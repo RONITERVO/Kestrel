@@ -17,6 +17,8 @@ Rust application boundary
   |           |-- catalog.jsonl durable index
   |           `-- SQLite FTS5 rebuildable cache
   |-- Services: installed scripts and NVIDIA telemetry
+  |-- AttachmentStore: immutable local objects + bounded document extraction
+  |     `-- native image/audio blocks only for advertised projector capabilities
   `-- DeveloperAssistant: optional, user-triggered Codex child
 ```
 
@@ -27,3 +29,5 @@ The research prefix has only `search_archive` and `read_source`. Candidate refer
 Publication writes every artifact into a hidden staging directory, then renames that complete directory into its immutable final path before indexing. Startup treats report JSON as truth, regenerates missing derived artifacts, and rebuilds missing/broken catalog acceleration without changing report identity.
 
 The optional developer boundary executes fixed diagnostic commands without a shell. Codex uses `codex exec --ephemeral --ignore-user-config --sandbox workspace-write`, receives its prompt over stdin, runs only inside the validated Git root, and leaves changes uncommitted. No research or runtime module imports it.
+
+Attachments are imported through a native picker and copied before use; original paths are not the durable source of truth. Chat messages and task records reference immutable attachment metadata. Native media travels only as base64 data on the authenticated loopback request. Extracted document text is bounded per object and per turn. The Computer Tasks `read_attachment` tool accepts only IDs declared on that task, so it cannot become an arbitrary path-reading bypass.

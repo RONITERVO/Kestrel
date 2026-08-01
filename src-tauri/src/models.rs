@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::attachments::ContextAttachment;
 use crate::model::ModelInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,7 +154,7 @@ pub struct RuntimeLog {
     pub at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub id: String,
@@ -164,6 +165,8 @@ pub struct ChatMessage {
     /// Present when an assistant turn is partial or stopped at the configured output limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ContextAttachment>,
     pub created_at: String,
 }
 
@@ -194,6 +197,8 @@ pub struct StartChatRequest {
     pub session_id: Option<String>,
     pub model_id: String,
     pub message: String,
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: u32,
@@ -223,6 +228,8 @@ pub struct ChatStreamEvent {
 pub struct ComputerTaskRequest {
     pub model_id: String,
     pub objective: String,
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
     pub access: ComputerTaskAccess,
     pub max_steps: u32,
     pub max_output_tokens: u32,
@@ -266,6 +273,8 @@ pub struct ComputerTaskRun {
     pub updated_at: String,
     pub events: Vec<ComputerTaskEvent>,
     pub artifacts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ContextAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,7 +1,30 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { demoReport, demoSnapshot } from "./demo";
-import type { AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ChatStreamEvent, ComputerTaskEvent, ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot, DeveloperRepairReport, OperationProgress, ProfileTransfer, ResearchProgress, ResearchReport, ResearchSettings, ResumeComputerTaskRequest, RunResearchRequest, StartChatRequest, SystemSnapshot } from "./types";
+import type {
+  AppSnapshot,
+  ChatSession,
+  ChatSessionSummary,
+  ChatStart,
+  ChatStreamEvent,
+  ComputerTaskEvent,
+  ComputerTaskRequest,
+  ComputerTaskRun,
+  ComputerTaskSummary,
+  ContextAttachment,
+  ControlSettings,
+  ControlSnapshot,
+  DeveloperRepairReport,
+  OperationProgress,
+  ProfileTransfer,
+  ResearchProgress,
+  ResearchReport,
+  ResearchSettings,
+  ResumeComputerTaskRequest,
+  RunResearchRequest,
+  StartChatRequest,
+  SystemSnapshot,
+} from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
 
@@ -15,10 +38,17 @@ export async function getReport(id: string): Promise<ResearchReport> {
   return invoke<ResearchReport>("get_report", { id });
 }
 
-export async function runResearch(request: RunResearchRequest): Promise<ResearchReport> {
+export async function runResearch(
+  request: RunResearchRequest,
+): Promise<ResearchReport> {
   if (!isTauri()) {
     await new Promise((resolve) => window.setTimeout(resolve, 900));
-    return { ...demoReport, query: request.query, title: request.query, id: `demo-${Date.now()}` };
+    return {
+      ...demoReport,
+      query: request.query,
+      title: request.query,
+      id: `demo-${Date.now()}`,
+    };
   }
   return invoke<ResearchReport>("run_research", { request });
 }
@@ -40,18 +70,33 @@ export async function revealLibrary(): Promise<void> {
   if (isTauri()) await invoke("reveal_library");
 }
 
-export async function onProgress(callback: (progress: ResearchProgress) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<ResearchProgress>("research-progress", (event) => callback(event.payload));
+export async function onProgress(
+  callback: (progress: ResearchProgress) => void,
+): Promise<UnlistenFn> {
+  if (isTauri())
+    return listen<ResearchProgress>("research-progress", (event) =>
+      callback(event.payload),
+    );
   return () => undefined;
 }
 
-export async function onRuntimeProgress(callback: (progress: OperationProgress) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<OperationProgress>("runtime-progress", (event) => callback(event.payload));
+export async function onRuntimeProgress(
+  callback: (progress: OperationProgress) => void,
+): Promise<UnlistenFn> {
+  if (isTauri())
+    return listen<OperationProgress>("runtime-progress", (event) =>
+      callback(event.payload),
+    );
   return () => undefined;
 }
 
-export async function onDeveloperProgress(callback: (progress: OperationProgress) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<OperationProgress>("developer-progress", (event) => callback(event.payload));
+export async function onDeveloperProgress(
+  callback: (progress: OperationProgress) => void,
+): Promise<UnlistenFn> {
+  if (isTauri())
+    return listen<OperationProgress>("developer-progress", (event) =>
+      callback(event.payload),
+    );
   return () => undefined;
 }
 
@@ -60,19 +105,36 @@ export async function getSystemSnapshot(): Promise<SystemSnapshot> {
     return {
       status: demoSnapshot.status,
       settings: demoSnapshot.settings,
-      runtime: { contextWindow: 98_304, maxOutputTokens: 32_768, parallelSlots: 1, kvCache: "q4_0 / q4_0", modelVramMib: 9_964, modelRoot: "D:\\LocalAI\\Bonsai27B" },
-      gpu: { name: "NVIDIA GeForce RTX 5070", totalMib: 12_227, usedMib: 11_128, freeMib: 816, utilizationPercent: 7 },
+      runtime: {
+        contextWindow: 98_304,
+        maxOutputTokens: 32_768,
+        parallelSlots: 1,
+        kvCache: "q4_0 / q4_0",
+        modelVramMib: 9_964,
+        modelRoot: "D:\\LocalAI\\Bonsai27B",
+      },
+      gpu: {
+        name: "NVIDIA GeForce RTX 5070",
+        totalMib: 12_227,
+        usedMib: 11_128,
+        freeMib: 816,
+        utilizationPercent: 7,
+      },
     };
   }
   return invoke<SystemSnapshot>("get_system_snapshot");
 }
 
-export async function saveResearchSettings(settings: ResearchSettings): Promise<ResearchSettings> {
+export async function saveResearchSettings(
+  settings: ResearchSettings,
+): Promise<ResearchSettings> {
   if (!isTauri()) return settings;
   return invoke<ResearchSettings>("save_research_settings", { settings });
 }
 
-export async function applyModelRuntime(settings: ResearchSettings): Promise<SystemSnapshot> {
+export async function applyModelRuntime(
+  settings: ResearchSettings,
+): Promise<SystemSnapshot> {
   if (!isTauri()) return getSystemSnapshot();
   return invoke<SystemSnapshot>("apply_model_runtime", { settings });
 }
@@ -81,7 +143,9 @@ export async function openBonsaiControlCenter(): Promise<void> {
   if (isTauri()) await invoke("open_bonsai_control_center");
 }
 
-export async function getControlSnapshot(probeDeveloper = true): Promise<ControlSnapshot> {
+export async function getControlSnapshot(
+  probeDeveloper = true,
+): Promise<ControlSnapshot> {
   if (!isTauri()) return demoSnapshot.control;
   return invoke<ControlSnapshot>("get_control_snapshot", { probeDeveloper });
 }
@@ -92,7 +156,11 @@ export async function scanLocalModels(): Promise<ControlSnapshot> {
 }
 
 export async function exportSetupProfile(): Promise<ProfileTransfer> {
-  if (!isTauri()) return { path: "C:\\Users\\Researcher\\Kestrel Research\\setup-profiles\\kestrel-profile-preview.json", message: "Preview profile exported safely." };
+  if (!isTauri())
+    return {
+      path: "C:\\Users\\Researcher\\Kestrel Research\\setup-profiles\\kestrel-profile-preview.json",
+      message: "Preview profile exported safely.",
+    };
   return invoke<ProfileTransfer>("export_setup_profile");
 }
 
@@ -101,23 +169,57 @@ export async function importSetupProfile(path: string): Promise<AppSnapshot> {
   return invoke<AppSnapshot>("import_setup_profile", { path });
 }
 
-export async function saveControlSettings(settings: ControlSettings): Promise<ControlSnapshot> {
+export async function saveControlSettings(
+  settings: ControlSettings,
+): Promise<ControlSnapshot> {
   if (!isTauri()) return { ...demoSnapshot.control, settings };
   return invoke<ControlSnapshot>("save_control_settings", { settings });
 }
 
-export async function startLocalModel(modelId: string): Promise<ControlSnapshot> {
-  if (!isTauri()) return { ...demoSnapshot.control, runtime: { ...demoSnapshot.control.runtime, phase: "ready", modelId, modelName: demoSnapshot.control.models.find(model => model.id === modelId)?.name } };
+export async function startLocalModel(
+  modelId: string,
+): Promise<ControlSnapshot> {
+  if (!isTauri())
+    return {
+      ...demoSnapshot.control,
+      runtime: {
+        ...demoSnapshot.control.runtime,
+        phase: "ready",
+        modelId,
+        modelName: demoSnapshot.control.models.find(
+          (model) => model.id === modelId,
+        )?.name,
+      },
+    };
   return invoke<ControlSnapshot>("start_local_model", { modelId });
 }
 
 export async function stopLocalModel(): Promise<ControlSnapshot> {
-  if (!isTauri()) return { ...demoSnapshot.control, runtime: { ...demoSnapshot.control.runtime, phase: "stopped", modelId: undefined, modelName: undefined } };
+  if (!isTauri())
+    return {
+      ...demoSnapshot.control,
+      runtime: {
+        ...demoSnapshot.control.runtime,
+        phase: "stopped",
+        modelId: undefined,
+        modelName: undefined,
+      },
+    };
   return invoke<ControlSnapshot>("stop_local_model");
 }
 
 export async function releaseAiMemory(): Promise<ControlSnapshot> {
-  if (!isTauri()) return { ...demoSnapshot.control, runtime: { ...demoSnapshot.control.runtime, phase: "stopped", mode: "none", modelId: undefined, modelName: undefined } };
+  if (!isTauri())
+    return {
+      ...demoSnapshot.control,
+      runtime: {
+        ...demoSnapshot.control.runtime,
+        phase: "stopped",
+        mode: "none",
+        modelId: undefined,
+        modelName: undefined,
+      },
+    };
   return invoke<ControlSnapshot>("release_ai_memory");
 }
 
@@ -135,8 +237,25 @@ export async function deleteChatSession(id: string): Promise<void> {
   if (isTauri()) await invoke("delete_chat_session", { id });
 }
 
-export async function startChatStream(request: StartChatRequest): Promise<ChatStart> {
-  if (!isTauri()) throw new Error("Preview conversations cannot stream or persist.");
+export async function pickContextFiles(): Promise<ContextAttachment[]> {
+  if (!isTauri()) return [];
+  return invoke<ContextAttachment[]>("pick_context_files");
+}
+
+export async function openContextAttachment(id: string): Promise<void> {
+  if (isTauri()) await invoke("open_context_attachment", { id });
+}
+
+export async function pickLocalModelFolder(): Promise<string | undefined> {
+  if (!isTauri()) return undefined;
+  return (await invoke<string | null>("pick_local_model_folder")) ?? undefined;
+}
+
+export async function startChatStream(
+  request: StartChatRequest,
+): Promise<ChatStart> {
+  if (!isTauri())
+    throw new Error("Preview conversations cannot stream or persist.");
   return invoke<ChatStart>("start_chat_stream", { request });
 }
 
@@ -144,8 +263,13 @@ export async function cancelChatStream(requestId: string): Promise<void> {
   if (isTauri()) await invoke("cancel_chat_stream", { requestId });
 }
 
-export async function onChatStream(callback: (event: ChatStreamEvent) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<ChatStreamEvent>("chat-stream", (event) => callback(event.payload));
+export async function onChatStream(
+  callback: (event: ChatStreamEvent) => void,
+): Promise<UnlistenFn> {
+  if (isTauri())
+    return listen<ChatStreamEvent>("chat-stream", (event) =>
+      callback(event.payload),
+    );
   return () => undefined;
 }
 
@@ -159,13 +283,19 @@ export async function getComputerTask(id: string): Promise<ComputerTaskRun> {
   return invoke<ComputerTaskRun>("get_computer_task", { id });
 }
 
-export async function startComputerTask(request: ComputerTaskRequest): Promise<ComputerTaskRun> {
-  if (!isTauri()) throw new Error("Computer Tasks require the desktop application.");
+export async function startComputerTask(
+  request: ComputerTaskRequest,
+): Promise<ComputerTaskRun> {
+  if (!isTauri())
+    throw new Error("Computer Tasks require the desktop application.");
   return invoke<ComputerTaskRun>("start_computer_task", { request });
 }
 
-export async function resumeComputerTask(request: ResumeComputerTaskRequest): Promise<ComputerTaskRun> {
-  if (!isTauri()) throw new Error("Computer Tasks require the desktop application.");
+export async function resumeComputerTask(
+  request: ResumeComputerTaskRequest,
+): Promise<ComputerTaskRun> {
+  if (!isTauri())
+    throw new Error("Computer Tasks require the desktop application.");
   return invoke<ComputerTaskRun>("resume_computer_task", { request });
 }
 
@@ -173,12 +303,20 @@ export async function stopComputerTask(runId: string): Promise<void> {
   if (isTauri()) await invoke("stop_computer_task", { runId });
 }
 
-export async function onComputerTaskEvent(callback: (event: ComputerTaskEvent) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<ComputerTaskEvent>("computer-task-event", (event) => callback(event.payload));
+export async function onComputerTaskEvent(
+  callback: (event: ComputerTaskEvent) => void,
+): Promise<UnlistenFn> {
+  if (isTauri())
+    return listen<ComputerTaskEvent>("computer-task-event", (event) =>
+      callback(event.payload),
+    );
   return () => undefined;
 }
 
-export async function openTaskArtifact(runId: string, path: string): Promise<void> {
+export async function openTaskArtifact(
+  runId: string,
+  path: string,
+): Promise<void> {
   if (isTauri()) await invoke("open_task_artifact", { runId, path });
 }
 
@@ -187,7 +325,18 @@ export async function runNativeDiagnostics(): Promise<string> {
   return invoke<string>("run_native_diagnostics");
 }
 
-export async function runCodexRepair(issue: string): Promise<DeveloperRepairReport> {
-  if (!isTauri()) return { success: true, summary: "Preview repair verified.", diagnosticsBefore: "Preview", diagnosticsAfter: "Preview", reportPath: "preview.json" };
-  return invoke<DeveloperRepairReport>("run_codex_repair", { request: { issue } });
+export async function runCodexRepair(
+  issue: string,
+): Promise<DeveloperRepairReport> {
+  if (!isTauri())
+    return {
+      success: true,
+      summary: "Preview repair verified.",
+      diagnosticsBefore: "Preview",
+      diagnosticsAfter: "Preview",
+      reportPath: "preview.json",
+    };
+  return invoke<DeveloperRepairReport>("run_codex_repair", {
+    request: { issue },
+  });
 }

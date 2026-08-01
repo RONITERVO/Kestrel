@@ -5,6 +5,7 @@
 //! action, and a durable event transcript.
 
 use crate::{
+    attachments::AttachmentStore,
     model::ModelInfo,
     models::{ComputerTaskAccess, ComputerTaskEvent, ComputerTaskRequest, ControlSettings},
     runtime::{authorized, RuntimeManager},
@@ -35,6 +36,7 @@ pub async fn run(
     app: Option<AppHandle>,
     runtime: Arc<RuntimeManager>,
     store: WorkspaceStore,
+    attachment_store: AttachmentStore,
     run_id: String,
     request: ComputerTaskRequest,
     models: Vec<ModelInfo>,
@@ -85,6 +87,16 @@ pub async fn run(
         &format!("{} · {}", lease.connection.model_label, access_label),
         None,
     );
+    let context_attachments = attachment_store.resolve(&request.attachment_ids)?;
+    let selected_model = models
+        .iter()
+        .find(|model| model.id == request.model_id)
+        .ok_or_else(|| "The selected model is no longer in the local catalog.".to_string())?;
+    let attachment_instruction = if context_attachments.is_empty() {
+        String::new()
+    } else {
+        " Attached documents are durable local inputs. Native image/audio content is included when this model supports it. Use read_attachment with an attachment ID and character range when an extracted document preview is incomplete; never claim to have interpreted a metadata-only binary.".into()
+    };
     let system = format!(
         "You are Kestrel's offline Windows computer assistant. You have {access_label}. Use tools to complete the objective. \
          Never claim that an action happened unless a tool result confirms it. Inspect before changing. Prefer the smallest \
@@ -93,12 +105,13 @@ pub async fn run(
          concrete options when possible, and recommend the safest useful option. Do not ask about immaterial preferences when a \
          reversible default is available. Never put a clarification only in prose: call ask_user. When complete, answer with a \
          concise summary and exact artifact paths, and do not append an optional follow-up question. \
-         Workspace roots: {}",
+         Workspace roots: {}{}",
         if settings.agent_workspace_roots.is_empty() {
             "full access explicitly enabled".into()
         } else {
             settings.agent_workspace_roots.join("; ")
-        }
+        },
+        attachment_instruction,
     );
     let objective = match continuation {
         Some(continuation) => format!(
@@ -107,11 +120,29 @@ pub async fn run(
         ),
         None => request.objective.clone(),
     };
+    let prepared = attachment_store.prepare_message(
+        &objective,
+        &context_attachments,
+        selected_model,
+        120_000,
+    )?;
     let mut messages = vec![
         json!({"role":"system","content":system}),
-        json!({"role":"user","content":objective}),
+        json!({"role":"user","content":prepared.content}),
     ];
-    let tools = tool_schemas(access);
+    if let Some(notice) = prepared.notice {
+        event(
+            &app,
+            &store,
+            &run_id,
+            0,
+            "context",
+            "Attachment context prepared",
+            &notice,
+            None,
+        );
+    }
+    let tools = tool_schemas(access, !context_attachments.is_empty());
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3_600))
         .build()
@@ -337,7 +368,14 @@ pub async fn run(
                 Some(arguments.clone()),
             );
             let result = tokio::select! {
-                result = execute_tool(name, &arguments, access, &settings.agent_workspace_roots) => result,
+                result = execute_tool(
+                    name,
+                    &arguments,
+                    access,
+                    &settings.agent_workspace_roots,
+                    &attachment_store,
+                    &request.attachment_ids,
+                ) => result,
                 _ = cancel.cancelled() => {
                     event(&app, &store, &run_id, step, "cancelled", "Stopped by you", "The active operation was cancelled and no further tools will run.", None);
                     return Ok(());
@@ -436,7 +474,7 @@ fn event(
     }
 }
 
-fn tool_schemas(access: Access) -> Vec<Value> {
+fn tool_schemas(access: Access, has_attachments: bool) -> Vec<Value> {
     let mut tools = vec![
         schema("ask_user", "Pause safely and ask one decision-critical clarification. Use this instead of guessing when different answers materially change the target, scope, format, safety, or an irreversible action.", json!({"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","minItems":2,"maxItems":4,"items":{"type":"string"}},"recommended_index":{"type":"integer","minimum":0,"maximum":3}},"required":["question"]})),
         schema("list_directory", "List up to 500 files and folders at an absolute path.", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})),
@@ -446,6 +484,9 @@ fn tool_schemas(access: Access) -> Vec<Value> {
         schema("move_path", "Move or rename a path. The destination must not already exist.", json!({"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"]})),
         schema("copy_file", "Copy one file. The destination must not already exist.", json!({"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"]})),
     ];
+    if has_attachments {
+        tools.push(schema("read_attachment", "Read a bounded character range from a durable attachment's local text extraction. Use the attachment ID shown in the objective. This cannot interpret metadata-only binaries.", json!({"type":"object","properties":{"attachment_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100000}},"required":["attachment_id"]})));
+    }
     if access == Access::Full {
         tools.extend([
             schema("run_program", "Run a Windows program directly with an argument array and captured output. No command shell is used.", json!({"type":"object","properties":{"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":600}},"required":["program","args","cwd"]})),
@@ -507,6 +548,8 @@ async fn execute_tool(
     arguments: &Value,
     access: Access,
     roots: &[String],
+    attachments: &AttachmentStore,
+    attachment_ids: &[String],
 ) -> Result<ToolOutput, String> {
     let string = |key: &str| {
         arguments
@@ -515,6 +558,24 @@ async fn execute_tool(
             .ok_or_else(|| format!("missing string argument: {key}"))
     };
     match name {
+        "read_attachment" => {
+            let id = string("attachment_id")?;
+            if !attachment_ids.iter().any(|known| known == id) {
+                return Err("That attachment is not part of this durable task.".into());
+            }
+            let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(20_000)
+                .clamp(1, 100_000) as usize;
+            let text = attachments.read_extracted(id, offset, limit)?;
+            Ok(ToolOutput {
+                text,
+                artifact: None,
+                data: Some(json!({"attachmentId":id,"offset":offset,"limit":limit})),
+            })
+        }
         "list_directory" => {
             let path = allowed_existing(string("path")?, access, roots)?;
             if !path.is_dir() {
@@ -944,11 +1005,14 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let path = root.join("cat.svg");
         fs::write(&path, "old version").unwrap();
+        let attachment_store = AttachmentStore::new(directory.path()).unwrap();
         let result = execute_tool(
             "write_file",
             &json!({"path":path,"content":"<svg><path d=\"M0 0\"/></svg>"}),
             Access::Workspace,
             &[root.to_string_lossy().into_owned()],
+            &attachment_store,
+            &[],
         )
         .await
         .unwrap();
@@ -964,5 +1028,36 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap();
         assert_eq!(fs::read_to_string(backup).unwrap(), "old version");
+    }
+
+    #[tokio::test]
+    async fn attachment_tool_reads_only_declared_task_inputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("evidence.txt");
+        fs::write(&source, "bounded local evidence").unwrap();
+        let attachment_store = AttachmentStore::new(directory.path()).unwrap();
+        let attachment = attachment_store.import_path(&source).unwrap();
+        let arguments = json!({"attachment_id":attachment.id,"offset":8,"limit":5});
+        let denied = execute_tool(
+            "read_attachment",
+            &arguments,
+            Access::Workspace,
+            &[],
+            &attachment_store,
+            &[],
+        )
+        .await;
+        assert!(denied.is_err());
+        let allowed = execute_tool(
+            "read_attachment",
+            &arguments,
+            Access::Workspace,
+            &[],
+            &attachment_store,
+            &[attachment.id],
+        )
+        .await
+        .unwrap();
+        assert_eq!(allowed.text, "local");
     }
 }

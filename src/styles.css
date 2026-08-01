@@ -339,11 +339,14 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .control-chat article p { margin: 9px 0 0; color: #dbe6de; white-space: pre-wrap; font: 13px/1.65 var(--sans); }
 .control-chat details { margin-top: 10px; color: #8ea095; font-size: 9px; }
 .control-chat pre { max-height: 200px; overflow: auto; white-space: pre-wrap; }
-.control-composer { margin: 0 clamp(20px, 4vw, 64px) 16px; min-height: 90px; display: grid; grid-template-columns: 1fr 43px; gap: 8px; padding: 11px; border: 1px solid #2a3931; border-radius: 12px; background: #101713; }
+.control-composer { margin: 0 clamp(20px, 4vw, 64px) 16px; min-height: 90px; padding: 11px; border: 1px solid #2a3931; border-radius: 12px; background: #101713; }
+.composer-row { min-height: 66px; display: grid; grid-template-columns: 40px minmax(0,1fr) 43px; gap: 8px; }
 .control-composer textarea { min-width: 0; resize: none; border: 0; outline: 0; color: #e5efe8; background: transparent; font: 12px/1.5 var(--sans); }
 .control-composer textarea:disabled { color: #607269; }
-.control-composer button { align-self: end; width: 40px; height: 40px; display: grid; place-items: center; border: 0; border-radius: 9px; color: #0c130d; background: #a7d341; cursor: pointer; }
-.control-composer button:disabled { color: #56665d; background: #1d2822; cursor: default; }
+.composer-row > button { align-self: end; width: 40px; height: 40px; display: grid; place-items: center; border: 0; border-radius: 9px; color: #0c130d; background: #a7d341; cursor: pointer; }
+.composer-row > button:disabled { color: #56665d; background: #1d2822; cursor: default; }
+.composer-row > .attach-button { border: 1px solid #32443a; color: #9ab0a2; background: #17211b; }
+.composer-row > .attach-button:hover:not(:disabled) { color: #c6ee86; border-color: #536b46; }
 .control-composer svg { width: 17px; }
 .control-inspector { overflow: auto; padding: 24px 14px; border-left: 1px solid var(--control-line); }
 .control-inspector > .eyebrow { display: block; padding-bottom: 17px; border-bottom: 1px solid var(--control-line); color: #658074; font: 700 8px var(--mono); }
@@ -404,6 +407,21 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .control-composer .stop-generation { color: #f1c0b8; background: #542b26; }
 .control-composer .stop-generation:hover { background: #69342d; }
 .control-composer.steerable { border-color: #536744; box-shadow: 0 0 0 2px rgba(169,220,74,.05); }
+.attachment-shelf { width: 100%; min-width: 0; margin: 0 0 9px; display: flex; flex-wrap: wrap; gap: 6px; }
+.attachment-chip { max-width: min(100%, 300px); min-height: 39px; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; border: 1px solid #33463b; border-radius: 8px; background: #111b16; }
+.attachment-chip.image { border-color: #486044; }
+.attachment-chip.audio { border-color: #4d526d; }
+.attachment-open { min-width: 0; height: 100%; padding: 6px 8px; display: grid; grid-template-columns: 20px minmax(0,1fr); align-items: center; gap: 7px; border: 0; color: #8fa399; background: transparent; text-align: left; cursor: pointer; }
+.attachment-open > svg { width: 14px; color: #a9d34e; }
+.attachment-open span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.attachment-open strong, .attachment-open small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-open strong { color: #d5e2d9; font: 700 8px var(--mono); }
+.attachment-open small { color: #71857a; font: 7px var(--mono); }
+.attachment-remove { width: 28px; height: 100%; display: grid; place-items: center; border: 0; border-left: 1px solid #2b3b32; color: #73867b; background: transparent; cursor: pointer; }
+.attachment-remove:hover { color: #e2aaa0; background: #241816; }
+.attachment-remove svg { width: 12px; }
+.control-chat article .attachment-shelf { margin: 10px 0 4px; }
+.control-chat article .attachment-chip { background: #101813; }
 .chat-resume { margin: -5px clamp(20px, 4vw, 64px) 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #809488; font: 8px var(--mono); }
 .chat-resume button { min-height: 30px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid #465b3d; border-radius: 7px; color: #c4e98c; background: #172219; cursor: pointer; font: 700 8px var(--mono); }
 .chat-resume svg { width: 12px; }
@@ -426,6 +444,16 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .workspace-roots input { min-width: 0; height: 29px; padding: 0 6px; border: 1px solid #293830; border-radius: 5px; color: #d9e5dd; background: #101814; font: 7px var(--mono); }
 .root-entry button { min-height: 29px; border: 1px solid #33463b; border-radius: 5px; color: #b7d686; background: #162119; cursor: pointer; }
 .engine-discovery-note { display: block; margin-top: -3px; color: #91a69a; font: 9px/1.4 var(--mono); }
+.model-root-picker { display: grid; gap: 5px; }
+.model-root-picker > div { min-width: 0; min-height: 29px; padding-left: 8px; display: grid; grid-template-columns: minmax(0,1fr) 28px; align-items: center; border: 1px solid #293830; border-radius: 6px; background: #0e1612; }
+.model-root-picker > div span { overflow: hidden; color: #91a399; text-overflow: ellipsis; white-space: nowrap; font: 7px var(--mono); }
+.model-root-picker > div button { min-height: 27px; display: grid; place-items: center; border: 0; color: #71857a; background: transparent; cursor: pointer; }
+.model-root-picker > div button:hover { color: #dfa69c; }
+.model-root-picker > div svg { width: 11px; }
+.model-root-picker > button { min-height: 33px; padding: 0 9px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #34473c; border-radius: 6px; color: #b8cfbf; background: #141e19; cursor: pointer; font: 700 8px var(--mono); }
+.model-root-picker > button:disabled { opacity: .55; cursor: default; }
+.model-root-picker > button svg { width: 13px; }
+.model-root-picker > small { color: #6f8378; font: 7px/1.45 var(--mono); }
 .control-warning { margin-top: 12px; padding: 9px; border: 1px solid #69512b; border-radius: 7px; color: #d9ba7e; background: #241d11; font: 7px/1.5 var(--mono); }
 .inspector-save { width: 100%; margin-top: 12px; }
 
@@ -437,6 +465,12 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .task-launch > p { max-width: 590px; margin: 0 0 22px; color: #71867a; font-size: 11px; line-height: 1.55; }
 .task-launch textarea { width: 100%; min-height: 125px; padding: 16px; resize: vertical; border: 1px solid #304239; border-radius: 12px; outline: 0; color: #e2eee5; background: #101814; font: 12px/1.55 var(--sans); }
 .task-launch textarea:focus { border-color: #72914e; box-shadow: 0 0 0 3px rgba(172,226,71,.06); }
+.task-launch > .attachment-shelf { margin: 10px 0 0; justify-content: center; }
+.context-attach { min-height: 34px; margin-top: 10px; padding: 0 12px; display: inline-flex; align-items: center; gap: 7px; border: 1px solid #3a4d41; border-radius: 7px; color: #b6cbbe; background: #131d18; cursor: pointer; font: 700 8px var(--mono); }
+.context-attach:disabled { opacity: .55; cursor: default; }
+.context-attach svg { width: 14px; }
+.task-run-view > header > div { min-width: 0; flex: 1; }
+.task-run-view > header .attachment-shelf { margin: 10px 0 0; }
 .task-policy { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
 .task-policy > button { min-height: 62px; padding: 11px 13px; display: grid; grid-template-columns: 27px 1fr; align-items: center; gap: 9px; border: 1px solid #293a31; border-radius: 9px; color: #82968a; background: #101713; text-align: left; cursor: pointer; }
 .task-policy > button.active { border-color: #607e43; color: #dfeae2; background: #19231b; }

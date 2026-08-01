@@ -102,9 +102,13 @@ describe("Kestrel research experience", () => {
     expect(screen.getByText("SESSION INSPECTOR")).toBeInTheDocument();
     expect(screen.getByText(/one inference lease/i)).toBeInTheDocument();
     expect(screen.getByText(/private, persistent workspace/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Attach local context/i })).toBeInTheDocument();
+    expect(screen.getByText("Vision")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Add local model folder/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Computer/i }));
     expect(screen.getByRole("heading", { name: /bounded objective/i })).toBeInTheDocument();
     expect(screen.getByText(/Every decision, tool call, result, error, and artifact/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Attach files as context/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Start visible task/i })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /New chat/i }));
     expect(screen.getByRole("button", { name: /^Chat$/i })).toHaveClass("active");

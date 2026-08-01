@@ -1,8 +1,9 @@
 //! Streaming, durable, tool-free local conversations.
 
 use crate::{
+    attachments::AttachmentStore,
     model::ModelInfo,
-    models::{ChatStreamEvent, ControlSettings, StartChatRequest},
+    models::{ChatMessage, ChatStreamEvent, ControlSettings, StartChatRequest},
     runtime::{authorized, RuntimeManager},
     workspace::WorkspaceStore,
 };
@@ -18,6 +19,7 @@ pub struct ChatStreamJob {
     pub app: Option<AppHandle>,
     pub runtime: Arc<RuntimeManager>,
     pub store: WorkspaceStore,
+    pub attachments: AttachmentStore,
     pub request_id: String,
     pub session_id: String,
     pub request: StartChatRequest,
@@ -32,6 +34,7 @@ impl ChatStreamJob {
             app,
             runtime,
             store,
+            attachments,
             request_id,
             session_id,
             request,
@@ -73,11 +76,6 @@ impl ChatStreamJob {
                 .max(1)
                 .min(settings.max_output_tokens.max(1))
         };
-        let all_messages = session
-            .messages
-            .iter()
-            .map(|message| json!({"role": message.role, "content": message.content}))
-            .collect::<Vec<_>>();
         let prompt_chars = max_output_tokens
             .checked_add(1_024)
             .and_then(|reserved| settings.context_window.checked_sub(reserved))
@@ -86,11 +84,36 @@ impl ChatStreamJob {
         let history_budget = prompt_chars
             .max(4_096)
             .saturating_sub(CHAT_SYSTEM_PROMPT.len());
-        let (history, omitted) = fit_recent_messages(&all_messages, history_budget.max(2_048));
+        let (history, omitted) = fit_recent_messages(&session.messages, history_budget.max(2_048));
         let included = history.len();
         let mut messages = Vec::with_capacity(history.len() + 1);
         messages.push(json!({"role":"system","content":CHAT_SYSTEM_PROMPT}));
-        messages.extend(history);
+        let model = models
+            .iter()
+            .find(|model| model.id == request.model_id)
+            .ok_or_else(|| "The selected model is no longer in the local catalog.".to_string())?;
+        let attachment_budget = history_budget
+            .checked_div(included.max(1))
+            .unwrap_or(history_budget)
+            .clamp(2_048, 250_000);
+        let mut attachment_notices = Vec::new();
+        for message in history {
+            let content = if message.role == "user" && !message.attachments.is_empty() {
+                let prepared = attachments.prepare_message(
+                    &message.content,
+                    &message.attachments,
+                    model,
+                    attachment_budget,
+                )?;
+                if let Some(notice) = prepared.notice {
+                    attachment_notices.push(notice);
+                }
+                prepared.content
+            } else {
+                Value::String(message.content.clone())
+            };
+            messages.push(json!({"role": message.role, "content": content}));
+        }
         if omitted > 0 {
             emit(
             app.as_ref(),
@@ -103,6 +126,16 @@ impl ChatStreamJob {
             )),
             Some(json!({"included":included,"omitted":omitted})),
         );
+        }
+        if !attachment_notices.is_empty() {
+            emit(
+                app.as_ref(),
+                &request_id,
+                &session_id,
+                "context",
+                Some(attachment_notices.join(" ")),
+                Some(json!({"attachments":true})),
+            );
         }
         let body = json!({
             "model": lease.connection.model_id,
@@ -312,11 +345,22 @@ fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-fn fit_recent_messages(messages: &[Value], max_chars: usize) -> (Vec<Value>, usize) {
+fn fit_recent_messages(messages: &[ChatMessage], max_chars: usize) -> (Vec<ChatMessage>, usize) {
     let mut selected = Vec::new();
     let mut used = 0usize;
     for message in messages.iter().rev() {
-        let length = message.to_string().chars().count();
+        let length = message.content.chars().count()
+            + message
+                .attachments
+                .iter()
+                .map(|attachment| {
+                    if attachment.extracted_chars > 0 {
+                        attachment.extracted_chars.min(250_000)
+                    } else {
+                        4_096
+                    }
+                })
+                .sum::<usize>();
         if !selected.is_empty() && used.saturating_add(length) > max_chars {
             break;
         }
@@ -335,13 +379,25 @@ mod tests {
     #[test]
     fn context_fitting_keeps_the_newest_complete_turns() {
         let messages = vec![
-            json!({"role":"user","content":"old old old"}),
-            json!({"role":"assistant","content":"middle middle middle"}),
-            json!({"role":"user","content":"new"}),
+            chat_message("user", "old old old"),
+            chat_message("assistant", "middle middle middle"),
+            chat_message("user", "new"),
         ];
-        let newest_size = messages[2].to_string().len();
+        let newest_size = messages[2].content.len();
         let (selected, omitted) = fit_recent_messages(&messages, newest_size + 1);
         assert_eq!(selected, vec![messages[2].clone()]);
         assert_eq!(omitted, 2);
+    }
+
+    fn chat_message(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            role: role.into(),
+            content: content.into(),
+            reasoning: None,
+            status: None,
+            attachments: Vec::new(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
     }
 }

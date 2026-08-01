@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 mod agent;
+mod attachments;
 mod chat;
 mod config;
 mod developer;
@@ -15,6 +16,7 @@ mod services;
 mod store;
 mod workspace;
 
+use attachments::{AttachmentStore, ContextAttachment};
 use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
@@ -53,6 +55,7 @@ struct AppState {
     runtime: Arc<RuntimeManager>,
     developer: DeveloperAssistant,
     workspace: WorkspaceStore,
+    attachments: AttachmentStore,
     research_active: AtomicBool,
     work_active: AtomicBool,
     jobs: Mutex<HashMap<String, CancellationToken>>,
@@ -478,14 +481,66 @@ fn delete_chat_session(id: String, state: State<'_, AppState>) -> Result<(), Str
 }
 
 #[tauri::command]
+async fn pick_context_files(state: State<'_, AppState>) -> Result<Vec<ContextAttachment>, String> {
+    let paths = tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Attach local context")
+            .add_filter(
+                "Readable context",
+                &[
+                    "png", "jpg", "jpeg", "webp", "gif", "bmp", "wav", "mp3", "flac", "ogg", "m4a",
+                    "pdf", "docx", "pptx", "xlsx", "txt", "md", "csv", "json", "yaml", "yml",
+                    "toml", "xml", "html", "log", "rs", "py", "js", "ts", "tsx", "svg",
+                ],
+            )
+            .add_filter("All files", &["*"])
+            .pick_files()
+            .unwrap_or_default()
+    })
+    .await
+    .map_err(|error| format!("The native file picker stopped unexpectedly: {error}"))?;
+    let store = state.attachments.clone();
+    tokio::task::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|path| store.import_path(path))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|error| format!("Attachment import stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command]
+fn open_context_attachment(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.attachments.open(&id)
+}
+
+#[tauri::command]
+async fn pick_local_model_folder() -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Add a local GGUF model folder")
+            .pick_folder()
+            .map(|path| {
+                path.canonicalize()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|error| format!("The native folder picker stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command]
 async fn start_chat_stream(
     request: StartChatRequest,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ChatStart, String> {
     ensure_workspace_idle(&state)?;
-    if request.message.trim().is_empty() {
-        return Err("Write a message before sending.".into());
+    if request.message.trim().is_empty() && request.attachment_ids.is_empty() {
+        return Err("Write a message or attach local context before sending.".into());
     }
     if request.message.len() > 1_048_576 {
         return Err("A chat message cannot exceed 1 MiB.".into());
@@ -494,6 +549,18 @@ async fn start_chat_stream(
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Another chat generation or computer task is already active.".to_string())?;
+    let attachments = match state.attachments.resolve(&request.attachment_ids) {
+        Ok(attachments) => attachments,
+        Err(error) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err(error);
+        }
+    };
+    let message = if request.message.trim().is_empty() {
+        "Analyze the attached local context.".to_string()
+    } else {
+        request.message.trim().to_string()
+    };
     let session = match request.session_id.as_deref() {
         Some(id) => {
             let session = match state.workspace.get_chat(id) {
@@ -509,10 +576,7 @@ async fn start_chat_stream(
             }
             session
         }
-        None => match state
-            .workspace
-            .create_chat(&request.model_id, &request.message)
-        {
+        None => match state.workspace.create_chat(&request.model_id, &message) {
             Ok(session) => session,
             Err(error) => {
                 state.work_active.store(false, Ordering::Release);
@@ -520,18 +584,17 @@ async fn start_chat_stream(
             }
         },
     };
-    let session = match state.workspace.add_chat_message(
-        &session.id,
-        "user",
-        request.message.trim().to_string(),
-        None,
-    ) {
-        Ok(session) => session,
-        Err(error) => {
-            state.work_active.store(false, Ordering::Release);
-            return Err(error);
-        }
-    };
+    let session =
+        match state
+            .workspace
+            .add_user_message_with_attachments(&session.id, message, attachments)
+        {
+            Ok(session) => session,
+            Err(error) => {
+                state.work_active.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
     let request_id = uuid::Uuid::new_v4().to_string();
     let cancel = CancellationToken::new();
     match state.interactive_jobs.lock() {
@@ -558,6 +621,7 @@ async fn start_chat_stream(
                     app: Some(app_for_task.clone()),
                     runtime: managed.runtime.clone(),
                     store: managed.workspace.clone(),
+                    attachments: managed.attachments.clone(),
                     request_id: event_request_id.clone(),
                     session_id: event_session_id.clone(),
                     request,
@@ -630,13 +694,19 @@ fn get_computer_task(id: String, state: State<'_, AppState>) -> Result<ComputerT
 
 #[tauri::command]
 async fn start_computer_task(
-    request: ComputerTaskRequest,
+    mut request: ComputerTaskRequest,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ComputerTaskRun, String> {
     ensure_workspace_idle(&state)?;
+    if request.objective.trim().is_empty() && request.attachment_ids.is_empty() {
+        return Err(
+            "Describe what the computer task should accomplish or attach local context.".into(),
+        );
+    }
     if request.objective.trim().is_empty() {
-        return Err("Describe what the computer task should accomplish.".into());
+        request.objective =
+            "Analyze the attached local context and complete the implied task safely.".into();
     }
     let settings = state
         .control_settings
@@ -649,17 +719,25 @@ async fn start_computer_task(
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Another chat generation or computer task is already active.".to_string())?;
-    let run =
-        match state
-            .workspace
-            .create_task(&request.model_id, &request.objective, request.access)
-        {
-            Ok(run) => run,
-            Err(error) => {
-                state.work_active.store(false, Ordering::Release);
-                return Err(error);
-            }
-        };
+    let attachments = match state.attachments.resolve(&request.attachment_ids) {
+        Ok(attachments) => attachments,
+        Err(error) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err(error);
+        }
+    };
+    let run = match state.workspace.create_task_with_attachments(
+        &request.model_id,
+        &request.objective,
+        request.access,
+        attachments,
+    ) {
+        Ok(run) => run,
+        Err(error) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err(error);
+        }
+    };
     let cancel = CancellationToken::new();
     match state.interactive_jobs.lock() {
         Ok(mut jobs) => {
@@ -731,6 +809,7 @@ async fn resume_computer_task(
         access: run.access,
         max_steps: settings.agent_max_steps,
         max_output_tokens: settings.agent_max_output_tokens,
+        attachment_ids: run.attachments.iter().map(|item| item.id.clone()).collect(),
     };
     let continuation = task_continuation(&run, answer);
     let cancel = CancellationToken::new();
@@ -770,6 +849,7 @@ fn spawn_computer_task(
             Some(app.clone()),
             managed.runtime.clone(),
             managed.workspace.clone(),
+            managed.attachments.clone(),
             run_id.clone(),
             request,
             models,
@@ -1054,6 +1134,7 @@ pub fn run() {
             let harness = ResearchHarness::new(store.clone());
             let developer = DeveloperAssistant::new(store.root());
             let workspace = WorkspaceStore::new(store.root())?;
+            let attachments = AttachmentStore::new(&store.root().join("workspace"))?;
             app.manage(AppState {
                 store,
                 harness,
@@ -1065,6 +1146,7 @@ pub fn run() {
                 runtime: Arc::new(RuntimeManager::new()),
                 developer,
                 workspace,
+                attachments,
                 research_active: AtomicBool::new(false),
                 work_active: AtomicBool::new(false),
                 jobs: Mutex::new(HashMap::new()),
@@ -1124,6 +1206,9 @@ pub fn run() {
             list_chat_sessions,
             get_chat_session,
             delete_chat_session,
+            pick_context_files,
+            open_context_attachment,
+            pick_local_model_folder,
             start_chat_stream,
             cancel_chat_stream,
             list_computer_tasks,

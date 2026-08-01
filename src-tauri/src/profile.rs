@@ -423,6 +423,8 @@ mod tests {
             chat_template: true,
             quantization: None,
             mmproj_path: None,
+            supports_vision: false,
+            supports_audio: false,
             recommendation: "Bonsai".into(),
         };
         let transfer = export(
