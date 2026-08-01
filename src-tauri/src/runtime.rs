@@ -506,10 +506,11 @@ impl RuntimeManager {
     /// Wait until every Kestrel inference lease has been returned. Memory release uses this after
     /// cancelling visible work so the server is never killed while a native tool may still be
     /// committing its durable result.
-    pub async fn wait_until_idle(&self, maximum: Duration) -> bool {
+    pub async fn wait_until_idle(&self, maximum: Duration) -> Option<OwnedSemaphorePermit> {
         tokio::time::timeout(maximum, self.gate.clone().acquire_owned())
             .await
-            .is_ok()
+            .ok()
+            .and_then(Result::ok)
     }
 
     /// Stop only abandoned llama.cpp processes carrying Kestrel's private API-key marker. A live
@@ -526,11 +527,15 @@ foreach($item in $all){
      -not $live.ContainsKey([uint32]$item.ParentProcessId)){
     $keyMatch=[regex]::Match($item.CommandLine,'--api-key-file\s+(?:"([^"]+)"|(\S+))')
     $keyFile=if($keyMatch.Groups[1].Success){$keyMatch.Groups[1].Value}else{$keyMatch.Groups[2].Value}
-    Stop-Process -Id $item.ProcessId -Force -ErrorAction Stop
-    if($keyFile -and [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($keyFile)) -ieq [IO.Path]::GetFullPath($env:TEMP)){
-      Remove-Item -LiteralPath $keyFile -Force -ErrorAction SilentlyContinue
+    try {
+      Stop-Process -Id $item.ProcessId -Force -ErrorAction Stop
+      if($keyFile -and [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($keyFile)) -ieq [IO.Path]::GetFullPath($env:TEMP)){
+        Remove-Item -LiteralPath $keyFile -Force -ErrorAction SilentlyContinue
+      }
+      Write-Output $item.ProcessId
+    } catch {
+      Write-Warning "Could not stop orphaned Kestrel process $($item.ProcessId): $($_.Exception.Message)"
     }
-    Write-Output $item.ProcessId
   }
 }"#;
         let mut command = Command::new("powershell.exe");

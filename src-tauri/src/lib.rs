@@ -435,13 +435,13 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
     for cancellation in cancellations {
         cancellation.cancel();
     }
-    if !state
+    let Some(_idle_permit) = state
         .runtime
         .wait_until_idle(std::time::Duration::from_secs(20))
         .await
-    {
+    else {
         return Err("The active local request did not release its inference lease within 20 seconds. Its cancellation remains requested; try Release AI memory again after the visible task settles.".into());
-    }
+    };
     let research = state
         .research_settings
         .load()
@@ -792,15 +792,13 @@ fn task_continuation(run: &ComputerTaskRun, answer: &str) -> String {
     for event in run
         .events
         .iter()
+        .filter(|event| event.kind != "reasoning")
         .rev()
         .take(30)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
     {
-        if event.kind == "reasoning" {
-            continue;
-        }
         transcript.push_str(&format!("- {}: {}\n", event.title, event.detail));
         if transcript.len() >= 24_000 {
             transcript = transcript.chars().take(24_000).collect();

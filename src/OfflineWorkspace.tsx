@@ -29,18 +29,17 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   const [stoppingTask, setStoppingTask] = useState(false);
   const [runtimeProgress, setRuntimeProgress] = useState<string | null>(null);
   const [newRoot, setNewRoot] = useState("");
+  const selected = control.models.find((model) => model.id === selectedId);
   const chatRequestRef = useRef<string | null>(null);
   const pendingRedirectRef = useRef<string | null>(null);
   const chatTerminalRef = useRef<{ kind: string; content?: string } | null>(null);
-  const latestChatRef = useRef({ selected: control.models.find((model) => model.id === selectedId), settings, session });
+  const latestChatRef = useRef({ selected, settings, session });
   const taskRunRef = useRef<string | null>(null);
   const taskStartingRef = useRef(false);
   const earlyTaskEventsRef = useRef<ComputerTaskEvent[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const selected = control.models.find((model) => model.id === selectedId);
   const enginePathHasValidName = /(?:^|[\\/])llama-server\.exe$/i.test(settings.enginePath.trim());
   const visibleModels = useMemo(() => control.models.filter((model) => `${model.name} ${model.source} ${model.quantization ?? ""}`.toLowerCase().includes(filter.toLowerCase())), [control.models, filter]);
-  latestChatRef.current = { selected, settings, session };
 
   const refreshHistory = async () => {
     const [nextSessions, nextTasks] = await Promise.all([listChatSessions(), listComputerTasks()]);
@@ -49,6 +48,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   };
 
   useEffect(() => { setSettings(control.settings); }, [control.settings]);
+  useEffect(() => { latestChatRef.current = { selected, settings, session }; }, [selected, settings, session]);
   useEffect(() => {
     void refreshHistory().catch(() => undefined);
     let unmounted = false;
@@ -86,7 +86,6 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
         try {
           const next = await getChatSession(event.sessionId);
           setSession(next);
-          latestChatRef.current.session = next;
           await refreshHistory();
           setStream((current) => current?.requestId === event.requestId ? null : current);
           chatRequestRef.current = null;
@@ -154,7 +153,6 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       const started = await startChatStream({ sessionId: baseSession?.id, modelId: current.selected.id, message, temperature: 0.2, topP: 0.9, topK: 40, maxOutputTokens: current.settings.maxOutputTokens });
       chatRequestRef.current = started.requestId;
       setSession(started.session);
-      latestChatRef.current.session = started.session;
       setStream((current) => current?.requestId === started.requestId ? current : { requestId: started.requestId, phase: "queued", content: "", reasoning: "" });
       void refreshHistory();
     } catch (cause) { setSession(baseSession); onError(String(cause)); }
@@ -165,11 +163,12 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       if (chatRequestRef.current !== requestId) return;
       void getControlSnapshot(false).then(async (snapshot) => {
         if (snapshot.runtime.inferenceBusy || chatRequestRef.current !== requestId) return;
-        const sessionId = latestChatRef.current.session?.id;
+        let baseSession = latestChatRef.current.session;
+        const sessionId = baseSession?.id;
         if (sessionId) {
           const next = await getChatSession(sessionId);
           setSession(next);
-          latestChatRef.current.session = next;
+          baseSession = next;
         }
         const redirect = pendingRedirectRef.current;
         setStream(null);
@@ -177,7 +176,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
         chatTerminalRef.current = null;
         pendingRedirectRef.current = null;
         await refreshHistory();
-        if (redirect) await launchChat(redirect, latestChatRef.current.session);
+        if (redirect) await launchChat(redirect, baseSession);
       }).catch((cause) => onError(String(cause)));
     }, 5_000);
   }
@@ -221,9 +220,9 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       const run = await startComputerTask({ modelId: selected.id, objective: objective.trim(), access, maxSteps: settings.agentMaxSteps, maxOutputTokens: settings.agentMaxOutputTokens });
       const early = earlyTaskEventsRef.current.filter((event) => event.runId === run.id);
       earlyTaskEventsRef.current = earlyTaskEventsRef.current.filter((event) => event.runId !== run.id);
-      const terminal = early.some((event) => ["done", "cancelled", "error", "limit", "question"].includes(event.kind));
+      const terminal = early.filter((event) => ["done", "cancelled", "error", "limit", "question"].includes(event.kind)).at(-1);
       taskRunRef.current = terminal ? null : run.id;
-      setTask({ ...run, status: terminal ? terminalTaskStatus(early.at(-1)?.kind ?? "", run.status) : run.status, events: [...run.events, ...early] });
+      setTask({ ...run, status: terminal ? terminalTaskStatus(terminal.kind, run.status) : run.status, events: [...run.events, ...early] });
       taskStartingRef.current = false;
       setWorking(null);
       setObjective("");
@@ -253,10 +252,10 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       const early = earlyTaskEventsRef.current.filter((event) => event.runId === next.id);
       earlyTaskEventsRef.current = earlyTaskEventsRef.current.filter((event) => event.runId !== next.id);
       const additional = early.filter((event) => !next.events.some((known) => known.at === event.at && known.kind === event.kind && known.title === event.title));
-      const terminal = additional.some((event) => ["done", "cancelled", "error", "limit", "question"].includes(event.kind));
+      const terminal = additional.filter((event) => ["done", "cancelled", "error", "limit", "question"].includes(event.kind)).at(-1);
       taskRunRef.current = terminal ? null : next.id;
       taskStartingRef.current = false;
-      setTask({ ...next, status: terminal ? terminalTaskStatus(additional.at(-1)?.kind ?? "", next.status) : next.status, events: [...next.events, ...additional] });
+      setTask({ ...next, status: terminal ? terminalTaskStatus(terminal.kind, next.status) : next.status, events: [...next.events, ...additional] });
       setTaskAnswer("");
       void refreshHistory();
     } catch (cause) { taskStartingRef.current = false; onError(String(cause)); } finally { setWorking(null); }

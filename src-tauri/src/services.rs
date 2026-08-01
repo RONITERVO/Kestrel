@@ -18,6 +18,8 @@ pub enum ServiceError {
     MissingScript(String),
     #[error("could not start {name}: {details}")]
     StartFailed { name: String, details: String },
+    #[error("could not stop {name}: {details}")]
+    StopFailed { name: String, details: String },
     #[error("local service check failed: {0}")]
     Request(#[from] reqwest::Error),
 }
@@ -81,7 +83,14 @@ $targets=@(Get-CimInstance Win32_Process | Where-Object {
   ($_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $proxy) -or
   ($_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $server -and $_.CommandLine -match '(--port|-p)\s+8081(?:\s|$)')
 })
-foreach($item in $targets){Stop-Process -Id $item.ProcessId -Force -ErrorAction Stop; Write-Output $item.ProcessId}"#;
+foreach($item in $targets){
+  try {
+    Stop-Process -Id $item.ProcessId -Force -ErrorAction Stop
+    Write-Output $item.ProcessId
+  } catch {
+    Write-Warning "Could not stop Bonsai process $($item.ProcessId): $($_.Exception.Message)"
+  }
+}"#;
     let mut command = Command::new("powershell.exe");
     command.args([
         "-NoLogo",
@@ -98,12 +107,12 @@ foreach($item in $targets){Stop-Process -Id $item.ProcessId -Force -ErrorAction 
     let output = command
         .output()
         .await
-        .map_err(|error| ServiceError::StartFailed {
+        .map_err(|error| ServiceError::StopFailed {
             name: "Bonsai shutdown".into(),
             details: error.to_string(),
         })?;
     if !output.status.success() {
-        return Err(ServiceError::StartFailed {
+        return Err(ServiceError::StopFailed {
             name: "Bonsai shutdown".into(),
             details: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });

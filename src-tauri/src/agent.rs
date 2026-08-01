@@ -927,6 +927,13 @@ mod tests {
         .unwrap();
         assert_eq!(question.options.len(), 4);
         assert_eq!(question.recommended_index, Some(1));
+        let question = parse_question(&json!({
+            "question":"Which destination should I use?",
+            "options":["Safe folder","Existing folder"],
+            "recommended_index":2
+        }))
+        .unwrap();
+        assert_eq!(question.recommended_index, None);
         assert!(parse_question(&json!({"question":"  "})).is_err());
     }
 
