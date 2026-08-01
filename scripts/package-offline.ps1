@@ -60,12 +60,6 @@ if (-not (Test-Path -LiteralPath $releaseBinary -PathType Leaf) -or -not $instal
     throw "The release binary or NSIS installer was not produced."
 }
 
-$signatureTargets = @($releaseBinary, $installer.FullName)
-$signatureResults = $signatureTargets | ForEach-Object { Get-AuthenticodeSignature -LiteralPath $_ }
-if ($RequireSignature -and ($signatureResults | Where-Object Status -ne "Valid")) {
-    throw "A valid Authenticode signature is required, but at least one artifact is unsigned or invalid."
-}
-
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $outputDirectory = Join-Path $projectRoot "release\$version-$stamp"
 New-Item -ItemType Directory -Path $outputDirectory -ErrorAction Stop | Out-Null
@@ -84,6 +78,10 @@ $artifacts = @($portablePath, $installerPath) | ForEach-Object {
         authenticode = [string]$signature.Status
     }
 }
+$invalidArtifacts = @($artifacts | Where-Object authenticode -ne "Valid")
+if ($RequireSignature -and $invalidArtifacts.Count -gt 0) {
+    throw "A valid Authenticode signature is required, but at least one copied release artifact is unsigned or invalid."
+}
 $manifest = [ordered]@{
     product = "Kestrel Local"
     version = $version
@@ -96,6 +94,6 @@ $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $outpu
 $artifacts | ForEach-Object { "$($_.sha256)  $($_.file)" } | Set-Content -LiteralPath (Join-Path $outputDirectory "SHA256SUMS.txt") -Encoding ascii
 
 Write-Host "Offline release created at $outputDirectory"
-if ($signatureResults | Where-Object Status -ne "Valid") {
+if ($invalidArtifacts.Count -gt 0) {
     Write-Warning "Artifacts are unsigned. Public releases should pass -SigningCertificateThumbprint and -RequireSignature."
 }

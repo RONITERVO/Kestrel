@@ -1,9 +1,30 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { demoSnapshot } from "./demo";
 import { terminalTaskStatus } from "./OfflineWorkspace";
 
-afterEach(cleanup);
+const profileApi = vi.hoisted(() => ({
+  exportSetupProfile: vi.fn(),
+  importSetupProfile: vi.fn(),
+}));
+
+vi.mock("./api", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./api")>(),
+  exportSetupProfile: profileApi.exportSetupProfile,
+  importSetupProfile: profileApi.importSetupProfile,
+}));
+
+beforeEach(() => {
+  profileApi.exportSetupProfile.mockReset().mockResolvedValue({ path: "C:\\Research\\portable.json", message: "Safe profile exported." });
+  profileApi.importSetupProfile.mockReset().mockResolvedValue(demoSnapshot);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("Kestrel research experience", () => {
   it("opens the durable library and renders evidence-oriented research", async () => {
@@ -39,6 +60,41 @@ describe("Kestrel research experience", () => {
     expect(await screen.findByText("Your research")).toBeInTheDocument();
   });
 
+  it("displays safe exports and explains clipboard failures", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Export safe profile/i }));
+
+    expect(await screen.findByDisplayValue("C:\\Research\\portable.json")).toBeInTheDocument();
+    expect(await screen.findByText(/Safe profile exported.*Copy the displayed path manually/i)).toBeInTheDocument();
+  });
+
+  it("requires confirmation and adopts the imported snapshot", async () => {
+    const imported = { ...demoSnapshot, status: { ...demoSnapshot.status, archive: "Imported offline archive" } };
+    profileApi.importSetupProfile.mockResolvedValue(imported);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));
+    fireEvent.change(await screen.findByLabelText("Profile JSON path"), { target: { value: "C:\\Research\\portable.json" } });
+    fireEvent.click(screen.getByRole("button", { name: /Import profile/i }));
+    expect(profileApi.importSetupProfile).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: /Import profile/i }));
+    await waitFor(() => expect(profileApi.importSetupProfile).toHaveBeenCalledWith("C:\\Research\\portable.json"));
+    expect(await screen.findByText("Imported offline archive")).toBeInTheDocument();
+    expect(screen.getByText(/Profile imported.*Full Access remains locked/i)).toBeInTheDocument();
+  });
+
+  it("surfaces profile API errors", async () => {
+    profileApi.exportSetupProfile.mockRejectedValue(new Error("profile storage is read-only"));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Export safe profile/i }));
+    expect(await screen.findByText(/profile storage is read-only/i)).toBeInTheDocument();
+  });
+
   it("keeps the historical control plane and optional developer repair discoverable", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /^Control$/i }));
@@ -50,11 +106,21 @@ describe("Kestrel research experience", () => {
     expect(screen.getByRole("heading", { name: /bounded objective/i })).toBeInTheDocument();
     expect(screen.getByText(/Every decision, tool call, result, error, and artifact/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Start visible task/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /New chat/i }));
+    expect(screen.getByRole("button", { name: /^Chat$/i })).toHaveClass("active");
 
     fireEvent.click(screen.getByRole("button", { name: /^Developer$/i }));
     expect(await screen.findByRole("heading", { name: "Developer" })).toBeInTheDocument();
     expect(screen.getByText(/Offline independence/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Run offline diagnostics/i })).toBeInTheDocument();
+  });
+
+  it("rejects a manually entered non-llama engine", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Control$/i }));
+    fireEvent.change(await screen.findByRole("combobox", { name: "llama-server" }), { target: { value: "C:\\Tools\\program.exe" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save complete profile/i }));
+    expect(await screen.findByText(/must end with llama-server\.exe/i)).toBeInTheDocument();
   });
 });
 

@@ -413,7 +413,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .root-entry > span { display: grid; grid-template-columns: minmax(0,1fr) 36px; gap: 4px; }
 .workspace-roots input { min-width: 0; height: 29px; padding: 0 6px; border: 1px solid #293830; border-radius: 5px; color: #d9e5dd; background: #101814; font: 7px var(--mono); }
 .root-entry button { min-height: 29px; border: 1px solid #33463b; border-radius: 5px; color: #b7d686; background: #162119; cursor: pointer; }
-.engine-discovery-note { display: block; margin-top: -3px; color: #71867a; font: 7px/1.4 var(--mono); }
+.engine-discovery-note { display: block; margin-top: -3px; color: #91a69a; font: 9px/1.4 var(--mono); }
 .control-warning { margin-top: 12px; padding: 9px; border: 1px solid #69512b; border-radius: 7px; color: #d9ba7e; background: #241d11; font: 7px/1.5 var(--mono); }
 .inspector-save { width: 100%; margin-top: 12px; }
 

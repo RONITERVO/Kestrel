@@ -29,18 +29,26 @@ use tokio::{
 
 const EXTERNAL_ENDPOINT: &str = "http://127.0.0.1:8080/v1";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(300);
+const ENGINE_SOURCE_CONFIGURED: &str = "Configured";
+const ENGINE_SOURCE_BONSAI: &str = "Bonsai installation";
+const ENGINE_SOURCE_JAN: &str = "Jan backend";
+const ENGINE_SOURCE_PATH: &str = "Windows PATH";
 
 /// Finds only well-known local engine locations. It never searches whole drives and never
 /// downloads or executes a candidate during discovery.
 pub fn detect_engines(configured: &str, bonsai_root: &str) -> Vec<EngineCandidate> {
     let mut candidates = Vec::new();
-    push_engine(&mut candidates, PathBuf::from(configured), "Configured");
+    push_engine(
+        &mut candidates,
+        PathBuf::from(configured),
+        ENGINE_SOURCE_CONFIGURED,
+    );
     push_engine(
         &mut candidates,
         Path::new(bonsai_root)
             .join("runtime")
             .join("llama-server.exe"),
-        "Bonsai installation",
+        ENGINE_SOURCE_BONSAI,
     );
     if let Some(base) = directories::BaseDirs::new() {
         let jan = base
@@ -62,7 +70,11 @@ pub fn detect_engines(configured: &str, bonsai_root: &str) -> Vec<EngineCandidat
                         .to_string_lossy()
                         .eq_ignore_ascii_case("llama-server.exe")
                 {
-                    push_engine(&mut candidates, entry.path().to_path_buf(), "Jan backend");
+                    push_engine(
+                        &mut candidates,
+                        entry.path().to_path_buf(),
+                        ENGINE_SOURCE_JAN,
+                    );
                 }
             }
         }
@@ -72,22 +84,22 @@ pub fn detect_engines(configured: &str, bonsai_root: &str) -> Vec<EngineCandidat
             push_engine(
                 &mut candidates,
                 directory.join("llama-server.exe"),
-                "Windows PATH",
+                ENGINE_SOURCE_PATH,
             );
         }
     }
     let mut seen = HashSet::new();
     candidates.retain(|candidate| seen.insert(candidate.path.to_lowercase()));
-    candidates.sort_by_key(engine_rank);
+    candidates.sort_by_cached_key(engine_rank);
     candidates
 }
 
 fn engine_rank(candidate: &EngineCandidate) -> (u8, u8, String) {
     let path = candidate.path.to_lowercase();
     let source = match candidate.source.as_str() {
-        "Configured" => 0,
-        "Bonsai installation" => 1,
-        "Jan backend" => 2,
+        ENGINE_SOURCE_CONFIGURED => 0,
+        ENGINE_SOURCE_BONSAI => 1,
+        ENGINE_SOURCE_JAN => 2,
         _ => 3,
     };
     let backend = if path.contains("bonsai") {
@@ -103,17 +115,20 @@ fn engine_rank(candidate: &EngineCandidate) -> (u8, u8, String) {
 }
 
 fn push_engine(candidates: &mut Vec<EngineCandidate>, path: PathBuf, source: &str) {
-    if path.is_file()
-        && path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .is_some_and(|value| value.eq_ignore_ascii_case("llama-server.exe"))
-    {
+    if is_llama_server_file(&path) {
         candidates.push(EngineCandidate {
             path: path.to_string_lossy().into_owned(),
             source: source.into(),
         });
     }
+}
+
+pub fn is_llama_server_file(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("llama-server.exe"))
 }
 
 #[derive(Debug, Error)]
@@ -122,6 +137,8 @@ pub enum RuntimeError {
     MissingModel(String),
     #[error("llama.cpp engine is missing: {0}")]
     MissingEngine(String),
+    #[error("model engine must be an existing file named llama-server.exe: {0}")]
+    InvalidEngine(String),
     #[error("no local port is available")]
     NoPort,
     #[error("could not start the local model: {0}")]
@@ -331,6 +348,9 @@ impl RuntimeManager {
         }
         if !Path::new(&settings.engine_path).is_file() {
             return Err(RuntimeError::MissingEngine(settings.engine_path.clone()));
+        }
+        if !is_llama_server_file(Path::new(&settings.engine_path)) {
+            return Err(RuntimeError::InvalidEngine(settings.engine_path.clone()));
         }
         self.stop_managed().await?;
         let port = portpicker::pick_unused_port().ok_or(RuntimeError::NoPort)?;
@@ -698,6 +718,7 @@ mod tests {
 
         let candidates = detect_engines(&program.to_string_lossy(), "Z:\\missing-bonsai");
 
+        assert!(!is_llama_server_file(&program));
         assert!(!candidates
             .iter()
             .any(|candidate| candidate.path == program.to_string_lossy()));

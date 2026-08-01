@@ -121,9 +121,11 @@ fn read_catalog(path: &Path) -> io::Result<Option<CachedCatalog>> {
 
 fn quarantine(path: &Path) {
     if path.is_file() {
+        let unique = uuid::Uuid::new_v4().simple().to_string();
         let name = format!(
-            "model-catalog.corrupt-{}.json",
-            Utc::now().format("%Y%m%dT%H%M%S")
+            "model-catalog.corrupt-{}-{}.json",
+            Utc::now().format("%Y%m%dT%H%M%S"),
+            &unique[..8]
         );
         let _ = fs::rename(path, path.with_file_name(name));
     }
@@ -487,5 +489,34 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with("model-catalog.corrupt-")));
+    }
+
+    #[test]
+    fn corrupt_primary_is_restored_from_the_catalog_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let model_path = directory.path().join("restored.gguf");
+        fs::write(&model_path, b"catalog model").unwrap();
+        let store = ModelCatalogStore::new(directory.path());
+        let model = ModelInfo {
+            id: "restored-identity".into(),
+            name: "Restored model".into(),
+            path: model_path.to_string_lossy().into_owned(),
+            source: "Test".into(),
+            bytes: 13,
+            architecture: None,
+            context_length: None,
+            chat_template: false,
+            quantization: None,
+            mmproj_path: None,
+            recommendation: "Recovered".into(),
+        };
+        store.save(std::slice::from_ref(&model)).unwrap();
+        fs::write(directory.path().join("model-catalog.json"), b"broken").unwrap();
+
+        assert_eq!(store.load().unwrap(), vec![model.clone()]);
+        let restored = read_catalog(&directory.path().join("model-catalog.json"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.models, vec![model]);
     }
 }

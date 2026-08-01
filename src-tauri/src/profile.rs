@@ -21,6 +21,15 @@ use thiserror::Error;
 
 const PROFILE_SCHEMA_VERSION: u32 = 1;
 const MAX_PROFILE_BYTES: u64 = 1024 * 1024;
+const MAX_CONTEXT_WINDOW: u32 = 1_048_576;
+const MAX_OUTPUT_TOKENS: u32 = 262_144;
+const MAX_THREADS: u32 = 256;
+const MAX_AGENT_STEPS: u32 = 1_000;
+const MAX_RESEARCH_LANES: u32 = 256;
+const MAX_RESULTS_PER_LANE: u32 = 1_000;
+const MAX_SOURCE_TARGET: u32 = 10_000;
+const MAX_TOOL_TURNS: u32 = 1_000;
+const MAX_SOURCE_CHARS: u32 = 16 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum ProfileError {
@@ -163,6 +172,7 @@ pub fn import(
     if profile.schema_version != PROFILE_SCHEMA_VERSION {
         return Err(ProfileError::UnsupportedVersion(profile.schema_version));
     }
+    validate_tuning(&profile)?;
 
     let current_research = research_store
         .load()
@@ -220,6 +230,79 @@ fn valid_bonsai_root(value: &str) -> bool {
     root.join("settings.json").is_file()
         || root.join("runtime").join("llama-server.exe").is_file()
         || root.join("models").is_dir()
+}
+
+fn validate_tuning(profile: &PortableProfile) -> Result<(), ProfileError> {
+    for (value, limit, field) in [
+        (
+            profile.research.context_window,
+            MAX_CONTEXT_WINDOW,
+            "research.contextWindow",
+        ),
+        (
+            profile.research.max_output_tokens,
+            MAX_OUTPUT_TOKENS,
+            "research.maxOutputTokens",
+        ),
+        (
+            profile.research.research_lanes,
+            MAX_RESEARCH_LANES,
+            "research.researchLanes",
+        ),
+        (
+            profile.research.results_per_lane,
+            MAX_RESULTS_PER_LANE,
+            "research.resultsPerLane",
+        ),
+        (
+            profile.research.source_target,
+            MAX_SOURCE_TARGET,
+            "research.sourceTarget",
+        ),
+        (
+            profile.research.tool_turns,
+            MAX_TOOL_TURNS,
+            "research.toolTurns",
+        ),
+        (
+            profile.research.thinking_budget,
+            MAX_OUTPUT_TOKENS,
+            "research.thinkingBudget",
+        ),
+        (
+            profile.research.max_source_chars,
+            MAX_SOURCE_CHARS,
+            "research.maxSourceChars",
+        ),
+        (
+            profile.control.context_window,
+            MAX_CONTEXT_WINDOW,
+            "control.contextWindow",
+        ),
+        (
+            profile.control.max_output_tokens,
+            MAX_OUTPUT_TOKENS,
+            "control.maxOutputTokens",
+        ),
+        (profile.control.threads, MAX_THREADS, "control.threads"),
+        (
+            profile.control.agent_max_steps,
+            MAX_AGENT_STEPS,
+            "control.agentMaxSteps",
+        ),
+        (
+            profile.control.agent_max_output_tokens,
+            MAX_OUTPUT_TOKENS,
+            "control.agentMaxOutputTokens",
+        ),
+    ] {
+        if value == 0 || value > limit {
+            return Err(ProfileError::Settings(format!(
+                "{field} must be between 1 and {limit}, found {value}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn portable_path(value: &str) -> String {
@@ -320,7 +403,10 @@ mod tests {
 
         let imported = import(Path::new(&transfer.path), &research_store, &control_store).unwrap();
 
-        assert_eq!(imported.control.engine_path, safe.engine_path);
+        assert_ne!(
+            imported.control.engine_path,
+            unrelated.to_string_lossy().into_owned()
+        );
     }
 
     #[test]
@@ -354,5 +440,27 @@ mod tests {
             Some("bonsai-signature")
         );
         assert_eq!(profile.models.len(), 1);
+    }
+
+    #[test]
+    fn import_rejects_oversized_tuning_before_persistence() {
+        let directory = tempfile::tempdir().unwrap();
+        let research_store = SettingsStore::new(directory.path());
+        let control_store = ControlSettingsStore::new(directory.path());
+        let research = ResearchSettings::default();
+        let control = ControlSettings::default();
+        research_store.save(&research).unwrap();
+        control_store.save(&control).unwrap();
+        let transfer = export(directory.path(), &research, &control, &[]).unwrap();
+        let mut profile: PortableProfile =
+            serde_json::from_slice(&fs::read(&transfer.path).unwrap()).unwrap();
+        profile.control.threads = u32::MAX;
+        fs::write(&transfer.path, serde_json::to_vec_pretty(&profile).unwrap()).unwrap();
+
+        assert!(matches!(
+            import(Path::new(&transfer.path), &research_store, &control_store),
+            Err(ProfileError::Settings(_))
+        ));
+        assert_eq!(control_store.load().unwrap().threads, control.threads);
     }
 }

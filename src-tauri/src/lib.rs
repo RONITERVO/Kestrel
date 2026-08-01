@@ -211,7 +211,11 @@ async fn scan_local_models(state: State<'_, AppState>) -> Result<ControlSnapshot
     let found = tokio::task::spawn_blocking(move || model::scan(&roots))
         .await
         .map_err(|error| format!("model scan failed: {error}"))?;
-    let _ = state.model_catalog.save(&found);
+    if let Err(error) = state.model_catalog.save(&found) {
+        eprintln!(
+            "Kestrel model scan completed, but its disposable catalog could not be saved: {error}"
+        );
+    }
     *state.models.write().await = found;
     control_snapshot(&state, true).await
 }
@@ -250,9 +254,16 @@ async fn import_setup_profile(
         &imported.control.extra_model_roots,
         &imported.research.bonsai_root,
     );
-    if let Ok(found) = tokio::task::spawn_blocking(move || model::scan(&roots)).await {
-        let _ = state.model_catalog.save(&found);
-        *state.models.write().await = found;
+    match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
+        Ok(found) => {
+            if let Err(error) = state.model_catalog.save(&found) {
+                eprintln!("Kestrel imported the profile and found its models, but the disposable catalog could not be saved: {error}");
+            }
+            *state.models.write().await = found;
+        }
+        Err(error) => {
+            eprintln!("Kestrel imported the profile, but its follow-up model scan could not finish: {error}");
+        }
     }
     refresh_engine_candidates(&state, &imported.control, &imported.research).await;
     snapshot(&state).await
@@ -290,6 +301,13 @@ async fn save_control_settings(
     settings: ControlSettings,
     state: State<'_, AppState>,
 ) -> Result<ControlSnapshot, String> {
+    let engine_path = std::path::Path::new(&settings.engine_path);
+    if engine_path.is_file() && !runtime::is_llama_server_file(engine_path) {
+        return Err(format!(
+            "model engine must be a file named llama-server.exe: {}",
+            engine_path.display()
+        ));
+    }
     state
         .control_settings
         .save(&settings)
@@ -481,6 +499,7 @@ async fn start_chat_stream(
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         let managed = app_for_task.state::<AppState>();
+        let _work_guard = WorkGuard(&managed.work_active);
         let settings = managed.control_settings.load();
         let result = match settings {
             Ok(settings) => {
@@ -511,8 +530,7 @@ async fn start_chat_stream(
         }
         if let Ok(mut jobs) = managed.interactive_jobs.lock() {
             jobs.remove(&event_request_id);
-        }
-        managed.work_active.store(false, Ordering::Release);
+        };
     });
     Ok(ChatStart {
         request_id,
@@ -590,6 +608,7 @@ async fn start_computer_task(
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         let managed = app_for_task.state::<AppState>();
+        let _work_guard = WorkGuard(&managed.work_active);
         let models = managed.models.read().await.clone();
         let result = agent::run(
             Some(app_for_task.clone()),
@@ -612,15 +631,36 @@ async fn start_computer_task(
         }
         if let Ok(mut jobs) = managed.interactive_jobs.lock() {
             jobs.remove(&event_run_id);
-        }
-        managed.work_active.store(false, Ordering::Release);
+        };
     });
     Ok(run)
 }
 
 #[tauri::command]
 fn stop_computer_task(run_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    cancel_chat_stream(run_id, state)
+    let (cancel, interactive_registry_empty) = {
+        let jobs = state
+            .interactive_jobs
+            .lock()
+            .map_err(|_| "interactive job registry is unavailable".to_string())?;
+        (jobs.get(&run_id).cloned(), jobs.is_empty())
+    };
+    if let Some(cancel) = cancel {
+        cancel.cancel();
+        return Ok(());
+    }
+    let run = state.workspace.get_task(&run_id)?;
+    let terminal = matches!(
+        run.status.as_str(),
+        "completed" | "cancelled" | "failed" | "interrupted"
+    );
+    if terminal {
+        if interactive_registry_empty && !state.research_active.load(Ordering::Acquire) {
+            state.work_active.store(false, Ordering::Release);
+        }
+        return Ok(());
+    }
+    Err("That computer task is not registered as an active job. Restart Kestrel to recover its inference lock.".into())
 }
 
 #[tauri::command]
@@ -754,8 +794,16 @@ async fn refresh_engine_candidates(
     control: &ControlSettings,
     research: &ResearchSettings,
 ) {
-    *state.engine_candidates.write().await =
-        runtime::detect_engines(&control.engine_path, &research.bonsai_root);
+    let engine_path = control.engine_path.clone();
+    let bonsai_root = research.bonsai_root.clone();
+    match tokio::task::spawn_blocking(move || runtime::detect_engines(&engine_path, &bonsai_root))
+        .await
+    {
+        Ok(candidates) => *state.engine_candidates.write().await = candidates,
+        Err(error) => {
+            eprintln!("Kestrel could not refresh local engine candidates: {error}");
+        }
+    }
 }
 
 fn ensure_workspace_idle(state: &AppState) -> Result<(), String> {
@@ -816,18 +864,19 @@ pub fn run() {
             if !std::path::Path::new(&control.engine_path).is_file() {
                 if let Some(candidate) = engine_candidates.first() {
                     control.engine_path.clone_from(&candidate.path);
-                    control_settings
-                        .save(&control)
-                        .map_err(|error| error.to_string())?;
+                    if let Err(error) = control_settings.save(&control) {
+                        eprintln!("Kestrel repaired the missing engine path for this session, but could not save it. Check write access to the Kestrel Research folder: {error}");
+                    }
                     engine_candidates =
                         runtime::detect_engines(&control.engine_path, &research.bonsai_root);
                 }
             }
-            // Startup stays fast: merge the valid cache with an immediate Bonsai inspection.
+            // Startup reads only the validated cache; the full scan runs after the window opens.
             let model_catalog = ModelCatalogStore::new(store.root());
-            let cached = model_catalog.load().unwrap_or_default();
-            let bonsai_root = vec![std::path::Path::new(&research.bonsai_root).join("models")];
-            let models = merge_catalogs(cached, model::scan(&bonsai_root));
+            let models = model_catalog.load().unwrap_or_else(|error| {
+                eprintln!("Kestrel could not restore its disposable model catalog: {error}");
+                Vec::new()
+            });
             let harness = ResearchHarness::new(store.clone());
             let developer = DeveloperAssistant::new(store.root());
             let workspace = WorkspaceStore::new(store.root())?;
@@ -861,11 +910,18 @@ pub fn run() {
                 let roots = default_roots(&control.extra_model_roots, &research.bonsai_root);
                 let found = match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
                     Ok(value) => value,
-                    Err(_) => return,
+                    Err(error) => {
+                        eprintln!("Kestrel's background model scan could not finish: {error}");
+                        return;
+                    }
                 };
-                let _ = state.model_catalog.save(&found);
-                *state.models.write().await = found.clone();
-                let _ = handle.emit("model-catalog-updated", found);
+                let existing = state.models.read().await.clone();
+                let merged = merge_catalogs(existing, found);
+                if let Err(error) = state.model_catalog.save(&merged) {
+                    eprintln!("Kestrel found local models, but its disposable catalog could not be saved: {error}");
+                }
+                *state.models.write().await = merged.clone();
+                let _ = handle.emit("model-catalog-updated", merged);
             });
             Ok(())
         })

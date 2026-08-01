@@ -734,16 +734,19 @@ fn compact_messages(messages: Vec<Value>, max_chars: usize) -> Vec<Value> {
             }
         }
     }
-    let memory = json!({
-        "role":"system",
-        "content":format!(
-            "COMPACT SHARED MEMORY — {} earlier action groups were removed from the live KV context but remain in Kestrel's durable transcript. Confirm important state with tools before changing it. Earlier tool results:\n{}",
-            groups.len(),
-            ledger.join("\n---\n")
-        )
-    });
+    let memory = format!(
+        "COMPACT SHARED MEMORY — {} earlier action groups were removed from the live KV context but remain in Kestrel's durable transcript. Confirm important state with tools before changing it. Earlier tool results:\n{}",
+        groups.len(),
+        ledger.join("\n---\n")
+    );
     let mut output = prefix;
-    output.push(memory);
+    if let Some(system) = output.first_mut() {
+        let original = system
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        system["content"] = Value::String(format!("{original}\n\n{memory}"));
+    }
     output.extend(kept.into_iter().flatten());
     output
 }
@@ -789,7 +792,9 @@ mod tests {
             json!({"role":"tool","tool_call_id":"new","content":"new result"}),
         ];
         let compacted = compact_messages(messages, 180);
-        assert_eq!(compacted[0]["content"], "policy");
+        assert!(compacted[0]["content"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("policy\n\n")));
         assert_eq!(compacted[1]["content"], "objective");
         assert!(compacted
             .iter()
@@ -797,6 +802,14 @@ mod tests {
         assert!(compacted.iter().any(|message| message["content"]
             .as_str()
             .is_some_and(|value| value.contains("COMPACT SHARED MEMORY"))));
+        assert_eq!(
+            compacted
+                .iter()
+                .filter(|message| message["role"] == "system")
+                .count(),
+            1
+        );
+        assert_eq!(compacted[0]["role"], "system");
     }
 
     #[tokio::test]
