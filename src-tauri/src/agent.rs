@@ -6,6 +6,7 @@
 
 use crate::{
     attachments::AttachmentStore,
+    guardian::{self, GuardianDecision, GuardianError, GuardianRequest},
     model::ModelInfo,
     models::{
         ComputerTaskAccess, ComputerTaskApprovalMode, ComputerTaskEvent, ComputerTaskRequest,
@@ -38,7 +39,6 @@ struct ActionReview {
     summary: String,
     reason: String,
     risk: &'static str,
-    approve_automatically: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -74,85 +74,6 @@ pub async fn run(
         "Research, chat, and computer tasks share one inference slot.",
         None,
     );
-    let mut continuation = continuation;
-    if let Some(action) = approved_action {
-        if review_action(
-            &action.tool,
-            &action.arguments,
-            access,
-            ComputerTaskApprovalMode::Manual,
-            &settings.agent_workspace_roots,
-        )?
-        .is_none()
-        {
-            return Err("The approved request is not a state-changing native action.".into());
-        }
-        event(
-            &app,
-            &store,
-            &run_id,
-            action.step,
-            "tool_start",
-            &format!("Using {}", action.tool),
-            &action.summary,
-            Some(json!({"approvalId": action.approval_id})),
-        );
-        let result = tokio::select! {
-            result = execute_tool(
-                &action.tool,
-                &action.arguments,
-                access,
-                &settings.agent_workspace_roots,
-                &attachment_store,
-                &request.attachment_ids,
-            ) => result,
-            _ = cancel.cancelled() => {
-                event(&app, &store, &run_id, action.step, "cancelled", "Stopped by you", "The approved action was cancelled and no further tools will run.", None);
-                return Ok(());
-            }
-        };
-        let (output, failed) = match result {
-            Ok(output) => (output, false),
-            Err(error) => (
-                ToolOutput {
-                    text: format!("ERROR: {error}"),
-                    artifact: None,
-                    data: None,
-                },
-                true,
-            ),
-        };
-        event(
-            &app,
-            &store,
-            &run_id,
-            action.step,
-            if failed { "tool_error" } else { "tool_result" },
-            &format!("{} finished", action.tool),
-            &truncate(&output.text, 8_000),
-            output.data,
-        );
-        if let Some(path) = output.artifact {
-            event(
-                &app,
-                &store,
-                &run_id,
-                action.step,
-                "artifact",
-                "Artifact ready",
-                &path.to_string_lossy(),
-                Some(json!({"path": path.to_string_lossy()})),
-            );
-        }
-        let approval_result = format!(
-            "The exact action approved by the user has now finished. Native result:\n{}",
-            output.text
-        );
-        continuation = Some(match continuation {
-            Some(existing) => format!("{existing}\n\n{approval_result}"),
-            None => approval_result,
-        });
-    }
     let access_label = if access == Access::Workspace {
         "workspace-restricted file access"
     } else {
@@ -209,23 +130,12 @@ pub async fn run(
     } else {
         " Attached documents are durable local inputs. Native image/audio content is included when this model supports it. Use read_attachment with an attachment ID and character range when an extracted document preview is incomplete; never claim to have interpreted a metadata-only binary.".into()
     };
-    let system = format!(
-        "You are Kestrel's offline Windows computer assistant. You have {access_label}. Use tools to complete the objective. \
-         Never claim that an action happened unless a tool result confirms it. Inspect before changing. Prefer the smallest \
-         reversible change. Do not invent paths. If a missing decision could materially change the target, scope, output, safety, \
-         or an irreversible action, call ask_user before taking the affected action. Ask one focused question, include two to four \
-         concrete options when possible, and recommend the safest useful option. Do not ask about immaterial preferences when a \
-         reversible default is available. Never put a clarification only in prose: call ask_user. Do not use ask_user merely to \
-         request permission for a tool: Kestrel's native approval policy will explain and review the exact action after you call it. When complete, answer with a \
-         concise summary and exact artifact paths, and do not append an optional follow-up question. \
-         Workspace roots: {}{}",
-        if settings.agent_workspace_roots.is_empty() {
-            "full access explicitly enabled".into()
-        } else {
-            settings.agent_workspace_roots.join("; ")
-        },
-        attachment_instruction,
-    );
+    let workspace_roots = if settings.agent_workspace_roots.is_empty() {
+        "full access explicitly enabled".into()
+    } else {
+        settings.agent_workspace_roots.join("; ")
+    };
+    let system = agent_system_prompt(access_label, &workspace_roots, &attachment_instruction);
     let mut messages = vec![
         json!({"role":"system","content":system}),
         json!({"role":"user","content":prepared.content}),
@@ -282,6 +192,115 @@ pub async fn run(
         &format!("{} · {}", lease.connection.model_label, access_label),
         None,
     );
+    if let Some(action) = approved_action {
+        let action_step = action.step.max(1);
+        let review = review_action(
+            &action.tool,
+            &action.arguments,
+            access,
+            &settings.agent_workspace_roots,
+        )?
+        .ok_or_else(|| {
+            "The approved action is no longer a reviewable state-changing tool.".to_string()
+        })?;
+        let verdict = guardian::review(
+            &client,
+            &lease.connection,
+            GuardianRequest {
+                objective: &objective,
+                access,
+                tool: &action.tool,
+                summary: &review.summary,
+                native_scope: &review.reason,
+                arguments: &action.arguments,
+                manually_authorized: true,
+                authorization_note: action.authorization_note.as_deref(),
+            },
+            &cancel,
+        )
+        .await;
+        match verdict {
+            Ok(verdict) if verdict.decision == GuardianDecision::Approve => {
+                approval_event(
+                    &app,
+                    &store,
+                    &run_id,
+                    action_step,
+                    &action.tool,
+                    &review.summary,
+                    &verdict,
+                );
+                let call_id = format!("approved-{}", action.approval_id);
+                messages.push(tool_call_message(&call_id, &action.tool, &action.arguments));
+                let Some(result) = execute_recorded_tool(
+                    &app,
+                    &store,
+                    &run_id,
+                    action_step,
+                    &action.tool,
+                    &action.arguments,
+                    access,
+                    &settings.agent_workspace_roots,
+                    &attachment_store,
+                    &request.attachment_ids,
+                    &cancel,
+                )
+                .await
+                else {
+                    return Ok(());
+                };
+                messages.push(json!({"role":"tool","tool_call_id":call_id,"content":result}));
+            }
+            Ok(verdict) => {
+                let detail = denied_tool_result(&verdict.reason);
+                denial_event(
+                    &app,
+                    &store,
+                    &run_id,
+                    action_step,
+                    &action.tool,
+                    &review.summary,
+                    &verdict,
+                );
+                let call_id = format!("denied-{}", action.approval_id);
+                messages.push(tool_call_message(&call_id, &action.tool, &action.arguments));
+                messages.push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
+            }
+            Err(GuardianError::Cancelled) => {
+                event(
+                    &app,
+                    &store,
+                    &run_id,
+                    action_step,
+                    "cancelled",
+                    "Stopped by you",
+                    "The isolated safety review was cancelled. The approved action was not run.",
+                    None,
+                );
+                return Ok(());
+            }
+            Err(GuardianError::Unavailable(error)) => {
+                let mut pending = action;
+                pending.approval_id = uuid::Uuid::new_v4().to_string();
+                pending.reason = format!("The isolated safety review failed closed: {error}");
+                let detail = format!(
+                    "{}\nRisk: {}\nWhy: {}",
+                    pending.summary, pending.risk, pending.reason
+                );
+                event(
+                    &app,
+                    &store,
+                    &run_id,
+                    action_step,
+                    "approval_required",
+                    "Safety review unavailable",
+                    &detail,
+                    Some(json!(pending)),
+                );
+                return Ok(());
+            }
+        }
+    }
     for step in 1..=max_steps {
         if cancel.is_cancelled() {
             event(
@@ -334,7 +353,13 @@ pub async fn run(
             }
         };
         let status = response.status();
-        let body: Value = response.json().await.map_err(|error| error.to_string())?;
+        let body: Value = tokio::select! {
+            result = response.json() => result.map_err(|error| error.to_string())?,
+            _ = cancel.cancelled() => {
+                event(&app, &store, &run_id, step, "cancelled", "Stopped by you", "The active model response was cancelled. No tool was started.", None);
+                return Ok(());
+            }
+        };
         if !status.is_success() {
             return Err(format!(
                 "computer task model returned {status}: {}",
@@ -476,133 +501,134 @@ pub async fn run(
                     }
                 }
             }
-            let review = match review_action(
+            let review =
+                match review_action(name, &arguments, access, &settings.agent_workspace_roots) {
+                    Ok(review) => review,
+                    Err(error) => {
+                        let detail = format!("ERROR: invalid action request: {error}");
+                        event(
+                            &app,
+                            &store,
+                            &run_id,
+                            step,
+                            "tool_error",
+                            &format!("{name} finished"),
+                            &detail,
+                            None,
+                        );
+                        messages
+                            .push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
+                        continue;
+                    }
+                };
+            if let Some(review) = review {
+                let verdict = guardian::review(
+                    &client,
+                    &lease.connection,
+                    GuardianRequest {
+                        objective: &objective,
+                        access,
+                        tool: name,
+                        summary: &review.summary,
+                        native_scope: &review.reason,
+                        arguments: &arguments,
+                        manually_authorized: false,
+                        authorization_note: None,
+                    },
+                    &cancel,
+                )
+                .await;
+                match verdict {
+                    Ok(verdict) if verdict.decision == GuardianDecision::Deny => {
+                        denial_event(&app, &store, &run_id, step, name, &review.summary, &verdict);
+                        messages.push(json!({"role":"tool","tool_call_id":call_id,"content":denied_tool_result(&verdict.reason)}));
+                        continue;
+                    }
+                    Ok(verdict)
+                        if request.approval_mode == ComputerTaskApprovalMode::Automatic
+                            && verdict.decision == GuardianDecision::Approve =>
+                    {
+                        approval_event(
+                            &app,
+                            &store,
+                            &run_id,
+                            step,
+                            name,
+                            &review.summary,
+                            &verdict,
+                        );
+                    }
+                    Ok(verdict) => {
+                        let reason = if request.approval_mode == ComputerTaskApprovalMode::Manual
+                            && verdict.decision == GuardianDecision::Approve
+                        {
+                            format!("Manual approval is enabled. {}", verdict.reason)
+                        } else {
+                            verdict.reason.clone()
+                        };
+                        persist_pending_action(
+                            &app,
+                            &store,
+                            &run_id,
+                            step,
+                            name,
+                            &arguments,
+                            &review.summary,
+                            &reason,
+                            &verdict.risk,
+                            "Approval required",
+                        );
+                        return Ok(());
+                    }
+                    Err(GuardianError::Cancelled) => {
+                        event(
+                            &app,
+                            &store,
+                            &run_id,
+                            step,
+                            "cancelled",
+                            "Stopped by you",
+                            "The isolated safety review was cancelled. No action was run.",
+                            None,
+                        );
+                        return Ok(());
+                    }
+                    Err(GuardianError::Unavailable(error)) => {
+                        let reason = format!("The isolated safety review failed closed: {error}");
+                        persist_pending_action(
+                            &app,
+                            &store,
+                            &run_id,
+                            step,
+                            name,
+                            &arguments,
+                            &review.summary,
+                            &reason,
+                            review.risk,
+                            "Safety review unavailable",
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+            let Some(result) = execute_recorded_tool(
+                &app,
+                &store,
+                &run_id,
+                step,
                 name,
                 &arguments,
                 access,
-                request.approval_mode,
                 &settings.agent_workspace_roots,
-            ) {
-                Ok(review) => review,
-                Err(error) => {
-                    let detail = format!("ERROR: invalid action request: {error}");
-                    event(
-                        &app,
-                        &store,
-                        &run_id,
-                        step,
-                        "tool_error",
-                        &format!("{name} finished"),
-                        &detail,
-                        None,
-                    );
-                    messages.push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
-                    continue;
-                }
+                &attachment_store,
+                &request.attachment_ids,
+                &cancel,
+            )
+            .await
+            else {
+                return Ok(());
             };
-            if let Some(review) = review {
-                let detail = format!(
-                    "{}\nRisk: {}\nWhy: {}",
-                    review.summary, review.risk, review.reason
-                );
-                if review.approve_automatically {
-                    event(
-                        &app,
-                        &store,
-                        &run_id,
-                        step,
-                        "approval_auto",
-                        "Approved for you",
-                        &detail,
-                        Some(json!({
-                            "tool": name,
-                            "summary": review.summary,
-                            "reason": review.reason,
-                            "risk": review.risk,
-                            "decision": "approved"
-                        })),
-                    );
-                } else {
-                    let pending = PendingComputerAction {
-                        approval_id: uuid::Uuid::new_v4().to_string(),
-                        step,
-                        tool: name.to_string(),
-                        arguments: arguments.clone(),
-                        summary: review.summary,
-                        reason: review.reason,
-                        risk: review.risk.to_string(),
-                    };
-                    event(
-                        &app,
-                        &store,
-                        &run_id,
-                        step,
-                        "approval_required",
-                        "Approval required",
-                        &detail,
-                        Some(json!(pending)),
-                    );
-                    return Ok(());
-                }
-            }
-            event(
-                &app,
-                &store,
-                &run_id,
-                step,
-                "tool_start",
-                &format!("Using {name}"),
-                argument_text,
-                Some(arguments.clone()),
-            );
-            let result = tokio::select! {
-                result = execute_tool(
-                    name,
-                    &arguments,
-                    access,
-                    &settings.agent_workspace_roots,
-                    &attachment_store,
-                    &request.attachment_ids,
-                ) => result,
-                _ = cancel.cancelled() => {
-                    event(&app, &store, &run_id, step, "cancelled", "Stopped by you", "The active operation was cancelled and no further tools will run.", None);
-                    return Ok(());
-                }
-            };
-            let (output, failed) = match result {
-                Ok(output) => (output, false),
-                Err(error) => (
-                    ToolOutput {
-                        text: format!("ERROR: {error}"),
-                        artifact: None,
-                        data: None,
-                    },
-                    true,
-                ),
-            };
-            event(
-                &app,
-                &store,
-                &run_id,
-                step,
-                if failed { "tool_error" } else { "tool_result" },
-                &format!("{name} finished"),
-                &truncate(&output.text, 8_000),
-                output.data,
-            );
-            if let Some(path) = output.artifact {
-                event(
-                    &app,
-                    &store,
-                    &run_id,
-                    step,
-                    "artifact",
-                    "Artifact ready",
-                    &path.to_string_lossy(),
-                    Some(json!({"path": path.to_string_lossy()})),
-                );
-            }
-            messages.push(json!({"role":"tool","tool_call_id":call_id,"content":output.text}));
+            messages.push(json!({"role":"tool","tool_call_id":call_id,"content":result}));
         }
     }
     event(
@@ -616,6 +642,23 @@ pub async fn run(
         None,
     );
     Ok(())
+}
+
+fn agent_system_prompt(
+    access_label: &str,
+    workspace_roots: &str,
+    attachment_instruction: &str,
+) -> String {
+    format!(
+        "You are Kestrel's offline Windows computer assistant. You have {access_label}. Use tools to complete the objective. \
+         Never claim that an action happened unless a tool result confirms it. Inspect before changing. Prefer the smallest \
+         reversible change. Do not invent paths. If a missing decision could materially change the target, scope, output, safety, \
+         or an irreversible action, call ask_user before taking the affected action. Ask one focused question, include two to four \
+         concrete options when possible, and recommend the safest useful option. Do not ask about immaterial preferences when a \
+         reversible default is available. Never put a clarification only in prose: call ask_user. When complete, answer with a \
+         concise summary and exact artifact paths, and do not append an optional follow-up question. \
+         Workspace roots: {workspace_roots}{attachment_instruction}"
+    )
 }
 
 pub fn emit_error(app: Option<&AppHandle>, store: &WorkspaceStore, run_id: &str, detail: String) {
@@ -731,6 +774,183 @@ fn schema(name: &str, description: &str, parameters: Value) -> Value {
     json!({"type":"function","function":{"name":name,"description":description,"parameters":parameters}})
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn execute_recorded_tool(
+    app: &Option<AppHandle>,
+    store: &WorkspaceStore,
+    run_id: &str,
+    step: u32,
+    name: &str,
+    arguments: &Value,
+    access: Access,
+    roots: &[String],
+    attachments: &AttachmentStore,
+    attachment_ids: &[String],
+    cancel: &CancellationToken,
+) -> Option<String> {
+    event(
+        app,
+        store,
+        run_id,
+        step,
+        "tool_start",
+        &format!("Using {name}"),
+        &arguments.to_string(),
+        Some(arguments.clone()),
+    );
+    let result = tokio::select! {
+        result = execute_tool(name, arguments, access, roots, attachments, attachment_ids) => result,
+        _ = cancel.cancelled() => {
+            event(app, store, run_id, step, "cancelled", "Stopped by you", "The active operation was cancelled and no further tools will run.", None);
+            return None;
+        }
+    };
+    let (output, failed) = match result {
+        Ok(output) => (output, false),
+        Err(error) => (
+            ToolOutput {
+                text: format!("ERROR: {error}"),
+                artifact: None,
+                data: None,
+            },
+            true,
+        ),
+    };
+    event(
+        app,
+        store,
+        run_id,
+        step,
+        if failed { "tool_error" } else { "tool_result" },
+        &format!("{name} finished"),
+        &truncate(&output.text, 8_000),
+        output.data,
+    );
+    if let Some(path) = output.artifact {
+        event(
+            app,
+            store,
+            run_id,
+            step,
+            "artifact",
+            "Artifact ready",
+            &path.to_string_lossy(),
+            Some(json!({"path": path.to_string_lossy()})),
+        );
+    }
+    Some(output.text)
+}
+
+fn tool_call_message(call_id: &str, tool: &str, arguments: &Value) -> Value {
+    json!({
+        "role": "assistant",
+        "content": Value::Null,
+        "tool_calls": [{
+            "id": call_id,
+            "type": "function",
+            "function": {"name": tool, "arguments": arguments.to_string()}
+        }]
+    })
+}
+
+fn denied_tool_result(reason: &str) -> String {
+    format!(
+        "DENIED BY KESTREL SAFETY REVIEW: {reason} Do not retry or work around the same action. Choose a materially safer approach or ask the user."
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_pending_action(
+    app: &Option<AppHandle>,
+    store: &WorkspaceStore,
+    run_id: &str,
+    step: u32,
+    tool: &str,
+    arguments: &Value,
+    summary: &str,
+    reason: &str,
+    risk: &str,
+    title: &str,
+) {
+    let pending = PendingComputerAction {
+        approval_id: uuid::Uuid::new_v4().to_string(),
+        step,
+        tool: tool.to_string(),
+        arguments: arguments.clone(),
+        summary: summary.to_string(),
+        reason: reason.to_string(),
+        risk: risk.to_string(),
+        authorization_note: None,
+    };
+    let detail = format!("{summary}\nRisk: {risk}\nWhy: {reason}");
+    event(
+        app,
+        store,
+        run_id,
+        step,
+        "approval_required",
+        title,
+        &detail,
+        Some(json!(pending)),
+    );
+}
+
+fn approval_event(
+    app: &Option<AppHandle>,
+    store: &WorkspaceStore,
+    run_id: &str,
+    step: u32,
+    tool: &str,
+    summary: &str,
+    verdict: &guardian::GuardianVerdict,
+) {
+    event(
+        app,
+        store,
+        run_id,
+        step,
+        "approval_auto",
+        "Safety review approved",
+        &format!("{summary}\nRisk: {}\nWhy: {}", verdict.risk, verdict.reason),
+        Some(json!({
+            "tool": tool,
+            "summary": summary,
+            "reason": verdict.reason,
+            "risk": verdict.risk,
+            "authorization": verdict.authorization,
+            "decision": "approved"
+        })),
+    );
+}
+
+fn denial_event(
+    app: &Option<AppHandle>,
+    store: &WorkspaceStore,
+    run_id: &str,
+    step: u32,
+    tool: &str,
+    summary: &str,
+    verdict: &guardian::GuardianVerdict,
+) {
+    event(
+        app,
+        store,
+        run_id,
+        step,
+        "approval_denied",
+        "Safety review denied",
+        &format!("{summary}\nRisk: {}\nWhy: {}", verdict.risk, verdict.reason),
+        Some(json!({
+            "tool": tool,
+            "summary": summary,
+            "reason": verdict.reason,
+            "risk": verdict.risk,
+            "authorization": verdict.authorization,
+            "decision": "denied"
+        })),
+    );
+}
+
 fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, String> {
     arguments
         .get(key)
@@ -738,20 +958,14 @@ fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, Strin
         .ok_or_else(|| format!("missing string argument: {key}"))
 }
 
-/// Deterministic local review for tools with side effects. The model cannot choose the decision:
-/// it supplies typed arguments, native code validates their exact scope, and this policy either
-/// records a bounded automatic approval or persists the action for a person.
+/// Native validation and scope description for tools with side effects. The isolated guardian
+/// receives this bounded description; it never gets to broaden paths or tool arguments.
 fn review_action(
     name: &str,
     arguments: &Value,
     access: Access,
-    mode: ComputerTaskApprovalMode,
     roots: &[String],
 ) -> Result<Option<ActionReview>, String> {
-    let manual_reason =
-        "Manual approval is enabled for every state-changing or externally visible action.";
-    let automatic_reason =
-        "Approve for me kept this bounded action inside an approved workspace folder.";
     let review = match name {
         "write_file" => {
             let path_value = required_string(arguments, "path")?;
@@ -774,15 +988,13 @@ fn review_action(
                         " as a new file"
                     }
                 ),
-                reason: approval_reason(
-                    mode,
-                    auto_safe,
-                    manual_reason,
-                    automatic_reason,
-                    "This write is outside the approved workspace or targets protected workspace metadata.",
-                ),
+                reason: if auto_safe {
+                    "The target is inside an approved workspace and protected metadata is not involved."
+                } else {
+                    "The target is outside the approved workspace or involves protected workspace metadata."
+                }
+                .into(),
                 risk: if overwrites { "medium" } else { "low" },
-                approve_automatically: mode == ComputerTaskApprovalMode::Automatic && auto_safe,
             }
         }
         "create_directory" => {
@@ -792,15 +1004,13 @@ fn review_action(
                 && !has_protected_component(&path);
             ActionReview {
                 summary: format!("Create directory {} and any missing parents.", path.display()),
-                reason: approval_reason(
-                    mode,
-                    auto_safe,
-                    manual_reason,
-                    automatic_reason,
-                    "This directory is outside the approved workspace or targets protected workspace metadata.",
-                ),
+                reason: if auto_safe {
+                    "The directory is inside an approved workspace and protected metadata is not involved."
+                } else {
+                    "The directory is outside the approved workspace or involves protected workspace metadata."
+                }
+                .into(),
                 risk: "low",
-                approve_automatically: mode == ComputerTaskApprovalMode::Automatic && auto_safe,
             }
         }
         "copy_file" => {
@@ -816,15 +1026,13 @@ fn review_action(
                 && !has_protected_component(&to);
             ActionReview {
                 summary: format!("Copy {} to the new file {}.", from.display(), to.display()),
-                reason: approval_reason(
-                    mode,
-                    auto_safe,
-                    manual_reason,
-                    automatic_reason,
-                    "The copy crosses the approved workspace boundary or targets protected workspace metadata.",
-                ),
+                reason: if auto_safe {
+                    "The copy remains inside approved workspace folders and creates a new destination."
+                } else {
+                    "The copy crosses the approved workspace boundary or involves protected workspace metadata."
+                }
+                .into(),
                 risk: "low",
-                approve_automatically: mode == ComputerTaskApprovalMode::Automatic && auto_safe,
             }
         }
         "move_path" => {
@@ -835,13 +1043,9 @@ fn review_action(
             }
             ActionReview {
                 summary: format!("Move or rename {} to {}.", from.display(), to.display()),
-                reason: if mode == ComputerTaskApprovalMode::Manual {
-                    manual_reason.into()
-                } else {
-                    "Moving a path can break references and has no automatic recovery copy, so Approve for me escalated it.".into()
-                },
+                reason: "Moving a path can break references and has no automatic recovery copy."
+                    .into(),
                 risk: "high",
-                approve_automatically: false,
             }
         }
         "run_program" if access == Access::Full => {
@@ -871,47 +1075,24 @@ fn review_action(
                     },
                     cwd.display()
                 ),
-                reason: if mode == ComputerTaskApprovalMode::Manual {
-                    manual_reason.into()
-                } else {
-                    "Programs can perform effects that Kestrel's file policy cannot inspect, so Approve for me escalated this launch.".into()
-                },
+                reason:
+                    "Programs can perform effects that Kestrel's file policy cannot inspect directly."
+                        .into(),
                 risk: "high",
-                approve_automatically: false,
             }
         }
         "open_path" if access == Access::Full => {
             let path = allowed_existing(required_string(arguments, "path")?, access, roots)?;
             ActionReview {
                 summary: format!("Open {} visibly with Windows Explorer.", path.display()),
-                reason: if mode == ComputerTaskApprovalMode::Manual {
-                    manual_reason.into()
-                } else {
-                    "Opening a path launches an external application or file association, so Approve for me escalated it.".into()
-                },
+                reason: "Opening a path launches an external application or file association."
+                    .into(),
                 risk: "medium",
-                approve_automatically: false,
             }
         }
         _ => return Ok(None),
     };
     Ok(Some(review))
-}
-
-fn approval_reason(
-    mode: ComputerTaskApprovalMode,
-    auto_safe: bool,
-    manual: &str,
-    automatic: &str,
-    escalation: &str,
-) -> String {
-    if mode == ComputerTaskApprovalMode::Manual {
-        manual.into()
-    } else if auto_safe {
-        automatic.into()
-    } else {
-        escalation.into()
-    }
 }
 
 fn quote_argument(value: &str) -> String {
@@ -1310,6 +1491,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn main_agent_prompt_has_no_approval_or_guardian_protocol() {
+        let prompt = agent_system_prompt("workspace-restricted file access", r"C:\Research", "");
+        assert!(!prompt.to_ascii_lowercase().contains("approval"));
+        assert!(!prompt.to_ascii_lowercase().contains("guardian"));
+        assert!(!prompt.contains("decision\":\"approve"));
+    }
+
+    #[test]
+    fn approved_action_replay_looks_like_an_ordinary_tool_exchange() {
+        let call = tool_call_message(
+            "approved-id",
+            "create_directory",
+            &json!({"path":r"C:\Research\Notes"}),
+        );
+        assert_eq!(call["role"], "assistant");
+        assert_eq!(
+            call["tool_calls"][0]["function"]["name"],
+            "create_directory"
+        );
+        assert!(!call.to_string().contains("guardian"));
+        assert!(!call.to_string().contains("approvalReason"));
+    }
+
+    #[test]
     fn workspace_paths_cannot_escape_an_approved_root() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("workspace");
@@ -1387,7 +1592,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_review_stays_inside_workspace_and_escalates_risky_actions() {
+    fn action_review_describes_native_scope_without_deciding_approval() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("workspace");
         fs::create_dir_all(&root).unwrap();
@@ -1397,25 +1602,22 @@ mod tests {
             "write_file",
             &json!({"path":safe_path,"content":"offline notes"}),
             Access::Workspace,
-            ComputerTaskApprovalMode::Automatic,
             &roots,
         )
         .unwrap()
         .unwrap();
-        assert!(safe.approve_automatically);
         assert_eq!(safe.risk, "low");
+        assert!(safe.reason.contains("inside an approved workspace"));
 
         let outside = directory.path().join("outside.txt");
         let escalated = review_action(
             "write_file",
             &json!({"path":outside,"content":"outside"}),
             Access::Full,
-            ComputerTaskApprovalMode::Automatic,
             &roots,
         )
         .unwrap()
         .unwrap();
-        assert!(!escalated.approve_automatically);
         assert!(escalated.reason.contains("outside the approved workspace"));
 
         let protected = root.join(".git").join("config");
@@ -1423,12 +1625,13 @@ mod tests {
             "write_file",
             &json!({"path":protected,"content":"unsafe"}),
             Access::Workspace,
-            ComputerTaskApprovalMode::Automatic,
             &roots,
         )
         .unwrap()
         .unwrap();
-        assert!(!protected_review.approve_automatically);
+        assert!(protected_review
+            .reason
+            .contains("protected workspace metadata"));
 
         let moving = root.join("old.txt");
         fs::write(&moving, "old").unwrap();
@@ -1436,36 +1639,22 @@ mod tests {
             "move_path",
             &json!({"from":moving,"to":root.join("new.txt")}),
             Access::Workspace,
-            ComputerTaskApprovalMode::Automatic,
             &roots,
         )
         .unwrap()
         .unwrap();
-        assert!(!move_review.approve_automatically);
         assert_eq!(move_review.risk, "high");
     }
 
     #[test]
-    fn manual_review_requires_confirmation_for_bounded_workspace_writes() {
+    fn read_actions_do_not_need_side_effect_review() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("workspace");
         fs::create_dir_all(&root).unwrap();
-        let review = review_action(
-            "create_directory",
-            &json!({"path":root.join("reports")}),
-            Access::Workspace,
-            ComputerTaskApprovalMode::Manual,
-            &[root.to_string_lossy().into_owned()],
-        )
-        .unwrap()
-        .unwrap();
-        assert!(!review.approve_automatically);
-        assert!(review.reason.contains("Manual approval"));
         assert!(review_action(
             "read_file",
             &json!({"path":root.join("notes.txt")}),
             Access::Workspace,
-            ComputerTaskApprovalMode::Manual,
             &[root.to_string_lossy().into_owned()],
         )
         .unwrap()

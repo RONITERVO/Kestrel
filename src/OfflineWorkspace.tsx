@@ -586,8 +586,8 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       !window.confirm(
         `Run this local model with full computer access? It may propose programs and changes outside workspace folders. Every action is recorded. ${
           approvalMode === "manual"
-            ? "Manual approval will pause before every action."
-            : "Approve for me will still pause for programs, moves, external launches, protected metadata, and anything outside approved workspace folders."
+            ? "Manual approval pauses before every effect; native critical denials remain enforced."
+            : "Approve for me uses an isolated safety review and asks you only when authorization is unclear or review fails closed."
         }`,
       )
     )
@@ -665,8 +665,8 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       !window.confirm(
         `Continue this task with full computer access? The model may propose programs and changes outside workspace folders. ${
           task.approvalMode === "manual"
-            ? "Manual approval will pause before every action."
-            : "Approve for me will escalate effects outside its bounded workspace policy for your confirmation."
+            ? "Manual approval pauses before every effect; native critical denials remain enforced."
+            : "Approve for me uses an isolated safety review and asks you only when authorization is unclear or review fails closed."
         }`,
       )
     )
@@ -1663,7 +1663,7 @@ export function ComputerTasks({
               <Check />
               <span>
                 <strong>Approve for me</strong>
-                <small>Explains each action; risky work asks you</small>
+                <small>Isolated review; ambiguity asks you</small>
               </span>
             </button>
             <button
@@ -1674,7 +1674,7 @@ export function ComputerTasks({
               <ShieldCheck />
               <span>
                 <strong>Approve manually</strong>
-                <small>Pause before every action</small>
+                <small>You decide; native critical denials remain</small>
               </span>
             </button>
           </div>
@@ -1743,7 +1743,16 @@ export function ComputerTasks({
                       {timeOnly(event.at)}
                     </span>
                   </header>
-                  <pre>{event.detail}</pre>
+                  {event.kind === "approval_auto" ? (
+                    <details className="safety-audit">
+                      <summary>
+                        {String(event.data?.tool ?? "native action")} / {String(event.data?.risk ?? "reviewed")} risk
+                      </summary>
+                      <pre>{event.detail}</pre>
+                    </details>
+                  ) : (
+                    <pre>{event.detail}</pre>
+                  )}
                   {event.kind === "artifact" && event.data?.path && (
                     <button
                       className="artifact-button"

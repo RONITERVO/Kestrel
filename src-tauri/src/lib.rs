@@ -5,6 +5,7 @@ mod attachments;
 mod chat;
 mod config;
 mod developer;
+mod guardian;
 mod harness;
 mod html;
 mod kiwix;
@@ -882,24 +883,25 @@ async fn resolve_computer_task_approval(
 
     let note = request.note.trim();
     let (kind, title, detail, approved_action, continuation) = match request.decision {
-        ComputerTaskApprovalDecision::Approve => (
-            "approval_approved",
-            "Approved by you",
-            format!(
-                "Authorized once: {}{}",
-                action.summary,
-                if note.is_empty() {
-                    String::new()
-                } else {
-                    format!("\nYour note: {note}")
-                }
-            ),
-            Some(action.clone()),
-            format!(
-                "The user approved one exact native action: {} Kestrel executed it once before this continuation. Use the recorded native result and do not repeat it unless a new result requires a new action.",
-                action.summary
-            ),
-        ),
+        ComputerTaskApprovalDecision::Approve => {
+            let mut approved = action.clone();
+            approved.authorization_note = (!note.is_empty()).then(|| note.to_string());
+            (
+                "approval_approved",
+                "Approved by you",
+                format!(
+                    "Authorized once: {}{}",
+                    action.summary,
+                    if note.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\nYour note: {note}")
+                    }
+                ),
+                Some(approved),
+                String::new(),
+            )
+        }
         ComputerTaskApprovalDecision::Reject => (
             "approval_rejected",
             "Rejected by you",
@@ -973,7 +975,13 @@ async fn resolve_computer_task_approval(
         task_request,
         settings,
         cancel,
-        Some(task_native_continuation(&run, &continuation)),
+        Some(
+            if request.decision == ComputerTaskApprovalDecision::Approve {
+                task_replay_continuation(&run)
+            } else {
+                task_native_continuation(&run, &continuation)
+            },
+        ),
         approved_action,
     );
     Ok(updated)
@@ -1046,12 +1054,28 @@ fn task_native_continuation(run: &ComputerTaskRun, directive: &str) -> String {
     task_continuation_with_label(run, "Kestrel's verified approval state", directive)
 }
 
+fn task_replay_continuation(run: &ComputerTaskRun) -> String {
+    let transcript = recent_task_transcript(run, false);
+    format!(
+        "Continue the same durable task. Re-inspect current state before further changes because the prior run may have stopped between actions.\n\nRecent verified tool transcript:\n{transcript}"
+    )
+}
+
 fn task_continuation_with_label(run: &ComputerTaskRun, label: &str, value: &str) -> String {
+    let transcript = recent_task_transcript(run, true);
+    format!(
+        "Continue the same durable task. Re-inspect current state before further changes because the prior run may have stopped between actions.\n\nRecent verified transcript:\n{transcript}\n{label}:\n{value}"
+    )
+}
+
+fn recent_task_transcript(run: &ComputerTaskRun, include_approvals: bool) -> String {
     let mut transcript = String::new();
     for event in run
         .events
         .iter()
-        .filter(|event| event.kind != "reasoning")
+        .filter(|event| {
+            event.kind != "reasoning" && (include_approvals || !event.kind.starts_with("approval_"))
+        })
         .rev()
         .take(30)
         .collect::<Vec<_>>()
@@ -1064,9 +1088,7 @@ fn task_continuation_with_label(run: &ComputerTaskRun, label: &str, value: &str)
             break;
         }
     }
-    format!(
-        "Continue the same durable task. Re-inspect current state before further changes because the prior run may have stopped between actions.\n\nRecent verified transcript:\n{transcript}\n{label}:\n{value}"
-    )
+    transcript
 }
 
 #[tauri::command]
@@ -1453,5 +1475,46 @@ mod tests {
         assert_eq!(action.approval_id, approval_id);
         assert_eq!(action.arguments["content"], "notes");
         assert!(pending_computer_action(&run, &uuid::Uuid::new_v4().to_string()).is_err());
+    }
+
+    #[test]
+    fn approved_replay_hides_approval_protocol_from_the_main_agent() {
+        let now = chrono::Utc::now().to_rfc3339();
+        let run = ComputerTaskRun {
+            id: uuid::Uuid::new_v4().to_string(),
+            objective: "write notes".into(),
+            model_id: "model".into(),
+            access: ComputerTaskAccess::Workspace,
+            approval_mode: ComputerTaskApprovalMode::Manual,
+            status: "running".into(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            events: vec![
+                models::ComputerTaskEvent {
+                    run_id: "run".into(),
+                    step: 1,
+                    kind: "tool_result".into(),
+                    title: "read_file finished".into(),
+                    detail: "existing notes".into(),
+                    data: None,
+                    at: now.clone(),
+                },
+                models::ComputerTaskEvent {
+                    run_id: "run".into(),
+                    step: 2,
+                    kind: "approval_required".into(),
+                    title: "Approval required".into(),
+                    detail: "guardian-private explanation".into(),
+                    data: None,
+                    at: now,
+                },
+            ],
+            artifacts: Vec::new(),
+            attachments: Vec::new(),
+        };
+        let replay = task_replay_continuation(&run);
+        assert!(replay.contains("existing notes"));
+        assert!(!replay.contains("guardian-private explanation"));
+        assert!(!replay.contains("Approval required"));
     }
 }

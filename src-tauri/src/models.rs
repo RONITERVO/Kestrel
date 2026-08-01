@@ -289,6 +289,8 @@ pub struct PendingComputerAction {
     pub summary: String,
     pub reason: String,
     pub risk: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
