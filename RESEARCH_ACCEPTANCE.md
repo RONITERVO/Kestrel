@@ -12,12 +12,13 @@
 
 | Layer | Result |
 | --- | --- |
-| Rust unit/integration | 21 passed; 4 live tests ignored by default |
+| Rust unit/integration | 22 passed; 5 live tests ignored by default |
 | Frontend behavior | 4 passed |
 | Rust lint | `clippy --all-targets -D warnings` passed |
 | TypeScript + production web build | passed |
 | Git diff hygiene | passed |
 | Existing Bonsai attachment | passed; attached mode, no child PID, 0.01 s |
+| Installed PowerShell/BOM settings apply | passed; recovery backup preserved and Bonsai health `ok` |
 | Real Kiwix search/read | passed, 0.15 s |
 | Real focused expansion | citation-valid indexed standalone HTML, 108.80 s |
 | Real Solo expedition | high-capacity shared-lane report, 316.36 s |

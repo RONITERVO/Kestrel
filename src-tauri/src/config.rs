@@ -9,7 +9,7 @@ use thiserror::Error;
 pub enum ConfigError {
     #[error("research settings file error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("research settings JSON error: {0}")]
+    #[error("local settings JSON error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("advanced values must be positive integers")]
     InvalidAdvancedValue,
@@ -56,7 +56,8 @@ fn legacy_control_settings() -> Option<ControlSettings> {
         .config_dir()
         .join("app.kestrel.local")
         .join("settings.json");
-    let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let bytes = fs::read(path).ok()?;
+    let value: Value = serde_json::from_slice(without_utf8_bom(&bytes)).ok()?;
     let mut settings = ControlSettings::default();
     settings.advanced_mode = value
         .get("advanced_mode")
@@ -145,11 +146,12 @@ fn recoverable_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Confi
     let backup = path.with_extension("json.backup");
     if path.is_file() {
         let primary = fs::read(path)?;
-        match serde_json::from_slice(&primary) {
+        match serde_json::from_slice(without_utf8_bom(&primary)) {
             Ok(value) => return Ok(Some(value)),
             Err(primary_error) => {
                 if backup.is_file() {
-                    if let Ok(value) = serde_json::from_slice(&fs::read(&backup)?) {
+                    if let Ok(value) = serde_json::from_slice(without_utf8_bom(&fs::read(&backup)?))
+                    {
                         fs::copy(&backup, path)?;
                         return Ok(Some(value));
                     }
@@ -160,11 +162,15 @@ fn recoverable_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Confi
     }
     if backup.is_file() {
         let bytes = fs::read(&backup)?;
-        let value = serde_json::from_slice(&bytes)?;
+        let value = serde_json::from_slice(without_utf8_bom(&bytes))?;
         fs::copy(&backup, path)?;
         return Ok(Some(value));
     }
     Ok(None)
+}
+
+pub(crate) fn without_utf8_bom(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)
 }
 
 pub fn apply_bonsai_runtime(settings: &ResearchSettings) -> Result<PathBuf, ConfigError> {
@@ -175,7 +181,8 @@ pub fn apply_bonsai_runtime(settings: &ResearchSettings) -> Result<PathBuf, Conf
             path.display().to_string(),
         ));
     }
-    let mut value: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    let bytes = fs::read(&path)?;
+    let mut value: Value = serde_json::from_slice(without_utf8_bom(&bytes))?;
     value["AdvancedMode"] = Value::Bool(true);
     value["ContextWindow"] = Value::from(settings.context_window);
     value["MainMaxOutputTokens"] = Value::from(settings.max_output_tokens);
@@ -271,11 +278,9 @@ mod tests {
             "MainMaxOutputTokens": 1_024,
             "Temperature": 0.6
         });
-        fs::write(
-            directory.path().join("settings.json"),
-            serde_json::to_vec_pretty(&original).unwrap(),
-        )
-        .unwrap();
+        let mut powershell_json = vec![0xEF, 0xBB, 0xBF];
+        powershell_json.extend(serde_json::to_vec_pretty(&original).unwrap());
+        fs::write(directory.path().join("settings.json"), powershell_json).unwrap();
         let settings = ResearchSettings {
             advanced_mode: true,
             bonsai_root: directory.path().to_string_lossy().into_owned(),
@@ -289,13 +294,27 @@ mod tests {
         let applied: Value =
             serde_json::from_slice(&fs::read(directory.path().join("settings.json")).unwrap())
                 .unwrap();
-        let backup: Value = serde_json::from_slice(
-            &fs::read(directory.path().join("settings.json.kestrel-backup")).unwrap(),
-        )
-        .unwrap();
+        let backup_bytes = fs::read(directory.path().join("settings.json.kestrel-backup")).unwrap();
+        let backup: Value = serde_json::from_slice(without_utf8_bom(&backup_bytes)).unwrap();
         assert_eq!(applied["ContextWindow"], 196_608);
         assert_eq!(applied["MainMaxOutputTokens"], 65_536);
         assert_eq!(applied["Temperature"], 0.6);
         assert_eq!(backup, original);
+    }
+
+    #[test]
+    #[ignore = "writes the user's installed Bonsai settings with the validated profile"]
+    fn live_applies_profile_to_powershell_bom_settings() {
+        let settings = ResearchSettings {
+            advanced_mode: true,
+            ..ResearchSettings::default()
+        };
+        let path = apply_bonsai_runtime(&settings).expect("installed Bonsai settings should apply");
+        let bytes = fs::read(&path).unwrap();
+        assert!(!bytes.starts_with(&[0xEF, 0xBB, 0xBF]));
+        let applied: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(applied["ContextWindow"], 98_304);
+        assert_eq!(applied["MainMaxOutputTokens"], 32_768);
+        assert!(path.with_extension("json.kestrel-backup").is_file());
     }
 }

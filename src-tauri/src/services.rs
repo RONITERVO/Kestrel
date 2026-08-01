@@ -1,3 +1,4 @@
+use crate::config::without_utf8_bom;
 use crate::kiwix::KiwixClient;
 use crate::models::{
     GpuSnapshot, ResearchSettings, RuntimeSnapshot, ServiceStatus, SystemSnapshot,
@@ -130,7 +131,7 @@ pub async fn gpu_snapshot() -> Option<GpuSnapshot> {
 fn read_json(path: &Path) -> Value {
     std::fs::read(path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice(without_utf8_bom(&bytes)).ok())
         .unwrap_or(Value::Null)
 }
 
@@ -182,5 +183,18 @@ impl From<std::io::Error> for ServiceError {
             name: "PowerShell".into(),
             details: error.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_powershell_utf8_bom_json() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("telemetry.json");
+        std::fs::write(&path, b"\xEF\xBB\xBF{\"ContextWindow\":98304}").unwrap();
+        assert_eq!(number(&read_json(&path), "ContextWindow"), Some(98_304));
     }
 }
