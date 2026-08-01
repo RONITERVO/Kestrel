@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { demoReport, demoSnapshot } from "./demo";
-import type { AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ChatStreamEvent, ComputerTaskEvent, ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot, DeveloperRepairReport, OperationProgress, ResearchProgress, ResearchReport, ResearchSettings, RunResearchRequest, StartChatRequest, SystemSnapshot } from "./types";
+import type { AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ChatStreamEvent, ComputerTaskEvent, ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot, DeveloperRepairReport, OperationProgress, ProfileTransfer, ResearchProgress, ResearchReport, ResearchSettings, RunResearchRequest, StartChatRequest, SystemSnapshot } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
 
@@ -89,6 +89,16 @@ export async function getControlSnapshot(probeDeveloper = true): Promise<Control
 export async function scanLocalModels(): Promise<ControlSnapshot> {
   if (!isTauri()) return demoSnapshot.control;
   return invoke<ControlSnapshot>("scan_local_models");
+}
+
+export async function exportSetupProfile(): Promise<ProfileTransfer> {
+  if (!isTauri()) return { path: "C:\\Users\\Researcher\\Kestrel Research\\setup-profiles\\kestrel-profile-preview.json", message: "Preview profile exported safely." };
+  return invoke<ProfileTransfer>("export_setup_profile");
+}
+
+export async function importSetupProfile(path: string): Promise<AppSnapshot> {
+  if (!isTauri()) return demoSnapshot;
+  return invoke<AppSnapshot>("import_setup_profile", { path });
 }
 
 export async function saveControlSettings(settings: ControlSettings): Promise<ControlSnapshot> {

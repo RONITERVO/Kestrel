@@ -3,16 +3,143 @@
 //! This module deliberately has no runtime, network, or mutation authority. Model identity is a
 //! fast path-independent content signature so a cached selection survives drive/user changes.
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    fs::File,
+    fs::{self, File},
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
+
+const CATALOG_SCHEMA_VERSION: u32 = 1;
+const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedCatalog {
+    schema_version: u32,
+    updated_at: String,
+    models: Vec<ModelInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelCatalogStore {
+    path: PathBuf,
+}
+
+impl ModelCatalogStore {
+    pub fn new(library_root: &Path) -> Self {
+        Self {
+            path: library_root.join("model-catalog.json"),
+        }
+    }
+
+    pub fn load(&self) -> io::Result<Vec<ModelInfo>> {
+        let backup = self.path.with_extension("json.backup");
+        let catalog = match read_catalog(&self.path) {
+            Ok(Some(value)) => value,
+            Ok(None) => match read_catalog(&backup) {
+                Ok(Some(value)) => {
+                    fs::copy(&backup, &self.path)?;
+                    value
+                }
+                Ok(None) => return Ok(Vec::new()),
+                Err(error) => return Err(error),
+            },
+            Err(_primary_error) => match read_catalog(&backup) {
+                Ok(Some(value)) => {
+                    quarantine(&self.path);
+                    fs::copy(&backup, &self.path)?;
+                    value
+                }
+                _ => {
+                    quarantine(&self.path);
+                    return Ok(Vec::new());
+                }
+            },
+        };
+        if catalog.schema_version != CATALOG_SCHEMA_VERSION {
+            return Ok(Vec::new());
+        }
+        Ok(catalog
+            .models
+            .into_iter()
+            .filter(|model| {
+                fs::metadata(&model.path)
+                    .is_ok_and(|metadata| metadata.is_file() && metadata.len() == model.bytes)
+            })
+            .collect())
+    }
+
+    pub fn save(&self, models: &[ModelInfo]) -> io::Result<()> {
+        let temporary = self.path.with_extension("json.tmp");
+        let backup = self.path.with_extension("json.backup");
+        let catalog = CachedCatalog {
+            schema_version: CATALOG_SCHEMA_VERSION,
+            updated_at: Utc::now().to_rfc3339(),
+            models: models.to_vec(),
+        };
+        fs::write(
+            &temporary,
+            serde_json::to_vec_pretty(&catalog).map_err(io::Error::other)?,
+        )?;
+        if self.path.is_file() {
+            fs::copy(&self.path, &backup)?;
+            fs::remove_file(&self.path)?;
+        }
+        if let Err(error) = fs::rename(&temporary, &self.path) {
+            if backup.is_file() {
+                let _ = fs::copy(&backup, &self.path);
+            }
+            return Err(error);
+        }
+        if !backup.is_file() {
+            fs::copy(&self.path, &backup)?;
+        }
+        Ok(())
+    }
+}
+
+fn read_catalog(path: &Path) -> io::Result<Option<CachedCatalog>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    if fs::metadata(path)?.len() > MAX_CATALOG_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "model catalog exceeds 64 MiB",
+        ));
+    }
+    serde_json::from_slice(&fs::read(path)?)
+        .map(Some)
+        .map_err(io::Error::other)
+}
+
+fn quarantine(path: &Path) {
+    if path.is_file() {
+        let unique = uuid::Uuid::new_v4().simple().to_string();
+        let name = format!(
+            "model-catalog.corrupt-{}-{}.json",
+            Utc::now().format("%Y%m%dT%H%M%S"),
+            &unique[..8]
+        );
+        let _ = fs::rename(path, path.with_file_name(name));
+    }
+}
+
+pub fn merge_catalogs(cached: Vec<ModelInfo>, refreshed: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    let mut by_id = HashMap::new();
+    for model in cached.into_iter().chain(refreshed) {
+        by_id.insert(model.id.clone(), model);
+    }
+    let mut models: Vec<_> = by_id.into_values().collect();
+    models.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    models
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -318,5 +445,78 @@ mod tests {
         assert!(!is_candidate(Path::new("model-mmproj-Q8_0.gguf")));
         assert!(!is_candidate(Path::new("model-00002-of-00004.gguf")));
         assert!(is_candidate(Path::new("model-00001-of-00004.gguf")));
+    }
+
+    #[test]
+    fn catalog_cache_restores_only_existing_unchanged_models() {
+        let directory = tempfile::tempdir().unwrap();
+        let model_path = directory.path().join("model.gguf");
+        fs::write(&model_path, b"stable-model").unwrap();
+        let store = ModelCatalogStore::new(directory.path());
+        let model = ModelInfo {
+            id: "identity".into(),
+            name: "Model".into(),
+            path: model_path.to_string_lossy().into_owned(),
+            source: "Custom".into(),
+            bytes: 12,
+            architecture: None,
+            context_length: None,
+            chat_template: false,
+            quantization: None,
+            mmproj_path: None,
+            recommendation: "Inspect metadata".into(),
+        };
+        store.save(std::slice::from_ref(&model)).unwrap();
+        assert_eq!(store.load().unwrap(), vec![model]);
+
+        fs::write(model_path, b"changed").unwrap();
+        assert!(store.load().unwrap().is_empty());
+    }
+
+    #[test]
+    fn corrupt_catalog_is_quarantined_without_blocking_startup() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ModelCatalogStore::new(directory.path());
+        fs::write(directory.path().join("model-catalog.json"), b"broken").unwrap();
+
+        assert!(store.load().unwrap().is_empty());
+        assert!(directory
+            .path()
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("model-catalog.corrupt-")));
+    }
+
+    #[test]
+    fn corrupt_primary_is_restored_from_the_catalog_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let model_path = directory.path().join("restored.gguf");
+        fs::write(&model_path, b"catalog model").unwrap();
+        let store = ModelCatalogStore::new(directory.path());
+        let model = ModelInfo {
+            id: "restored-identity".into(),
+            name: "Restored model".into(),
+            path: model_path.to_string_lossy().into_owned(),
+            source: "Test".into(),
+            bytes: 13,
+            architecture: None,
+            context_length: None,
+            chat_template: false,
+            quantization: None,
+            mmproj_path: None,
+            recommendation: "Recovered".into(),
+        };
+        store.save(std::slice::from_ref(&model)).unwrap();
+        fs::write(directory.path().join("model-catalog.json"), b"broken").unwrap();
+
+        assert_eq!(store.load().unwrap(), vec![model.clone()]);
+        let restored = read_catalog(&directory.path().join("model-catalog.json"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.models, vec![model]);
     }
 }

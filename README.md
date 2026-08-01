@@ -4,7 +4,7 @@ Kestrel is a Windows-first local model control plane and fully offline research 
 
 The application has four adjacent workspaces:
 
-- **Control** discovers GGUF files read-only, attaches to an existing Bonsai service or starts one authenticated `llama-server`, shows live VRAM, exposes exact launch arguments, and offers local chat.
+- **Control** discovers GGUF files read-only, keeps a recoverable startup catalog, rediscovers installed Bonsai/Jan/PATH engines, attaches to an existing Bonsai service or starts one authenticated `llama-server`, shows live VRAM, exposes exact launch arguments, and offers local chat.
 - **Research** runs a Bonsai-specific two-tool harness, visibly reports six stages, validates every citation, finds related prior work, and publishes immutable editions.
 - **Developer** runs fixed offline checks. If Codex CLI is installed and signed in, an explicit one-click action can repair this Git workspace under an ephemeral workspace-write sandbox. Research never depends on it.
 - **System** exposes the installed Bonsai/Kiwix state, GPU telemetry, and opt-in high-capacity research settings.
@@ -24,6 +24,8 @@ Articles:    6,863,660
 ```
 
 Kestrel reads these assets in place. It does not copy the model or 102.3 GiB archive. A first-run model rescan also checks common Jan, LM Studio, Hugging Face, and Ollama locations plus user-added roots.
+
+Subsequent starts merge an integrity-checked `model-catalog.json` cache with an immediate Bonsai scan, then refresh all configured roots in the background. Missing or size-changed weights are discarded from the cache. A corrupt cache is quarantined and rebuilt without blocking startup.
 
 ## Runtime design
 
@@ -55,6 +57,8 @@ C:\Users\<you>\Kestrel Research\
 |-- README.txt
 |-- catalog.sqlite3       # disposable/rebuilt FTS5 cache
 |-- catalog.jsonl         # open one-record-per-line index
+|-- model-catalog.json    # recoverable local GGUF discovery cache
+|-- setup-profiles\       # safe portable tuning/model identity profiles
 |-- maintenance\          # optional Codex repair transcripts
 `-- reports\YYYY\MM\<title>--<id>\
     |-- index.html        # self-contained, printable research page
@@ -66,6 +70,8 @@ C:\Users\<you>\Kestrel Research\
 Publication builds a complete staging directory and atomically renames it into place. Existing IDs are never overwritten. At startup Kestrel repairs missing derived HTML/source/provenance files from `report.json` and repopulates a missing SQLite catalog. If SQLite cannot be initialized, it is preserved with a timestamped `.corrupt-*` name before a clean cache is built from reports.
 
 This keeps thousands of editions searchable through FTS5 while local models and ordinary tools can always traverse JSONL and report folders directly.
+
+Portable setup profiles contain research/runtime tuning, path-independent model identities, and local path hints. They never include weights, chats, research, credentials, developer paths, or Full Access authority. Import validates a bounded JSON file, keeps local developer/workspace paths, locks Full Access, rediscovers a local engine, and rescans weights before returning control.
 
 ## Offline boundary
 
@@ -97,6 +103,14 @@ npm test -- --run
 npm run build
 ```
 
+Create a current-user Windows installer that remains installable without a network connection:
+
+```powershell
+npm run package:offline
+```
+
+The release script emits SHA-256 hashes, signature status, a machine-readable manifest, and supports mandatory Authenticode signing when a certificate is supplied. See [RELEASING.md](RELEASING.md).
+
 Live archive and model acceptance:
 
 ```powershell
@@ -110,7 +124,7 @@ The in-app Developer screen runs the deterministic checks offline. Its optional 
 ## Next useful improvements
 
 - Add artifact hashes and an in-app integrity/rebuild action.
-- Validate a signed installer on a clean offline Windows VM.
+- Supply the release signing certificate and validate the signed offline installer on a clean disconnected Windows VM.
 - Add local papers/books/document adapters behind the same evidence contract.
 - Add collection/tag and parent/child comparison views after sustained library use.
 - Capture firewall evidence for a complete strict offline run.

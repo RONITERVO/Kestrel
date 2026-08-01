@@ -7,6 +7,7 @@ import {
   CircleStop,
   Clock3,
   Cpu,
+  Download,
   ExternalLink,
   Feather,
   FileText,
@@ -27,6 +28,7 @@ import {
   ShieldCheck,
   Sparkles,
   TriangleAlert,
+  Upload,
   Wrench,
   X,
   Zap,
@@ -36,8 +38,10 @@ import {
   bootstrap,
   cancelResearch,
   applyModelRuntime,
+  exportSetupProfile,
   getReport,
   getSystemSnapshot,
+  importSetupProfile,
   onProgress,
   openBonsaiControlCenter,
   openStandalone,
@@ -215,6 +219,7 @@ function App() {
             <SystemConsole
               initialSettings={snapshot.settings}
               onSaved={(settings) => setSnapshot((current) => current ? { ...current, settings } : current)}
+              onImported={(next) => setSnapshot(next)}
               onError={(message) => setError(message)}
             />
           ) : !selectedId && snapshot.reports.length === 0 ? (
@@ -472,10 +477,12 @@ function CitationRow({ ids, onFocus, labels }: { ids: string[]; onFocus: (id: st
   return <div className="citation-row" aria-label="Citations">{ids.map((id) => <button key={id} onClick={() => onFocus(id)} title={labels?.get(id)?.title ?? `Source ${id}`}>{id}</button>)}</div>;
 }
 
-function SystemConsole({ initialSettings, onSaved, onError }: { initialSettings: ResearchSettings; onSaved: (settings: ResearchSettings) => void; onError: (message: string) => void }) {
+function SystemConsole({ initialSettings, onSaved, onImported, onError }: { initialSettings: ResearchSettings; onSaved: (settings: ResearchSettings) => void; onImported: (snapshot: AppSnapshot) => void; onError: (message: string) => void }) {
   const [system, setSystem] = useState<SystemSnapshot | null>(null);
   const [draft, setDraft] = useState<ResearchSettings>(initialSettings);
-  const [busy, setBusy] = useState<"save" | "apply" | null>(null);
+  const [busy, setBusy] = useState<"save" | "apply" | "export" | "import" | null>(null);
+  const [profilePath, setProfilePath] = useState("");
+  const [profileStatus, setProfileStatus] = useState("");
 
   const refreshSystem = useCallback(async () => {
     try {
@@ -526,6 +533,39 @@ function SystemConsole({ initialSettings, onSaved, onError }: { initialSettings:
       onError(String(cause));
     }
   };
+  const exportProfile = async () => {
+    setBusy("export");
+    try {
+      const transfer = await exportSetupProfile();
+      setProfilePath(transfer.path);
+      setProfileStatus(transfer.message);
+      try {
+        await navigator.clipboard.writeText(transfer.path);
+      } catch {
+        setProfileStatus(`${transfer.message} Copy the displayed path manually.`);
+      }
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const importProfile = async () => {
+    const path = profilePath.trim();
+    if (!path || !window.confirm("Import this setup profile? Local developer/workspace paths stay unchanged and Full Access will be locked.")) return;
+    setBusy("import");
+    try {
+      const next = await importSetupProfile(path);
+      setDraft(next.settings);
+      onImported(next);
+      setProfileStatus("Profile imported. Model paths were rescanned, the engine was rediscovered locally, and Full Access remains locked.");
+      await refreshSystem();
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
   const gpu = system?.gpu;
   const usedPercent = gpu ? Math.min(100, (gpu.usedMib / gpu.totalMib) * 100) : 0;
 
@@ -564,6 +604,13 @@ function SystemConsole({ initialSettings, onSaved, onError }: { initialSettings:
 
         <div className="advanced-warning"><TriangleAlert /><div><strong>Expert values are intentionally uncapped.</strong><span>Warning: invalid or oversized values can stop startup or exhaust VRAM. The model runtime still enforces its physical and architectural limits.</span></div></div>
         <div className="settings-actions"><button className="quiet-button" onClick={() => void openControls()}><Settings2 size={15} /> Open Bonsai controls</button><span /><button className="quiet-button" disabled={!!busy} onClick={() => void save()}>{busy === "save" ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save research profile</button><button className="primary-button" disabled={!draft.advancedMode || !!busy} onClick={() => void apply()}>{busy === "apply" ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />} Apply & restart model</button></div>
+      </section>
+
+      <section className="settings-panel portability-panel">
+        <div className="settings-heading"><div><span className="eyebrow">Safe machine transfer</span><h2>Portable setup</h2><p>Move tuning and path-independent model identities to another offline PC. Profiles never contain weights, chats, research, credentials, developer paths, or Full Access authority.</p></div><ShieldCheck /></div>
+        <label className="wide-field"><span>Profile JSON path</span><input value={profilePath} onChange={(event) => setProfilePath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\setup-profiles\\kestrel-profile-….json" /></label>
+        {profileStatus && <div className="profile-status" role="status">{profileStatus}</div>}
+        <div className="settings-actions"><button className="quiet-button" disabled={!!busy} onClick={() => void exportProfile()}>{busy === "export" ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} Export safe profile</button><span /><button className="quiet-button" disabled={!!busy || !profilePath.trim()} onClick={() => void importProfile()}>{busy === "import" ? <LoaderCircle className="spin" size={15} /> : <Upload size={15} />} Import profile</button></div>
       </section>
     </div>
   );

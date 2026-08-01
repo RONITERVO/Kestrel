@@ -9,6 +9,7 @@ mod html;
 mod kiwix;
 mod model;
 mod models;
+mod profile;
 mod runtime;
 mod services;
 mod store;
@@ -17,12 +18,12 @@ mod workspace;
 use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
-use model::{default_roots, ModelInfo};
+use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
 use models::{
     AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess,
     ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
-    DeveloperRepairReport, DeveloperRepairRequest, ResearchReport, ResearchSettings,
-    RunResearchRequest, StartChatRequest, SystemSnapshot,
+    DeveloperRepairReport, DeveloperRepairRequest, ProfileTransfer, ResearchReport,
+    ResearchSettings, RunResearchRequest, StartChatRequest, SystemSnapshot,
 };
 use runtime::RuntimeManager;
 use std::{
@@ -33,7 +34,7 @@ use std::{
     },
 };
 use store::ResearchStore;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use workspace::WorkspaceStore;
@@ -45,7 +46,9 @@ struct AppState {
     harness: ResearchHarness,
     research_settings: SettingsStore,
     control_settings: ControlSettingsStore,
+    model_catalog: ModelCatalogStore,
     models: RwLock<Vec<ModelInfo>>,
+    engine_candidates: RwLock<Vec<models::EngineCandidate>>,
     runtime: Arc<RuntimeManager>,
     developer: DeveloperAssistant,
     workspace: WorkspaceStore,
@@ -208,12 +211,66 @@ async fn scan_local_models(state: State<'_, AppState>) -> Result<ControlSnapshot
     let found = tokio::task::spawn_blocking(move || model::scan(&roots))
         .await
         .map_err(|error| format!("model scan failed: {error}"))?;
+    if let Err(error) = state.model_catalog.save(&found) {
+        eprintln!(
+            "Kestrel model scan completed, but its disposable catalog could not be saved: {error}"
+        );
+    }
     *state.models.write().await = found;
     control_snapshot(&state, true).await
 }
 
 #[tauri::command]
-fn save_research_settings(
+async fn export_setup_profile(state: State<'_, AppState>) -> Result<ProfileTransfer, String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let models = state.models.read().await.clone();
+    profile::export(state.store.root(), &research, &control, &models)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn import_setup_profile(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    ensure_workspace_idle(&state)?;
+    if !std::path::Path::new(&path).is_absolute() {
+        return Err("setup profile path must be absolute".into());
+    }
+    let imported = profile::import(
+        std::path::Path::new(&path),
+        &state.research_settings,
+        &state.control_settings,
+    )
+    .map_err(|error| error.to_string())?;
+    let roots = default_roots(
+        &imported.control.extra_model_roots,
+        &imported.research.bonsai_root,
+    );
+    match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
+        Ok(found) => {
+            if let Err(error) = state.model_catalog.save(&found) {
+                eprintln!("Kestrel imported the profile and found its models, but the disposable catalog could not be saved: {error}");
+            }
+            *state.models.write().await = found;
+        }
+        Err(error) => {
+            eprintln!("Kestrel imported the profile, but its follow-up model scan could not finish: {error}");
+        }
+    }
+    refresh_engine_candidates(&state, &imported.control, &imported.research).await;
+    snapshot(&state).await
+}
+
+#[tauri::command]
+async fn save_research_settings(
     settings: ResearchSettings,
     state: State<'_, AppState>,
 ) -> Result<ResearchSettings, String> {
@@ -235,6 +292,7 @@ fn save_research_settings(
         .control_settings
         .save(&control)
         .map_err(|error| error.to_string())?;
+    refresh_engine_candidates(&state, &control, &settings).await;
     Ok(settings)
 }
 
@@ -243,6 +301,13 @@ async fn save_control_settings(
     settings: ControlSettings,
     state: State<'_, AppState>,
 ) -> Result<ControlSnapshot, String> {
+    let engine_path = std::path::Path::new(&settings.engine_path);
+    if engine_path.is_file() && !runtime::is_llama_server_file(engine_path) {
+        return Err(format!(
+            "model engine must be a file named llama-server.exe: {}",
+            engine_path.display()
+        ));
+    }
     state
         .control_settings
         .save(&settings)
@@ -261,6 +326,7 @@ async fn save_control_settings(
         .research_settings
         .save(&research)
         .map_err(|error| error.to_string())?;
+    refresh_engine_candidates(&state, &settings, &research).await;
     control_snapshot(&state, true).await
 }
 
@@ -288,6 +354,7 @@ async fn apply_model_runtime(
         .control_settings
         .save(&control)
         .map_err(|error| error.to_string())?;
+    refresh_engine_candidates(&state, &control, &settings).await;
     state
         .runtime
         .stop_managed()
@@ -432,6 +499,7 @@ async fn start_chat_stream(
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         let managed = app_for_task.state::<AppState>();
+        let _work_guard = WorkGuard(&managed.work_active);
         let settings = managed.control_settings.load();
         let result = match settings {
             Ok(settings) => {
@@ -462,8 +530,7 @@ async fn start_chat_stream(
         }
         if let Ok(mut jobs) = managed.interactive_jobs.lock() {
             jobs.remove(&event_request_id);
-        }
-        managed.work_active.store(false, Ordering::Release);
+        };
     });
     Ok(ChatStart {
         request_id,
@@ -541,6 +608,7 @@ async fn start_computer_task(
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         let managed = app_for_task.state::<AppState>();
+        let _work_guard = WorkGuard(&managed.work_active);
         let models = managed.models.read().await.clone();
         let result = agent::run(
             Some(app_for_task.clone()),
@@ -563,15 +631,36 @@ async fn start_computer_task(
         }
         if let Ok(mut jobs) = managed.interactive_jobs.lock() {
             jobs.remove(&event_run_id);
-        }
-        managed.work_active.store(false, Ordering::Release);
+        };
     });
     Ok(run)
 }
 
 #[tauri::command]
 fn stop_computer_task(run_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    cancel_chat_stream(run_id, state)
+    let (cancel, interactive_registry_empty) = {
+        let jobs = state
+            .interactive_jobs
+            .lock()
+            .map_err(|_| "interactive job registry is unavailable".to_string())?;
+        (jobs.get(&run_id).cloned(), jobs.is_empty())
+    };
+    if let Some(cancel) = cancel {
+        cancel.cancel();
+        return Ok(());
+    }
+    let run = state.workspace.get_task(&run_id)?;
+    let terminal = matches!(
+        run.status.as_str(),
+        "completed" | "cancelled" | "failed" | "interrupted"
+    );
+    if terminal {
+        if interactive_registry_empty && !state.research_active.load(Ordering::Acquire) {
+            state.work_active.store(false, Ordering::Release);
+        }
+        return Ok(());
+    }
+    Err("That computer task is not registered as an active job. Restart Kestrel to recover its inference lock.".into())
 }
 
 #[tauri::command]
@@ -690,6 +779,7 @@ async fn control_snapshot(
         state.developer.status(&settings.project_root).await
     };
     Ok(ControlSnapshot {
+        engine_candidates: state.engine_candidates.read().await.clone(),
         settings,
         models: state.models.read().await.clone(),
         runtime: state.runtime.snapshot().await,
@@ -697,6 +787,23 @@ async fn control_snapshot(
         developer,
         runtime_logs: state.runtime.recent_logs(100).await,
     })
+}
+
+async fn refresh_engine_candidates(
+    state: &AppState,
+    control: &ControlSettings,
+    research: &ResearchSettings,
+) {
+    let engine_path = control.engine_path.clone();
+    let bonsai_root = research.bonsai_root.clone();
+    match tokio::task::spawn_blocking(move || runtime::detect_engines(&engine_path, &bonsai_root))
+        .await
+    {
+        Ok(candidates) => *state.engine_candidates.write().await = candidates,
+        Err(error) => {
+            eprintln!("Kestrel could not refresh local engine candidates: {error}");
+        }
+    }
 }
 
 fn ensure_workspace_idle(state: &AppState) -> Result<(), String> {
@@ -751,10 +858,25 @@ pub fn run() {
             let research = research_settings
                 .load()
                 .map_err(|error| error.to_string())?;
-            control_settings.load().map_err(|error| error.to_string())?;
-            // Startup stays fast: inspect Bonsai immediately and let an explicit rescan cover large libraries.
-            let bonsai_root = vec![std::path::Path::new(&research.bonsai_root).join("models")];
-            let models = model::scan(&bonsai_root);
+            let mut control = control_settings.load().map_err(|error| error.to_string())?;
+            let mut engine_candidates =
+                runtime::detect_engines(&control.engine_path, &research.bonsai_root);
+            if !std::path::Path::new(&control.engine_path).is_file() {
+                if let Some(candidate) = engine_candidates.first() {
+                    control.engine_path.clone_from(&candidate.path);
+                    if let Err(error) = control_settings.save(&control) {
+                        eprintln!("Kestrel repaired the missing engine path for this session, but could not save it. Check write access to the Kestrel Research folder: {error}");
+                    }
+                    engine_candidates =
+                        runtime::detect_engines(&control.engine_path, &research.bonsai_root);
+                }
+            }
+            // Startup reads only the validated cache; the full scan runs after the window opens.
+            let model_catalog = ModelCatalogStore::new(store.root());
+            let models = model_catalog.load().unwrap_or_else(|error| {
+                eprintln!("Kestrel could not restore its disposable model catalog: {error}");
+                Vec::new()
+            });
             let harness = ResearchHarness::new(store.clone());
             let developer = DeveloperAssistant::new(store.root());
             let workspace = WorkspaceStore::new(store.root())?;
@@ -763,7 +885,9 @@ pub fn run() {
                 harness,
                 research_settings,
                 control_settings,
+                model_catalog,
                 models: RwLock::new(models),
+                engine_candidates: RwLock::new(engine_candidates),
                 runtime: Arc::new(RuntimeManager::new()),
                 developer,
                 workspace,
@@ -771,6 +895,33 @@ pub fn run() {
                 work_active: AtomicBool::new(false),
                 jobs: Mutex::new(HashMap::new()),
                 interactive_jobs: Mutex::new(HashMap::new()),
+            });
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<AppState>();
+                let research = match state.research_settings.load() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                let control = match state.control_settings.load() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                let roots = default_roots(&control.extra_model_roots, &research.bonsai_root);
+                let found = match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!("Kestrel's background model scan could not finish: {error}");
+                        return;
+                    }
+                };
+                let existing = state.models.read().await.clone();
+                let merged = merge_catalogs(existing, found);
+                if let Err(error) = state.model_catalog.save(&merged) {
+                    eprintln!("Kestrel found local models, but its disposable catalog could not be saved: {error}");
+                }
+                *state.models.write().await = merged.clone();
+                let _ = handle.emit("model-catalog-updated", merged);
             });
             Ok(())
         })
@@ -785,6 +936,8 @@ pub fn run() {
             get_system_snapshot,
             get_control_snapshot,
             scan_local_models,
+            export_setup_profile,
+            import_setup_profile,
             save_research_settings,
             save_control_settings,
             apply_model_runtime,

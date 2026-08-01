@@ -124,10 +124,25 @@ pub struct DeveloperStatus {
 pub struct ControlSnapshot {
     pub settings: ControlSettings,
     pub models: Vec<ModelInfo>,
+    pub engine_candidates: Vec<EngineCandidate>,
     pub runtime: ManagedRuntimeSnapshot,
     pub gpu: Option<GpuSnapshot>,
     pub developer: DeveloperStatus,
     pub runtime_logs: Vec<RuntimeLog>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineCandidate {
+    pub path: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileTransfer {
+    pub path: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -25,7 +25,8 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `harness.rs`: Bonsai-specific two-tool research loop and native citation validation.
 - `kiwix.rs`: bounded local Wikipedia search/read and URL validation.
 - `store.rs`: immutable directory-atomic bundles, recovery, FTS catalog.
-- `model.rs`: bounded read-only GGUF discovery/metadata.
+- `model.rs`: bounded read-only GGUF discovery/metadata plus the disposable recoverable model cache.
+- `profile.rs`: bounded portable setup import/export; never restore developer paths or Full Access.
 - `config.rs`: recoverable settings and explicit Bonsai runtime application.
 - `services.rs`: installed Bonsai/Kiwix scripts and live GPU telemetry.
 - `developer.rs`: optional Codex maintainer plus fixed offline diagnostics.
