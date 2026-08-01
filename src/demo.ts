@@ -1,0 +1,106 @@
+import type { AppSnapshot, ResearchReport } from "./types";
+
+export const demoReport: ResearchReport = {
+  id: "demo-antikythera",
+  title: "The Antikythera mechanism",
+  dek: "How a corroded shipwreck find changed what we know about ancient Greek astronomy and mechanical engineering.",
+  query: "How did the Antikythera mechanism work, and why does it matter?",
+  answer:
+    "The Antikythera mechanism was a hand-powered astronomical calculator built in the Hellenistic world. Its interlocking bronze gears modeled cycles of the Sun, Moon, eclipses, and likely the known planets—making it the most complex geared device known from antiquity.",
+  createdAt: "2026-07-28T13:20:00Z",
+  updatedAt: "2026-08-01T08:14:00Z",
+  edition: 3,
+  parentId: "demo-antikythera-v2",
+  improvement: "Added the eclipse dial, separated established evidence from reconstruction, and clarified what remains disputed.",
+  model: "Ternary-Bonsai-27B-Q2_0",
+  archiveSnapshot: "English Wikipedia · 12 January 2024",
+  findings: [
+    {
+      title: "A mechanical model of the sky",
+      explanation: "At least 30 surviving bronze gears converted one hand-driven input into several astronomical displays.",
+      citations: ["S1", "S2"],
+    },
+    {
+      title: "Its eclipse predictions were cyclic, not prophetic",
+      explanation: "The rear Saros dial represented a repeating 223-lunar-month cycle used to anticipate eclipse possibilities.",
+      citations: ["S1", "S3"],
+    },
+    {
+      title: "Much of the machine is still reconstructed",
+      explanation: "Only fragments survive. Researchers combine inscriptions, scans, and gear geometry, so some front-display details remain debated.",
+      citations: ["S1", "S2"],
+    },
+  ],
+  sections: [
+    {
+      id: "what-it-was",
+      heading: "What it was",
+      summary: "A portable analog computer in a wooden case, probably made during the second or first century BCE.",
+      body: [
+        "The mechanism was recovered from a Roman-era shipwreck near the Greek island of Antikythera. What first looked like an unremarkable corroded lump later revealed bronze gear teeth and inscribed plates.",
+        "Turning a crank advanced linked pointers across calendar and astronomical scales. The device did not observe the sky; it embodied mathematical cycles so that a user could calculate positions and recurring events.",
+      ],
+      citations: ["S1", "S2"],
+    },
+    {
+      id: "how-it-worked",
+      heading: "How the gearing worked",
+      summary: "Gear ratios translated a single motion into multiple periods, including the Moon's irregular-looking movement.",
+      body: [
+        "A train of gears represented each desired ratio. The Moon display used a pin-and-slot arrangement that varied the pointer's speed, approximating the Moon's changing angular motion across its orbit.",
+        "On the back, spiral dials compressed long cycles into a compact area. A follower moved along each spiral while the pointer completed several turns.",
+      ],
+      citations: ["S1", "S3"],
+    },
+    {
+      id: "why-it-matters",
+      heading: "Why it changed the history of technology",
+      summary: "It demonstrates a level of miniaturized mathematical engineering not otherwise preserved from its era.",
+      body: [
+        "The mechanism is evidence that Hellenistic craftspeople could translate sophisticated astronomical models into dense, manufacturable gearing. No comparably complex geared object survives from the next millennium.",
+        "That gap should not be read as proof that the device was unique. Survival is uneven: bronze was routinely recycled, and shipwreck preservation is exceptional.",
+      ],
+      citations: ["S1", "S2"],
+    },
+  ],
+  timeline: [
+    { label: "Construction", date: "c. 150–100 BCE", description: "Likely built in the Hellenistic Greek world.", citations: ["S1"] },
+    { label: "Shipwreck", date: "c. 70–60 BCE", description: "The carrying vessel sank near Antikythera.", citations: ["S1"] },
+    { label: "Recovery", date: "1901", description: "Divers recovered the principal fragments.", citations: ["S2"] },
+    { label: "X-ray breakthrough", date: "1970s onward", description: "Imaging revealed hidden gears and inscriptions.", citations: ["S2", "S3"] },
+  ],
+  terms: [
+    { term: "Analog computer", meaning: "A device that represents quantities through physical motion rather than binary digits." },
+    { term: "Saros cycle", meaning: "About 18 years and 11 days, after which similar eclipses can recur." },
+    { term: "Epicyclic gearing", meaning: "Gears whose centers move around another gear, useful for producing complex motion." },
+  ],
+  openQuestions: [
+    "Which workshop or intellectual tradition produced the mechanism?",
+    "Exactly how were the proposed planetary displays arranged?",
+    "Was this an exceptional object or one example of a wider craft tradition?",
+  ],
+  sources: [
+    { id: "S1", kind: "wikipedia", title: "Antikythera mechanism", section: "Mechanism", snapshot: "2024-01-12", reference: "/content/wikipedia_en_all_maxi_2024-01/A/Antikythera_mechanism", excerpt: "The mechanism is described as the oldest known example of an analogue computer." },
+    { id: "S2", kind: "wikipedia", title: "Antikythera wreck", section: "Discovery", snapshot: "2024-01-12", reference: "/content/wikipedia_en_all_maxi_2024-01/A/Antikythera_wreck", excerpt: "The wreck was discovered by sponge divers in 1900." },
+    { id: "S3", kind: "wikipedia", title: "Saros", section: "Description", snapshot: "2024-01-12", reference: "/content/wikipedia_en_all_maxi_2024-01/A/Saros", excerpt: "The Saros is a period of approximately 223 synodic months." },
+  ],
+  htmlPath: "demo/index.html",
+  wordCount: 1187,
+  readingMinutes: 6,
+};
+
+export const demoSnapshot: AppSnapshot = {
+  status: {
+    bonsai: "ready",
+    wikipedia: "ready",
+    model: "Ternary Bonsai 27B",
+    archive: "Wikipedia EN · Jan 2024",
+    offlineOnly: true,
+  },
+  libraryRoot: "D:\\Kestrel Research",
+  reports: [
+    { id: demoReport.id, title: demoReport.title, query: demoReport.query, dek: demoReport.dek, updatedAt: demoReport.updatedAt, edition: demoReport.edition, sourceCount: 3, readingMinutes: 6 },
+    { id: "demo-byzantine", title: "Byzantine signal beacons", query: "How did the Byzantine beacon system work?", dek: "A chain of fire signals and the limits of what historians can reconstruct.", updatedAt: "2026-07-23T16:05:00Z", edition: 2, sourceCount: 5, readingMinutes: 8 },
+    { id: "demo-mycelium", title: "Mycelial networks, without the metaphors", query: "What does science actually show about mycorrhizal networks?", dek: "Evidence, open questions, and the gap between ecology and the ‘wood wide web.’", updatedAt: "2026-07-12T09:42:00Z", edition: 4, sourceCount: 7, readingMinutes: 11 },
+  ],
+};
