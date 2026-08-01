@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { demoReport, demoSnapshot } from "./demo";
-import type { AppSnapshot, ResearchProgress, ResearchReport, ResearchSettings, RunResearchRequest, SystemSnapshot } from "./types";
+import type { AppSnapshot, ChatRequest, ChatResponse, ControlSettings, ControlSnapshot, DeveloperRepairReport, OperationProgress, ResearchProgress, ResearchReport, ResearchSettings, RunResearchRequest, SystemSnapshot } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
 
@@ -45,6 +45,16 @@ export async function onProgress(callback: (progress: ResearchProgress) => void)
   return () => undefined;
 }
 
+export async function onRuntimeProgress(callback: (progress: OperationProgress) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<OperationProgress>("runtime-progress", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function onDeveloperProgress(callback: (progress: OperationProgress) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<OperationProgress>("developer-progress", (event) => callback(event.payload));
+  return () => undefined;
+}
+
 export async function getSystemSnapshot(): Promise<SystemSnapshot> {
   if (!isTauri()) {
     return {
@@ -69,4 +79,44 @@ export async function applyModelRuntime(settings: ResearchSettings): Promise<Sys
 
 export async function openBonsaiControlCenter(): Promise<void> {
   if (isTauri()) await invoke("open_bonsai_control_center");
+}
+
+export async function getControlSnapshot(): Promise<ControlSnapshot> {
+  if (!isTauri()) return demoSnapshot.control;
+  return invoke<ControlSnapshot>("get_control_snapshot");
+}
+
+export async function scanLocalModels(): Promise<ControlSnapshot> {
+  if (!isTauri()) return demoSnapshot.control;
+  return invoke<ControlSnapshot>("scan_local_models");
+}
+
+export async function saveControlSettings(settings: ControlSettings): Promise<ControlSnapshot> {
+  if (!isTauri()) return { ...demoSnapshot.control, settings };
+  return invoke<ControlSnapshot>("save_control_settings", { settings });
+}
+
+export async function startLocalModel(modelId: string): Promise<ControlSnapshot> {
+  if (!isTauri()) return { ...demoSnapshot.control, runtime: { ...demoSnapshot.control.runtime, phase: "ready", modelId, modelName: demoSnapshot.control.models.find(model => model.id === modelId)?.name } };
+  return invoke<ControlSnapshot>("start_local_model", { modelId });
+}
+
+export async function stopLocalModel(): Promise<ControlSnapshot> {
+  if (!isTauri()) return { ...demoSnapshot.control, runtime: { ...demoSnapshot.control.runtime, phase: "stopped", modelId: undefined, modelName: undefined } };
+  return invoke<ControlSnapshot>("stop_local_model");
+}
+
+export async function sendLocalChat(request: ChatRequest): Promise<ChatResponse> {
+  if (!isTauri()) return { content: `Preview response from the local model to: ${request.message}` };
+  return invoke<ChatResponse>("send_local_chat", { request });
+}
+
+export async function runNativeDiagnostics(): Promise<string> {
+  if (!isTauri()) return "## Preview diagnostics: PASS";
+  return invoke<string>("run_native_diagnostics");
+}
+
+export async function runCodexRepair(issue: string): Promise<DeveloperRepairReport> {
+  if (!isTauri()) return { success: true, summary: "Preview repair verified.", diagnosticsBefore: "Preview", diagnosticsAfter: "Preview", reportPath: "preview.json" };
+  return invoke<DeveloperRepairReport>("run_codex_repair", { request: { issue } });
 }

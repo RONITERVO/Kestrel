@@ -1,0 +1,318 @@
+//! Read-only GGUF discovery and bounded metadata inspection.
+//!
+//! This module deliberately has no runtime, network, or mutation authority. Model identity is a
+//! fast path-independent content signature so a cached selection survives drive/user changes.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{self, BufReader, Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+};
+use walkdir::WalkDir;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub source: String,
+    pub bytes: u64,
+    pub architecture: Option<String>,
+    pub context_length: Option<u64>,
+    pub chat_template: bool,
+    pub quantization: Option<String>,
+    pub mmproj_path: Option<String>,
+    pub recommendation: String,
+}
+
+pub fn default_roots(extra: &[String], bonsai_root: &str) -> Vec<PathBuf> {
+    let mut roots = vec![PathBuf::from(bonsai_root).join("models")];
+    if let Some(base) = directories::BaseDirs::new() {
+        let home = base.home_dir();
+        let data = base.data_dir();
+        roots.extend([
+            home.join("jan").join("models"),
+            home.join(".cache").join("lm-studio").join("models"),
+            home.join(".lmstudio").join("models"),
+            home.join(".cache").join("huggingface").join("hub"),
+            home.join(".ollama").join("models").join("blobs"),
+            data.join("Jan").join("data").join("models"),
+            data.join("Jan")
+                .join("data")
+                .join("llamacpp")
+                .join("models"),
+        ]);
+    }
+    roots.extend(extra.iter().map(PathBuf::from));
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+pub fn scan(roots: &[PathBuf]) -> Vec<ModelInfo> {
+    let mut models = Vec::new();
+    for root in roots.iter().filter(|path| path.exists()) {
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .max_depth(8)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if entry.file_type().is_file() && is_candidate(entry.path()) {
+                if let Ok(model) = inspect(entry.path()) {
+                    models.push(model);
+                }
+            }
+        }
+    }
+    models.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    models.dedup_by(|a, b| a.id == b.id);
+    models
+}
+
+fn is_candidate(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    !name.contains("mmproj")
+        && (!name.contains("-of-") || name.contains("-00001-of-"))
+        && (path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("gguf"))
+            || path
+                .to_string_lossy()
+                .to_lowercase()
+                .contains(".ollama\\models\\blobs"))
+}
+
+fn inspect(path: &Path) -> io::Result<ModelInfo> {
+    let bytes = path.metadata()?.len();
+    let metadata = read_gguf_metadata(path)?;
+    let architecture = string_value(metadata.get("general.architecture"));
+    let context_length = architecture
+        .as_ref()
+        .and_then(|value| metadata.get(&format!("{value}.context_length")))
+        .and_then(Value::as_u64);
+    let name = string_value(metadata.get("general.name")).unwrap_or_else(|| friendly_name(path));
+    let file_type = metadata.get("general.file_type").and_then(Value::as_u64);
+    let lower = format!("{} {}", name, path.display()).to_lowercase();
+    let recommendation = if lower.contains("ternary-bonsai-27b") {
+        "Validated Bonsai profile: one slot, Q4 KV, flash attention, full GPU, visible context restart"
+    } else {
+        "Use embedded GGUF template and native context; keep placement explicit"
+    };
+    Ok(ModelInfo {
+        id: content_identity(path, bytes)?,
+        name,
+        path: path.to_string_lossy().into_owned(),
+        source: source_for(path).into(),
+        bytes,
+        architecture,
+        context_length,
+        chat_template: metadata.keys().any(|key| key.contains("chat_template")),
+        quantization: file_type.map(quantization_name),
+        mmproj_path: find_projector(path),
+        recommendation: recommendation.into(),
+    })
+}
+
+fn content_identity(path: &Path, bytes: u64) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes.to_le_bytes());
+    let length = usize::try_from(bytes.min(1024 * 1024)).unwrap_or(1024 * 1024);
+    let mut sample = vec![0; length];
+    file.read_exact(&mut sample)?;
+    hasher.update(&sample);
+    if bytes > length as u64 {
+        file.seek(SeekFrom::End(-(length as i64)))?;
+        file.read_exact(&mut sample)?;
+        hasher.update(&sample);
+    }
+    Ok(hex::encode(hasher.finalize())[..24].into())
+}
+
+fn find_projector(path: &Path) -> Option<String> {
+    let mut candidates = std::fs::read_dir(path.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    let lower = name.to_lowercase();
+                    candidate.is_file() && lower.contains("mmproj") && lower.ends_with(".gguf")
+                })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates
+        .first()
+        .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
+fn source_for(path: &Path) -> &'static str {
+    let value = path.to_string_lossy().to_lowercase();
+    if value.contains("huggingface") {
+        "Hugging Face"
+    } else if value.contains(".ollama") {
+        "Ollama"
+    } else if value.contains("jan") {
+        "Jan"
+    } else if value.contains("lmstudio") || value.contains("lm-studio") {
+        "LM Studio"
+    } else if value.contains("localai") {
+        "LocalAI"
+    } else {
+        "Custom"
+    }
+}
+
+fn friendly_name(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Unknown model")
+        .replace("-00001-of-", " · split ")
+}
+
+fn string_value(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).map(ToOwned::to_owned)
+}
+
+fn quantization_name(value: u64) -> String {
+    match value {
+        0 => "F32".into(),
+        1 => "F16".into(),
+        2 => "Q4_0".into(),
+        7 => "Q8_0".into(),
+        10 => "Q2_K".into(),
+        15 => "Q4_K_M".into(),
+        17 => "Q5_K_M".into(),
+        18 => "Q6_K".into(),
+        30 => "BF16".into(),
+        34 => "TQ1_0".into(),
+        35 => "TQ2_0".into(),
+        other => format!("type {other}"),
+    }
+}
+
+fn read_gguf_metadata(path: &Path) -> io::Result<HashMap<String, Value>> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut magic = [0; 4];
+    reader.read_exact(&mut magic)?;
+    if &magic != b"GGUF" {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "not GGUF"));
+    }
+    let version = read_u32(&mut reader)?;
+    if !(2..=3).contains(&version) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported GGUF",
+        ));
+    }
+    let _tensor_count = read_u64(&mut reader)?;
+    let count = read_u64(&mut reader)?;
+    if count > 100_000 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "metadata count"));
+    }
+    let mut output = HashMap::new();
+    for _ in 0..count {
+        let key = read_string(&mut reader)?;
+        let kind = read_u32(&mut reader)?;
+        let value = read_value(&mut reader, kind, 0)?;
+        if matches!(
+            key.as_str(),
+            "general.name" | "general.architecture" | "general.file_type"
+        ) || key.ends_with(".context_length")
+            || key.contains("chat_template")
+        {
+            output.insert(key, value);
+        }
+    }
+    Ok(output)
+}
+
+fn read_value<R: Read>(reader: &mut R, kind: u32, depth: u8) -> io::Result<Value> {
+    if depth > 3 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "metadata depth"));
+    }
+    Ok(match kind {
+        0 => Value::from(read_num::<1, _>(reader)?[0]),
+        1 => Value::from(read_num::<1, _>(reader)?[0] as i8),
+        2 => Value::from(u16::from_le_bytes(read_num(reader)?)),
+        3 => Value::from(i16::from_le_bytes(read_num(reader)?)),
+        4 => Value::from(read_u32(reader)?),
+        5 => Value::from(i32::from_le_bytes(read_num(reader)?)),
+        6 => Value::from(f32::from_le_bytes(read_num(reader)?)),
+        7 => Value::from(read_num::<1, _>(reader)?[0] != 0),
+        8 => Value::from(read_string(reader)?),
+        9 => {
+            let item_kind = read_u32(reader)?;
+            let length = read_u64(reader)?;
+            if length > 10_000_000 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "metadata array"));
+            }
+            for _ in 0..length {
+                let _ = read_value(reader, item_kind, depth + 1)?;
+            }
+            Value::Null
+        }
+        10 => Value::from(read_u64(reader)?),
+        11 => Value::from(i64::from_le_bytes(read_num(reader)?)),
+        12 => Value::from(f64::from_le_bytes(read_num(reader)?)),
+        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "metadata type")),
+    })
+}
+
+fn read_string<R: Read>(reader: &mut R) -> io::Result<String> {
+    let length = read_u64(reader)?;
+    if length > 16 * 1024 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "metadata string",
+        ));
+    }
+    let mut bytes = vec![0; length as usize];
+    reader.read_exact(&mut bytes)?;
+    String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn read_u32<R: Read>(reader: &mut R) -> io::Result<u32> {
+    Ok(u32::from_le_bytes(read_num(reader)?))
+}
+fn read_u64<R: Read>(reader: &mut R) -> io::Result<u64> {
+    Ok(u64::from_le_bytes(read_num(reader)?))
+}
+fn read_num<const N: usize, R: Read>(reader: &mut R) -> io::Result<[u8; N]> {
+    let mut bytes = [0; N];
+    reader.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_quantization_names() {
+        assert_eq!(quantization_name(15), "Q4_K_M");
+        assert_eq!(quantization_name(41), "type 41");
+    }
+
+    #[test]
+    fn projector_and_split_files_are_not_models() {
+        assert!(!is_candidate(Path::new("model-mmproj-Q8_0.gguf")));
+        assert!(!is_candidate(Path::new("model-00002-of-00004.gguf")));
+        assert!(is_candidate(Path::new("model-00001-of-00004.gguf")));
+    }
+}

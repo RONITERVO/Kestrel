@@ -101,7 +101,7 @@ fn runtime_snapshot(settings: &ResearchSettings) -> RuntimeSnapshot {
     }
 }
 
-async fn gpu_snapshot() -> Option<GpuSnapshot> {
+pub async fn gpu_snapshot() -> Option<GpuSnapshot> {
     let mut command = Command::new("nvidia-smi.exe");
     command.args([
         "--query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu",

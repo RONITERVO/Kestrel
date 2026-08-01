@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::model::ModelInfo;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceStatus {
@@ -17,6 +19,131 @@ pub struct AppSnapshot {
     pub reports: Vec<ReportSummary>,
     pub library_root: String,
     pub settings: ResearchSettings,
+    pub control: ControlSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ControlSettings {
+    pub advanced_mode: bool,
+    pub engine_path: String,
+    pub extra_model_roots: Vec<String>,
+    pub selected_model_id: Option<String>,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub threads: u32,
+    pub project_root: String,
+}
+
+impl Default for ControlSettings {
+    fn default() -> Self {
+        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+            .to_string_lossy()
+            .into_owned();
+        Self {
+            advanced_mode: false,
+            engine_path: r"D:\LocalAI\Bonsai27B\runtime\llama-server.exe".into(),
+            extra_model_roots: Vec::new(),
+            selected_model_id: None,
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            threads: std::thread::available_parallelism()
+                .map(|value| value.get() as u32)
+                .unwrap_or(4),
+            project_root,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedRuntimeSnapshot {
+    pub phase: String,
+    pub mode: String,
+    pub model_id: Option<String>,
+    pub model_name: Option<String>,
+    pub endpoint: Option<String>,
+    pub pid: Option<u32>,
+    pub context_window: u32,
+    pub launch_args: Vec<String>,
+    pub detail: String,
+    pub inference_busy: bool,
+}
+
+impl Default for ManagedRuntimeSnapshot {
+    fn default() -> Self {
+        Self {
+            phase: "stopped".into(),
+            mode: "none".into(),
+            model_id: None,
+            model_name: None,
+            endpoint: None,
+            pid: None,
+            context_window: 0,
+            launch_args: Vec::new(),
+            detail: "No local model runtime is attached.".into(),
+            inference_busy: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperStatus {
+    pub codex_available: bool,
+    pub codex_authenticated: bool,
+    pub codex_version: Option<String>,
+    pub project_root: String,
+    pub git_repository: bool,
+    pub worktree_clean: bool,
+    pub running: bool,
+    pub last_report: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlSnapshot {
+    pub settings: ControlSettings,
+    pub models: Vec<ModelInfo>,
+    pub runtime: ManagedRuntimeSnapshot,
+    pub gpu: Option<GpuSnapshot>,
+    pub developer: DeveloperStatus,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRequest {
+    pub model_id: String,
+    pub message: String,
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: u32,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatResponse {
+    pub content: String,
+    pub reasoning: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperRepairRequest {
+    pub issue: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperRepairReport {
+    pub success: bool,
+    pub summary: String,
+    pub diagnostics_before: String,
+    pub diagnostics_after: String,
+    pub report_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

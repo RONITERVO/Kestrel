@@ -1,0 +1,43 @@
+# Kestrel maintenance contract
+
+Read this before editing. The UI maintainer may not know Rust; keep backend behavior explicit in code and error messages.
+
+## Non-negotiable invariants
+
+- Research must complete with the public network unavailable and without Codex.
+- Research HTTP is fixed to loopback Bonsai and Kiwix endpoints. Never add a remote fallback.
+- `RuntimeManager` owns the only Kestrel model process and its semaphore owns the only inference slot. Research and chat must acquire that gate.
+- Codex exists only in `developer.rs`, is user-triggered, repository-scoped, ephemeral, uncommitted, and unavailable during research.
+- Search results are not evidence. Only successfully opened sources receive citation IDs; native code validates citations before publication.
+- Published report IDs are immutable. Expansion creates a child edition.
+- Report JSON, sources, provenance, HTML, and JSONL are durable truth. SQLite is a rebuildable search cache.
+- Do not add benchmarking, leaderboards, autonomous labs, analytics, or background network work.
+
+## Backend map
+
+- `lib.rs`: Tauri commands, strict research lock, state boundaries.
+- `runtime.rs`: attach/start/stop model runtime and single inference lease.
+- `harness.rs`: Bonsai-specific two-tool research loop and native citation validation.
+- `kiwix.rs`: bounded local Wikipedia search/read and URL validation.
+- `store.rs`: immutable directory-atomic bundles, recovery, FTS catalog.
+- `model.rs`: bounded read-only GGUF discovery/metadata.
+- `config.rs`: recoverable settings and explicit Bonsai runtime application.
+- `services.rs`: installed Bonsai/Kiwix scripts and live GPU telemetry.
+- `developer.rs`: optional Codex maintainer plus fixed offline diagnostics.
+
+Prefer small typed modules, fixed command argument arrays, bounded reads, loopback-only URLs, recoverable file replacement, and actionable errors. Never execute model-provided text as a path, command, URL, or SQL fragment.
+
+## Required verification
+
+Run all of these after a change:
+
+```powershell
+git diff --check
+cargo test --all-targets --manifest-path src-tauri\Cargo.toml
+cargo clippy --all-targets --manifest-path src-tauri\Cargo.toml -- -D warnings
+npm run check
+npm test -- --run
+npm run build
+```
+
+For harness/runtime changes, also run the applicable ignored live tests with local services available. Do not weaken a test to make a repair pass. Never commit automatically from the in-app Codex flow.

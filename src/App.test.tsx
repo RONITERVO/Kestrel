@@ -34,4 +34,17 @@ describe("Kestrel research experience", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Research$/i }));
     expect(await screen.findByText("Your research")).toBeInTheDocument();
   });
+
+  it("keeps the historical control plane and optional developer repair discoverable", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Control$/i }));
+    expect(await screen.findByRole("heading", { name: /Ternary Bonsai/i })).toBeInTheDocument();
+    expect(screen.getByText("SESSION INSPECTOR")).toBeInTheDocument();
+    expect(screen.getByText(/one inference lease/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Developer$/i }));
+    expect(await screen.findByRole("heading", { name: "Developer" })).toBeInTheDocument();
+    expect(screen.getByText(/Research independence/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Run offline diagnostics/i })).toBeInTheDocument();
+  });
 });

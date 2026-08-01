@@ -3,6 +3,7 @@ use crate::models::{
     Finding, ResearchDraft, ResearchProgress, ResearchReport, ResearchSection, ResearchSettings,
     RunResearchRequest, Source, Term, TimelineItem,
 };
+use crate::runtime::{authorized, ModelConnection};
 use crate::store::{slugify, ResearchStore, StoreError};
 use chrono::Utc;
 use reqwest::Client;
@@ -13,10 +14,15 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
+
+struct CompletionOptions {
+    response_format: Option<Value>,
+    max_tokens: u32,
+    thinking_budget: u32,
+    parallel_tool_calls: bool,
+}
 use uuid::Uuid;
 
-const MODEL_ENDPOINT: &str = "http://127.0.0.1:8080/v1/chat/completions";
-const MODEL_ID: &str = "bonsai-27b";
 const MODEL_LABEL: &str = "Ternary Bonsai 27B Q2_0";
 const ARCHIVE_LABEL: &str = "English Wikipedia · 12 January 2024";
 const HARNESS_VERSION: &str = "bonsai-wikipedia-v2";
@@ -85,6 +91,7 @@ impl ResearchHarness {
         app: Option<&AppHandle>,
         request: RunResearchRequest,
         settings: ResearchSettings,
+        connection: &ModelConnection,
         job_id: &str,
         cancel: CancellationToken,
     ) -> Result<ResearchReport, ResearchError> {
@@ -220,7 +227,7 @@ impl ResearchHarness {
             ];
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-                result = self.complete(&planning_messages, None, Some(plan_schema(settings.research_lanes)), max_output, thinking_budget, false) => result?,
+                result = self.complete(connection, &planning_messages, None, CompletionOptions { response_format: Some(plan_schema(settings.research_lanes)), max_tokens: max_output, thinking_budget, parallel_tool_calls: false }) => result?,
             };
             let content = response_message(&response)?
                 .get("content")
@@ -270,7 +277,7 @@ impl ResearchHarness {
             self.ensure_not_cancelled(&cancel)?;
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-                result = self.complete(&messages, Some(&tools), None, if expedition { max_output } else { 1_800 }, thinking_budget, expedition) => result?,
+                result = self.complete(connection, &messages, Some(&tools), CompletionOptions { response_format: None, max_tokens: if expedition { max_output } else { 1_800 }, thinking_budget, parallel_tool_calls: expedition }) => result?,
             };
             let assistant = response_message(&response)?;
             let calls = assistant
@@ -423,7 +430,7 @@ impl ResearchHarness {
         }));
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-            result = self.complete(&messages, None, Some(report_schema(expedition)), max_output, thinking_budget, false) => result?,
+            result = self.complete(connection, &messages, None, CompletionOptions { response_format: Some(report_schema(expedition)), max_tokens: max_output, thinking_budget, parallel_tool_calls: false }) => result?,
         };
         let mut content = response_message(&response)?
             .get("content")
@@ -437,7 +444,7 @@ impl ResearchHarness {
                 messages.push(json!({"role":"user","content":if expedition { "The previous JSON was incomplete. Retry once with concise but complete prose that fits the schema. Return the strict JSON object only; preserve the evidence IDs, lane coverage, uncertainty, and concrete improvement." } else { "The previous JSON was incomplete. Retry once with compact prose: at most 4 findings, 4 sections, 2 paragraphs per section, 8 timeline items, and 8 terms. Return the complete strict JSON object only. Preserve the same evidence IDs and concrete improvement." }}));
                 let retry = tokio::select! {
                     _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-                    result = self.complete(&messages, None, Some(report_schema(expedition)), if expedition { max_output } else { 9_000 }, 0, false) => result?,
+                    result = self.complete(connection, &messages, None, CompletionOptions { response_format: Some(report_schema(expedition)), max_tokens: if expedition { max_output } else { 9_000 }, thinking_budget: 0, parallel_tool_calls: false }) => result?,
                 };
                 content = response_message(&retry)?
                     .get("content")
@@ -620,22 +627,28 @@ impl ResearchHarness {
 
     async fn complete(
         &self,
+        connection: &ModelConnection,
         messages: &[Value],
         tools: Option<&Value>,
-        response_format: Option<Value>,
-        max_tokens: u32,
-        thinking_budget: u32,
-        parallel_tool_calls: bool,
+        options: CompletionOptions,
     ) -> Result<Value, ResearchError> {
         let request = completion_request(
+            &connection.model_id,
             messages,
             tools,
-            response_format,
-            max_tokens,
-            thinking_budget,
-            parallel_tool_calls,
+            options.response_format,
+            options.max_tokens,
+            options.thinking_budget,
+            options.parallel_tool_calls,
         );
-        let response = self.http.post(MODEL_ENDPOINT).json(&request).send().await?;
+        let response = authorized(
+            self.http
+                .post(format!("{}/chat/completions", connection.endpoint)),
+            connection,
+        )
+        .json(&request)
+        .send()
+        .await?;
         let status = response.status();
         let body = response.text().await?;
         if !status.is_success() {
@@ -658,6 +671,7 @@ impl ResearchHarness {
 }
 
 fn completion_request(
+    model_id: &str,
     messages: &[Value],
     tools: Option<&Value>,
     response_format: Option<Value>,
@@ -666,7 +680,7 @@ fn completion_request(
     parallel_tool_calls: bool,
 ) -> Value {
     let mut request = json!({
-        "model": MODEL_ID, "messages": messages, "stream": false, "temperature": 0.2, "top_p": 0.9,
+        "model": model_id, "messages": messages, "stream": false, "temperature": 0.2, "top_p": 0.9,
         "max_tokens": max_tokens, "thinking_budget_tokens": thinking_budget
     });
     if let Some(tools) = tools {
@@ -1242,6 +1256,7 @@ mod tests {
     #[test]
     fn advanced_request_preserves_validated_high_capacity_values() {
         let request = completion_request(
+            "bonsai-27b",
             &[json!({"role":"user","content":"test"})],
             Some(&tool_schema(true, 65_536)),
             None,
@@ -1305,6 +1320,7 @@ mod tests {
                     depth: "expedition".into(),
                 },
                 settings,
+                &live_connection(),
                 "live-expedition",
                 CancellationToken::new(),
             )
@@ -1347,6 +1363,7 @@ mod tests {
             None,
             RunResearchRequest { query: "How did the Antikythera mechanism predict eclipses, and what remains uncertain?".into(), depth: "focused".into() },
             ResearchSettings::default(),
+            &live_connection(),
             "live-acceptance",
             CancellationToken::new(),
         ).await.unwrap();
@@ -1377,5 +1394,14 @@ mod tests {
             report.title,
             directory.path().join(&report.html_path).display()
         );
+    }
+
+    fn live_connection() -> ModelConnection {
+        ModelConnection {
+            endpoint: "http://127.0.0.1:8080/v1".into(),
+            api_key: None,
+            model_id: "bonsai-27b".into(),
+            model_label: MODEL_LABEL.into(),
+        }
     }
 }

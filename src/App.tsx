@@ -18,6 +18,7 @@ import {
   LoaderCircle,
   MemoryStick,
   Menu,
+  MessageSquare,
   MonitorCog,
   Plus,
   RefreshCw,
@@ -26,6 +27,7 @@ import {
   ShieldCheck,
   Sparkles,
   TriangleAlert,
+  Wrench,
   X,
   Zap,
 } from "lucide-react";
@@ -44,6 +46,7 @@ import {
   runResearch,
   saveResearchSettings,
 } from "./api";
+import { ControlPlane, DeveloperConsole } from "./ControlPlane";
 import type {
   AppSnapshot,
   ProgressStage,
@@ -88,7 +91,7 @@ function App() {
   const [progress, setProgress] = useState<ResearchProgress | null>(null);
   const [activity, setActivity] = useState<ResearchProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"research" | "system">("research");
+  const [view, setView] = useState<"control" | "research" | "developer" | "system">("research");
 
   const refresh = useCallback(async () => {
     try {
@@ -182,7 +185,7 @@ function App() {
           }
         }}
       />
-      <div className={`workspace ${view === "system" ? "system-workspace" : ""}`}>
+      <div className={`workspace ${view !== "research" ? "system-workspace" : ""}`}>
         {view === "research" && <LibrarySidebar
           open={sidebarOpen}
           reports={visibleReports}
@@ -196,7 +199,19 @@ function App() {
         />}
         <main className="main-stage">
           {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
-          {view === "system" ? (
+          {view === "control" ? (
+            <ControlPlane
+              control={snapshot.control}
+              onChanged={(control) => setSnapshot((current) => current ? { ...current, control } : current)}
+              onError={(message) => setError(message)}
+            />
+          ) : view === "developer" ? (
+            <DeveloperConsole
+              control={snapshot.control}
+              onChanged={(control) => setSnapshot((current) => current ? { ...current, control } : current)}
+              onError={(message) => setError(message)}
+            />
+          ) : view === "system" ? (
             <SystemConsole
               initialSettings={snapshot.settings}
               onSaved={(settings) => setSnapshot((current) => current ? { ...current, settings } : current)}
@@ -246,8 +261,8 @@ function AppHeader({
   onPrepare,
 }: {
   status: AppSnapshot["status"];
-  view: "research" | "system";
-  onView: (view: "research" | "system") => void;
+  view: "control" | "research" | "developer" | "system";
+  onView: (view: "control" | "research" | "developer" | "system") => void;
   onMenu: () => void;
   onNew: () => void;
   onPrepare: () => void;
@@ -258,10 +273,12 @@ function AppHeader({
       <div className="header-left">
         <button className="icon-button menu-button" aria-label="Toggle library" onClick={onMenu}><Menu /></button>
         <div className="brand-mark"><Feather size={19} /></div>
-        <div className="brand-copy"><strong>Kestrel</strong><span>Research</span></div>
+        <div className="brand-copy"><strong>Kestrel</strong><span>{view === "control" ? "Control plane" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research"}</span></div>
       </div>
       <nav className="view-switcher" aria-label="Kestrel sections">
+        <button className={view === "control" ? "active" : ""} onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
         <button className={view === "research" ? "active" : ""} onClick={() => onView("research")}><Library size={14} /> Research</button>
+        <button className={view === "developer" ? "active" : ""} onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
         <button className={view === "system" ? "active" : ""} onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
       </nav>
       <div className="header-status" role="status">
@@ -525,7 +542,7 @@ function SystemConsole({ initialSettings, onSaved, onError }: { initialSettings:
           {gpu && <><div className="vram-number"><strong>{formatMib(gpu.usedMib)}</strong><span>of {formatMib(gpu.totalMib)} used</span></div><div className="vram-track"><span style={{ width: `${usedPercent}%` }} /></div><div className="telemetry-foot"><span>{formatMib(gpu.freeMib)} free</span><span>{gpu.utilizationPercent}% compute</span></div></>}
         </article>
         <article className="telemetry-card"><div className="telemetry-title"><MemoryStick /><span><small>Loaded model footprint</small><strong>{formatMib(system?.runtime.modelVramMib ?? 0)}</strong></span></div><p>Measured VRAM delta at model load. Other GPU applications can affect the live total.</p></article>
-        <article className="telemetry-card"><div className="telemetry-title"><Cpu /><span><small>Active runtime</small><strong>{(system?.runtime.contextWindow ?? 0).toLocaleString()} context</strong></span></div><div className="runtime-facts"><span>{(system?.runtime.maxOutputTokens ?? 0).toLocaleString()} max answer</span><span>{system?.runtime.parallelSlots ?? 1} GPU slot</span><span>{system?.runtime.kvCache ?? "â€”"} KV</span></div></article>
+        <article className="telemetry-card"><div className="telemetry-title"><Cpu /><span><small>Active runtime</small><strong>{(system?.runtime.contextWindow ?? 0).toLocaleString()} context</strong></span></div><div className="runtime-facts"><span>{(system?.runtime.maxOutputTokens ?? 0).toLocaleString()} max answer</span><span>{system?.runtime.parallelSlots ?? 1} GPU slot</span><span>{system?.runtime.kvCache ?? "—"} KV</span></div></article>
       </section>
 
       <section className="single-context-note"><Zap /><div><strong>Why Kestrel uses one model researcher</strong><p>Your current 98K context leaves little spare VRAM. Multiple model workers would duplicate KV state and compete for one server slot. Solo expedition instead runs archive searches concurrently, then lets one long-lived GPU context coordinate every lane through a shared, compact candidate ledger.</p></div></section>
@@ -557,7 +574,7 @@ function NumberSetting({ label, hint, value, disabled, onChange }: { label: stri
 }
 
 function formatMib(value: number): string {
-  if (!value) return "â€”";
+  if (!value) return "—";
   return value >= 1024 ? `${(value / 1024).toFixed(1)} GiB` : `${value.toLocaleString()} MiB`;
 }
 

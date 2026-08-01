@@ -4,7 +4,7 @@ use chrono::{Datelike, Utc};
 use directories::UserDirs;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -19,6 +19,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("research report not found: {0}")]
     NotFound(String),
+    #[error("research report already exists and is immutable: {0}")]
+    AlreadyExists(String),
 }
 
 #[derive(Clone)]
@@ -38,7 +40,11 @@ impl ResearchStore {
     pub fn open(root: PathBuf) -> Result<Self, StoreError> {
         fs::create_dir_all(root.join("reports"))?;
         let store = Self { root };
-        store.initialize()?;
+        if let Err(error) = store.initialize() {
+            store.quarantine_catalog().map_err(|_| error)?;
+            store.initialize()?;
+        }
+        store.reconcile_catalog()?;
         store.ensure_guide()?;
         Ok(store)
     }
@@ -160,6 +166,9 @@ impl ResearchStore {
     }
 
     pub fn save(&self, report: &mut ResearchReport) -> Result<(), StoreError> {
+        if self.catalog_contains(&report.id)? || self.report_file_for_id(&report.id).is_some() {
+            return Err(StoreError::AlreadyExists(report.id.clone()));
+        }
         let now = Utc::now();
         let short_id = report.id.chars().take(8).collect::<String>();
         let folder = self
@@ -168,54 +177,27 @@ impl ResearchStore {
             .join(now.year().to_string())
             .join(format!("{:02}", now.month()))
             .join(format!("{}--{}", slugify(&report.title), short_id));
-        fs::create_dir_all(&folder)?;
+        let parent = folder.parent().expect("report folder has month parent");
+        fs::create_dir_all(parent)?;
+        let staging = parent.join(format!(".pending-{}", report.id));
+        if staging.exists() {
+            return Err(StoreError::AlreadyExists(report.id.clone()));
+        }
+        fs::create_dir(&staging)?;
         let json_path = folder.join("report.json");
-        let source_path = folder.join("sources.json");
-        let provenance_path = folder.join("provenance.json");
         let html_path = folder.join("index.html");
         report.html_path = relative_slashes(&self.root, &html_path);
 
-        write_json_atomic(&json_path, report)?;
-        write_json_atomic(&source_path, &report.sources)?;
-        write_json_atomic(
-            &provenance_path,
-            &serde_json::json!({
-                "schemaVersion": 1,
-                "id": report.id,
-                "query": report.query,
-                "createdAt": report.created_at,
-                "edition": report.edition,
-                "parentId": report.parent_id,
-                "improvement": report.improvement,
-                "model": report.model,
-                "archiveSnapshot": report.archive_snapshot,
-                "researchProfile": report.research_profile,
-                "contextWindow": report.context_window,
-                "outputBudget": report.output_budget,
-                "researchLanes": report.research_lanes,
-                "offlineOnly": true,
-            }),
+        write_json_atomic(&staging.join("report.json"), report)?;
+        write_json_atomic(&staging.join("sources.json"), &report.sources)?;
+        write_json_atomic(&staging.join("provenance.json"), &provenance(report))?;
+        write_atomic(
+            &staging.join("index.html"),
+            render_report_html(report).as_bytes(),
         )?;
-        write_atomic(&html_path, render_report_html(report).as_bytes())?;
+        fs::rename(&staging, &folder)?;
 
-        let search_text = format!(
-            "{} {} {} {} {}",
-            report.title,
-            report.query,
-            report.dek,
-            report.answer,
-            report
-                .sections
-                .iter()
-                .map(|section| format!(
-                    "{} {} {}",
-                    section.heading,
-                    section.summary,
-                    section.body.join(" ")
-                ))
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
+        let search_text = report_search_text(report);
         let connection = self.connect()?;
         connection.execute(
             "INSERT INTO reports(id,title,query,dek,updated_at,edition,parent_id,source_count,reading_minutes,json_path,html_path,search_text)
@@ -239,6 +221,107 @@ impl ResearchStore {
         Ok(())
     }
 
+    fn catalog_contains(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(self
+            .connect()?
+            .query_row("SELECT 1 FROM reports WHERE id=?1", [id], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+
+    fn report_file_for_id(&self, id: &str) -> Option<PathBuf> {
+        walkdir::WalkDir::new(self.root.join("reports"))
+            .follow_links(false)
+            .max_depth(5)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file() && entry.file_name() == "report.json")
+            .find_map(|entry| {
+                let report: ResearchReport =
+                    serde_json::from_slice(&fs::read(entry.path()).ok()?).ok()?;
+                (report.id == id).then(|| entry.path().to_path_buf())
+            })
+    }
+
+    fn reconcile_catalog(&self) -> Result<(), StoreError> {
+        let connection = self.connect()?;
+        let known_paths = {
+            let mut statement = connection.prepare("SELECT json_path FROM reports")?;
+            let paths = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<HashSet<_>, _>>()?;
+            paths
+        };
+        let mut changed = false;
+        for entry in walkdir::WalkDir::new(self.root.join("reports"))
+            .follow_links(false)
+            .max_depth(5)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file() && entry.file_name() == "report.json")
+        {
+            let relative_json = relative_slashes(&self.root, entry.path());
+            let folder = match entry.path().parent() {
+                Some(folder) => folder,
+                None => continue,
+            };
+            let bundle_incomplete = !folder.join("sources.json").is_file()
+                || !folder.join("provenance.json").is_file()
+                || !folder.join("index.html").is_file();
+            if known_paths.contains(&relative_json) && !bundle_incomplete {
+                continue;
+            }
+            let bytes = match fs::read(entry.path()) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let report: ResearchReport = match serde_json::from_slice(&bytes) {
+                Ok(report) => report,
+                Err(_) => continue,
+            };
+            repair_missing_bundle_files(folder, &report)?;
+            changed |= bundle_incomplete;
+            changed |= connection.execute(
+                "INSERT OR IGNORE INTO reports(id,title,query,dek,updated_at,edition,parent_id,source_count,reading_minutes,json_path,html_path,search_text)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                params![
+                    report.id,
+                    report.title,
+                    report.query,
+                    report.dek,
+                    report.updated_at,
+                    report.edition,
+                    report.parent_id,
+                    report.sources.len() as i64,
+                    report.reading_minutes,
+                    relative_json,
+                    relative_slashes(&self.root, &folder.join("index.html")),
+                    report_search_text(&report),
+                ],
+            )? > 0;
+        }
+        drop(connection);
+        if changed || !self.root.join("catalog.jsonl").is_file() {
+            self.export_catalog()?;
+        }
+        Ok(())
+    }
+
+    fn quarantine_catalog(&self) -> Result<(), StoreError> {
+        let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+        for suffix in ["", "-wal", "-shm"] {
+            let path = self.root.join(format!("catalog.sqlite3{suffix}"));
+            if path.exists() {
+                fs::rename(
+                    &path,
+                    self.root
+                        .join(format!("catalog.sqlite3{suffix}.corrupt-{stamp}")),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn export_catalog(&self) -> Result<(), StoreError> {
         let summaries = self.list(100_000)?;
         let mut output = String::new();
@@ -248,6 +331,62 @@ impl ResearchStore {
         }
         write_atomic(&self.root.join("catalog.jsonl"), output.as_bytes())
     }
+}
+
+fn provenance(report: &ResearchReport) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": 1,
+        "id": report.id,
+        "query": report.query,
+        "createdAt": report.created_at,
+        "edition": report.edition,
+        "parentId": report.parent_id,
+        "improvement": report.improvement,
+        "model": report.model,
+        "archiveSnapshot": report.archive_snapshot,
+        "researchProfile": report.research_profile,
+        "contextWindow": report.context_window,
+        "outputBudget": report.output_budget,
+        "researchLanes": report.research_lanes,
+        "offlineOnly": true,
+    })
+}
+
+fn report_search_text(report: &ResearchReport) -> String {
+    format!(
+        "{} {} {} {} {}",
+        report.title,
+        report.query,
+        report.dek,
+        report.answer,
+        report
+            .sections
+            .iter()
+            .map(|section| format!(
+                "{} {} {}",
+                section.heading,
+                section.summary,
+                section.body.join(" ")
+            ))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
+fn repair_missing_bundle_files(folder: &Path, report: &ResearchReport) -> Result<(), StoreError> {
+    let sources = folder.join("sources.json");
+    let provenance_path = folder.join("provenance.json");
+    let html = folder.join("index.html");
+    if !sources.is_file() {
+        write_json_atomic(&sources, &report.sources)?;
+    }
+    if !provenance_path.is_file() {
+        write_json_atomic(&provenance_path, &provenance(report))?;
+    }
+    if !html.is_file() {
+        write_atomic(&html, render_report_html(report).as_bytes())?;
+    }
+    Ok(())
 }
 
 fn summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReportSummary> {
@@ -411,6 +550,43 @@ mod tests {
             "report-one"
         );
         assert!(directory.path().join("catalog.jsonl").exists());
+    }
+
+    #[test]
+    fn rebuilds_disposable_catalog_from_report_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ResearchStore::open(directory.path().to_path_buf()).unwrap();
+        let mut saved = report("durable-one", "offline catalog recovery", "Recovery");
+        store.save(&mut saved).unwrap();
+        drop(store);
+        for suffix in ["", "-wal", "-shm"] {
+            let path = directory.path().join(format!("catalog.sqlite3{suffix}"));
+            if path.exists() {
+                fs::remove_file(path).unwrap();
+            }
+        }
+
+        let reopened = ResearchStore::open(directory.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.get("durable-one").unwrap().title, "Recovery");
+        assert_eq!(reopened.search("catalog recovery", 5).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_existing_report_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ResearchStore::open(directory.path().to_path_buf()).unwrap();
+        let mut first = report("immutable-one", "original", "Original");
+        store.save(&mut first).unwrap();
+        let original = fs::read(directory.path().join(&first.html_path)).unwrap();
+        let mut replacement = report("immutable-one", "replacement", "Replacement");
+        assert!(matches!(
+            store.save(&mut replacement),
+            Err(StoreError::AlreadyExists(_))
+        ));
+        assert_eq!(
+            fs::read(directory.path().join(&first.html_path)).unwrap(),
+            original
+        );
     }
 
     #[test]

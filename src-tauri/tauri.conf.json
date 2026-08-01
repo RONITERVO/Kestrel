@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Kestrel Local",
-  "version": "0.6.0",
-  "identifier": "local.kestrel.research",
+  "version": "0.7.0",
+  "identifier": "app.kestrel.local",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Kestrel Research",
+        "title": "Kestrel Local",
         "width": 1480,
         "height": 940,
         "minWidth": 900,

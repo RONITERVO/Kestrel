@@ -88,6 +88,93 @@ export interface AppSnapshot {
   reports: ReportSummary[];
   libraryRoot: string;
   settings: ResearchSettings;
+  control: ControlSnapshot;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  path: string;
+  source: string;
+  bytes: number;
+  architecture?: string;
+  contextLength?: number;
+  chatTemplate: boolean;
+  quantization?: string;
+  mmprojPath?: string;
+  recommendation: string;
+}
+
+export interface ControlSettings {
+  advancedMode: boolean;
+  enginePath: string;
+  extraModelRoots: string[];
+  selectedModelId?: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  threads: number;
+  projectRoot: string;
+}
+
+export interface ManagedRuntimeSnapshot {
+  phase: string;
+  mode: string;
+  modelId?: string;
+  modelName?: string;
+  endpoint?: string;
+  pid?: number;
+  contextWindow: number;
+  launchArgs: string[];
+  detail: string;
+  inferenceBusy: boolean;
+}
+
+export interface DeveloperStatus {
+  codexAvailable: boolean;
+  codexAuthenticated: boolean;
+  codexVersion?: string;
+  projectRoot: string;
+  gitRepository: boolean;
+  worktreeClean: boolean;
+  running: boolean;
+  lastReport?: string;
+}
+
+export interface ControlSnapshot {
+  settings: ControlSettings;
+  models: ModelInfo[];
+  runtime: ManagedRuntimeSnapshot;
+  gpu?: GpuSnapshot;
+  developer: DeveloperStatus;
+}
+
+export interface ChatRequest {
+  modelId: string;
+  message: string;
+  temperature: number;
+  topP: number;
+  topK: number;
+  maxOutputTokens: number;
+}
+
+export interface ChatResponse {
+  content: string;
+  reasoning?: string;
+}
+
+export interface DeveloperRepairReport {
+  success: boolean;
+  summary: string;
+  diagnosticsBefore: string;
+  diagnosticsAfter: string;
+  reportPath: string;
+}
+
+export interface OperationProgress {
+  stage?: string;
+  phase?: string;
+  detail: string;
+  at?: string;
 }
 
 export interface ResearchSettings {
