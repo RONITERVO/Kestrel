@@ -415,7 +415,9 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       void refreshHistory();
     } catch (cause) {
       setSession(baseSession);
-      setChatAttachments((current) => mergeAttachments(current, attachments));
+      setChatAttachments(
+        (current) => mergeAttachments(current, attachments).attachments,
+      );
       onError(String(cause));
     }
   }
@@ -504,16 +506,20 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
     setWorking("attach");
     try {
       const result = await pickContextFiles();
-      if (target === "chat")
-        setChatAttachments((current) =>
-          mergeAttachments(current, result.attachments),
+      const merged = mergeAttachments(
+        target === "chat" ? chatAttachments : taskAttachments,
+        result.attachments,
+      );
+      if (target === "chat") setChatAttachments(merged.attachments);
+      else setTaskAttachments(merged.attachments);
+      const failures = [...result.failures];
+      if (merged.rejected > 0) {
+        failures.push(
+          `${merged.rejected} file(s) exceeded the 12-file or 256 MiB message limit.`,
         );
-      else
-        setTaskAttachments((current) =>
-          mergeAttachments(current, result.attachments),
-        );
-      if (result.failures.length > 0) {
-        onError(`Some files were not attached:\n${result.failures.join("\n")}`);
+      }
+      if (failures.length > 0) {
+        onError(`Some files were not attached:\n${failures.join("\n")}`);
       }
     } catch (cause) {
       onError(String(cause));
@@ -598,13 +604,15 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
         )
         .at(-1);
       taskRunRef.current = terminal ? null : run.id;
-      setTask({
+      const initialized = {
         ...run,
         status: terminal
           ? terminalTaskStatus(terminal.kind, run.status)
           : run.status,
         events: [...run.events, ...early],
-      });
+      };
+      latestTaskRef.current = initialized;
+      setTask(initialized);
       taskStartingRef.current = false;
       setWorking(null);
       setObjective("");
@@ -668,14 +676,16 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
         )
         .at(-1);
       taskRunRef.current = terminal ? null : next.id;
-      taskStartingRef.current = false;
-      setTask({
+      const initialized = {
         ...next,
         status: terminal
           ? terminalTaskStatus(terminal.kind, next.status)
           : next.status,
         events: [...next.events, ...additional],
-      });
+      };
+      latestTaskRef.current = initialized;
+      setTask(initialized);
+      taskStartingRef.current = false;
       setTaskAnswer("");
       void refreshHistory();
     } catch (cause) {
@@ -1905,11 +1915,26 @@ function formatBytes(value: number) {
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`;
   return `${value} B`;
 }
-function mergeAttachments(
+export function mergeAttachments(
   current: ContextAttachment[],
   added: ContextAttachment[],
 ) {
-  return [
-    ...new Map([...current, ...added].map((item) => [item.id, item])).values(),
-  ].slice(0, 12);
+  const attachments: ContextAttachment[] = [];
+  const seen = new Set<string>();
+  let bytes = 0;
+  let rejected = 0;
+  for (const attachment of [...current, ...added]) {
+    if (seen.has(attachment.id)) continue;
+    seen.add(attachment.id);
+    if (
+      attachments.length >= 12 ||
+      bytes + attachment.bytes > 256 * 1024 * 1024
+    ) {
+      rejected += 1;
+      continue;
+    }
+    attachments.push(attachment);
+    bytes += attachment.bytes;
+  }
+  return { attachments, rejected };
 }

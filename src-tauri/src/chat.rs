@@ -1,7 +1,7 @@
 //! Streaming, durable, tool-free local conversations.
 
 use crate::{
-    attachments::AttachmentStore,
+    attachments::{AttachmentStore, MediaCache},
     model::ModelInfo,
     models::{ChatMessage, ChatStreamEvent, ControlSettings, StartChatRequest},
     runtime::{authorized, RuntimeManager},
@@ -9,7 +9,7 @@ use crate::{
 };
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
@@ -43,30 +43,6 @@ impl ChatStreamJob {
             cancel,
         } = self;
         emit(app.as_ref(), &request_id, &session_id, "queued", None, None);
-        let lease = tokio::select! {
-            lease = runtime.lease_model(&request.model_id, &models, &settings, app.as_ref()) => {
-                lease.map_err(|error| error.to_string())?
-            }
-            _ = cancel.cancelled() => {
-                store.add_chat_message_with_status(
-                    &session_id,
-                    "assistant",
-                    "Generation stopped before the first token.".into(),
-                    None,
-                    Some("interrupted".into()),
-                )?;
-                emit(app.as_ref(), &request_id, &session_id, "cancelled", None, None);
-                return Ok(());
-            }
-        };
-        emit(
-            app.as_ref(),
-            &request_id,
-            &session_id,
-            "started",
-            None,
-            None,
-        );
         let session = store.get_chat(&session_id)?;
         let max_output_tokens = if settings.advanced_mode {
             request.max_output_tokens.max(1)
@@ -84,22 +60,19 @@ impl ChatStreamJob {
         let history_budget = prompt_chars
             .max(4_096)
             .saturating_sub(CHAT_SYSTEM_PROMPT.len());
-        let (history, omitted) = fit_recent_messages(&session.messages, history_budget.max(2_048));
+        let (history, omitted, attachment_budget) =
+            fit_chat_history(&session.messages, history_budget.max(2_048));
         let included = history.len();
         let model = models
             .iter()
             .find(|model| model.id == request.model_id)
             .cloned()
             .ok_or_else(|| "The selected model is no longer in the local catalog.".to_string())?;
-        let attachment_budget = history_budget
-            .checked_div(included.max(1))
-            .unwrap_or(history_budget)
-            .clamp(2_048, 250_000);
         let preparation = tokio::task::spawn_blocking(move || {
             let mut messages = Vec::with_capacity(history.len() + 1);
             messages.push(json!({"role":"system","content":CHAT_SYSTEM_PROMPT}));
             let mut attachment_notices = Vec::new();
-            let mut media_cache = HashMap::new();
+            let mut media_cache = MediaCache::default();
             for message in history {
                 let content = if message.role == "user" && !message.attachments.is_empty() {
                     let prepared = attachments.prepare_message_cached(
@@ -158,6 +131,30 @@ impl ChatStreamJob {
                 Some(json!({"attachments":true})),
             );
         }
+        let lease = tokio::select! {
+            lease = runtime.lease_model(&request.model_id, &models, &settings, app.as_ref()) => {
+                lease.map_err(|error| error.to_string())?
+            }
+            _ = cancel.cancelled() => {
+                store.add_chat_message_with_status(
+                    &session_id,
+                    "assistant",
+                    "Generation stopped before the first token.".into(),
+                    None,
+                    Some("interrupted".into()),
+                )?;
+                emit(app.as_ref(), &request_id, &session_id, "cancelled", None, None);
+                return Ok(());
+            }
+        };
+        emit(
+            app.as_ref(),
+            &request_id,
+            &session_id,
+            "started",
+            None,
+            None,
+        );
         let body = json!({
             "model": lease.connection.model_id,
             "messages": messages,
@@ -366,22 +363,55 @@ fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-fn fit_recent_messages(messages: &[ChatMessage], max_chars: usize) -> (Vec<ChatMessage>, usize) {
+fn fit_chat_history(
+    messages: &[ChatMessage],
+    history_budget: usize,
+) -> (Vec<ChatMessage>, usize, usize) {
+    let mut attachment_budget = history_budget.clamp(2_048, 250_000);
+    for _ in 0..=messages.len() {
+        let (history, omitted) = fit_recent_messages(messages, history_budget, attachment_budget);
+        let attachment_messages = history
+            .iter()
+            .filter(|message| !message.attachments.is_empty())
+            .count();
+        let next_budget = history_budget
+            .checked_div(attachment_messages.max(1))
+            .unwrap_or(history_budget)
+            .clamp(2_048, 250_000);
+        if next_budget == attachment_budget {
+            return (history, omitted, attachment_budget);
+        }
+        attachment_budget = next_budget;
+    }
+    let (history, omitted) = fit_recent_messages(messages, history_budget, attachment_budget);
+    (history, omitted, attachment_budget)
+}
+
+fn fit_recent_messages(
+    messages: &[ChatMessage],
+    max_chars: usize,
+    attachment_budget: usize,
+) -> (Vec<ChatMessage>, usize) {
     let mut selected = Vec::new();
     let mut used = 0usize;
     for message in messages.iter().rev() {
-        let length = message.content.chars().count()
-            + message
-                .attachments
-                .iter()
-                .map(|attachment| {
-                    if attachment.extracted_chars > 0 {
-                        attachment.extracted_chars.min(250_000)
-                    } else {
-                        4_096
-                    }
-                })
-                .sum::<usize>();
+        let attachment_chars = message
+            .attachments
+            .iter()
+            .map(|attachment| {
+                if attachment.extracted_chars > 0 {
+                    attachment.extracted_chars
+                } else {
+                    4_096
+                }
+            })
+            .sum::<usize>()
+            .min(attachment_budget);
+        let length = message
+            .content
+            .chars()
+            .count()
+            .saturating_add(attachment_chars);
         if !selected.is_empty() && used.saturating_add(length) > max_chars {
             break;
         }
@@ -405,9 +435,66 @@ mod tests {
             chat_message("user", "new"),
         ];
         let newest_size = messages[2].content.len();
-        let (selected, omitted) = fit_recent_messages(&messages, newest_size + 1);
+        let (selected, omitted) = fit_recent_messages(&messages, newest_size + 1, 2_048);
         assert_eq!(selected, vec![messages[2].clone()]);
         assert_eq!(omitted, 2);
+    }
+
+    #[test]
+    fn context_fitting_accounts_for_older_attachment_content() {
+        let mut older = chat_message("user", "old");
+        older
+            .attachments
+            .push(crate::attachments::ContextAttachment {
+                id: "a".repeat(64),
+                name: "evidence.txt".into(),
+                kind: "text".into(),
+                mime_type: "text/plain".into(),
+                bytes: 100,
+                sha256: "a".repeat(64),
+                stored_path: "attachment.txt".into(),
+                extracted_chars: 40,
+                context_mode: "text".into(),
+                note: "test".into(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            });
+        let newest = chat_message("user", "new");
+        let (selected, omitted) = fit_recent_messages(&[older, newest.clone()], 20, 20);
+
+        assert_eq!(selected, vec![newest]);
+        assert_eq!(omitted, 1);
+    }
+
+    #[test]
+    fn attachment_budget_uses_only_retained_attachment_messages() {
+        let mut first = chat_message("user", "first");
+        first.attachments.push(test_attachment("a", 1_000));
+        let middle = chat_message("assistant", "middle");
+        let mut newest = chat_message("user", "newest");
+        newest.attachments.push(test_attachment("b", 1_000));
+
+        let (selected, omitted, attachment_budget) =
+            fit_chat_history(&[first, middle, newest], 10_000);
+
+        assert_eq!(selected.len(), 3);
+        assert_eq!(omitted, 0);
+        assert_eq!(attachment_budget, 5_000);
+    }
+
+    fn test_attachment(id: &str, extracted_chars: usize) -> crate::attachments::ContextAttachment {
+        crate::attachments::ContextAttachment {
+            id: id.repeat(64),
+            name: "evidence.txt".into(),
+            kind: "text".into(),
+            mime_type: "text/plain".into(),
+            bytes: 100,
+            sha256: id.repeat(64),
+            stored_path: "attachment.txt".into(),
+            extracted_chars,
+            context_mode: "text".into(),
+            note: "test".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
     }
 
     fn chat_message(role: &str, content: &str) -> ChatMessage {

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -22,10 +22,60 @@ use std::{
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_NATIVE_MEDIA_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_NATIVE_MEDIA_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MEDIA_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EXTRACTED_CHARS: usize = 2_000_000;
 const MAX_PLAIN_TEXT_BYTES: usize = MAX_EXTRACTED_CHARS * 4 + 4;
 const MAX_XML_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
+
+#[derive(Clone)]
+struct CachedMedia {
+    content: Arc<Value>,
+    encoded_bytes: u64,
+}
+
+#[derive(Default)]
+pub(crate) struct MediaCache {
+    entries: HashMap<String, CachedMedia>,
+    order: VecDeque<String>,
+    encoded_bytes: u64,
+}
+
+impl MediaCache {
+    fn get(&mut self, id: &str) -> Option<Arc<Value>> {
+        let content = Arc::clone(&self.entries.get(id)?.content);
+        self.order.retain(|known| known != id);
+        self.order.push_back(id.to_string());
+        Some(content)
+    }
+
+    fn insert(&mut self, id: String, encoded_bytes: u64, content: Arc<Value>) {
+        if encoded_bytes > MAX_MEDIA_CACHE_BYTES {
+            return;
+        }
+        if let Some(replaced) = self.entries.remove(&id) {
+            self.encoded_bytes = self.encoded_bytes.saturating_sub(replaced.encoded_bytes);
+            self.order.retain(|known| known != &id);
+        }
+        while self.encoded_bytes.saturating_add(encoded_bytes) > MAX_MEDIA_CACHE_BYTES {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&oldest) {
+                self.encoded_bytes = self.encoded_bytes.saturating_sub(removed.encoded_bytes);
+            }
+        }
+        self.encoded_bytes = self.encoded_bytes.saturating_add(encoded_bytes);
+        self.order.push_back(id.clone());
+        self.entries.insert(
+            id,
+            CachedMedia {
+                content,
+                encoded_bytes,
+            },
+        );
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -230,7 +280,7 @@ impl AttachmentStore {
             attachments,
             model,
             max_text_chars,
-            &mut HashMap::new(),
+            &mut MediaCache::default(),
         )
     }
 
@@ -240,7 +290,7 @@ impl AttachmentStore {
         attachments: &[ContextAttachment],
         model: &ModelInfo,
         max_text_chars: usize,
-        media_cache: &mut HashMap<String, Value>,
+        media_cache: &mut MediaCache,
     ) -> Result<PreparedAttachments, String> {
         if attachments.is_empty() {
             return Ok(PreparedAttachments {
@@ -395,14 +445,17 @@ impl AttachmentStore {
     fn native_media_part_cached(
         &self,
         attachment: &ContextAttachment,
-        cache: &mut HashMap<String, Value>,
+        cache: &mut MediaCache,
     ) -> Result<Value, String> {
         if let Some(content) = cache.get(&attachment.id) {
-            return Ok(content.clone());
+            return Ok((*content).clone());
         }
-        let content = self.native_media_part(attachment)?;
-        cache.insert(attachment.id.clone(), content.clone());
-        Ok(content)
+        let content = Arc::new(self.native_media_part(attachment)?);
+        let encoded_bytes = (attachment.bytes.saturating_add(2) / 3)
+            .saturating_mul(4)
+            .saturating_add(1_024);
+        cache.insert(attachment.id.clone(), encoded_bytes, Arc::clone(&content));
+        Ok((*content).clone())
     }
 }
 
@@ -561,8 +614,6 @@ fn xml_text(xml: &str) -> Result<String, String> {
         match reader.read_event() {
             Ok(Event::Text(value)) => {
                 let decoded = value.decode().map_err(|error| error.to_string())?;
-                let decoded =
-                    quick_xml::escape::unescape(&decoded).map_err(|error| error.to_string())?;
                 output.push_str(&decoded);
             }
             Ok(Event::CData(value)) => {
@@ -904,6 +955,25 @@ mod tests {
             .unwrap();
         assert_eq!(prepared.content.as_array().unwrap().len(), 3);
         assert!(prepared.notice.unwrap().contains("64 MiB per message"));
+    }
+
+    #[test]
+    fn media_cache_evicts_old_encoded_values_at_its_byte_cap() {
+        let mut cache = MediaCache::default();
+        cache.insert(
+            "first".into(),
+            40 * 1024 * 1024,
+            Arc::new(json!({"data":"first"})),
+        );
+        cache.insert(
+            "second".into(),
+            40 * 1024 * 1024,
+            Arc::new(json!({"data":"second"})),
+        );
+
+        assert!(cache.get("first").is_none());
+        assert!(cache.get("second").is_some());
+        assert!(cache.encoded_bytes <= MAX_MEDIA_CACHE_BYTES);
     }
 
     #[test]

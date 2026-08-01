@@ -2,7 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { demoSnapshot } from "./demo";
-import { terminalTaskStatus } from "./OfflineWorkspace";
+import { mergeAttachments, terminalTaskStatus } from "./OfflineWorkspace";
+import type { ContextAttachment } from "./types";
 
 const profileApi = vi.hoisted(() => ({
   exportSetupProfile: vi.fn(),
@@ -27,6 +28,37 @@ afterEach(() => {
 });
 
 describe("Kestrel research experience", () => {
+  it("keeps composer attachments within native count and byte limits", () => {
+    const attachment = (id: string, bytes: number): ContextAttachment => ({
+      id,
+      name: `${id}.bin`,
+      kind: "binary",
+      mimeType: "application/octet-stream",
+      bytes,
+      sha256: id.padEnd(64, "0"),
+      storedPath: `${id}.bin`,
+      extractedChars: 0,
+      contextMode: "metadata_only",
+      note: "test",
+      createdAt: new Date(0).toISOString(),
+    });
+    const mib = 1024 * 1024;
+    const overBytes = mergeAttachments([], [
+      attachment("one", 128 * mib),
+      attachment("two", 128 * mib),
+      attachment("three", 1),
+    ]);
+    expect(overBytes.attachments.map((item) => item.id)).toEqual(["one", "two"]);
+    expect(overBytes.rejected).toBe(1);
+
+    const overCount = mergeAttachments(
+      [],
+      Array.from({ length: 13 }, (_, index) => attachment(`item-${index}`, 1)),
+    );
+    expect(overCount.attachments).toHaveLength(12);
+    expect(overCount.rejected).toBe(1);
+  });
+
   it("opens the durable library and renders evidence-oriented research", async () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "The Antikythera mechanism" })).toBeInTheDocument();

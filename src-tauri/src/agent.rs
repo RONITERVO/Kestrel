@@ -63,35 +63,57 @@ pub async fn run(
         "Research, chat, and computer tasks share one inference slot.",
         None,
     );
-    let lease = tokio::select! {
-        result = runtime.lease_model(&request.model_id, &models, &settings, app.as_ref()) => {
-            result.map_err(|error| error.to_string())?
-        }
-        _ = cancel.cancelled() => {
-            event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "No computer action was started.", None);
-            return Ok(());
-        }
-    };
     let access_label = if access == Access::Workspace {
         "workspace-restricted file access"
     } else {
         "explicit full computer access"
     };
-    event(
-        &app,
-        &store,
-        &run_id,
-        0,
-        "start",
-        "Computer task started",
-        &format!("{} · {}", lease.connection.model_label, access_label),
-        None,
-    );
-    let context_attachments = attachment_store.resolve(&request.attachment_ids)?;
     let selected_model = models
         .iter()
         .find(|model| model.id == request.model_id)
+        .cloned()
         .ok_or_else(|| "The selected model is no longer in the local catalog.".to_string())?;
+    let objective = match continuation {
+        Some(continuation) => format!(
+            "Original objective:\n{}\n\n{}",
+            request.objective, continuation
+        ),
+        None => request.objective.clone(),
+    };
+    let preparation_store = attachment_store.clone();
+    let preparation_ids = request.attachment_ids.clone();
+    let preparation_objective = objective.clone();
+    let preparation = tokio::task::spawn_blocking(move || {
+        let attachments = preparation_store.resolve(&preparation_ids)?;
+        let prepared = preparation_store.prepare_message(
+            &preparation_objective,
+            &attachments,
+            &selected_model,
+            120_000,
+        )?;
+        Ok::<_, String>((attachments, prepared))
+    });
+    let (context_attachments, prepared) = tokio::select! {
+        result = preparation => result
+            .map_err(|error| format!("Attachment preparation stopped unexpectedly: {error}"))??,
+        _ = cancel.cancelled() => {
+            event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "The task stopped while preparing local attachment context. No tool was started.", None);
+            return Ok(());
+        }
+    };
+    if cancel.is_cancelled() {
+        event(
+            &app,
+            &store,
+            &run_id,
+            0,
+            "cancelled",
+            "Stopped by you",
+            "The task stopped after preparing local attachment context. No tool was started.",
+            None,
+        );
+        return Ok(());
+    }
     let attachment_instruction = if context_attachments.is_empty() {
         String::new()
     } else {
@@ -113,33 +135,6 @@ pub async fn run(
         },
         attachment_instruction,
     );
-    let objective = match continuation {
-        Some(continuation) => format!(
-            "Original objective:\n{}\n\n{}",
-            request.objective, continuation
-        ),
-        None => request.objective.clone(),
-    };
-    let preparation_store = attachment_store.clone();
-    let preparation_attachments = context_attachments.clone();
-    let preparation_model = selected_model.clone();
-    let preparation_objective = objective.clone();
-    let preparation = tokio::task::spawn_blocking(move || {
-        preparation_store.prepare_message(
-            &preparation_objective,
-            &preparation_attachments,
-            &preparation_model,
-            120_000,
-        )
-    });
-    let prepared = tokio::select! {
-        result = preparation => result
-            .map_err(|error| format!("Attachment preparation stopped unexpectedly: {error}"))??,
-        _ = cancel.cancelled() => {
-            event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "The task stopped while preparing local attachment context. No tool was started.", None);
-            return Ok(());
-        }
-    };
     let mut messages = vec![
         json!({"role":"system","content":system}),
         json!({"role":"user","content":prepared.content}),
@@ -177,6 +172,25 @@ pub async fn run(
             .max(1)
             .min(settings.agent_max_output_tokens.max(1))
     };
+    let lease = tokio::select! {
+        result = runtime.lease_model(&request.model_id, &models, &settings, app.as_ref()) => {
+            result.map_err(|error| error.to_string())?
+        }
+        _ = cancel.cancelled() => {
+            event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "No computer action was started.", None);
+            return Ok(());
+        }
+    };
+    event(
+        &app,
+        &store,
+        &run_id,
+        0,
+        "start",
+        "Computer task started",
+        &format!("{} · {}", lease.connection.model_label, access_label),
+        None,
+    );
     for step in 1..=max_steps {
         if cancel.is_cancelled() {
             event(
