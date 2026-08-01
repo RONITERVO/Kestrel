@@ -139,6 +139,8 @@ export const demoSnapshot: AppSnapshot = {
       contextLength: 262_144,
       chatTemplate: true,
       quantization: "TQ2_0",
+      supportsVision: true,
+      supportsAudio: false,
       recommendation: "Validated Bonsai profile: one slot, Q4 KV, flash attention, full GPU",
     }],
     engineCandidates: [{

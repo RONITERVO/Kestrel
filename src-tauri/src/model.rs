@@ -15,7 +15,8 @@ use std::{
 };
 use walkdir::WalkDir;
 
-const CATALOG_SCHEMA_VERSION: u32 = 1;
+// Version 2 invalidates catalogs that inferred vision support from an unverified projector path.
+const CATALOG_SCHEMA_VERSION: u32 = 2;
 const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -154,6 +155,10 @@ pub struct ModelInfo {
     pub chat_template: bool,
     pub quantization: Option<String>,
     pub mmproj_path: Option<String>,
+    #[serde(default)]
+    pub supports_vision: bool,
+    #[serde(default)]
+    pub supports_audio: bool,
     pub recommendation: String,
 }
 
@@ -236,6 +241,20 @@ fn inspect(path: &Path) -> io::Result<ModelInfo> {
     } else {
         "Use embedded GGUF template and native context; keep placement explicit"
     };
+    let mmproj_path = find_projector(path);
+    let projector_metadata = mmproj_path
+        .as_deref()
+        .and_then(|projector| read_gguf_metadata(Path::new(projector)).ok());
+    let supports_vision = projector_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("clip.has_vision_encoder"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let supports_audio = projector_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("clip.has_audio_encoder"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     Ok(ModelInfo {
         id: content_identity(path, bytes)?,
         name,
@@ -250,7 +269,9 @@ fn inspect(path: &Path) -> io::Result<ModelInfo> {
         } else {
             file_type.map(quantization_name)
         },
-        mmproj_path: find_projector(path),
+        mmproj_path,
+        supports_vision,
+        supports_audio,
         recommendation: recommendation.into(),
     })
 }
@@ -287,9 +308,62 @@ fn find_projector(path: &Path) -> Option<String> {
         })
         .collect::<Vec<_>>();
     candidates.sort();
+    let model_count = std::fs::read_dir(path.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| candidate.is_file() && is_candidate(candidate))
+        .count();
+    if candidates.len() == 1 && model_count == 1 {
+        return candidates
+            .first()
+            .map(|candidate| candidate.to_string_lossy().into_owned());
+    }
+    let model_tokens = identity_tokens(path);
     candidates
-        .first()
-        .map(|candidate| candidate.to_string_lossy().into_owned())
+        .into_iter()
+        .map(|candidate| {
+            let score = identity_tokens(&candidate)
+                .intersection(&model_tokens)
+                .map(String::len)
+                .sum::<usize>();
+            (score, candidate)
+        })
+        .filter(|(score, _)| *score > 0)
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)))
+        .map(|(_, candidate)| candidate.to_string_lossy().into_owned())
+}
+
+fn identity_tokens(path: &Path) -> std::collections::BTreeSet<String> {
+    const GENERIC: &[&str] = &[
+        "gguf",
+        "model",
+        "mmproj",
+        "projector",
+        "instruct",
+        "chat",
+        "q2",
+        "q3",
+        "q4",
+        "q5",
+        "q6",
+        "q8",
+        "bf16",
+        "f16",
+        "f32",
+        "km",
+        "ks",
+        "kl",
+        "xl",
+    ];
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| token.len() >= 3 && !GENERIC.contains(token))
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn source_for(path: &Path) -> &'static str {
@@ -363,7 +437,11 @@ fn read_gguf_metadata(path: &Path) -> io::Result<HashMap<String, Value>> {
         let value = read_value(&mut reader, kind, 0)?;
         if matches!(
             key.as_str(),
-            "general.name" | "general.architecture" | "general.file_type"
+            "general.name"
+                | "general.architecture"
+                | "general.file_type"
+                | "clip.has_vision_encoder"
+                | "clip.has_audio_encoder"
         ) || key.ends_with(".context_length")
             || key.contains("chat_template")
         {
@@ -448,6 +526,73 @@ mod tests {
     }
 
     #[test]
+    fn projector_matching_does_not_cross_models_in_a_shared_folder() {
+        let directory = tempfile::tempdir().unwrap();
+        let bonsai = directory.path().join("Ternary-Bonsai-27B-Q2.gguf");
+        let bonsai_projector = directory.path().join("mmproj-Ternary-Bonsai-27B-Q8.gguf");
+        let gemma_projector = directory.path().join("mmproj-gemma-4-e2b-f16.gguf");
+        fs::write(&bonsai, b"model").unwrap();
+        fs::write(&bonsai_projector, b"projector").unwrap();
+        fs::write(&gemma_projector, b"projector").unwrap();
+        assert_eq!(
+            find_projector(&bonsai).as_deref(),
+            Some(bonsai_projector.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn generic_single_projector_is_not_assigned_across_multiple_models() {
+        let directory = tempfile::tempdir().unwrap();
+        let bonsai = directory.path().join("Ternary-Bonsai-27B-Q2.gguf");
+        let gemma = directory.path().join("gemma-4-e2b.gguf");
+        let projector = directory.path().join("mmproj.gguf");
+        fs::write(&bonsai, b"model").unwrap();
+        fs::write(&gemma, b"model").unwrap();
+        fs::write(&projector, b"projector").unwrap();
+
+        assert!(find_projector(&bonsai).is_none());
+        assert!(find_projector(&gemma).is_none());
+    }
+
+    #[test]
+    fn projector_metadata_advertises_vision_and_audio_without_filename_guesses() {
+        use std::io::Write as _;
+
+        fn write_gguf(path: &Path, flags: &[(&str, bool)]) {
+            let mut file = File::create(path).unwrap();
+            file.write_all(b"GGUF").unwrap();
+            file.write_all(&3u32.to_le_bytes()).unwrap();
+            file.write_all(&0u64.to_le_bytes()).unwrap();
+            file.write_all(&(flags.len() as u64).to_le_bytes()).unwrap();
+            for (key, value) in flags {
+                file.write_all(&(key.len() as u64).to_le_bytes()).unwrap();
+                file.write_all(key.as_bytes()).unwrap();
+                file.write_all(&7u32.to_le_bytes()).unwrap();
+                file.write_all(&[u8::from(*value)]).unwrap();
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let model = directory.path().join("gemma-4-e2b.gguf");
+        let projector = directory.path().join("mmproj-gemma-4-e2b.gguf");
+        write_gguf(&model, &[]);
+        write_gguf(
+            &projector,
+            &[
+                ("clip.has_vision_encoder", true),
+                ("clip.has_audio_encoder", true),
+            ],
+        );
+        let inspected = inspect(&model).unwrap();
+        assert!(inspected.supports_vision);
+        assert!(inspected.supports_audio);
+        assert_eq!(
+            inspected.mmproj_path.as_deref(),
+            Some(projector.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
     fn catalog_cache_restores_only_existing_unchanged_models() {
         let directory = tempfile::tempdir().unwrap();
         let model_path = directory.path().join("model.gguf");
@@ -464,6 +609,8 @@ mod tests {
             chat_template: false,
             quantization: None,
             mmproj_path: None,
+            supports_vision: false,
+            supports_audio: false,
             recommendation: "Inspect metadata".into(),
         };
         store.save(std::slice::from_ref(&model)).unwrap();
@@ -508,6 +655,8 @@ mod tests {
             chat_template: false,
             quantization: None,
             mmproj_path: None,
+            supports_vision: false,
+            supports_audio: false,
             recommendation: "Recovered".into(),
         };
         store.save(std::slice::from_ref(&model)).unwrap();

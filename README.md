@@ -4,7 +4,7 @@ Kestrel is a Windows-first local model control plane and fully offline research 
 
 The application has four adjacent workspaces:
 
-- **Control** discovers GGUF files read-only, keeps a recoverable startup catalog, rediscovers installed Bonsai/Jan/PATH engines, attaches to an existing Bonsai service or starts one authenticated `llama-server`, shows live VRAM, exposes exact launch arguments, and offers local chat.
+- **Control** discovers GGUF files read-only, keeps a recoverable startup catalog, rediscovers installed Bonsai/Jan/PATH engines, attaches to an existing Bonsai service or starts one authenticated `llama-server`, shows live VRAM, exposes exact launch arguments, and offers durable multimodal chat and Computer Tasks.
 - **Research** runs a Bonsai-specific two-tool harness, visibly reports six stages, validates every citation, finds related prior work, and publishes immutable editions.
 - **Developer** runs fixed offline checks. If Codex CLI is installed and signed in, an explicit one-click action can repair this Git workspace under an ephemeral workspace-write sandbox. Research never depends on it.
 - **System** exposes the installed Bonsai/Kiwix state, GPU telemetry, and opt-in high-capacity research settings.
@@ -60,6 +60,9 @@ C:\Users\<you>\Kestrel Research\
 |-- model-catalog.json    # recoverable local GGUF discovery cache
 |-- setup-profiles\       # safe portable tuning/model identity profiles
 |-- maintenance\          # optional Codex repair transcripts
+|-- workspace\attachments # content-addressed local context objects and extractions
+|-- workspace\chats       # recoverable chat transcripts and attachment references
+|-- workspace\tasks       # recoverable computer-task transcripts
 `-- reports\YYYY\MM\<title>--<id>\
     |-- index.html        # self-contained, printable research page
     |-- report.json       # complete structured edition
@@ -71,6 +74,8 @@ Publication builds a complete staging directory and atomically renames it into p
 
 This keeps thousands of editions searchable through FTS5 while local models and ordinary tools can always traverse JSONL and report folders directly.
 
+Chat and Computer Tasks can attach any regular local file up to 128 MiB. Kestrel copies it into a SHA-256-addressed object store before inference. Images and audio use loopback-only llama.cpp multimodal content blocks when the selected GGUF projector advertises those modalities. PDF, DOCX, PPTX, XLSX, source code, markup, logs, and common text formats receive bounded local text extraction. Unknown binaries remain durable and clearly marked metadata-only; Kestrel never claims the model read content it could not decode. Computer Tasks can request additional ranges from a declared attachment through a read-only typed tool.
+
 Portable setup profiles contain research/runtime tuning, path-independent model identities, and local path hints. They never include weights, chats, research, credentials, developer paths, or Full Access authority. Import validates a bounded JSON file, keeps local developer/workspace paths, locks Full Access, rediscovers a local engine, and rescans weights before returning control.
 
 ## Offline boundary
@@ -78,7 +83,7 @@ Portable setup profiles contain research/runtime tuning, path-independent model 
 - The WebView CSP permits no external network connection or remote asset.
 - Native research clients accept only fixed loopback services.
 - Kiwix runs with external access blocked.
-- The model receives no shell, arbitrary file, browser, MCP, upload, or delete tool.
+- Research receives only its two citation tools. Ordinary chat receives no mutation tools. Computer Tasks receives only typed, policy-checked tools; attachment reads are restricted to files explicitly selected for that task.
 - Codex is isolated to `developer.rs`, requires explicit confirmation, cannot run during research, creates no commit, and is not required for diagnostics or any offline feature.
 
 Wikipedia is a tertiary starting point with a January 2024 cutoff. Reports expose the inspected evidence and open questions; they do not claim finality.

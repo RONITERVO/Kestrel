@@ -19,6 +19,7 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 
 - `lib.rs`: Tauri commands, strict research lock, state boundaries.
 - `runtime.rs`: attach/start/stop model runtime and single inference lease.
+- `attachments.rs`: content-addressed local files, bounded extraction, and capability-gated media blocks.
 - `chat.rs`: cancellable SSE chat stream; never add tools here.
 - `agent.rs`: bounded Computer Tasks loop, typed tools, path policy, recovery copies, visible events.
 - `workspace.rs`: recoverable chat/task JSON and restart recovery.

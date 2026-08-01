@@ -102,7 +102,28 @@ export interface ModelInfo {
   chatTemplate: boolean;
   quantization?: string;
   mmprojPath?: string;
+  supportsVision: boolean;
+  supportsAudio: boolean;
   recommendation: string;
+}
+
+export interface ContextAttachment {
+  id: string;
+  name: string;
+  kind: "image" | "audio" | "pdf" | "document" | "text" | "binary" | string;
+  mimeType: string;
+  bytes: number;
+  sha256: string;
+  storedPath: string;
+  extractedChars: number;
+  contextMode: "native_media" | "extracted_text" | "text" | "metadata_only" | string;
+  note: string;
+  createdAt: string;
+}
+
+export interface ContextAttachmentImport {
+  attachments: ContextAttachment[];
+  failures: string[];
 }
 
 export interface ControlSettings {
@@ -176,6 +197,7 @@ export interface ChatMessage {
   content: string;
   reasoning?: string;
   status?: "interrupted" | "limited";
+  attachments?: ContextAttachment[];
   createdAt: string;
 }
 
@@ -200,6 +222,7 @@ export interface StartChatRequest {
   sessionId?: string;
   modelId: string;
   message: string;
+  attachmentIds: string[];
   temperature: number;
   topP: number;
   topK: number;
@@ -223,6 +246,7 @@ export interface ChatStreamEvent {
 export interface ComputerTaskRequest {
   modelId: string;
   objective: string;
+  attachmentIds: string[];
   access: "workspace" | "full";
   maxSteps: number;
   maxOutputTokens: number;
@@ -253,6 +277,7 @@ export interface ComputerTaskRun {
   updatedAt: string;
   events: ComputerTaskEvent[];
   artifacts: string[];
+  attachments?: ContextAttachment[];
 }
 
 export interface ComputerTaskSummary {

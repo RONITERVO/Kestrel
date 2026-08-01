@@ -3,6 +3,7 @@
 //! Files in this module are user data, not a cache. Each update is written through a temporary
 //! file with a recovery copy so a crash cannot silently erase a long conversation or task audit.
 
+use crate::attachments::ContextAttachment;
 use crate::models::{
     ChatMessage, ChatSession, ChatSessionSummary, ComputerTaskAccess, ComputerTaskEvent,
     ComputerTaskRun, ComputerTaskSummary,
@@ -60,6 +61,7 @@ impl WorkspaceStore {
         read_recoverable(&self.chat_path(id)?)
     }
 
+    #[cfg(test)]
     pub fn add_chat_message(
         &self,
         id: &str,
@@ -78,6 +80,27 @@ impl WorkspaceStore {
         reasoning: Option<String>,
         status: Option<String>,
     ) -> Result<ChatSession, String> {
+        self.add_chat_message_record(id, role, content, reasoning, status, Vec::new())
+    }
+
+    pub fn add_user_message_with_attachments(
+        &self,
+        id: &str,
+        content: String,
+        attachments: Vec<ContextAttachment>,
+    ) -> Result<ChatSession, String> {
+        self.add_chat_message_record(id, "user", content, None, None, attachments)
+    }
+
+    fn add_chat_message_record(
+        &self,
+        id: &str,
+        role: &str,
+        content: String,
+        reasoning: Option<String>,
+        status: Option<String>,
+        attachments: Vec<ContextAttachment>,
+    ) -> Result<ChatSession, String> {
         let _guard = self
             .write_lock
             .lock()
@@ -90,6 +113,7 @@ impl WorkspaceStore {
             content,
             reasoning,
             status,
+            attachments,
             created_at: now.clone(),
         });
         session.updated_at = now;
@@ -132,11 +156,22 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn create_task(
         &self,
         model_id: &str,
         objective: &str,
         access: ComputerTaskAccess,
+    ) -> Result<ComputerTaskRun, String> {
+        self.create_task_with_attachments(model_id, objective, access, Vec::new())
+    }
+
+    pub fn create_task_with_attachments(
+        &self,
+        model_id: &str,
+        objective: &str,
+        access: ComputerTaskAccess,
+        attachments: Vec<ContextAttachment>,
     ) -> Result<ComputerTaskRun, String> {
         let now = chrono::Utc::now().to_rfc3339();
         let run = ComputerTaskRun {
@@ -149,6 +184,7 @@ impl WorkspaceStore {
             updated_at: now,
             events: Vec::new(),
             artifacts: Vec::new(),
+            attachments,
         };
         self.save_task(&run)?;
         Ok(run)
@@ -538,6 +574,52 @@ mod tests {
                 .status
                 .as_deref(),
             Some("interrupted")
+        );
+    }
+
+    #[test]
+    fn attachment_references_survive_chat_and_task_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::new(directory.path()).unwrap();
+        let attachment = ContextAttachment {
+            id: "a".repeat(64),
+            name: "evidence.pdf".into(),
+            kind: "pdf".into(),
+            mime_type: "application/pdf".into(),
+            bytes: 42,
+            sha256: "a".repeat(64),
+            stored_path: "objects/evidence.pdf".into(),
+            extracted_chars: 120,
+            context_mode: "extracted_text".into(),
+            note: "local".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let session = store.create_chat("model", "inspect evidence").unwrap();
+        store
+            .add_user_message_with_attachments(
+                &session.id,
+                "inspect".into(),
+                vec![attachment.clone()],
+            )
+            .unwrap();
+        let task = store
+            .create_task_with_attachments(
+                "model",
+                "inspect",
+                ComputerTaskAccess::Workspace,
+                vec![attachment.clone()],
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = WorkspaceStore::new(directory.path()).unwrap();
+        assert_eq!(
+            reopened.get_chat(&session.id).unwrap().messages[0].attachments,
+            vec![attachment.clone()]
+        );
+        assert_eq!(
+            reopened.get_task(&task.id).unwrap().attachments,
+            vec![attachment]
         );
     }
 }
