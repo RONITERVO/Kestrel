@@ -67,6 +67,17 @@ impl WorkspaceStore {
         content: String,
         reasoning: Option<String>,
     ) -> Result<ChatSession, String> {
+        self.add_chat_message_with_status(id, role, content, reasoning, None)
+    }
+
+    pub fn add_chat_message_with_status(
+        &self,
+        id: &str,
+        role: &str,
+        content: String,
+        reasoning: Option<String>,
+        status: Option<String>,
+    ) -> Result<ChatSession, String> {
         let _guard = self
             .write_lock
             .lock()
@@ -78,6 +89,7 @@ impl WorkspaceStore {
             role: role.to_string(),
             content,
             reasoning,
+            status,
             created_at: now.clone(),
         });
         session.updated_at = now;
@@ -163,6 +175,7 @@ impl WorkspaceStore {
             "done" => run.status = "completed".into(),
             "error" | "limit" => run.status = "failed".into(),
             "cancelled" => run.status = "cancelled".into(),
+            "question" => run.status = "waiting".into(),
             _ => run.status = "running".into(),
         }
         if event.kind == "artifact" {
@@ -478,5 +491,53 @@ mod tests {
         let recovered = reopened.get_task(&run.id).unwrap();
         assert_eq!(recovered.status, "interrupted");
         assert_eq!(reopened.list_tasks().unwrap()[0].status, "interrupted");
+    }
+
+    #[test]
+    fn clarification_questions_pause_a_task_durably() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::new(directory.path()).unwrap();
+        let run = store
+            .create_task("model", "organize files", ComputerTaskAccess::Workspace)
+            .unwrap();
+        let paused = store
+            .add_task_event(ComputerTaskEvent {
+                run_id: run.id.clone(),
+                step: 1,
+                kind: "question".into(),
+                title: "Needs your input".into(),
+                detail: "Which folder should be changed?".into(),
+                data: Some(serde_json::json!({"options":["A","B"],"recommendedIndex":0})),
+                at: chrono::Utc::now().to_rfc3339(),
+            })
+            .unwrap();
+        assert_eq!(paused.status, "waiting");
+        drop(store);
+        let reopened = WorkspaceStore::new(directory.path()).unwrap();
+        assert_eq!(reopened.get_task(&run.id).unwrap().status, "waiting");
+    }
+
+    #[test]
+    fn interrupted_chat_status_survives_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::new(directory.path()).unwrap();
+        let session = store.create_chat("model", "explain this").unwrap();
+        store
+            .add_chat_message_with_status(
+                &session.id,
+                "assistant",
+                "partial".into(),
+                None,
+                Some("interrupted".into()),
+            )
+            .unwrap();
+        drop(store);
+        let reopened = WorkspaceStore::new(directory.path()).unwrap();
+        assert_eq!(
+            reopened.get_chat(&session.id).unwrap().messages[0]
+                .status
+                .as_deref(),
+            Some("interrupted")
+        );
     }
 }

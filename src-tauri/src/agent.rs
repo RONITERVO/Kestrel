@@ -40,6 +40,7 @@ pub async fn run(
     models: Vec<ModelInfo>,
     settings: ControlSettings,
     cancel: CancellationToken,
+    continuation: Option<String>,
 ) -> Result<(), String> {
     let access = request.access;
     if access == Access::Full && !settings.allow_full_access_agent {
@@ -87,7 +88,11 @@ pub async fn run(
     let system = format!(
         "You are Kestrel's offline Windows computer assistant. You have {access_label}. Use tools to complete the objective. \
          Never claim that an action happened unless a tool result confirms it. Inspect before changing. Prefer the smallest \
-         reversible change. Do not invent paths. When complete, answer with a concise summary and exact artifact paths. \
+         reversible change. Do not invent paths. If a missing decision could materially change the target, scope, output, safety, \
+         or an irreversible action, call ask_user before taking the affected action. Ask one focused question, include two to four \
+         concrete options when possible, and recommend the safest useful option. Do not ask about immaterial preferences when a \
+         reversible default is available. Never put a clarification only in prose: call ask_user. When complete, answer with a \
+         concise summary and exact artifact paths, and do not append an optional follow-up question. \
          Workspace roots: {}",
         if settings.agent_workspace_roots.is_empty() {
             "full access explicitly enabled".into()
@@ -95,9 +100,16 @@ pub async fn run(
             settings.agent_workspace_roots.join("; ")
         }
     );
+    let objective = match continuation {
+        Some(continuation) => format!(
+            "Original objective:\n{}\n\n{}",
+            request.objective, continuation
+        ),
+        None => request.objective.clone(),
+    };
     let mut messages = vec![
         json!({"role":"system","content":system}),
-        json!({"role":"user","content":request.objective}),
+        json!({"role":"user","content":objective}),
     ];
     let tools = tool_schemas(access);
     let client = reqwest::Client::builder()
@@ -211,6 +223,19 @@ pub async fn run(
                 .get("content")
                 .and_then(Value::as_str)
                 .unwrap_or("The task ended without a summary.");
+            if answer.trim_end().ends_with('?') {
+                event(
+                    &app,
+                    &store,
+                    &run_id,
+                    step,
+                    "question",
+                    "Needs your input",
+                    answer,
+                    Some(json!({"question": answer, "options": []})),
+                );
+                return Ok(());
+            }
             event(
                 &app,
                 &store,
@@ -264,6 +289,43 @@ pub async fn run(
                     continue;
                 }
             };
+            if name == "ask_user" {
+                match parse_question(&arguments) {
+                    Ok(question) => {
+                        event(
+                            &app,
+                            &store,
+                            &run_id,
+                            step,
+                            "question",
+                            "Needs your input",
+                            &question.question,
+                            Some(json!({
+                                "question": question.question,
+                                "options": question.options,
+                                "recommendedIndex": question.recommended_index
+                            })),
+                        );
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        let detail = format!("ERROR: invalid clarification request: {error}");
+                        event(
+                            &app,
+                            &store,
+                            &run_id,
+                            step,
+                            "tool_error",
+                            "ask_user finished",
+                            &detail,
+                            None,
+                        );
+                        messages
+                            .push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
+                        continue;
+                    }
+                }
+            }
             event(
                 &app,
                 &store,
@@ -376,6 +438,7 @@ fn event(
 
 fn tool_schemas(access: Access) -> Vec<Value> {
     let mut tools = vec![
+        schema("ask_user", "Pause safely and ask one decision-critical clarification. Use this instead of guessing when different answers materially change the target, scope, format, safety, or an irreversible action.", json!({"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","minItems":2,"maxItems":4,"items":{"type":"string"}},"recommended_index":{"type":"integer","minimum":0,"maximum":3}},"required":["question"]})),
         schema("list_directory", "List up to 500 files and folders at an absolute path.", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})),
         schema("read_file", "Read a UTF-8 text file no larger than 1 MiB.", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})),
         schema("write_file", "Write a UTF-8 file no larger than 5 MiB. Existing content receives a timestamped recovery copy.", json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})),
@@ -391,6 +454,48 @@ fn tool_schemas(access: Access) -> Vec<Value> {
         ]);
     }
     tools
+}
+
+struct ClarifyingQuestion {
+    question: String,
+    options: Vec<String>,
+    recommended_index: Option<usize>,
+}
+
+fn parse_question(arguments: &Value) -> Result<ClarifyingQuestion, String> {
+    let question = arguments
+        .get("question")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "ask_user requires a non-empty question".to_string())?;
+    if question.chars().count() > 600 {
+        return Err("ask_user question exceeds 600 characters".into());
+    }
+    let options = arguments
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .take(4)
+                .map(|value| value.chars().take(240).collect::<String>())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let recommended_index = arguments
+        .get("recommended_index")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .filter(|index| *index < options.len());
+    Ok(ClarifyingQuestion {
+        question: question.to_string(),
+        options,
+        recommended_index,
+    })
 }
 
 fn schema(name: &str, description: &str, parameters: Value) -> Value {
@@ -810,6 +915,19 @@ mod tests {
             1
         );
         assert_eq!(compacted[0]["role"], "system");
+    }
+
+    #[test]
+    fn clarification_parser_bounds_options_and_recommendation() {
+        let question = parse_question(&json!({
+            "question":"Which destination should I use?",
+            "options":["Safe folder","Existing folder","Third","Fourth","Ignored"],
+            "recommended_index":1
+        }))
+        .unwrap();
+        assert_eq!(question.options.len(), 4);
+        assert_eq!(question.recommended_index, Some(1));
+        assert!(parse_question(&json!({"question":"  "})).is_err());
     }
 
     #[tokio::test]

@@ -175,6 +175,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   reasoning?: string;
+  status?: "interrupted" | "limited";
   createdAt: string;
 }
 
@@ -213,7 +214,7 @@ export interface ChatStart {
 export interface ChatStreamEvent {
   requestId: string;
   sessionId: string;
-  kind: "queued" | "started" | "context" | "token" | "reasoning" | "metrics" | "done" | "cancelled" | "error";
+  kind: "queued" | "started" | "context" | "token" | "reasoning" | "metrics" | "done" | "cancelled" | "error" | "settled";
   content?: string;
   data?: Record<string, unknown>;
   at: string;
@@ -227,13 +228,18 @@ export interface ComputerTaskRequest {
   maxOutputTokens: number;
 }
 
+export interface ResumeComputerTaskRequest {
+  runId: string;
+  answer: string;
+}
+
 export interface ComputerTaskEvent {
   runId: string;
   step: number;
   kind: string;
   title: string;
   detail: string;
-  data?: { path?: string; [key: string]: unknown };
+  data?: { path?: string; question?: string; options?: string[]; recommendedIndex?: number; [key: string]: unknown };
   at: string;
 }
 
