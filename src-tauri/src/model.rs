@@ -118,7 +118,13 @@ fn inspect(path: &Path) -> io::Result<ModelInfo> {
         architecture,
         context_length,
         chat_template: metadata.keys().any(|key| key.contains("chat_template")),
-        quantization: file_type.map(quantization_name),
+        quantization: if lower.contains("ternary-bonsai-27b")
+            && path.to_string_lossy().to_lowercase().contains("q2_0")
+        {
+            Some("TQ2_0".into())
+        } else {
+            file_type.map(quantization_name)
+        },
         mmproj_path: find_projector(path),
         recommendation: recommendation.into(),
     })

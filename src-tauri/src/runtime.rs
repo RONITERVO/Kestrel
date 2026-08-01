@@ -5,16 +5,15 @@
 //! Kestrel-managed Bonsai processes. An already-running Bonsai service is attached read-only.
 
 use crate::model::ModelInfo;
-use crate::models::{
-    ChatRequest, ChatResponse, ControlSettings, ManagedRuntimeSnapshot, ResearchSettings,
-};
+use crate::models::{ControlSettings, ManagedRuntimeSnapshot, ResearchSettings, RuntimeLog};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::json;
 use sha2::Digest;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{collections::VecDeque, path::Path, sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::{Child, Command},
     sync::{Mutex, OwnedSemaphorePermit, Semaphore},
 };
@@ -38,8 +37,6 @@ pub enum RuntimeError {
     Request(#[from] reqwest::Error),
     #[error("local model returned invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("model response did not contain an answer")]
-    MissingAnswer,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +62,7 @@ pub struct RuntimeManager {
     process: Mutex<Option<RuntimeProcess>>,
     gate: Arc<Semaphore>,
     http: Client,
+    logs: Arc<Mutex<VecDeque<RuntimeLog>>>,
 }
 
 impl RuntimeManager {
@@ -76,6 +74,7 @@ impl RuntimeManager {
                 .timeout(Duration::from_secs(3_600))
                 .build()
                 .expect("local runtime HTTP client"),
+            logs: Arc::new(Mutex::new(VecDeque::with_capacity(500))),
         }
     }
 
@@ -103,6 +102,10 @@ impl RuntimeManager {
             return current.snapshot.clone();
         }
         ManagedRuntimeSnapshot::default()
+    }
+
+    pub async fn logs(&self) -> Vec<RuntimeLog> {
+        self.logs.lock().await.iter().cloned().collect()
     }
 
     pub async fn attach_external_if_ready(
@@ -285,14 +288,22 @@ impl RuntimeManager {
         command
             .args(&args)
             .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         if let Some(parent) = Path::new(&settings.engine_path).parent() {
             command.current_dir(parent);
         }
         #[cfg(windows)]
         command.creation_flags(0x08000000);
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
         let pid = child.id();
+        if let Some(stdout) = child.stdout.take() {
+            spawn_log_reader(stdout, "stdout", self.logs.clone(), app.cloned());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_log_reader(stderr, "stderr", self.logs.clone(), app.cloned());
+        }
         let connection = ModelConnection {
             endpoint: format!("http://127.0.0.1:{port}/v1"),
             api_key: Some(api_key),
@@ -355,66 +366,37 @@ impl RuntimeManager {
         Ok(())
     }
 
-    pub async fn chat(
+    /// Obtain the single inference slot for an interactive feature. The lease keeps the gate
+    /// occupied until streaming or an agent loop has completely stopped.
+    pub async fn lease_model(
         self: &Arc<Self>,
-        request: ChatRequest,
+        model_id: &str,
         models: &[ModelInfo],
         settings: &ControlSettings,
-    ) -> Result<ChatResponse, RuntimeError> {
+        app: Option<&AppHandle>,
+    ) -> Result<InferenceLease, RuntimeError> {
         let model = models
             .iter()
-            .find(|model| model.id == request.model_id)
-            .ok_or_else(|| RuntimeError::MissingModel(request.model_id.clone()))?;
+            .find(|model| model.id == model_id)
+            .ok_or_else(|| RuntimeError::MissingModel(model_id.to_string()))?;
         let connection = match self.current_for_model(&model.id).await {
             Some(current) => current,
-            _ => {
-                self.start_model(model, settings, None).await?;
+            None => {
+                self.start_model(model, settings, app).await?;
                 self.current_healthy()
                     .await
                     .ok_or_else(|| RuntimeError::Startup("runtime disappeared".into()))?
             }
         };
-        let _permit = self.gate.acquire().await.expect("inference gate");
-        let body = json!({
-            "model": connection.model_id,
-            "messages": [{"role":"user","content":request.message}],
-            "temperature": request.temperature,
-            "top_p": request.top_p,
-            "top_k": request.top_k,
-            "max_tokens": request.max_output_tokens,
-            "stream": false
-        });
-        let response = authorized(
-            self.http
-                .post(format!("{}/chat/completions", connection.endpoint)),
-            &connection,
-        )
-        .json(&body)
-        .send()
-        .await?;
-        let status = response.status();
-        let text = response.text().await?;
-        if !status.is_success() {
-            return Err(RuntimeError::Startup(format!(
-                "HTTP {status}: {}",
-                truncate(&text, 500)
-            )));
-        }
-        let value: Value = serde_json::from_str(&text)?;
-        let message = value
-            .pointer("/choices/0/message")
-            .ok_or(RuntimeError::MissingAnswer)?;
-        Ok(ChatResponse {
-            content: message
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .into(),
-            reasoning: message
-                .get("reasoning_content")
-                .or_else(|| message.get("reasoning"))
-                .and_then(Value::as_str)
-                .map(Into::into),
+        let permit = self
+            .gate
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("inference gate is never closed");
+        Ok(InferenceLease {
+            connection,
+            _permit: permit,
         })
     }
 
@@ -477,6 +459,36 @@ fn emit_runtime(app: Option<&AppHandle>, phase: &str, detail: &str) {
     if let Some(app) = app {
         let _ = app.emit("runtime-progress", json!({"phase":phase,"detail":detail}));
     }
+}
+
+fn spawn_log_reader<R>(
+    reader: R,
+    stream: &'static str,
+    logs: Arc<Mutex<VecDeque<RuntimeLog>>>,
+    app: Option<AppHandle>,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let record = RuntimeLog {
+                stream: stream.into(),
+                line: truncate(&line, 4_000),
+                at: chrono::Utc::now().to_rfc3339(),
+            };
+            {
+                let mut values = logs.lock().await;
+                if values.len() == 500 {
+                    values.pop_front();
+                }
+                values.push_back(record.clone());
+            }
+            if let Some(app) = &app {
+                let _ = app.emit("runtime-log", &record);
+            }
+        }
+    });
 }
 
 fn truncate(value: &str, max: usize) -> String {

@@ -114,6 +114,10 @@ export interface ControlSettings {
   maxOutputTokens: number;
   threads: number;
   projectRoot: string;
+  agentWorkspaceRoots: string[];
+  allowFullAccessAgent: boolean;
+  agentMaxSteps: number;
+  agentMaxOutputTokens: number;
 }
 
 export interface ManagedRuntimeSnapshot {
@@ -146,9 +150,42 @@ export interface ControlSnapshot {
   runtime: ManagedRuntimeSnapshot;
   gpu?: GpuSnapshot;
   developer: DeveloperStatus;
+  runtimeLogs: RuntimeLog[];
 }
 
-export interface ChatRequest {
+export interface RuntimeLog {
+  stream: "stdout" | "stderr" | string;
+  line: string;
+  at: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  reasoning?: string;
+  createdAt: string;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  modelId: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ChatMessage[];
+}
+
+export interface ChatSessionSummary {
+  id: string;
+  title: string;
+  modelId: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+export interface StartChatRequest {
+  sessionId?: string;
   modelId: string;
   message: string;
   temperature: number;
@@ -157,9 +194,59 @@ export interface ChatRequest {
   maxOutputTokens: number;
 }
 
-export interface ChatResponse {
-  content: string;
-  reasoning?: string;
+export interface ChatStart {
+  requestId: string;
+  session: ChatSession;
+}
+
+export interface ChatStreamEvent {
+  requestId: string;
+  sessionId: string;
+  kind: "queued" | "started" | "context" | "token" | "reasoning" | "metrics" | "done" | "cancelled" | "error";
+  content?: string;
+  data?: Record<string, unknown>;
+  at: string;
+}
+
+export interface ComputerTaskRequest {
+  modelId: string;
+  objective: string;
+  access: "workspace" | "full";
+  maxSteps: number;
+  maxOutputTokens: number;
+}
+
+export interface ComputerTaskEvent {
+  runId: string;
+  step: number;
+  kind: string;
+  title: string;
+  detail: string;
+  data?: { path?: string; [key: string]: unknown };
+  at: string;
+}
+
+export interface ComputerTaskRun {
+  id: string;
+  objective: string;
+  modelId: string;
+  access: "workspace" | "full";
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  events: ComputerTaskEvent[];
+  artifacts: string[];
+}
+
+export interface ComputerTaskSummary {
+  id: string;
+  objective: string;
+  modelId: string;
+  access: "workspace" | "full";
+  status: string;
+  updatedAt: string;
+  eventCount: number;
+  artifactCount: number;
 }
 
 export interface DeveloperRepairReport {

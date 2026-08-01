@@ -41,10 +41,15 @@ describe("Kestrel research experience", () => {
     expect(await screen.findByRole("heading", { name: /Ternary Bonsai/i })).toBeInTheDocument();
     expect(screen.getByText("SESSION INSPECTOR")).toBeInTheDocument();
     expect(screen.getByText(/one inference lease/i)).toBeInTheDocument();
+    expect(screen.getByText(/private, persistent workspace/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Computer/i }));
+    expect(screen.getByRole("heading", { name: /bounded objective/i })).toBeInTheDocument();
+    expect(screen.getByText(/Every decision, tool call, result, error, and artifact/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Start visible task/i })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: /^Developer$/i }));
     expect(await screen.findByRole("heading", { name: "Developer" })).toBeInTheDocument();
-    expect(screen.getByText(/Research independence/i)).toBeInTheDocument();
+    expect(screen.getByText(/Offline independence/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Run offline diagnostics/i })).toBeInTheDocument();
   });
 });

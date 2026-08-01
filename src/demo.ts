@@ -124,6 +124,10 @@ export const demoSnapshot: AppSnapshot = {
       maxOutputTokens: 32_768,
       threads: 16,
       projectRoot: "D:\\Projects\\Local-LLM-only-best-harnesses\\kestrel-local",
+      agentWorkspaceRoots: ["C:\\Users\\Researcher\\Downloads", "C:\\Users\\Researcher\\Documents"],
+      allowFullAccessAgent: false,
+      agentMaxSteps: 30,
+      agentMaxOutputTokens: 8_192,
     },
     models: [{
       id: "bonsai-demo",
@@ -134,7 +138,7 @@ export const demoSnapshot: AppSnapshot = {
       architecture: "qwen35",
       contextLength: 262_144,
       chatTemplate: true,
-      quantization: "type 41",
+      quantization: "TQ2_0",
       recommendation: "Validated Bonsai profile: one slot, Q4 KV, flash attention, full GPU",
     }],
     runtime: {
@@ -158,6 +162,7 @@ export const demoSnapshot: AppSnapshot = {
       worktreeClean: true,
       running: false,
     },
+    runtimeLogs: [],
   },
   reports: [
     { id: demoReport.id, title: demoReport.title, query: demoReport.query, dek: demoReport.dek, updatedAt: demoReport.updatedAt, edition: demoReport.edition, sourceCount: 3, readingMinutes: 6 },
