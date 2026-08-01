@@ -231,6 +231,8 @@ pub struct ComputerTaskRequest {
     #[serde(default)]
     pub attachment_ids: Vec<String>,
     pub access: ComputerTaskAccess,
+    #[serde(default)]
+    pub approval_mode: ComputerTaskApprovalMode,
     pub max_steps: u32,
     pub max_output_tokens: u32,
 }
@@ -242,11 +244,51 @@ pub struct ResumeComputerTaskRequest {
     pub answer: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveComputerTaskApprovalRequest {
+    pub run_id: String,
+    pub approval_id: String,
+    pub decision: ComputerTaskApprovalDecision,
+    #[serde(default)]
+    pub note: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ComputerTaskAccess {
     Workspace,
     Full,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ComputerTaskApprovalMode {
+    Manual,
+    #[default]
+    Automatic,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ComputerTaskApprovalDecision {
+    Approve,
+    Reject,
+}
+
+/// One exact, validated native action waiting for a human decision. This is embedded in the
+/// durable task transcript so an app restart cannot broaden or silently forget the request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingComputerAction {
+    pub approval_id: String,
+    #[serde(default)]
+    pub step: u32,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+    pub summary: String,
+    pub reason: String,
+    pub risk: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +310,8 @@ pub struct ComputerTaskRun {
     pub objective: String,
     pub model_id: String,
     pub access: ComputerTaskAccess,
+    #[serde(default)]
+    pub approval_mode: ComputerTaskApprovalMode,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -284,6 +328,8 @@ pub struct ComputerTaskSummary {
     pub objective: String,
     pub model_id: String,
     pub access: ComputerTaskAccess,
+    #[serde(default)]
+    pub approval_mode: ComputerTaskApprovalMode,
     pub status: String,
     pub updated_at: String,
     pub event_count: usize,
@@ -546,5 +592,27 @@ mod tests {
             "maxOutputTokens": 1
         }));
         assert!(request.is_err());
+    }
+
+    #[test]
+    fn computer_task_approval_defaults_to_automatic_and_rejects_unknown_values() {
+        let request = serde_json::from_value::<ComputerTaskRequest>(serde_json::json!({
+            "modelId": "model",
+            "objective": "inspect files",
+            "access": "workspace",
+            "maxSteps": 1,
+            "maxOutputTokens": 1
+        }))
+        .unwrap();
+        assert_eq!(request.approval_mode, ComputerTaskApprovalMode::Automatic);
+        let invalid = serde_json::from_value::<ComputerTaskRequest>(serde_json::json!({
+            "modelId": "model",
+            "objective": "inspect files",
+            "access": "workspace",
+            "approvalMode": "trust-everything",
+            "maxSteps": 1,
+            "maxOutputTokens": 1
+        }));
+        assert!(invalid.is_err());
     }
 }

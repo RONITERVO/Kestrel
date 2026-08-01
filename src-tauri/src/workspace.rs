@@ -5,8 +5,8 @@
 
 use crate::attachments::ContextAttachment;
 use crate::models::{
-    ChatMessage, ChatSession, ChatSessionSummary, ComputerTaskAccess, ComputerTaskEvent,
-    ComputerTaskRun, ComputerTaskSummary,
+    ChatMessage, ChatSession, ChatSessionSummary, ComputerTaskAccess, ComputerTaskApprovalMode,
+    ComputerTaskEvent, ComputerTaskRun, ComputerTaskSummary,
 };
 use std::{
     fs,
@@ -163,7 +163,13 @@ impl WorkspaceStore {
         objective: &str,
         access: ComputerTaskAccess,
     ) -> Result<ComputerTaskRun, String> {
-        self.create_task_with_attachments(model_id, objective, access, Vec::new())
+        self.create_task_with_attachments(
+            model_id,
+            objective,
+            access,
+            ComputerTaskApprovalMode::Automatic,
+            Vec::new(),
+        )
     }
 
     pub fn create_task_with_attachments(
@@ -171,6 +177,7 @@ impl WorkspaceStore {
         model_id: &str,
         objective: &str,
         access: ComputerTaskAccess,
+        approval_mode: ComputerTaskApprovalMode,
         attachments: Vec<ContextAttachment>,
     ) -> Result<ComputerTaskRun, String> {
         let now = chrono::Utc::now().to_rfc3339();
@@ -179,6 +186,7 @@ impl WorkspaceStore {
             objective: objective.trim().to_string(),
             model_id: model_id.to_string(),
             access,
+            approval_mode,
             status: "starting".into(),
             created_at: now.clone(),
             updated_at: now,
@@ -212,6 +220,7 @@ impl WorkspaceStore {
             "error" | "limit" => run.status = "failed".into(),
             "cancelled" => run.status = "cancelled".into(),
             "question" => run.status = "waiting".into(),
+            "approval_required" => run.status = "approval".into(),
             _ => run.status = "running".into(),
         }
         if event.kind == "artifact" {
@@ -282,6 +291,7 @@ impl WorkspaceStore {
                 objective: run.objective.clone(),
                 model_id: run.model_id.clone(),
                 access: run.access,
+                approval_mode: run.approval_mode,
                 status: run.status.clone(),
                 updated_at: run.updated_at.clone(),
                 event_count: run.events.len(),
@@ -554,6 +564,42 @@ mod tests {
     }
 
     #[test]
+    fn exact_action_approval_survives_reopen_without_auto_resuming() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::new(directory.path()).unwrap();
+        let run = store
+            .create_task("model", "create notes", ComputerTaskAccess::Workspace)
+            .unwrap();
+        let approval_id = uuid::Uuid::new_v4().to_string();
+        let paused = store
+            .add_task_event(ComputerTaskEvent {
+                run_id: run.id.clone(),
+                step: 2,
+                kind: "approval_required".into(),
+                title: "Approval required".into(),
+                detail: "Write 5 bytes to notes.txt.".into(),
+                data: Some(serde_json::json!({
+                    "approvalId": approval_id,
+                    "tool": "write_file",
+                    "arguments": {"path":"C:\\workspace\\notes.txt","content":"notes"},
+                    "summary": "Write 5 bytes to notes.txt.",
+                    "reason": "Manual approval is enabled.",
+                    "risk": "low"
+                })),
+                at: chrono::Utc::now().to_rfc3339(),
+            })
+            .unwrap();
+        assert_eq!(paused.status, "approval");
+        drop(store);
+
+        let reopened = WorkspaceStore::new(directory.path()).unwrap();
+        let recovered = reopened.get_task(&run.id).unwrap();
+        assert_eq!(recovered.status, "approval");
+        assert_eq!(recovered.events.len(), 1);
+        assert_eq!(reopened.list_tasks().unwrap()[0].status, "approval");
+    }
+
+    #[test]
     fn interrupted_chat_status_survives_reopen() {
         let directory = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::new(directory.path()).unwrap();
@@ -607,6 +653,7 @@ mod tests {
                 "model",
                 "inspect",
                 ComputerTaskAccess::Workspace,
+                ComputerTaskApprovalMode::Automatic,
                 vec![attachment.clone()],
             )
             .unwrap();

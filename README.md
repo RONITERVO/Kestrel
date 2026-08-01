@@ -76,6 +76,8 @@ This keeps thousands of editions searchable through FTS5 while local models and 
 
 Chat and Computer Tasks can attach any regular local file up to 128 MiB. Kestrel copies it into a SHA-256-addressed object store before inference. Images and audio use loopback-only llama.cpp multimodal content blocks when the selected GGUF projector advertises those modalities. PDF, DOCX, PPTX, XLSX, source code, markup, logs, and common text formats receive bounded local text extraction. Unknown binaries remain durable and clearly marked metadata-only; Kestrel never claims the model read content it could not decode. Computer Tasks can request additional ranges from a declared attachment through a read-only typed tool.
 
+Computer Tasks offer per-task **Approve for me** and **Approve manually** policies. Both explain state-changing or externally visible native actions in the durable transcript. Manual mode pauses before every action. Approve for me automatically accepts only bounded changes contained by an approved workspace and escalates program launches, moves, external opens, protected metadata, and out-of-workspace effects to an exact one-time confirmation. Approval never expands the selected Workspace or Full Access boundary.
+
 Portable setup profiles contain research/runtime tuning, path-independent model identities, and local path hints. They never include weights, chats, research, credentials, developer paths, or Full Access authority. Import validates a bounded JSON file, keeps local developer/workspace paths, locks Full Access, rediscovers a local engine, and rescans weights before returning control.
 
 ## Offline boundary

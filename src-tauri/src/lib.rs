@@ -23,10 +23,11 @@ use harness::ResearchHarness;
 use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
 use models::{
     AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess,
-    ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
-    DeveloperRepairReport, DeveloperRepairRequest, ProfileTransfer, ResearchReport,
-    ResearchSettings, ResumeComputerTaskRequest, RunResearchRequest, StartChatRequest,
-    SystemSnapshot,
+    ComputerTaskApprovalDecision, ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary,
+    ControlSettings, ControlSnapshot, DeveloperRepairReport, DeveloperRepairRequest,
+    PendingComputerAction, ProfileTransfer, ResearchReport, ResearchSettings,
+    ResolveComputerTaskApprovalRequest, ResumeComputerTaskRequest, RunResearchRequest,
+    StartChatRequest, SystemSnapshot,
 };
 use runtime::RuntimeManager;
 use std::{
@@ -744,6 +745,7 @@ async fn start_computer_task(
         &request.model_id,
         &request.objective,
         request.access,
+        request.approval_mode,
         attachments,
     ) {
         Ok(run) => run,
@@ -762,7 +764,7 @@ async fn start_computer_task(
             return Err("interactive job registry is unavailable".into());
         }
     }
-    spawn_computer_task(app, run.id.clone(), request, settings, cancel, None);
+    spawn_computer_task(app, run.id.clone(), request, settings, cancel, None, None);
     Ok(run)
 }
 
@@ -821,6 +823,7 @@ async fn resume_computer_task(
         model_id: run.model_id.clone(),
         objective: run.objective.clone(),
         access: run.access,
+        approval_mode: run.approval_mode,
         max_steps: settings.agent_max_steps,
         max_output_tokens: settings.agent_max_output_tokens,
         attachment_ids: run.attachments.iter().map(|item| item.id.clone()).collect(),
@@ -843,8 +846,160 @@ async fn resume_computer_task(
         settings,
         cancel,
         Some(continuation),
+        None,
     );
     Ok(updated)
+}
+
+#[tauri::command]
+async fn resolve_computer_task_approval(
+    request: ResolveComputerTaskApprovalRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ComputerTaskRun, String> {
+    ensure_workspace_idle(&state)?;
+    uuid::Uuid::parse_str(&request.approval_id)
+        .map_err(|_| "The pending approval ID is invalid.".to_string())?;
+    if request.note.len() > 8_192 {
+        return Err("An approval note cannot exceed 8 KiB.".into());
+    }
+    let run = state.workspace.get_task(&request.run_id)?;
+    if run.status != "approval" {
+        return Err("This task is not waiting for an approval decision.".into());
+    }
+    let (step, action) = pending_computer_action(&run, &request.approval_id)?;
+    let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    if run.access == ComputerTaskAccess::Full && !settings.allow_full_access_agent {
+        return Err("Full computer access is locked in the runtime profile.".into());
+    }
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another chat generation or computer task is already active.".to_string())?;
+
+    let note = request.note.trim();
+    let (kind, title, detail, approved_action, continuation) = match request.decision {
+        ComputerTaskApprovalDecision::Approve => (
+            "approval_approved",
+            "Approved by you",
+            format!(
+                "Authorized once: {}{}",
+                action.summary,
+                if note.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nYour note: {note}")
+                }
+            ),
+            Some(action.clone()),
+            format!(
+                "The user approved one exact native action: {} Kestrel executed it once before this continuation. Use the recorded native result and do not repeat it unless a new result requires a new action.",
+                action.summary
+            ),
+        ),
+        ComputerTaskApprovalDecision::Reject => (
+            "approval_rejected",
+            "Rejected by you",
+            format!(
+                "Not authorized: {}{}",
+                action.summary,
+                if note.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nYour direction: {note}")
+                }
+            ),
+            None,
+            format!(
+                "The user rejected this exact action: {} Do not attempt the same outcome through a workaround or indirect execution. Find a materially safer alternative, or call ask_user if the task cannot continue safely.{}",
+                action.summary,
+                if note.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nUser's direction: {note}")
+                }
+            ),
+        ),
+    };
+    let decision_event = models::ComputerTaskEvent {
+        run_id: run.id.clone(),
+        step,
+        kind: kind.into(),
+        title: title.into(),
+        detail,
+        data: Some(serde_json::json!({
+            "approvalId": action.approval_id,
+            "decision": match request.decision {
+                ComputerTaskApprovalDecision::Approve => "approved",
+                ComputerTaskApprovalDecision::Reject => "rejected",
+            },
+            "note": note,
+        })),
+        at: chrono::Utc::now().to_rfc3339(),
+    };
+    let updated = match state.workspace.add_task_event(decision_event.clone()) {
+        Ok(updated) => updated,
+        Err(error) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err(error);
+        }
+    };
+    let _ = app.emit("computer-task-event", decision_event);
+    let task_request = ComputerTaskRequest {
+        model_id: run.model_id.clone(),
+        objective: run.objective.clone(),
+        attachment_ids: run.attachments.iter().map(|item| item.id.clone()).collect(),
+        access: run.access,
+        approval_mode: run.approval_mode,
+        max_steps: settings.agent_max_steps,
+        max_output_tokens: settings.agent_max_output_tokens,
+    };
+    let cancel = CancellationToken::new();
+    match state.interactive_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(run.id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("interactive job registry is unavailable".into());
+        }
+    }
+    spawn_computer_task(
+        app,
+        run.id.clone(),
+        task_request,
+        settings,
+        cancel,
+        Some(task_native_continuation(&run, &continuation)),
+        approved_action,
+    );
+    Ok(updated)
+}
+
+fn pending_computer_action(
+    run: &ComputerTaskRun,
+    approval_id: &str,
+) -> Result<(u32, PendingComputerAction), String> {
+    let event = run
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.kind == "approval_required")
+        .ok_or_else(|| "The durable task has no pending approval request.".to_string())?;
+    let action = serde_json::from_value::<PendingComputerAction>(
+        event
+            .data
+            .clone()
+            .ok_or_else(|| "The pending approval record is incomplete.".to_string())?,
+    )
+    .map_err(|error| format!("The pending approval record is invalid: {error}"))?;
+    if action.approval_id != approval_id {
+        return Err("That approval is stale. Review the task's current pending action.".into());
+    }
+    Ok((event.step, action))
 }
 
 fn spawn_computer_task(
@@ -854,6 +1009,7 @@ fn spawn_computer_task(
     settings: ControlSettings,
     cancel: CancellationToken,
     continuation: Option<String>,
+    approved_action: Option<PendingComputerAction>,
 ) {
     tauri::async_runtime::spawn(async move {
         let managed = app.state::<AppState>();
@@ -870,6 +1026,7 @@ fn spawn_computer_task(
             settings,
             cancel,
             continuation,
+            approved_action,
         )
         .await;
         if let Err(error) = result {
@@ -882,6 +1039,14 @@ fn spawn_computer_task(
 }
 
 fn task_continuation(run: &ComputerTaskRun, answer: &str) -> String {
+    task_continuation_with_label(run, "User's new direction", answer)
+}
+
+fn task_native_continuation(run: &ComputerTaskRun, directive: &str) -> String {
+    task_continuation_with_label(run, "Kestrel's verified approval state", directive)
+}
+
+fn task_continuation_with_label(run: &ComputerTaskRun, label: &str, value: &str) -> String {
     let mut transcript = String::new();
     for event in run
         .events
@@ -900,7 +1065,7 @@ fn task_continuation(run: &ComputerTaskRun, answer: &str) -> String {
         }
     }
     format!(
-        "Continue the same durable task. Re-inspect current state before further changes because the prior run may have stopped between actions.\n\nRecent verified transcript:\n{transcript}\nUser's new direction:\n{answer}"
+        "Continue the same durable task. Re-inspect current state before further changes because the prior run may have stopped between actions.\n\nRecent verified transcript:\n{transcript}\n{label}:\n{value}"
     )
 }
 
@@ -1229,6 +1394,7 @@ pub fn run() {
             get_computer_task,
             start_computer_task,
             resume_computer_task,
+            resolve_computer_task_approval,
             stop_computer_task,
             open_task_artifact,
             run_native_diagnostics,
@@ -1243,4 +1409,49 @@ pub fn run() {
             let _ = tauri::async_runtime::block_on(runtime.stop_managed());
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ComputerTaskApprovalMode;
+
+    #[test]
+    fn approval_resolution_loads_only_the_current_exact_action() {
+        let approval_id = uuid::Uuid::new_v4().to_string();
+        let run = ComputerTaskRun {
+            id: uuid::Uuid::new_v4().to_string(),
+            objective: "write notes".into(),
+            model_id: "model".into(),
+            access: ComputerTaskAccess::Workspace,
+            approval_mode: ComputerTaskApprovalMode::Manual,
+            status: "approval".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            events: vec![models::ComputerTaskEvent {
+                run_id: "run".into(),
+                step: 3,
+                kind: "approval_required".into(),
+                title: "Approval required".into(),
+                detail: "Write notes".into(),
+                data: Some(serde_json::json!({
+                    "approvalId": approval_id,
+                    "step": 3,
+                    "tool": "write_file",
+                    "arguments": {"path":"C:\\Work\\notes.txt","content":"notes"},
+                    "summary": "Write notes",
+                    "reason": "Manual approval",
+                    "risk": "low"
+                })),
+                at: chrono::Utc::now().to_rfc3339(),
+            }],
+            artifacts: Vec::new(),
+            attachments: Vec::new(),
+        };
+        let (step, action) = pending_computer_action(&run, &approval_id).unwrap();
+        assert_eq!(step, 3);
+        assert_eq!(action.approval_id, approval_id);
+        assert_eq!(action.arguments["content"], "notes");
+        assert!(pending_computer_action(&run, &uuid::Uuid::new_v4().to_string()).is_err());
+    }
 }

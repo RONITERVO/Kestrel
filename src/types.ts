@@ -248,6 +248,7 @@ export interface ComputerTaskRequest {
   objective: string;
   attachmentIds: string[];
   access: "workspace" | "full";
+  approvalMode: "manual" | "automatic";
   maxSteps: number;
   maxOutputTokens: number;
 }
@@ -257,13 +258,20 @@ export interface ResumeComputerTaskRequest {
   answer: string;
 }
 
+export interface ResolveComputerTaskApprovalRequest {
+  runId: string;
+  approvalId: string;
+  decision: "approve" | "reject";
+  note: string;
+}
+
 export interface ComputerTaskEvent {
   runId: string;
   step: number;
   kind: string;
   title: string;
   detail: string;
-  data?: { path?: string; question?: string; options?: string[]; recommendedIndex?: number; [key: string]: unknown };
+  data?: { path?: string; question?: string; options?: string[]; recommendedIndex?: number; approvalId?: string; tool?: string; summary?: string; reason?: string; risk?: string; decision?: string; arguments?: Record<string, unknown>; [key: string]: unknown };
   at: string;
 }
 
@@ -272,6 +280,7 @@ export interface ComputerTaskRun {
   objective: string;
   modelId: string;
   access: "workspace" | "full";
+  approvalMode: "manual" | "automatic";
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -285,6 +294,7 @@ export interface ComputerTaskSummary {
   objective: string;
   modelId: string;
   access: "workspace" | "full";
+  approvalMode: "manual" | "automatic";
   status: string;
   updatedAt: string;
   eventCount: number;

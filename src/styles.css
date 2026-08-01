@@ -480,6 +480,13 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .task-policy span { display: flex; flex-direction: column; gap: 3px; }
 .task-policy strong { font-size: 9px; }
 .task-policy small { color: #65796e; font: 7px var(--mono); }
+.approval-policy { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 14px; }
+.approval-policy > button { min-height: 58px; padding: 10px 13px; display: grid; grid-template-columns: 27px 1fr; align-items: center; gap: 9px; border: 1px solid #293a31; border-radius: 9px; color: #82968a; background: #101713; text-align: left; cursor: pointer; }
+.approval-policy > button.active { border-color: #718650; color: #e4ecdf; background: #1b251c; }
+.approval-policy svg { width: 17px; }
+.approval-policy span { display: flex; flex-direction: column; gap: 3px; }
+.approval-policy strong { font-size: 9px; }
+.approval-policy small { color: #6d8175; font: 7px var(--mono); }
 .task-run { min-width: 190px; justify-content: center; }
 .task-run-view { max-width: 850px; margin: auto; }
 .task-run-view > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 22px; border-bottom: 1px solid #25352d; }
@@ -492,7 +499,9 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .event-glyph svg { width: 14px; }
 .task-event.done .event-glyph, .task-event.artifact .event-glyph { color: #b6e560; border-color: #4d653d; }
 .task-event.error .event-glyph, .task-event.tool_error .event-glyph, .task-event.limit .event-glyph { color: #e8a298; border-color: #654039; }
-.task-event.question .event-glyph { color: #ecd080; border-color: #6c5930; background: #211c11; }
+.task-event.question .event-glyph, .task-event.approval_required .event-glyph { color: #ecd080; border-color: #6c5930; background: #211c11; }
+.task-event.approval_auto .event-glyph, .task-event.approval_approved .event-glyph { color: #b6e560; border-color: #4d653d; }
+.task-event.approval_rejected .event-glyph { color: #e8a298; border-color: #654039; }
 .task-event > div:last-child { min-width: 0; padding: 3px 0 10px; border-bottom: 1px solid rgba(37,53,45,.75); }
 .task-event header { display: flex; justify-content: space-between; gap: 12px; }
 .task-event header strong { font-size: 10px; }
@@ -508,6 +517,21 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .task-question h3 { margin: 7px 0 12px; color: #eadfbe; font: 600 15px/1.45 var(--serif); }
 .task-question textarea { width: 100%; min-height: 82px; padding: 11px; resize: vertical; border: 1px solid #4f4a32; border-radius: 8px; outline: 0; color: #e8e2cf; background: #11130e; font: 10px/1.5 var(--sans); }
 .task-question > .primary-button { margin-top: 9px; }
+.task-approval { margin: 6px 0 18px 44px; padding: 18px; border: 1px solid #7d6535; border-radius: 10px; background: #201b10; }
+.task-approval h3 { margin: 7px 0 10px; color: #f0e4bd; font: 600 15px/1.45 var(--serif); }
+.task-approval p { margin: 10px 0; color: #baaf91; font-size: 9px; line-height: 1.55; }
+.task-approval details { margin: 10px 0; padding: 9px 11px; border: 1px solid #4e472e; border-radius: 7px; background: #15140e; }
+.task-approval summary { color: #d7c994; cursor: pointer; font: 8px var(--mono); }
+.task-approval details pre { max-height: 260px; overflow: auto; margin: 9px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #aab3a7; font: 8px/1.5 var(--mono); }
+.task-approval textarea { width: 100%; min-height: 68px; padding: 10px; resize: vertical; border: 1px solid #51482c; border-radius: 8px; outline: 0; color: #e8e2cf; background: #11130e; font: 9px/1.5 var(--sans); }
+.approval-facts { display: flex; flex-wrap: wrap; gap: 8px; }
+.approval-facts span { padding: 5px 8px; border: 1px solid #4c442b; border-radius: 999px; color: #928a70; font: 7px var(--mono); text-transform: uppercase; }
+.approval-facts strong { color: #e2d49c; }
+.approval-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.approval-actions button { min-height: 38px; display: inline-flex; align-items: center; gap: 7px; }
+.approval-actions .secondary-button { padding: 0 13px; border: 1px solid #69443d; border-radius: 8px; color: #dcaaa1; background: #221513; cursor: pointer; font-size: 8px; }
+.approval-actions button:disabled { opacity: .5; cursor: default; }
+.approval-actions svg { width: 15px; }
 .system-hero-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .question-options { display: grid; gap: 6px; margin-bottom: 10px; }
 .question-options button { min-height: 36px; padding: 7px 10px; display: flex; justify-content: space-between; gap: 10px; align-items: center; border: 1px solid #494832; border-radius: 7px; color: #c7c3ad; background: #15170f; text-align: left; cursor: pointer; font-size: 9px; }
@@ -612,6 +636,10 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   .control-welcome h2 { font-size: 23px; }
   .control-welcome > div { display: none; }
   .control-composer { margin-inline: 12px; }
+  .task-policy, .approval-policy { grid-template-columns: 1fr; }
+  .task-approval, .task-question { margin-left: 0; }
+  .approval-actions { align-items: stretch; flex-direction: column-reverse; }
+  .approval-actions button { justify-content: center; }
   .dev-actions { align-items: stretch; flex-direction: column; }
 }
 

@@ -2,7 +2,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { demoSnapshot } from "./demo";
-import { mergeAttachments, terminalTaskStatus } from "./OfflineWorkspace";
+import {
+  ComputerTasks,
+  mergeAttachments,
+  terminalTaskStatus,
+} from "./OfflineWorkspace";
 import type { ContextAttachment } from "./types";
 
 const profileApi = vi.hoisted(() => ({
@@ -141,6 +145,8 @@ describe("Kestrel research experience", () => {
     expect(screen.getByRole("heading", { name: /bounded objective/i })).toBeInTheDocument();
     expect(screen.getByText(/Every decision, tool call, result, error, and artifact/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Attach files as context/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Approve for me/i })).toHaveClass("active");
+    expect(screen.getByRole("button", { name: /Approve manually/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Start visible task/i })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /New chat/i }));
     expect(screen.getByRole("button", { name: /^Chat$/i })).toHaveClass("active");
@@ -161,12 +167,86 @@ describe("Kestrel research experience", () => {
 });
 
 describe("computer task terminal states", () => {
+  it("shows one exact durable action for manual approval", () => {
+    const onApproval = vi.fn();
+    render(
+      <ComputerTasks
+        run={{
+          id: "run",
+          objective: "Create notes",
+          modelId: "model",
+          access: "workspace",
+          approvalMode: "manual",
+          status: "approval",
+          createdAt: new Date(0).toISOString(),
+          updatedAt: new Date(0).toISOString(),
+          artifacts: [],
+          events: [
+            {
+              runId: "run",
+              step: 1,
+              kind: "approval_required",
+              title: "Approval required",
+              detail: "Write 5 bytes to C:\\Work\\notes.txt.",
+              data: {
+                approvalId: "approval",
+                tool: "write_file",
+                arguments: {
+                  path: "C:\\Work\\notes.txt",
+                  content: "notes",
+                },
+                summary: "Write 5 bytes to C:\\Work\\notes.txt.",
+                reason: "Manual approval is enabled.",
+                risk: "low",
+              },
+              at: new Date(0).toISOString(),
+            },
+          ],
+        }}
+        objective=""
+        attachments={[]}
+        answer=""
+        access="workspace"
+        approvalMode="manual"
+        ready
+        running={false}
+        stopping={false}
+        resuming={false}
+        attaching={false}
+        fullUnlocked={false}
+        onObjective={vi.fn()}
+        onRemoveAttachment={vi.fn()}
+        onAttach={vi.fn()}
+        onAnswer={vi.fn()}
+        onAccess={vi.fn()}
+        onApprovalMode={vi.fn()}
+        onApproval={onApproval}
+        onRun={vi.fn()}
+        onResume={vi.fn()}
+        onStop={vi.fn()}
+        onOpen={vi.fn()}
+        onError={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("EXACT ACTION REVIEW")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        name: "Write 5 bytes to C:\\Work\\notes.txt.",
+      }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Approve this exact action once/i }),
+    );
+    expect(onApproval).toHaveBeenCalledWith("approve");
+  });
+
   it.each([
     ["done", "completed"],
     ["cancelled", "cancelled"],
     ["error", "failed"],
     ["limit", "failed"],
     ["question", "waiting"],
+    ["approval_required", "approval"],
   ])("maps %s to %s", (kind, expected) => {
     expect(terminalTaskStatus(kind, "running")).toBe(expected);
   });

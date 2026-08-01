@@ -20,6 +20,7 @@ import type {
   ResearchProgress,
   ResearchReport,
   ResearchSettings,
+  ResolveComputerTaskApprovalRequest,
   ResumeComputerTaskRequest,
   RunResearchRequest,
   StartChatRequest,
@@ -297,6 +298,14 @@ export async function resumeComputerTask(
   if (!isTauri())
     throw new Error("Computer Tasks require the desktop application.");
   return invoke<ComputerTaskRun>("resume_computer_task", { request });
+}
+
+export async function resolveComputerTaskApproval(
+  request: ResolveComputerTaskApprovalRequest,
+): Promise<ComputerTaskRun> {
+  if (!isTauri())
+    throw new Error("Computer Tasks require the desktop application.");
+  return invoke<ComputerTaskRun>("resolve_computer_task_approval", { request });
 }
 
 export async function stopComputerTask(runId: string): Promise<void> {

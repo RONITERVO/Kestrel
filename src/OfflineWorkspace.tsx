@@ -43,6 +43,7 @@ import {
   pickContextFiles,
   pickLocalModelFolder,
   releaseAiMemory,
+  resolveComputerTaskApproval,
   resumeComputerTask,
   saveControlSettings,
   scanLocalModels,
@@ -101,6 +102,9 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   );
   const [taskAnswer, setTaskAnswer] = useState("");
   const [access, setAccess] = useState<"workspace" | "full">("workspace");
+  const [approvalMode, setApprovalMode] = useState<"manual" | "automatic">(
+    "automatic",
+  );
   const [working, setWorking] = useState<
     "scan" | "start" | "stop" | "release" | "save" | "task" | "attach" | null
   >(null);
@@ -304,7 +308,14 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       };
     });
     if (
-      ["done", "cancelled", "error", "limit", "question"].includes(event.kind)
+      [
+        "done",
+        "cancelled",
+        "error",
+        "limit",
+        "question",
+        "approval_required",
+      ].includes(event.kind)
     ) {
       taskRunRef.current = null;
       setStoppingTask(false);
@@ -573,7 +584,11 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
     if (
       access === "full" &&
       !window.confirm(
-        "Run this local model with full computer access? It may run programs and change files outside workspace folders. Every action is recorded, but the folder sandbox will not apply.",
+        `Run this local model with full computer access? It may propose programs and changes outside workspace folders. Every action is recorded. ${
+          approvalMode === "manual"
+            ? "Manual approval will pause before every action."
+            : "Approve for me will still pause for programs, moves, external launches, protected metadata, and anything outside approved workspace folders."
+        }`,
       )
     )
       return;
@@ -587,6 +602,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
           "Analyze the attached local context and complete the implied task safely.",
         attachmentIds: taskAttachments.map((item) => item.id),
         access,
+        approvalMode,
         maxSteps: settings.agentMaxSteps,
         maxOutputTokens: settings.agentMaxOutputTokens,
       });
@@ -598,9 +614,14 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       );
       const terminal = early
         .filter((event) =>
-          ["done", "cancelled", "error", "limit", "question"].includes(
-            event.kind,
-          ),
+          [
+            "done",
+            "cancelled",
+            "error",
+            "limit",
+            "question",
+            "approval_required",
+          ].includes(event.kind),
         )
         .at(-1);
       taskRunRef.current = terminal ? null : run.id;
@@ -642,7 +663,11 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
     if (
       task.access === "full" &&
       !window.confirm(
-        "Continue this task with full computer access? The model may run programs and modify files outside workspace folders.",
+        `Continue this task with full computer access? The model may propose programs and changes outside workspace folders. ${
+          task.approvalMode === "manual"
+            ? "Manual approval will pause before every action."
+            : "Approve for me will escalate effects outside its bounded workspace policy for your confirmation."
+        }`,
       )
     )
       return;
@@ -670,9 +695,80 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       );
       const terminal = additional
         .filter((event) =>
-          ["done", "cancelled", "error", "limit", "question"].includes(
-            event.kind,
+          [
+            "done",
+            "cancelled",
+            "error",
+            "limit",
+            "question",
+            "approval_required",
+          ].includes(event.kind),
+        )
+        .at(-1);
+      taskRunRef.current = terminal ? null : next.id;
+      const initialized = {
+        ...next,
+        status: terminal
+          ? terminalTaskStatus(terminal.kind, next.status)
+          : next.status,
+        events: [...next.events, ...additional],
+      };
+      latestTaskRef.current = initialized;
+      setTask(initialized);
+      taskStartingRef.current = false;
+      setTaskAnswer("");
+      void refreshHistory();
+    } catch (cause) {
+      taskStartingRef.current = false;
+      onError(String(cause));
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const decideTaskApproval = async (decision: "approve" | "reject") => {
+    if (!task || task.status !== "approval") return;
+    const pending = [...task.events]
+      .reverse()
+      .find((event) => event.kind === "approval_required");
+    if (!pending?.data?.approvalId) {
+      onError("The durable approval record is incomplete. Reopen the task before retrying.");
+      return;
+    }
+    setWorking("task");
+    taskStartingRef.current = true;
+    try {
+      const next = await resolveComputerTaskApproval({
+        runId: task.id,
+        approvalId: pending.data.approvalId,
+        decision,
+        note: taskAnswer.trim(),
+      });
+      const early = earlyTaskEventsRef.current.filter(
+        (event) => event.runId === next.id,
+      );
+      earlyTaskEventsRef.current = earlyTaskEventsRef.current.filter(
+        (event) => event.runId !== next.id,
+      );
+      const additional = early.filter(
+        (event) =>
+          !next.events.some(
+            (known) =>
+              known.at === event.at &&
+              known.kind === event.kind &&
+              known.title === event.title,
           ),
+      );
+      const terminal = additional
+        .filter((event) =>
+          [
+            "done",
+            "cancelled",
+            "error",
+            "limit",
+            "question",
+            "approval_required",
+          ].includes(event.kind),
         )
         .at(-1);
       taskRunRef.current = terminal ? null : next.id;
@@ -1116,6 +1212,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             attachments={taskAttachments}
             answer={taskAnswer}
             access={access}
+            approvalMode={approvalMode}
             ready={control.runtime.phase === "ready"}
             running={!!taskRunRef.current}
             stopping={stoppingTask}
@@ -1131,6 +1228,8 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             onAttach={() => void attachFiles("task")}
             onAnswer={setTaskAnswer}
             onAccess={setAccess}
+            onApprovalMode={setApprovalMode}
+            onApproval={(decision) => void decideTaskApproval(decision)}
             onRun={() => void runTask()}
             onResume={() => void resumeTask()}
             onStop={() => void stopTask()}
@@ -1429,12 +1528,13 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   );
 }
 
-function ComputerTasks({
+export function ComputerTasks({
   run,
   objective,
   attachments,
   answer,
   access,
+  approvalMode,
   ready,
   running,
   stopping,
@@ -1446,6 +1546,8 @@ function ComputerTasks({
   onAttach,
   onAnswer,
   onAccess,
+  onApprovalMode,
+  onApproval,
   onRun,
   onResume,
   onStop,
@@ -1457,6 +1559,7 @@ function ComputerTasks({
   attachments: ContextAttachment[];
   answer: string;
   access: "workspace" | "full";
+  approvalMode: "manual" | "automatic";
   ready: boolean;
   running: boolean;
   stopping: boolean;
@@ -1468,6 +1571,8 @@ function ComputerTasks({
   onAttach: () => void;
   onAnswer: (value: string) => void;
   onAccess: (value: "workspace" | "full") => void;
+  onApprovalMode: (value: "manual" | "automatic") => void;
+  onApproval: (decision: "approve" | "reject") => void;
   onRun: () => void;
   onResume: () => void;
   onStop: () => void;
@@ -1480,6 +1585,12 @@ function ComputerTasks({
   const question = run
     ? [...run.events].reverse().find((event) => event.kind === "question")
     : undefined;
+  const pendingApproval =
+    run?.status === "approval"
+      ? [...run.events]
+          .reverse()
+          .find((event) => event.kind === "approval_required")
+      : undefined;
   return (
     <div className="computer-workspace">
       {!run || (!running && (objective || attachments.length > 0)) ? (
@@ -1543,6 +1654,30 @@ function ComputerTasks({
               </span>
             </button>
           </div>
+          <div className="approval-policy" aria-label="Action approval policy">
+            <button
+              className={approvalMode === "automatic" ? "active" : ""}
+              aria-pressed={approvalMode === "automatic"}
+              onClick={() => onApprovalMode("automatic")}
+            >
+              <Check />
+              <span>
+                <strong>Approve for me</strong>
+                <small>Explains each action; risky work asks you</small>
+              </span>
+            </button>
+            <button
+              className={approvalMode === "manual" ? "active" : ""}
+              aria-pressed={approvalMode === "manual"}
+              onClick={() => onApprovalMode("manual")}
+            >
+              <ShieldCheck />
+              <span>
+                <strong>Approve manually</strong>
+                <small>Pause before every action</small>
+              </span>
+            </button>
+          </div>
           <button
             className="primary-button task-run"
             disabled={!ready || (!objective.trim() && attachments.length === 0)}
@@ -1556,7 +1691,11 @@ function ComputerTasks({
           <header>
             <div>
               <span className="eyebrow">
-                {run.access.toUpperCase()} ACCESS · {run.status.toUpperCase()}
+                {run.access.toUpperCase()} ACCESS ·{" "}
+                {run.approvalMode === "manual"
+                  ? "MANUAL APPROVAL"
+                  : "APPROVE FOR ME"}{" "}
+                · {run.status.toUpperCase()}
               </span>
               <h2>{run.objective}</h2>
               {(run.attachments?.length ?? 0) > 0 && (
@@ -1617,6 +1756,57 @@ function ComputerTasks({
               </article>
             ))}
           </div>
+          {pendingApproval && (
+            <section className="task-approval">
+              <span className="eyebrow">EXACT ACTION REVIEW</span>
+              <h3>
+                {pendingApproval.data?.summary ?? pendingApproval.detail}
+              </h3>
+              <div className="approval-facts">
+                <span>
+                  Tool{" "}
+                  <strong>{pendingApproval.data?.tool ?? "native action"}</strong>
+                </span>
+                <span>
+                  Risk <strong>{pendingApproval.data?.risk ?? "unknown"}</strong>
+                </span>
+              </div>
+              <p>
+                {pendingApproval.data?.reason ??
+                  "Kestrel paused before this action so you can decide."}
+              </p>
+              {pendingApproval.data?.arguments && (
+                <details>
+                  <summary>Review bounded native arguments</summary>
+                  <pre>
+                    {formatApprovalArguments(pendingApproval.data.arguments)}
+                  </pre>
+                </details>
+              )}
+              <textarea
+                value={answer}
+                onChange={(event) => onAnswer(event.target.value)}
+                placeholder="Optional note, especially if you reject this action…"
+              />
+              <div className="approval-actions">
+                <button
+                  className="secondary-button"
+                  disabled={!ready || resuming}
+                  onClick={() => onApproval("reject")}
+                >
+                  <X /> Reject and find a safer path
+                </button>
+                <button
+                  className="primary-button"
+                  disabled={!ready || resuming}
+                  onClick={() => onApproval("approve")}
+                >
+                  {resuming ? <LoaderCircle className="spin" /> : <Check />} Approve
+                  this exact action once
+                </button>
+              </div>
+            </section>
+          )}
           {resumable && (
             <section className="task-question">
               <span className="eyebrow">
@@ -1881,10 +2071,20 @@ function Metric({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+function formatApprovalArguments(argumentsValue: Record<string, unknown>) {
+  const display = { ...argumentsValue };
+  if (typeof display.content === "string" && display.content.length > 2_000) {
+    display.content = `${display.content.slice(0, 2_000)}\n\n… ${(
+      display.content.length - 2_000
+    ).toLocaleString()} more characters retained in the exact durable request`;
+  }
+  return JSON.stringify(display, null, 2);
+}
 export function terminalTaskStatus(kind: string, fallback: string) {
   if (kind === "done") return "completed";
   if (kind === "cancelled") return "cancelled";
   if (kind === "question") return "waiting";
+  if (kind === "approval_required") return "approval";
   if (kind === "error" || kind === "limit") return "failed";
   return fallback === "starting" ? "running" : fallback;
 }
