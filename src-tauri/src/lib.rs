@@ -19,10 +19,10 @@ use developer::DeveloperAssistant;
 use harness::ResearchHarness;
 use model::{default_roots, ModelInfo};
 use models::{
-    AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskRequest, ComputerTaskRun,
-    ComputerTaskSummary, ControlSettings, ControlSnapshot, DeveloperRepairReport,
-    DeveloperRepairRequest, ResearchReport, ResearchSettings, RunResearchRequest, StartChatRequest,
-    SystemSnapshot,
+    AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess,
+    ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
+    DeveloperRepairReport, DeveloperRepairRequest, ResearchReport, ResearchSettings,
+    RunResearchRequest, StartChatRequest, SystemSnapshot,
 };
 use runtime::RuntimeManager;
 use std::{
@@ -64,6 +64,14 @@ impl Drop for ResearchGuard<'_> {
     fn drop(&mut self) {
         self.research.store(false, Ordering::Release);
         self.work.store(false, Ordering::Release);
+    }
+}
+
+struct WorkGuard<'a>(&'a AtomicBool);
+
+impl Drop for WorkGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -155,7 +163,7 @@ fn cancel_research(job_id: String, state: State<'_, AppState>) -> Result<(), Str
 
 #[tauri::command]
 async fn prepare_services(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
-    ensure_workspace_idle(&state)?;
+    let _guard = claim_workspace(&state)?;
     let settings = state
         .research_settings
         .load()
@@ -178,8 +186,11 @@ async fn get_system_snapshot(state: State<'_, AppState>) -> Result<SystemSnapsho
 }
 
 #[tauri::command]
-async fn get_control_snapshot(state: State<'_, AppState>) -> Result<ControlSnapshot, String> {
-    control_snapshot(&state, true).await
+async fn get_control_snapshot(
+    probe_developer: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<ControlSnapshot, String> {
+    control_snapshot(&state, probe_developer.unwrap_or(true)).await
 }
 
 #[tauri::command]
@@ -258,7 +269,7 @@ async fn apply_model_runtime(
     settings: ResearchSettings,
     state: State<'_, AppState>,
 ) -> Result<SystemSnapshot, String> {
-    ensure_workspace_idle(&state)?;
+    let _guard = claim_workspace(&state)?;
     state
         .research_settings
         .save(&settings)
@@ -297,7 +308,7 @@ async fn start_local_model(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ControlSnapshot, String> {
-    ensure_workspace_idle(&state)?;
+    let _guard = claim_workspace(&state)?;
     let mut settings = state
         .control_settings
         .load()
@@ -325,7 +336,7 @@ async fn start_local_model(
 
 #[tauri::command]
 async fn stop_local_model(state: State<'_, AppState>) -> Result<ControlSnapshot, String> {
-    ensure_workspace_idle(&state)?;
+    let _guard = claim_workspace(&state)?;
     state
         .runtime
         .stop_managed()
@@ -497,7 +508,7 @@ async fn start_computer_task(
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
-    if request.access == "full" && !settings.allow_full_access_agent {
+    if request.access == ComputerTaskAccess::Full && !settings.allow_full_access_agent {
         return Err("Full computer access is locked in the runtime profile.".into());
     }
     state
@@ -507,7 +518,7 @@ async fn start_computer_task(
     let run =
         match state
             .workspace
-            .create_task(&request.model_id, &request.objective, &request.access)
+            .create_task(&request.model_id, &request.objective, request.access)
         {
             Ok(run) => run,
             Err(error) => {
@@ -684,7 +695,7 @@ async fn control_snapshot(
         runtime: state.runtime.snapshot().await,
         gpu: services::gpu_snapshot().await,
         developer,
-        runtime_logs: state.runtime.logs().await,
+        runtime_logs: state.runtime.recent_logs(100).await,
     })
 }
 
@@ -694,6 +705,16 @@ fn ensure_workspace_idle(state: &AppState) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn claim_workspace(state: &AppState) -> Result<WorkGuard<'_>, String> {
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| {
+            "Chat, research, or a computer task is active. Stop or finish it before changing runtime or developer state.".to_string()
+        })?;
+    Ok(WorkGuard(&state.work_active))
 }
 
 async fn identify_attached_bonsai(state: &AppState) {

@@ -43,14 +43,15 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   useEffect(() => { setSettings(control.settings); }, [control.settings]);
   useEffect(() => {
     void refreshHistory().catch(() => undefined);
+    let unmounted = false;
     let chatDispose: (() => void) | undefined;
     let taskDispose: (() => void) | undefined;
     let runtimeDispose: (() => void) | undefined;
-    void onChatStream(handleChatEvent).then((dispose) => { chatDispose = dispose; });
-    void onComputerTaskEvent(handleTaskEvent).then((dispose) => { taskDispose = dispose; });
-    void onRuntimeProgress((event) => setRuntimeProgress(event.detail)).then((dispose) => { runtimeDispose = dispose; });
-    const timer = window.setInterval(() => void getControlSnapshot().then(onChanged).catch(() => undefined), 2_500);
-    return () => { chatDispose?.(); taskDispose?.(); runtimeDispose?.(); window.clearInterval(timer); };
+    void onChatStream(handleChatEvent).then((dispose) => { if (unmounted) dispose(); else chatDispose = dispose; });
+    void onComputerTaskEvent(handleTaskEvent).then((dispose) => { if (unmounted) dispose(); else taskDispose = dispose; });
+    void onRuntimeProgress((event) => setRuntimeProgress(event.detail)).then((dispose) => { if (unmounted) dispose(); else runtimeDispose = dispose; });
+    const timer = window.setInterval(() => void getControlSnapshot(false).then(onChanged).catch(() => undefined), 2_500);
+    return () => { unmounted = true; chatDispose?.(); taskDispose?.(); runtimeDispose?.(); window.clearInterval(timer); };
     // Event handlers use refs and functional state updates, so they remain stable for this subscription.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -146,6 +147,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       const terminal = early.some((event) => ["done", "cancelled", "error", "limit"].includes(event.kind));
       taskRunRef.current = terminal ? null : run.id;
       setTask({ ...run, status: terminal ? terminalTaskStatus(early.at(-1)?.kind ?? "", run.status) : run.status, events: [...run.events, ...early] });
+      if (terminal) setWorking(null);
       setObjective("");
       void refreshHistory();
     } catch (cause) { setWorking(null); onError(String(cause)); }
@@ -159,6 +161,10 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   };
 
   const addRoot = () => { const root = newRoot.trim(); if (root && !settings.agentWorkspaceRoots.includes(root)) setSettings({ ...settings, agentWorkspaceRoots: [...settings.agentWorkspaceRoots, root] }); setNewRoot(""); };
+  const updatePositiveSetting = (key: "contextWindow" | "maxOutputTokens" | "agentMaxSteps" | "agentMaxOutputTokens", value: string) => {
+    const next = Number(value);
+    if (Number.isFinite(next) && next > 0) setSettings((current) => ({ ...current, [key]: next }));
+  };
   const active = !!stream || !!taskRunRef.current;
   const gpu = control.gpu;
 
@@ -187,8 +193,8 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       <Metric label="Runtime" value={control.runtime.phase}/><Metric label="Ownership" value={control.runtime.mode}/><Metric label="Context" value={control.runtime.contextWindow ? control.runtime.contextWindow.toLocaleString() : "—"}/><Metric label="Inference" value={active ? "Active here" : control.runtime.inferenceBusy ? "Busy elsewhere" : "Available"}/>
       {gpu && <div className="control-memory"><strong>{gpu.name}</strong><div><span style={{width:`${Math.min(100, gpu.usedMib / gpu.totalMib * 100)}%`}}/></div><small>{formatMib(gpu.usedMib)} used · {formatMib(gpu.freeMib)} free · {gpu.utilizationPercent}% compute</small></div>}
       <p className="runtime-detail">{control.runtime.detail}</p>
-      <details className="inspector-section" open><summary>Model profile</summary><div className="inline-runtime-settings"><label>Context<input type="number" disabled={!settings.advancedMode} value={settings.contextWindow} onChange={(event) => setSettings({...settings, contextWindow:Number(event.target.value)})}/></label><label>Max chat output<input type="number" disabled={!settings.advancedMode} value={settings.maxOutputTokens} onChange={(event) => setSettings({...settings, maxOutputTokens:Number(event.target.value)})}/></label><label className="check-line"><input type="checkbox" checked={settings.advancedMode} onChange={(event) => setSettings({...settings, advancedMode:event.target.checked})}/> Advanced, uncapped</label></div></details>
-      <details className="inspector-section" open={kind === "task"}><summary>Computer Tasks policy</summary><div className="inline-runtime-settings"><label>Maximum steps<input type="number" value={settings.agentMaxSteps} onChange={(event) => setSettings({...settings, agentMaxSteps:Number(event.target.value)})}/></label><label>Output per decision<input type="number" value={settings.agentMaxOutputTokens} onChange={(event) => setSettings({...settings, agentMaxOutputTokens:Number(event.target.value)})}/></label><label className="check-line danger-toggle"><input type="checkbox" checked={settings.allowFullAccessAgent} onChange={(event) => { if (!event.target.checked || window.confirm("Unlock full computer access? Tasks will be able to run programs and operate outside workspace folders after an additional per-task confirmation.")) setSettings({...settings, allowFullAccessAgent:event.target.checked}); }}/> Unlock full access</label><div className="workspace-roots">{settings.agentWorkspaceRoots.map((root) => <div key={root}><span title={root}>{root}</span><button onClick={() => setSettings({...settings, agentWorkspaceRoots:settings.agentWorkspaceRoots.filter((value) => value !== root)})}>×</button></div>)}<label>Approved folder<span><input value={newRoot} onChange={(event) => setNewRoot(event.target.value)} placeholder="C:\Users\You\Work"/><button onClick={addRoot}>Add</button></span></label></div></div></details>
+      <details className="inspector-section" open><summary>Model profile</summary><div className="inline-runtime-settings"><label>Context<input type="number" disabled={!settings.advancedMode} value={settings.contextWindow} onChange={(event) => updatePositiveSetting("contextWindow", event.target.value)}/></label><label>Max chat output<input type="number" disabled={!settings.advancedMode} value={settings.maxOutputTokens} onChange={(event) => updatePositiveSetting("maxOutputTokens", event.target.value)}/></label><label className="check-line"><input type="checkbox" checked={settings.advancedMode} onChange={(event) => setSettings({...settings, advancedMode:event.target.checked})}/> Advanced, uncapped</label></div></details>
+      <details className="inspector-section" open={kind === "task"}><summary>Computer Tasks policy</summary><div className="inline-runtime-settings"><label>Maximum steps<input type="number" value={settings.agentMaxSteps} onChange={(event) => updatePositiveSetting("agentMaxSteps", event.target.value)}/></label><label>Output per decision<input type="number" value={settings.agentMaxOutputTokens} onChange={(event) => updatePositiveSetting("agentMaxOutputTokens", event.target.value)}/></label><label className="check-line danger-toggle"><input type="checkbox" checked={settings.allowFullAccessAgent} onChange={(event) => { if (!event.target.checked || window.confirm("Unlock full computer access? Tasks will be able to run programs and operate outside workspace folders after an additional per-task confirmation.")) setSettings({...settings, allowFullAccessAgent:event.target.checked}); }}/> Unlock full access</label><div className="workspace-roots">{settings.agentWorkspaceRoots.map((root) => <div key={root}><span title={root}>{root}</span><button onClick={() => setSettings({...settings, agentWorkspaceRoots:settings.agentWorkspaceRoots.filter((value) => value !== root)})}>×</button></div>)}<span className="root-entry"><label htmlFor="approved-folder">Approved folder</label><span><input id="approved-folder" value={newRoot} onChange={(event) => setNewRoot(event.target.value)} placeholder="C:\Users\You\Work"/><button type="button" aria-label="Add approved folder" onClick={addRoot}>Add</button></span></span></div></div></details>
       {settings.advancedMode && <div className="control-warning">Invalid or oversized values can stop startup or exhaust VRAM.</div>}
       <button className="quiet-button inspector-save" disabled={!!working || active} onClick={() => void save()}>{working === "save" ? <LoaderCircle className="spin"/> : <Check/>} Save complete profile</button>
       {control.runtime.launchArgs.length > 0 && <details className="launch-proof"><summary>Exact engine launch</summary><pre>{control.runtime.launchArgs.join(" ")}</pre></details>}
@@ -215,7 +221,7 @@ function Metrics({ data }: { data: Record<string, unknown> }) { const usage = da
 function RuntimeNotice({ title, detail }: { title: string; detail: string }) { return <div className="runtime-feed"><LoaderCircle className="spin"/><span><strong>{title}</strong>{detail}</span></div>; }
 function Welcome({ models, context, freeMib }: { models: number; context: number; freeMib?: number }) { return <div className="control-welcome"><Sparkles/><h2>Your private, persistent workspace.</h2><p>Stream a conversation, review reasoning and metrics, or give the same local model a visible computer task. Nothing is sent away.</p><div><span><strong>{models}</strong> models</span><span><strong>{context.toLocaleString()}</strong> context</span><span><strong>{freeMib === undefined ? "—" : formatMib(freeMib)}</strong> VRAM free</span></div></div>; }
 function Metric({ label, value }: { label: string; value: string }) { return <div className="control-metric"><span>{label}</span><strong>{value}</strong></div>; }
-function terminalTaskStatus(kind: string, fallback: string) { if (kind === "done") return "completed"; if (kind === "cancelled") return "cancelled"; if (kind === "error" || kind === "limit") return "failed"; return fallback === "starting" ? "running" : fallback; }
+export function terminalTaskStatus(kind: string, fallback: string) { if (kind === "done") return "completed"; if (kind === "cancelled") return "cancelled"; if (kind === "error" || kind === "limit") return "failed"; return fallback === "starting" ? "running" : fallback; }
 function relativeTime(value: string) { const delta = Date.now() - new Date(value).getTime(); if (delta < 60_000) return "now"; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`; return new Date(value).toLocaleDateString(); }
 function timeOnly(value: string) { return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
 function fileName(path: string) { return path.split(/[\\/]/).pop() ?? path; }

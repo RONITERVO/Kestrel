@@ -15,7 +15,7 @@
         "title": "Kestrel Local",
         "width": 1480,
         "height": 940,
-        "minWidth": 900,
+        "minWidth": 960,
         "minHeight": 650,
         "resizable": true,
         "fullscreen": false,

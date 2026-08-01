@@ -6,7 +6,7 @@
 
 use crate::{
     model::ModelInfo,
-    models::{ComputerTaskEvent, ComputerTaskRequest, ControlSettings},
+    models::{ComputerTaskAccess, ComputerTaskEvent, ComputerTaskRequest, ControlSettings},
     runtime::{authorized, RuntimeManager},
     workspace::WorkspaceStore,
 };
@@ -22,11 +22,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::{process::Command, time::timeout};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Copy, PartialEq)]
-enum Access {
-    Workspace,
-    Full,
-}
+type Access = ComputerTaskAccess;
 
 struct ToolOutput {
     text: String,
@@ -45,12 +41,10 @@ pub async fn run(
     settings: ControlSettings,
     cancel: CancellationToken,
 ) -> Result<(), String> {
-    let access = match request.access.as_str() {
-        "workspace" => Access::Workspace,
-        "full" if settings.allow_full_access_agent => Access::Full,
-        "full" => return Err("Full computer access is locked in the runtime profile.".into()),
-        _ => return Err("Computer task access must be workspace or full.".into()),
-    };
+    let access = request.access;
+    if access == Access::Full && !settings.allow_full_access_agent {
+        return Err("Full computer access is locked in the runtime profile.".into());
+    }
     if access == Access::Workspace && settings.agent_workspace_roots.is_empty() {
         return Err(
             "Add at least one Computer Tasks workspace folder in the runtime profile.".into(),
@@ -113,7 +107,10 @@ pub async fn run(
     let max_steps = if settings.advanced_mode {
         request.max_steps.max(1)
     } else {
-        request.max_steps.max(1).min(settings.agent_max_steps)
+        request
+            .max_steps
+            .max(1)
+            .min(settings.agent_max_steps.max(1))
     };
     let max_output_tokens = if settings.advanced_mode {
         request.max_output_tokens.max(1)
@@ -121,7 +118,7 @@ pub async fn run(
         request
             .max_output_tokens
             .max(1)
-            .min(settings.agent_max_output_tokens)
+            .min(settings.agent_max_output_tokens.max(1))
     };
     for step in 1..=max_steps {
         if cancel.is_cancelled() {
@@ -249,8 +246,24 @@ pub async fn run(
                 .pointer("/function/arguments")
                 .and_then(Value::as_str)
                 .unwrap_or("{}");
-            let arguments: Value = serde_json::from_str(argument_text)
-                .map_err(|error| format!("invalid arguments for {name}: {error}"))?;
+            let arguments: Value = match serde_json::from_str(argument_text) {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    let detail = format!("ERROR: invalid arguments for {name}: {error}");
+                    event(
+                        &app,
+                        &store,
+                        &run_id,
+                        step,
+                        "tool_error",
+                        &format!("{name} finished"),
+                        &detail,
+                        None,
+                    );
+                    messages.push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
+                    continue;
+                }
+            };
             event(
                 &app,
                 &store,
@@ -351,7 +364,11 @@ fn event(
         data,
         at: chrono::Utc::now().to_rfc3339(),
     };
-    let _ = store.add_task_event(value.clone());
+    if let Err(error) = store.add_task_event(value.clone()) {
+        eprintln!(
+            "failed to persist computer task event run={run_id} step={step} kind={kind}: {error}"
+        );
+    }
     if let Some(app) = app {
         let _ = app.emit("computer-task-event", value);
     }
@@ -449,9 +466,15 @@ async fn execute_tool(
             ));
             fs::write(&temporary, content.as_bytes()).map_err(|error| error.to_string())?;
             if path.exists() {
-                fs::remove_file(&path).map_err(|error| error.to_string())?;
+                if let Err(error) = fs::remove_file(&path) {
+                    let _ = fs::remove_file(&temporary);
+                    return Err(error.to_string());
+                }
             }
-            fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+            if let Err(error) = fs::rename(&temporary, &path) {
+                let _ = fs::remove_file(&temporary);
+                return Err(error.to_string());
+            }
             Ok(ToolOutput {
                 text: format!(
                     "Wrote {} bytes to {}{}",

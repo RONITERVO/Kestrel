@@ -81,9 +81,9 @@ export async function openBonsaiControlCenter(): Promise<void> {
   if (isTauri()) await invoke("open_bonsai_control_center");
 }
 
-export async function getControlSnapshot(): Promise<ControlSnapshot> {
+export async function getControlSnapshot(probeDeveloper = true): Promise<ControlSnapshot> {
   if (!isTauri()) return demoSnapshot.control;
-  return invoke<ControlSnapshot>("get_control_snapshot");
+  return invoke<ControlSnapshot>("get_control_snapshot", { probeDeveloper });
 }
 
 export async function scanLocalModels(): Promise<ControlSnapshot> {
@@ -121,10 +121,7 @@ export async function deleteChatSession(id: string): Promise<void> {
 }
 
 export async function startChatStream(request: StartChatRequest): Promise<ChatStart> {
-  if (!isTauri()) {
-    const now = new Date().toISOString();
-    return { requestId: `preview-${Date.now()}`, session: { id: `preview-${Date.now()}`, title: request.message, modelId: request.modelId, createdAt: now, updatedAt: now, messages: [{ id: "user", role: "user", content: request.message, createdAt: now }] } };
-  }
+  if (!isTauri()) throw new Error("Preview conversations cannot stream or persist.");
   return invoke<ChatStart>("start_chat_stream", { request });
 }
 

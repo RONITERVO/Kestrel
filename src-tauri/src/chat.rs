@@ -62,7 +62,7 @@ impl ChatStreamJob {
             request
                 .max_output_tokens
                 .max(1)
-                .min(settings.max_output_tokens)
+                .min(settings.max_output_tokens.max(1))
         };
         let all_messages = session
             .messages
@@ -141,7 +141,20 @@ impl ChatStreamJob {
                 }
             };
             let Some(chunk) = next else { break };
-            let chunk = chunk.map_err(|error| error.to_string())?;
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    if !content.is_empty() || !reasoning.is_empty() {
+                        store.add_chat_message(
+                            &session_id,
+                            "assistant",
+                            content,
+                            (!reasoning.is_empty()).then_some(reasoning),
+                        )?;
+                    }
+                    return Err(error.to_string());
+                }
+            };
             buffer.extend_from_slice(&chunk);
             while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
                 let line = buffer.drain(..=end).collect::<Vec<_>>();

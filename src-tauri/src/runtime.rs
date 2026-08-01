@@ -9,7 +9,14 @@ use crate::models::{ControlSettings, ManagedRuntimeSnapshot, ResearchSettings, R
 use reqwest::Client;
 use serde_json::json;
 use sha2::Digest;
-use std::{collections::VecDeque, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio::{
@@ -54,6 +61,7 @@ pub struct InferenceLease {
 
 struct RuntimeProcess {
     child: Option<Child>,
+    api_key_file: Option<PathBuf>,
     connection: ModelConnection,
     snapshot: ManagedRuntimeSnapshot,
 }
@@ -104,8 +112,18 @@ impl RuntimeManager {
         ManagedRuntimeSnapshot::default()
     }
 
+    /// Full history is retained for native diagnostics and tests. UI snapshots use `recent_logs`.
+    #[allow(dead_code)]
     pub async fn logs(&self) -> Vec<RuntimeLog> {
         self.logs.lock().await.iter().cloned().collect()
+    }
+
+    pub async fn recent_logs(&self, limit: usize) -> Vec<RuntimeLog> {
+        let logs = self.logs.lock().await;
+        logs.iter()
+            .skip(logs.len().saturating_sub(limit))
+            .cloned()
+            .collect()
     }
 
     pub async fn attach_external_if_ready(
@@ -136,6 +154,7 @@ impl RuntimeManager {
         };
         *process = Some(RuntimeProcess {
             child: None,
+            api_key_file: None,
             connection: connection.clone(),
             snapshot,
         });
@@ -230,6 +249,7 @@ impl RuntimeManager {
         let api_key = hex::encode(sha2::Sha256::digest(
             format!("{}:{port}:{}", model.id, chrono::Utc::now()).as_bytes(),
         ));
+        let api_key_file = create_api_key_file(&api_key)?;
         let context = settings.context_window.max(1);
         let mut args = vec![
             "--model".into(),
@@ -240,8 +260,8 @@ impl RuntimeManager {
             "127.0.0.1".into(),
             "--port".into(),
             port.to_string(),
-            "--api-key".into(),
-            api_key.clone(),
+            "--api-key-file".into(),
+            api_key_file.to_string_lossy().into_owned(),
             "--parallel".into(),
             "1".into(),
             "--ctx-size".into(),
@@ -280,10 +300,7 @@ impl RuntimeManager {
                 "on".into(),
             ]);
         }
-        let mut visible_args = args.clone();
-        if let Some(index) = visible_args.iter().position(|value| value == "--api-key") {
-            visible_args[index + 1] = "<session-secret>".into();
-        }
+        let visible_args = args.clone();
         let mut command = Command::new(&settings.engine_path);
         command
             .args(&args)
@@ -296,7 +313,13 @@ impl RuntimeManager {
         }
         #[cfg(windows)]
         command.creation_flags(0x08000000);
-        let mut child = command.spawn()?;
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = fs::remove_file(&api_key_file);
+                return Err(error.into());
+            }
+        };
         let pid = child.id();
         if let Some(stdout) = child.stdout.take() {
             spawn_log_reader(stdout, "stdout", self.logs.clone(), app.cloned());
@@ -326,6 +349,7 @@ impl RuntimeManager {
             let mut process = self.process.lock().await;
             *process = Some(RuntimeProcess {
                 child: Some(child),
+                api_key_file: Some(api_key_file),
                 connection: connection.clone(),
                 snapshot,
             });
@@ -360,6 +384,9 @@ impl RuntimeManager {
             if let Some(child) = current.child.as_mut() {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
+            }
+            if let Some(path) = current.api_key_file.take() {
+                let _ = fs::remove_file(path);
             }
         }
         *process = None;
@@ -471,7 +498,29 @@ fn spawn_log_reader<R>(
 {
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(error) => {
+                    let record = RuntimeLog {
+                        stream: "kestrel".into(),
+                        line: format!("Failed to read managed runtime {stream}: {error}"),
+                        at: chrono::Utc::now().to_rfc3339(),
+                    };
+                    {
+                        let mut values = logs.lock().await;
+                        if values.len() == 500 {
+                            values.pop_front();
+                        }
+                        values.push_back(record.clone());
+                    }
+                    if let Some(app) = &app {
+                        let _ = app.emit("runtime-log", &record);
+                    }
+                    break;
+                }
+            };
             let record = RuntimeLog {
                 stream: stream.into(),
                 line: truncate(&line, 4_000),
@@ -489,6 +538,24 @@ fn spawn_log_reader<R>(
             }
         }
     });
+}
+
+fn create_api_key_file(api_key: &str) -> Result<PathBuf, std::io::Error> {
+    let path =
+        std::env::temp_dir().join(format!("kestrel-runtime-key-{}.txt", uuid::Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    if let Err(error) = file.write_all(format!("{api_key}\n").as_bytes()) {
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(path)
 }
 
 fn truncate(value: &str, max: usize) -> String {
@@ -515,6 +582,14 @@ mod tests {
         assert_eq!(managed.api_key.as_deref(), Some("secret"));
     }
 
+    #[test]
+    fn api_key_file_does_not_expose_the_secret_in_its_path() {
+        let path = create_api_key_file("session-secret").unwrap();
+        assert!(!path.to_string_lossy().contains("session-secret"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "session-secret\n");
+        fs::remove_file(path).unwrap();
+    }
+
     #[tokio::test]
     async fn inference_gate_allows_exactly_one_owner() {
         let manager = RuntimeManager::new();
@@ -532,6 +607,31 @@ mod tests {
         )
         .await
         .is_ok());
+    }
+
+    #[tokio::test]
+    async fn recent_logs_returns_newest_records_in_order() {
+        let manager = RuntimeManager::new();
+        {
+            let mut logs = manager.logs.lock().await;
+            for index in 0..5 {
+                logs.push_back(RuntimeLog {
+                    stream: "test".into(),
+                    line: index.to_string(),
+                    at: index.to_string(),
+                });
+            }
+        }
+        assert_eq!(
+            manager
+                .recent_logs(3)
+                .await
+                .into_iter()
+                .map(|record| record.line)
+                .collect::<Vec<_>>(),
+            ["2", "3", "4"]
+        );
+        assert_eq!(manager.logs().await.len(), 5);
     }
 
     #[tokio::test]

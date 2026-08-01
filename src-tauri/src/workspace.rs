@@ -4,8 +4,8 @@
 //! file with a recovery copy so a crash cannot silently erase a long conversation or task audit.
 
 use crate::models::{
-    ChatMessage, ChatSession, ChatSessionSummary, ComputerTaskEvent, ComputerTaskRun,
-    ComputerTaskSummary,
+    ChatMessage, ChatSession, ChatSessionSummary, ComputerTaskAccess, ComputerTaskEvent,
+    ComputerTaskRun, ComputerTaskSummary,
 };
 use std::{
     fs,
@@ -96,13 +96,22 @@ impl WorkspaceStore {
     }
 
     pub fn delete_chat(&self, id: &str) -> Result<(), String> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| "conversation store lock is unavailable".to_string())?;
         let path = self.chat_path(id)?;
         if path.is_file() {
+            let backup = path.with_extension("json.backup");
+            if backup.is_file() {
+                fs::remove_file(backup).map_err(|error| error.to_string())?;
+            }
             let archived = self.root.join("chats").join(format!(
-                "{id}.archived-{}.json",
-                chrono::Utc::now().timestamp()
+                "{id}.archived-{}-{}.json",
+                chrono::Utc::now().timestamp(),
+                uuid::Uuid::new_v4()
             ));
-            fs::rename(path, archived).map_err(|error| error.to_string())?;
+            fs::rename(&path, archived).map_err(|error| error.to_string())?;
         }
         let index = self.chat_index_path(id)?;
         if index.is_file() {
@@ -115,14 +124,14 @@ impl WorkspaceStore {
         &self,
         model_id: &str,
         objective: &str,
-        access: &str,
+        access: ComputerTaskAccess,
     ) -> Result<ComputerTaskRun, String> {
         let now = chrono::Utc::now().to_rfc3339();
         let run = ComputerTaskRun {
             id: uuid::Uuid::new_v4().to_string(),
             objective: objective.trim().to_string(),
             model_id: model_id.to_string(),
-            access: access.to_string(),
+            access,
             status: "starting".into(),
             created_at: now.clone(),
             updated_at: now,
@@ -223,7 +232,7 @@ impl WorkspaceStore {
                 id: run.id.clone(),
                 objective: run.objective.clone(),
                 model_id: run.model_id.clone(),
-                access: run.access.clone(),
+                access: run.access,
                 status: run.status.clone(),
                 updated_at: run.updated_at.clone(),
                 event_count: run.events.len(),
@@ -238,8 +247,9 @@ impl WorkspaceStore {
                 continue;
             };
             if uuid::Uuid::parse_str(id).is_ok() && !self.chat_index_path(id)?.is_file() {
-                let session: ChatSession = read_recoverable(&path)?;
-                self.write_chat_summary(&session)?;
+                if let Ok(session) = read_recoverable::<ChatSession>(&path) {
+                    self.write_chat_summary(&session)?;
+                }
             }
         }
         for path in json_paths(&self.root.join("tasks"))? {
@@ -247,8 +257,9 @@ impl WorkspaceStore {
                 continue;
             };
             if uuid::Uuid::parse_str(id).is_ok() && !self.task_index_path(id)?.is_file() {
-                let run: ComputerTaskRun = read_recoverable(&path)?;
-                self.write_task_summary(&run)?;
+                if let Ok(run) = read_recoverable::<ComputerTaskRun>(&path) {
+                    self.write_task_summary(&run)?;
+                }
             }
         }
         Ok(())
@@ -257,7 +268,9 @@ impl WorkspaceStore {
     fn recover_interrupted_tasks(&self) -> Result<(), String> {
         for summary in read_json_directory::<ComputerTaskSummary>(&self.root.join("task-index"))? {
             if matches!(summary.status.as_str(), "starting" | "running") {
-                let mut run = self.get_task(&summary.id)?;
+                let Ok(mut run) = self.get_task(&summary.id) else {
+                    continue;
+                };
                 let now = chrono::Utc::now().to_rfc3339();
                 run.status = "interrupted".into();
                 run.updated_at = now.clone();
@@ -318,21 +331,31 @@ fn atomic_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String
 }
 
 fn read_recoverable<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
-    let primary = fs::read(path).map_err(|error| error.to_string())?;
+    let primary = match fs::read(path) {
+        Ok(primary) => primary,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return read_backup_and_restore(path).map_err(|backup_error| {
+                if path.with_extension("json.backup").is_file() {
+                    backup_error
+                } else {
+                    error.to_string()
+                }
+            });
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     match serde_json::from_slice(&primary) {
         Ok(value) => Ok(value),
-        Err(primary_error) => {
-            let backup = path.with_extension("json.backup");
-            if backup.is_file() {
-                let bytes = fs::read(&backup).map_err(|error| error.to_string())?;
-                let value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-                fs::copy(backup, path).map_err(|error| error.to_string())?;
-                Ok(value)
-            } else {
-                Err(primary_error.to_string())
-            }
-        }
+        Err(primary_error) => read_backup_and_restore(path).map_err(|_| primary_error.to_string()),
     }
+}
+
+fn read_backup_and_restore<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
+    let backup = path.with_extension("json.backup");
+    let bytes = fs::read(&backup).map_err(|error| error.to_string())?;
+    let value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    fs::copy(backup, path).map_err(|error| error.to_string())?;
+    Ok(value)
 }
 
 fn read_json_directory<T: serde::de::DeserializeOwned>(directory: &Path) -> Result<Vec<T>, String> {
@@ -380,7 +403,60 @@ mod tests {
             .join("chats")
             .join(format!("{}.json", session.id));
         fs::write(&path, b"broken").unwrap();
+        // Atomic saves retain one previous generation, so recovery returns the pre-message session.
         assert_eq!(store.get_chat(&session.id).unwrap().messages.len(), 0);
+    }
+
+    #[test]
+    fn missing_primary_is_restored_from_recovery_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::new(directory.path()).unwrap();
+        let session = store.create_chat("model", "recover me").unwrap();
+        store
+            .add_chat_message(&session.id, "user", "hello".into(), None)
+            .unwrap();
+        let path = directory
+            .path()
+            .join("workspace")
+            .join("chats")
+            .join(format!("{}.json", session.id));
+        fs::remove_file(&path).unwrap();
+        let recovered = store.get_chat(&session.id).unwrap();
+        assert_eq!(recovered.id, session.id);
+        assert_eq!(recovered.title, "recover me");
+        assert!(path.is_file());
+    }
+
+    #[test]
+    fn deleting_chat_removes_index_and_retains_unique_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::new(directory.path()).unwrap();
+        let session = store.create_chat("model", "archive me").unwrap();
+        store
+            .add_chat_message(&session.id, "user", "keep this".into(), None)
+            .unwrap();
+        store.delete_chat(&session.id).unwrap();
+        assert!(store.list_chats().unwrap().is_empty());
+
+        let chat_dir = directory.path().join("workspace").join("chats");
+        let archives = json_paths(&chat_dir)
+            .unwrap()
+            .into_iter()
+            .filter(|path| path.to_string_lossy().contains(".archived-"))
+            .collect::<Vec<_>>();
+        assert_eq!(archives.len(), 1);
+        let archived: ChatSession = read_recoverable(&archives[0]).unwrap();
+        assert_eq!(archived.id, session.id);
+        assert_eq!(archived.messages[0].content, "keep this");
+        let stem = archives[0]
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap();
+        let suffix = stem
+            .strip_prefix(&format!("{}.archived-", session.id))
+            .unwrap();
+        let (_, archive_id) = suffix.split_once('-').unwrap();
+        assert!(uuid::Uuid::parse_str(archive_id).is_ok());
     }
 
     #[test]
@@ -395,7 +471,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::new(directory.path()).unwrap();
         let run = store
-            .create_task("model", "make a file", "workspace")
+            .create_task("model", "make a file", ComputerTaskAccess::Workspace)
             .unwrap();
         drop(store);
         let reopened = WorkspaceStore::new(directory.path()).unwrap();

@@ -205,9 +205,16 @@ pub struct ChatStreamEvent {
 pub struct ComputerTaskRequest {
     pub model_id: String,
     pub objective: String,
-    pub access: String,
+    pub access: ComputerTaskAccess,
     pub max_steps: u32,
     pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ComputerTaskAccess {
+    Workspace,
+    Full,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,7 +235,7 @@ pub struct ComputerTaskRun {
     pub id: String,
     pub objective: String,
     pub model_id: String,
-    pub access: String,
+    pub access: ComputerTaskAccess,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -242,7 +249,7 @@ pub struct ComputerTaskSummary {
     pub id: String,
     pub objective: String,
     pub model_id: String,
-    pub access: String,
+    pub access: ComputerTaskAccess,
     pub status: String,
     pub updated_at: String,
     pub event_count: usize,
@@ -489,4 +496,21 @@ pub struct ResearchDraft {
     pub terms: Vec<Term>,
     #[serde(default)]
     pub open_questions: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn computer_task_access_rejects_unknown_values() {
+        let request = serde_json::from_value::<ComputerTaskRequest>(serde_json::json!({
+            "modelId": "model",
+            "objective": "inspect files",
+            "access": "network",
+            "maxSteps": 1,
+            "maxOutputTokens": 1
+        }));
+        assert!(request.is_err());
+    }
 }

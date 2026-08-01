@@ -301,6 +301,29 @@ mod tests {
     }
 
     #[test]
+    fn advanced_control_profile_preserves_supplied_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ControlSettingsStore::new(directory.path());
+        let settings = ControlSettings {
+            advanced_mode: true,
+            context_window: 196_608,
+            max_output_tokens: 65_536,
+            agent_max_steps: 100,
+            agent_max_output_tokens: 65_536,
+            ..ControlSettings::default()
+        };
+        store.save(&settings).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.context_window, settings.context_window);
+        assert_eq!(loaded.max_output_tokens, settings.max_output_tokens);
+        assert_eq!(loaded.agent_max_steps, settings.agent_max_steps);
+        assert_eq!(
+            loaded.agent_max_output_tokens,
+            settings.agent_max_output_tokens
+        );
+    }
+
+    #[test]
     fn restores_settings_from_the_recovery_copy() {
         let directory = tempfile::tempdir().unwrap();
         let store = SettingsStore::new(directory.path());

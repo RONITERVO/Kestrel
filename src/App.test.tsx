@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import App from "./App";
+import { terminalTaskStatus } from "./OfflineWorkspace";
 
 afterEach(cleanup);
 
@@ -51,5 +52,20 @@ describe("Kestrel research experience", () => {
     expect(await screen.findByRole("heading", { name: "Developer" })).toBeInTheDocument();
     expect(screen.getByText(/Offline independence/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Run offline diagnostics/i })).toBeInTheDocument();
+  });
+});
+
+describe("computer task terminal states", () => {
+  it.each([
+    ["done", "completed"],
+    ["cancelled", "cancelled"],
+    ["error", "failed"],
+    ["limit", "failed"],
+  ])("maps %s to %s", (kind, expected) => {
+    expect(terminalTaskStatus(kind, "running")).toBe(expected);
+  });
+
+  it("promotes the starting fallback while waiting for events", () => {
+    expect(terminalTaskStatus("start", "starting")).toBe("running");
   });
 });
