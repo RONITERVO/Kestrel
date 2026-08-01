@@ -1,6 +1,6 @@
 # Kestrel architecture
 
-The executable is one Tauri application with four explicit native authorities:
+The executable is one Tauri application with five explicit native authorities:
 
 ```text
 React WebView

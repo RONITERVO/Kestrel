@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -20,7 +21,10 @@ use std::{
 
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_NATIVE_MEDIA_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_NATIVE_MEDIA_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EXTRACTED_CHARS: usize = 2_000_000;
+const MAX_PLAIN_TEXT_BYTES: usize = MAX_EXTRACTED_CHARS * 4 + 4;
+const MAX_XML_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -221,6 +225,23 @@ impl AttachmentStore {
         model: &ModelInfo,
         max_text_chars: usize,
     ) -> Result<PreparedAttachments, String> {
+        self.prepare_message_cached(
+            text,
+            attachments,
+            model,
+            max_text_chars,
+            &mut HashMap::new(),
+        )
+    }
+
+    pub(crate) fn prepare_message_cached(
+        &self,
+        text: &str,
+        attachments: &[ContextAttachment],
+        model: &ModelInfo,
+        max_text_chars: usize,
+        media_cache: &mut HashMap<String, Value>,
+    ) -> Result<PreparedAttachments, String> {
         if attachments.is_empty() {
             return Ok(PreparedAttachments {
                 content: Value::String(text.to_string()),
@@ -230,6 +251,7 @@ impl AttachmentStore {
         let mut manifest = String::from("\n\nLocal attachments (durable copies):\n");
         let mut remaining = max_text_chars;
         let mut media = Vec::new();
+        let mut native_media_bytes = 0u64;
         let mut degraded = Vec::new();
         for attachment in attachments {
             manifest.push_str(&format!(
@@ -240,40 +262,57 @@ impl AttachmentStore {
                 attachment.bytes,
                 attachment.sha256
             ));
+            if matches!(attachment.kind.as_str(), "image" | "audio") {
+                let supported = if attachment.kind == "image" {
+                    model.supports_vision
+                } else {
+                    model.supports_audio
+                };
+                if !supported {
+                    degraded.push(if attachment.kind == "image" {
+                        format!(
+                            "{} was not sent visually because this model has no vision projector.",
+                            attachment.name
+                        )
+                    } else {
+                        format!(
+                            "{} was not sent as audio because this model/projector does not advertise audio input.",
+                            attachment.name
+                        )
+                    });
+                } else if attachment.bytes > MAX_NATIVE_MEDIA_BYTES {
+                    degraded.push(format!(
+                        "{} is stored but was not sent as {} because native media is limited to 32 MiB per file.",
+                        attachment.name,
+                        if attachment.kind == "image" { "an image" } else { "audio" }
+                    ));
+                } else if native_media_bytes.saturating_add(attachment.bytes)
+                    > MAX_NATIVE_MEDIA_TOTAL_BYTES
+                {
+                    degraded.push(format!(
+                        "{} is stored but was not sent because native media is limited to 64 MiB per message.",
+                        attachment.name
+                    ));
+                } else {
+                    media.push(self.native_media_part_cached(attachment, media_cache)?);
+                    native_media_bytes = native_media_bytes.saturating_add(attachment.bytes);
+                }
+                continue;
+            }
             match attachment.kind.as_str() {
-                "image" if model.supports_vision && attachment.bytes <= MAX_NATIVE_MEDIA_BYTES => {
-                    media.push(self.native_media_part(attachment)?);
-                }
-                "audio" if model.supports_audio && attachment.bytes <= MAX_NATIVE_MEDIA_BYTES => {
-                    media.push(self.native_media_part(attachment)?);
-                }
-                "image" if model.supports_vision => degraded.push(format!(
-                    "{} is stored but was not sent visually because native media is limited to 32 MiB per file.",
-                    attachment.name
-                )),
-                "audio" if model.supports_audio => degraded.push(format!(
-                    "{} is stored but was not sent as audio because native media is limited to 32 MiB per file.",
-                    attachment.name
-                )),
-                "image" => degraded.push(format!(
-                    "{} was not sent visually because this model has no vision projector.",
-                    attachment.name
-                )),
-                "audio" => degraded.push(format!(
-                    "{} was not sent as audio because this model/projector does not advertise audio input.",
-                    attachment.name
-                )),
                 _ if attachment.extracted_chars > 0 => {
                     let available = remaining.min(attachment.extracted_chars);
+                    let mut included = 0;
                     if available > 0 {
                         let extracted = self.read_extracted(&attachment.id, 0, available)?;
+                        included = extracted.chars().count();
                         manifest.push_str(&format!(
                             "\n--- BEGIN ATTACHMENT {} ---\n{}\n--- END ATTACHMENT {} ---\n",
                             attachment.name, extracted, attachment.name
                         ));
-                        remaining = remaining.saturating_sub(extracted.chars().count());
+                        remaining = remaining.saturating_sub(included);
                     }
-                    if available < attachment.extracted_chars {
+                    if included < attachment.extracted_chars {
                         degraded.push(format!(
                             "{} was truncated to fit this turn; its full local extraction remains stored.",
                             attachment.name
@@ -352,48 +391,83 @@ impl AttachmentStore {
             Ok(json!({"type":"input_audio","input_audio":{"data":encoded,"format":format}}))
         }
     }
+
+    fn native_media_part_cached(
+        &self,
+        attachment: &ContextAttachment,
+        cache: &mut HashMap<String, Value>,
+    ) -> Result<Value, String> {
+        if let Some(content) = cache.get(&attachment.id) {
+            return Ok(content.clone());
+        }
+        let content = self.native_media_part(attachment)?;
+        cache.insert(attachment.id.clone(), content.clone());
+        Ok(content)
+    }
 }
 
 fn copy_and_hash(source: &Path, destination: &Path) -> Result<(String, u64), String> {
-    let mut input = File::open(source).map_err(|error| error.to_string())?;
-    let mut output = File::create(destination).map_err(|error| error.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0; READ_CHUNK];
-    let mut total = 0u64;
-    loop {
-        let count = input.read(&mut buffer).map_err(|error| error.to_string())?;
-        if count == 0 {
-            break;
+    let result = (|| {
+        let mut input = File::open(source).map_err(|error| error.to_string())?;
+        let mut output = File::create(destination).map_err(|error| error.to_string())?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0; READ_CHUNK];
+        let mut total = 0u64;
+        loop {
+            let count = input.read(&mut buffer).map_err(|error| error.to_string())?;
+            if count == 0 {
+                break;
+            }
+            total = total.saturating_add(count as u64);
+            if total > MAX_FILE_BYTES {
+                return Err(
+                    "The selected file grew beyond the 128 MiB safety limit while copying.".into(),
+                );
+            }
+            hasher.update(&buffer[..count]);
+            output
+                .write_all(&buffer[..count])
+                .map_err(|error| error.to_string())?;
         }
-        total = total.saturating_add(count as u64);
-        if total > MAX_FILE_BYTES {
-            let _ = fs::remove_file(destination);
-            return Err(
-                "The selected file grew beyond the 128 MiB safety limit while copying.".into(),
-            );
-        }
-        hasher.update(&buffer[..count]);
-        output
-            .write_all(&buffer[..count])
-            .map_err(|error| error.to_string())?;
+        output.sync_all().map_err(|error| error.to_string())?;
+        Ok((hex::encode(hasher.finalize()), total))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(destination);
     }
-    output.sync_all().map_err(|error| error.to_string())?;
-    Ok((hex::encode(hasher.finalize()), total))
+    result
 }
 
 fn extract_text(path: &Path, kind: &str, extension: &str) -> Result<Option<String>, String> {
     match kind {
         "text" => read_plain_text(path).map(Some),
-        "pdf" => pdf_extract::extract_text(path)
-            .map(Some)
-            .map_err(|error| error.to_string()),
+        "pdf" => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pdf_extract::extract_text(path)
+        })) {
+            Ok(result) => result.map(Some).map_err(|error| error.to_string()),
+            Err(payload) => {
+                let detail = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("unknown PDF parser panic");
+                Err(format!("PDF extraction stopped unexpectedly: {detail}"))
+            }
+        },
         "document" => extract_open_xml(path, extension).map(Some),
         _ => Ok(None),
     }
 }
 
 fn read_plain_text(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let mut file = File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::with_capacity(MAX_PLAIN_TEXT_BYTES.min(READ_CHUNK));
+    Read::by_ref(&mut file)
+        .take((MAX_PLAIN_TEXT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    let truncated = bytes.len() > MAX_PLAIN_TEXT_BYTES;
+    bytes.truncate(MAX_PLAIN_TEXT_BYTES);
     if bytes.starts_with(&[0xff, 0xfe]) {
         let units = bytes[2..]
             .chunks_exact(2)
@@ -411,7 +485,13 @@ fn read_plain_text(path: &Path) -> Result<String, String> {
     if bytes.iter().take(8_192).any(|byte| *byte == 0) {
         return Err("The file contains binary data and was not treated as text.".into());
     }
-    String::from_utf8(bytes).map_err(|error| error.to_string())
+    match std::str::from_utf8(&bytes) {
+        Ok(value) => Ok(value.to_string()),
+        Err(error) if truncated && error.error_len().is_none() => {
+            Ok(String::from_utf8_lossy(&bytes[..error.valid_up_to()]).into_owned())
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn extract_open_xml(path: &Path, extension: &str) -> Result<String, String> {
@@ -430,13 +510,18 @@ fn extract_open_xml(path: &Path, extension: &str) -> Result<String, String> {
     let mut output = String::new();
     for name in names {
         let mut entry = archive.by_name(&name).map_err(|error| error.to_string())?;
-        if entry.size() > 32 * 1024 * 1024 {
+        if entry.size() > MAX_XML_ENTRY_BYTES {
             continue;
         }
         let mut xml = String::new();
         entry
+            .by_ref()
+            .take(MAX_XML_ENTRY_BYTES + 1)
             .read_to_string(&mut xml)
             .map_err(|error| error.to_string())?;
+        if xml.len() as u64 > MAX_XML_ENTRY_BYTES {
+            continue;
+        }
         let text = xml_text(&xml)?;
         if !text.trim().is_empty() {
             output.push_str(&format!("\n[{name}]\n{text}\n"));
@@ -471,7 +556,6 @@ fn open_xml_entry(extension: &str, name: &str) -> bool {
 
 fn xml_text(xml: &str) -> Result<String, String> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
     let mut output = String::new();
     loop {
         match reader.read_event() {
@@ -479,19 +563,32 @@ fn xml_text(xml: &str) -> Result<String, String> {
                 let decoded = value.decode().map_err(|error| error.to_string())?;
                 let decoded =
                     quick_xml::escape::unescape(&decoded).map_err(|error| error.to_string())?;
-                if !decoded.trim().is_empty() {
-                    if !output.is_empty() {
-                        output.push(' ');
-                    }
-                    output.push_str(decoded.trim());
-                }
+                output.push_str(&decoded);
+            }
+            Ok(Event::CData(value)) => {
+                output.push_str(&value.decode().map_err(|error| error.to_string())?);
+            }
+            Ok(Event::GeneralRef(value)) => {
+                let reference = value.decode().map_err(|error| error.to_string())?;
+                let encoded = format!("&{reference};");
+                output.push_str(
+                    &quick_xml::escape::unescape(&encoded).map_err(|error| error.to_string())?,
+                );
+            }
+            Ok(Event::End(_))
+                if output
+                    .chars()
+                    .last()
+                    .is_some_and(|value| !value.is_whitespace()) =>
+            {
+                output.push(' ');
             }
             Ok(Event::Eof) => break,
             Err(error) => return Err(error.to_string()),
             _ => {}
         }
     }
-    Ok(output)
+    Ok(output.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 fn classify(path: &Path) -> (String, String) {
@@ -528,9 +625,15 @@ fn classify(path: &Path) -> (String, String) {
 
 fn media_signature_matches(path: &Path, mime: &str) -> bool {
     let mut header = [0u8; 16];
-    let count = File::open(path)
-        .and_then(|mut file| file.read(&mut header))
-        .unwrap_or(0);
+    let mut count = 0;
+    if let Ok(mut file) = File::open(path) {
+        while count < header.len() {
+            match file.read(&mut header[count..]) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => count += read,
+            }
+        }
+    }
     let bytes = &header[..count];
     match mime {
         "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
@@ -765,6 +868,74 @@ mod tests {
     }
 
     #[test]
+    fn native_media_has_an_aggregate_message_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = AttachmentStore::new(directory.path()).unwrap();
+        let mut attachments = Vec::new();
+        for index in 0..3 {
+            let source = directory.path().join(format!("reference-{index}.png"));
+            fs::write(
+                &source,
+                [b"\x89PNG\r\n\x1a\n".as_slice(), &[index]].concat(),
+            )
+            .unwrap();
+            let mut attachment = store.import_path(&source).unwrap();
+            attachment.bytes = MAX_NATIVE_MEDIA_BYTES;
+            attachments.push(attachment);
+        }
+        let model = ModelInfo {
+            id: "vision-model".into(),
+            name: "Vision model".into(),
+            path: "model.gguf".into(),
+            source: "test".into(),
+            bytes: 1,
+            architecture: None,
+            context_length: None,
+            chat_template: true,
+            quantization: None,
+            mmproj_path: Some("mmproj.gguf".into()),
+            supports_vision: true,
+            supports_audio: false,
+            recommendation: "test".into(),
+        };
+
+        let prepared = store
+            .prepare_message("Inspect them.", &attachments, &model, 1_000)
+            .unwrap();
+        assert_eq!(prepared.content.as_array().unwrap().len(), 3);
+        assert!(prepared.notice.unwrap().contains("64 MiB per message"));
+    }
+
+    #[test]
+    fn extraction_notice_uses_the_characters_actually_included() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("long.txt");
+        fs::write(&source, "x".repeat(150_000)).unwrap();
+        let store = AttachmentStore::new(directory.path()).unwrap();
+        let attachment = store.import_path(&source).unwrap();
+        let model = ModelInfo {
+            id: "text-model".into(),
+            name: "Text model".into(),
+            path: "model.gguf".into(),
+            source: "test".into(),
+            bytes: 1,
+            architecture: None,
+            context_length: None,
+            chat_template: true,
+            quantization: None,
+            mmproj_path: None,
+            supports_vision: false,
+            supports_audio: false,
+            recommendation: "test".into(),
+        };
+
+        let prepared = store
+            .prepare_message("Read it.", &[attachment], &model, 200_000)
+            .unwrap();
+        assert!(prepared.notice.unwrap().contains("truncated"));
+    }
+
+    #[test]
     fn pdf_text_is_extracted_into_durable_context() {
         use lopdf::{dictionary, Document, Object, Stream};
 
@@ -815,5 +986,33 @@ mod tests {
             .read_extracted(&attachment.id, 0, 1_000)
             .unwrap()
             .contains("Offline PDF evidence"));
+    }
+
+    #[test]
+    fn docx_xml_entities_are_preserved_as_unescaped_text() {
+        use zip::{write::SimpleFileOptions, ZipWriter};
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("evidence.docx");
+        let mut archive = ZipWriter::new(File::create(&source).unwrap());
+        archive
+            .start_file("word/document.xml", SimpleFileOptions::default())
+            .unwrap();
+        archive
+            .write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+                    <w:document xmlns:w="urn:test"><w:body><w:p><w:r><w:t>Research &amp; evidence &#x2014; offline</w:t></w:r></w:p></w:body></w:document>"#,
+            )
+            .unwrap();
+        archive.finish().unwrap();
+
+        let store = AttachmentStore::new(directory.path()).unwrap();
+        let attachment = store.import_path(&source).unwrap();
+        assert_eq!(attachment.context_mode, "extracted_text");
+        let extracted = store.read_extracted(&attachment.id, 0, 1_000).unwrap();
+        assert!(
+            extracted.contains("Research & evidence — offline"),
+            "{extracted:?}"
+        );
     }
 }

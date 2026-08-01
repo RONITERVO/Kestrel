@@ -9,7 +9,7 @@ use crate::{
 };
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
@@ -86,34 +86,55 @@ impl ChatStreamJob {
             .saturating_sub(CHAT_SYSTEM_PROMPT.len());
         let (history, omitted) = fit_recent_messages(&session.messages, history_budget.max(2_048));
         let included = history.len();
-        let mut messages = Vec::with_capacity(history.len() + 1);
-        messages.push(json!({"role":"system","content":CHAT_SYSTEM_PROMPT}));
         let model = models
             .iter()
             .find(|model| model.id == request.model_id)
+            .cloned()
             .ok_or_else(|| "The selected model is no longer in the local catalog.".to_string())?;
         let attachment_budget = history_budget
             .checked_div(included.max(1))
             .unwrap_or(history_budget)
             .clamp(2_048, 250_000);
-        let mut attachment_notices = Vec::new();
-        for message in history {
-            let content = if message.role == "user" && !message.attachments.is_empty() {
-                let prepared = attachments.prepare_message(
-                    &message.content,
-                    &message.attachments,
-                    model,
-                    attachment_budget,
+        let preparation = tokio::task::spawn_blocking(move || {
+            let mut messages = Vec::with_capacity(history.len() + 1);
+            messages.push(json!({"role":"system","content":CHAT_SYSTEM_PROMPT}));
+            let mut attachment_notices = Vec::new();
+            let mut media_cache = HashMap::new();
+            for message in history {
+                let content = if message.role == "user" && !message.attachments.is_empty() {
+                    let prepared = attachments.prepare_message_cached(
+                        &message.content,
+                        &message.attachments,
+                        &model,
+                        attachment_budget,
+                        &mut media_cache,
+                    )?;
+                    if let Some(notice) = prepared.notice {
+                        attachment_notices.push(notice);
+                    }
+                    prepared.content
+                } else {
+                    Value::String(message.content.clone())
+                };
+                messages.push(json!({"role": message.role, "content": content}));
+            }
+            Ok::<_, String>((messages, attachment_notices))
+        });
+        let (messages, attachment_notices) = tokio::select! {
+            result = preparation => result
+                .map_err(|error| format!("Attachment preparation stopped unexpectedly: {error}"))??,
+            _ = cancel.cancelled() => {
+                store.add_chat_message_with_status(
+                    &session_id,
+                    "assistant",
+                    "Generation stopped while preparing local context.".into(),
+                    None,
+                    Some("interrupted".into()),
                 )?;
-                if let Some(notice) = prepared.notice {
-                    attachment_notices.push(notice);
-                }
-                prepared.content
-            } else {
-                Value::String(message.content.clone())
-            };
-            messages.push(json!({"role": message.role, "content": content}));
-        }
+                emit(app.as_ref(), &request_id, &session_id, "cancelled", None, None);
+                return Ok(());
+            }
+        };
         if omitted > 0 {
             emit(
             app.as_ref(),

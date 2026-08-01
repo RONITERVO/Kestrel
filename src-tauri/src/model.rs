@@ -15,7 +15,8 @@ use std::{
 };
 use walkdir::WalkDir;
 
-const CATALOG_SCHEMA_VERSION: u32 = 1;
+// Version 2 invalidates catalogs that inferred vision support from an unverified projector path.
+const CATALOG_SCHEMA_VERSION: u32 = 2;
 const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -248,7 +249,7 @@ fn inspect(path: &Path) -> io::Result<ModelInfo> {
         .as_ref()
         .and_then(|metadata| metadata.get("clip.has_vision_encoder"))
         .and_then(Value::as_bool)
-        .unwrap_or(mmproj_path.is_some());
+        .unwrap_or(false);
     let supports_audio = projector_metadata
         .as_ref()
         .and_then(|metadata| metadata.get("clip.has_audio_encoder"))
@@ -307,7 +308,13 @@ fn find_projector(path: &Path) -> Option<String> {
         })
         .collect::<Vec<_>>();
     candidates.sort();
-    if candidates.len() == 1 {
+    let model_count = std::fs::read_dir(path.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| candidate.is_file() && is_candidate(candidate))
+        .count();
+    if candidates.len() == 1 && model_count == 1 {
         return candidates
             .first()
             .map(|candidate| candidate.to_string_lossy().into_owned());
@@ -531,6 +538,20 @@ mod tests {
             find_projector(&bonsai).as_deref(),
             Some(bonsai_projector.to_string_lossy().as_ref())
         );
+    }
+
+    #[test]
+    fn generic_single_projector_is_not_assigned_across_multiple_models() {
+        let directory = tempfile::tempdir().unwrap();
+        let bonsai = directory.path().join("Ternary-Bonsai-27B-Q2.gguf");
+        let gemma = directory.path().join("gemma-4-e2b.gguf");
+        let projector = directory.path().join("mmproj.gguf");
+        fs::write(&bonsai, b"model").unwrap();
+        fs::write(&gemma, b"model").unwrap();
+        fs::write(&projector, b"projector").unwrap();
+
+        assert!(find_projector(&bonsai).is_none());
+        assert!(find_projector(&gemma).is_none());
     }
 
     #[test]

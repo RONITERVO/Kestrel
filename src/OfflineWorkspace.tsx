@@ -118,6 +118,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   );
   const latestChatRef = useRef({ selected, settings, session });
   const taskRunRef = useRef<string | null>(null);
+  const latestTaskRef = useRef<ComputerTaskRun | null>(task);
   const taskStartingRef = useRef(false);
   const earlyTaskEventsRef = useRef<ComputerTaskEvent[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -149,6 +150,9 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   useEffect(() => {
     latestChatRef.current = { selected, settings, session };
   }, [selected, settings, session]);
+  useEffect(() => {
+    latestTaskRef.current = task;
+  }, [task]);
   useEffect(() => {
     void refreshHistory().catch(() => undefined);
     let unmounted = false;
@@ -280,11 +284,12 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       earlyTaskEventsRef.current.push(event);
       return;
     }
+    if (latestTaskRef.current?.id !== event.runId) {
+      earlyTaskEventsRef.current.push(event);
+      return;
+    }
     setTask((current) => {
-      if (current?.id !== event.runId) {
-        earlyTaskEventsRef.current.push(event);
-        return current;
-      }
+      if (current?.id !== event.runId) return current;
       return {
         ...current,
         status: terminalTaskStatus(event.kind, current.status),
@@ -498,10 +503,18 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   const attachFiles = async (target: WorkKind) => {
     setWorking("attach");
     try {
-      const picked = await pickContextFiles();
+      const result = await pickContextFiles();
       if (target === "chat")
-        setChatAttachments((current) => mergeAttachments(current, picked));
-      else setTaskAttachments((current) => mergeAttachments(current, picked));
+        setChatAttachments((current) =>
+          mergeAttachments(current, result.attachments),
+        );
+      else
+        setTaskAttachments((current) =>
+          mergeAttachments(current, result.attachments),
+        );
+      if (result.failures.length > 0) {
+        onError(`Some files were not attached:\n${result.failures.join("\n")}`);
+      }
     } catch (cause) {
       onError(String(cause));
     } finally {
@@ -962,6 +975,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                     key={message.id}
                     message={message}
                     model={selected?.name}
+                    onError={onError}
                   />
                 ))
               ) : (
@@ -1012,6 +1026,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                 <AttachmentShelf
                   attachments={chatAttachments}
                   removable
+                  onError={onError}
                   onRemove={(id) =>
                     setChatAttachments((items) =>
                       items.filter((item) => item.id !== id),
@@ -1110,6 +1125,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             onResume={() => void resumeTask()}
             onStop={() => void stopTask()}
             onOpen={(path) => task && void openTaskArtifact(task.id, path)}
+            onError={onError}
           />
         )}
       </section>
@@ -1424,6 +1440,7 @@ function ComputerTasks({
   onResume,
   onStop,
   onOpen,
+  onError,
 }: {
   run: ComputerTaskRun | null;
   objective: string;
@@ -1445,6 +1462,7 @@ function ComputerTasks({
   onResume: () => void;
   onStop: () => void;
   onOpen: (path: string) => void;
+  onError: (message: string) => void;
 }) {
   const resumable =
     !!run &&
@@ -1477,6 +1495,7 @@ function ComputerTasks({
               attachments={attachments}
               removable
               onRemove={onRemoveAttachment}
+              onError={onError}
             />
           )}
           <button
@@ -1531,7 +1550,10 @@ function ComputerTasks({
               </span>
               <h2>{run.objective}</h2>
               {(run.attachments?.length ?? 0) > 0 && (
-                <AttachmentShelf attachments={run.attachments!} />
+                <AttachmentShelf
+                  attachments={run.attachments!}
+                  onError={onError}
+                />
               )}
             </div>
             {running && (
@@ -1649,7 +1671,15 @@ function ComputerTasks({
   );
 }
 
-function Message({ message, model }: { message: ChatMessage; model?: string }) {
+function Message({
+  message,
+  model,
+  onError,
+}: {
+  message: ChatMessage;
+  model?: string;
+  onError: (message: string) => void;
+}) {
   return (
     <article className={message.role}>
       <span>
@@ -1669,7 +1699,7 @@ function Message({ message, model }: { message: ChatMessage; model?: string }) {
         </button>
       </span>
       {(message.attachments?.length ?? 0) > 0 && (
-        <AttachmentShelf attachments={message.attachments!} />
+        <AttachmentShelf attachments={message.attachments!} onError={onError} />
       )}{" "}
       {message.reasoning && (
         <details>
@@ -1686,10 +1716,12 @@ function AttachmentShelf({
   attachments,
   removable = false,
   onRemove,
+  onError,
 }: {
   attachments: ContextAttachment[];
   removable?: boolean;
   onRemove?: (id: string) => void;
+  onError: (message: string) => void;
 }) {
   return (
     <div className="attachment-shelf">
@@ -1701,7 +1733,11 @@ function AttachmentShelf({
         >
           <button
             className="attachment-open"
-            onClick={() => void openContextAttachment(attachment.id)}
+            onClick={() =>
+              void openContextAttachment(attachment.id).catch((cause) =>
+                onError(String(cause)),
+              )
+            }
           >
             <AttachmentIcon attachment={attachment} />
             <span>

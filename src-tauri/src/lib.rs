@@ -76,6 +76,13 @@ impl Drop for ResearchGuard<'_> {
 
 struct WorkGuard<'a>(&'a AtomicBool);
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextAttachmentImport {
+    attachments: Vec<ContextAttachment>,
+    failures: Vec<String>,
+}
+
 impl Drop for WorkGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
@@ -481,33 +488,41 @@ fn delete_chat_session(id: String, state: State<'_, AppState>) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn pick_context_files(state: State<'_, AppState>) -> Result<Vec<ContextAttachment>, String> {
-    let paths = tokio::task::spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .set_title("Attach local context")
-            .add_filter(
-                "Readable context",
-                &[
-                    "png", "jpg", "jpeg", "webp", "gif", "bmp", "wav", "mp3", "flac", "ogg", "m4a",
-                    "pdf", "docx", "pptx", "xlsx", "txt", "md", "csv", "json", "yaml", "yml",
-                    "toml", "xml", "html", "log", "rs", "py", "js", "ts", "tsx", "svg",
-                ],
-            )
-            .add_filter("All files", &["*"])
-            .pick_files()
-            .unwrap_or_default()
-    })
-    .await
-    .map_err(|error| format!("The native file picker stopped unexpectedly: {error}"))?;
+async fn pick_context_files(state: State<'_, AppState>) -> Result<ContextAttachmentImport, String> {
+    let paths = rfd::AsyncFileDialog::new()
+        .set_title("Attach local context")
+        .add_filter(
+            "Readable context",
+            &[
+                "png", "jpg", "jpeg", "webp", "gif", "bmp", "wav", "mp3", "flac", "ogg", "m4a",
+                "pdf", "docx", "pptx", "xlsx", "txt", "md", "csv", "json", "yaml", "yml", "toml",
+                "xml", "html", "log", "rs", "py", "js", "ts", "tsx", "svg",
+            ],
+        )
+        .add_filter("All files", &["*"])
+        .pick_files()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|file| file.path().to_path_buf())
+        .collect::<Vec<_>>();
     let store = state.attachments.clone();
     tokio::task::spawn_blocking(move || {
-        paths
-            .iter()
-            .map(|path| store.import_path(path))
-            .collect::<Result<Vec<_>, _>>()
+        let mut attachments = Vec::new();
+        let mut failures = Vec::new();
+        for path in paths {
+            match store.import_path(&path) {
+                Ok(attachment) => attachments.push(attachment),
+                Err(error) => failures.push(format!("{}: {error}", path.display())),
+            }
+        }
+        ContextAttachmentImport {
+            attachments,
+            failures,
+        }
     })
     .await
-    .map_err(|error| format!("Attachment import stopped unexpectedly: {error}"))?
+    .map_err(|error| format!("Attachment import stopped unexpectedly: {error}"))
 }
 
 #[tauri::command]
@@ -517,19 +532,18 @@ fn open_context_attachment(id: String, state: State<'_, AppState>) -> Result<(),
 
 #[tauri::command]
 async fn pick_local_model_folder() -> Result<Option<String>, String> {
-    tokio::task::spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .set_title("Add a local GGUF model folder")
-            .pick_folder()
-            .map(|path| {
-                path.canonicalize()
-                    .map(|value| value.to_string_lossy().into_owned())
-                    .map_err(|error| error.to_string())
-            })
-            .transpose()
-    })
-    .await
-    .map_err(|error| format!("The native folder picker stopped unexpectedly: {error}"))?
+    rfd::AsyncFileDialog::new()
+        .set_title("Add a local GGUF model folder")
+        .pick_folder()
+        .await
+        .map(|folder| {
+            folder
+                .path()
+                .canonicalize()
+                .map(|value| value.to_string_lossy().into_owned())
+                .map_err(|error| error.to_string())
+        })
+        .transpose()
 }
 
 #[tauri::command]

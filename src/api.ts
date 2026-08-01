@@ -11,7 +11,7 @@ import type {
   ComputerTaskRequest,
   ComputerTaskRun,
   ComputerTaskSummary,
-  ContextAttachment,
+  ContextAttachmentImport,
   ControlSettings,
   ControlSnapshot,
   DeveloperRepairReport,
@@ -237,9 +237,9 @@ export async function deleteChatSession(id: string): Promise<void> {
   if (isTauri()) await invoke("delete_chat_session", { id });
 }
 
-export async function pickContextFiles(): Promise<ContextAttachment[]> {
-  if (!isTauri()) return [];
-  return invoke<ContextAttachment[]>("pick_context_files");
+export async function pickContextFiles(): Promise<ContextAttachmentImport> {
+  if (!isTauri()) return { attachments: [], failures: [] };
+  return invoke<ContextAttachmentImport>("pick_context_files");
 }
 
 export async function openContextAttachment(id: string): Promise<void> {

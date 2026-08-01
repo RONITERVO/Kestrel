@@ -121,6 +121,11 @@ export interface ContextAttachment {
   createdAt: string;
 }
 
+export interface ContextAttachmentImport {
+  attachments: ContextAttachment[];
+  failures: string[];
+}
+
 export interface ControlSettings {
   advancedMode: boolean;
   enginePath: string;

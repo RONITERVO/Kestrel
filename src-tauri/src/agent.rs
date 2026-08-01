@@ -120,12 +120,26 @@ pub async fn run(
         ),
         None => request.objective.clone(),
     };
-    let prepared = attachment_store.prepare_message(
-        &objective,
-        &context_attachments,
-        selected_model,
-        120_000,
-    )?;
+    let preparation_store = attachment_store.clone();
+    let preparation_attachments = context_attachments.clone();
+    let preparation_model = selected_model.clone();
+    let preparation_objective = objective.clone();
+    let preparation = tokio::task::spawn_blocking(move || {
+        preparation_store.prepare_message(
+            &preparation_objective,
+            &preparation_attachments,
+            &preparation_model,
+            120_000,
+        )
+    });
+    let prepared = tokio::select! {
+        result = preparation => result
+            .map_err(|error| format!("Attachment preparation stopped unexpectedly: {error}"))??,
+        _ = cancel.cancelled() => {
+            event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "The task stopped while preparing local attachment context. No tool was started.", None);
+            return Ok(());
+        }
+    };
     let mut messages = vec![
         json!({"role":"system","content":system}),
         json!({"role":"user","content":prepared.content}),
