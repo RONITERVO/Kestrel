@@ -23,7 +23,8 @@ use models::{
     AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess,
     ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
     DeveloperRepairReport, DeveloperRepairRequest, ProfileTransfer, ResearchReport,
-    ResearchSettings, RunResearchRequest, StartChatRequest, SystemSnapshot,
+    ResearchSettings, ResumeComputerTaskRequest, RunResearchRequest, StartChatRequest,
+    SystemSnapshot,
 };
 use runtime::RuntimeManager;
 use std::{
@@ -413,6 +414,55 @@ async fn stop_local_model(state: State<'_, AppState>) -> Result<ControlSnapshot,
 }
 
 #[tauri::command]
+async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot, String> {
+    let cancellations = {
+        let research = state
+            .jobs
+            .lock()
+            .map_err(|_| "research job registry is unavailable".to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let interactive = state
+            .interactive_jobs
+            .lock()
+            .map_err(|_| "interactive job registry is unavailable".to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        research.into_iter().chain(interactive).collect::<Vec<_>>()
+    };
+    for cancellation in cancellations {
+        cancellation.cancel();
+    }
+    let Some(_idle_permit) = state
+        .runtime
+        .wait_until_idle(std::time::Duration::from_secs(20))
+        .await
+    else {
+        return Err("The active local request did not release its inference lease within 20 seconds. Its cancellation remains requested; try Release AI memory again after the visible task settles.".into());
+    };
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    state
+        .runtime
+        .stop_managed()
+        .await
+        .map_err(|error| error.to_string())?;
+    services::stop_bonsai(&research.bonsai_root)
+        .await
+        .map_err(|error| error.to_string())?;
+    state
+        .runtime
+        .stop_orphaned_kestrel_processes()
+        .await
+        .map_err(|error| error.to_string())?;
+    control_snapshot(&state, false).await
+}
+
+#[tauri::command]
 fn list_chat_sessions(state: State<'_, AppState>) -> Result<Vec<ChatSessionSummary>, String> {
     state.workspace.list_chats()
 }
@@ -499,7 +549,7 @@ async fn start_chat_stream(
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         let managed = app_for_task.state::<AppState>();
-        let _work_guard = WorkGuard(&managed.work_active);
+        let work_guard = WorkGuard(&managed.work_active);
         let settings = managed.control_settings.load();
         let result = match settings {
             Ok(settings) => {
@@ -521,6 +571,21 @@ async fn start_chat_stream(
             Err(error) => Err(error.to_string()),
         };
         if let Err(error) = result {
+            if managed
+                .workspace
+                .get_chat(&event_session_id)
+                .ok()
+                .and_then(|session| session.messages.last().cloned())
+                .is_some_and(|message| message.role == "user")
+            {
+                let _ = managed.workspace.add_chat_message_with_status(
+                    &event_session_id,
+                    "assistant",
+                    "Generation stopped before an answer was recorded.".into(),
+                    None,
+                    Some("interrupted".into()),
+                );
+            }
             chat::emit_error(
                 Some(&app_for_task),
                 &event_request_id,
@@ -531,6 +596,8 @@ async fn start_chat_stream(
         if let Ok(mut jobs) = managed.interactive_jobs.lock() {
             jobs.remove(&event_request_id);
         };
+        drop(work_guard);
+        chat::emit_settled(Some(&app_for_task), &event_request_id, &event_session_id);
     });
     Ok(ChatStart {
         request_id,
@@ -603,37 +670,144 @@ async fn start_computer_task(
             return Err("interactive job registry is unavailable".into());
         }
     }
-    let run_id = run.id.clone();
-    let event_run_id = run_id.clone();
-    let app_for_task = app.clone();
+    spawn_computer_task(app, run.id.clone(), request, settings, cancel, None);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn resume_computer_task(
+    request: ResumeComputerTaskRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ComputerTaskRun, String> {
+    ensure_workspace_idle(&state)?;
+    let answer = request.answer.trim();
+    if answer.is_empty() {
+        return Err("Answer the task's question or add a continuation instruction first.".into());
+    }
+    if answer.len() > 65_536 {
+        return Err("A task continuation cannot exceed 64 KiB.".into());
+    }
+    let run = state.workspace.get_task(&request.run_id)?;
+    if !matches!(
+        run.status.as_str(),
+        "waiting" | "cancelled" | "interrupted" | "failed"
+    ) {
+        return Err(
+            "Only a waiting, stopped, interrupted, or failed task can be continued.".into(),
+        );
+    }
+    let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    if run.access == ComputerTaskAccess::Full && !settings.allow_full_access_agent {
+        return Err("Full computer access is locked in the runtime profile.".into());
+    }
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another chat generation or computer task is already active.".to_string())?;
+    let input_event = models::ComputerTaskEvent {
+        run_id: run.id.clone(),
+        step: 0,
+        kind: "user_input".into(),
+        title: "Direction from you".into(),
+        detail: answer.to_string(),
+        data: None,
+        at: chrono::Utc::now().to_rfc3339(),
+    };
+    let updated = match state.workspace.add_task_event(input_event.clone()) {
+        Ok(updated) => updated,
+        Err(error) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err(error);
+        }
+    };
+    let _ = app.emit("computer-task-event", input_event);
+    let task_request = ComputerTaskRequest {
+        model_id: run.model_id.clone(),
+        objective: run.objective.clone(),
+        access: run.access,
+        max_steps: settings.agent_max_steps,
+        max_output_tokens: settings.agent_max_output_tokens,
+    };
+    let continuation = task_continuation(&run, answer);
+    let cancel = CancellationToken::new();
+    match state.interactive_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(run.id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("interactive job registry is unavailable".into());
+        }
+    }
+    spawn_computer_task(
+        app,
+        run.id.clone(),
+        task_request,
+        settings,
+        cancel,
+        Some(continuation),
+    );
+    Ok(updated)
+}
+
+fn spawn_computer_task(
+    app: AppHandle,
+    run_id: String,
+    request: ComputerTaskRequest,
+    settings: ControlSettings,
+    cancel: CancellationToken,
+    continuation: Option<String>,
+) {
     tauri::async_runtime::spawn(async move {
-        let managed = app_for_task.state::<AppState>();
+        let managed = app.state::<AppState>();
         let _work_guard = WorkGuard(&managed.work_active);
         let models = managed.models.read().await.clone();
         let result = agent::run(
-            Some(app_for_task.clone()),
+            Some(app.clone()),
             managed.runtime.clone(),
             managed.workspace.clone(),
-            event_run_id.clone(),
+            run_id.clone(),
             request,
             models,
             settings,
             cancel,
+            continuation,
         )
         .await;
         if let Err(error) = result {
-            agent::emit_error(
-                Some(&app_for_task),
-                &managed.workspace,
-                &event_run_id,
-                error,
-            );
+            agent::emit_error(Some(&app), &managed.workspace, &run_id, error);
         }
         if let Ok(mut jobs) = managed.interactive_jobs.lock() {
-            jobs.remove(&event_run_id);
+            jobs.remove(&run_id);
         };
     });
-    Ok(run)
+}
+
+fn task_continuation(run: &ComputerTaskRun, answer: &str) -> String {
+    let mut transcript = String::new();
+    for event in run
+        .events
+        .iter()
+        .filter(|event| event.kind != "reasoning")
+        .rev()
+        .take(30)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        transcript.push_str(&format!("- {}: {}\n", event.title, event.detail));
+        if transcript.len() >= 24_000 {
+            transcript = transcript.chars().take(24_000).collect();
+            break;
+        }
+    }
+    format!(
+        "Continue the same durable task. Re-inspect current state before further changes because the prior run may have stopped between actions.\n\nRecent verified transcript:\n{transcript}\nUser's new direction:\n{answer}"
+    )
 }
 
 #[tauri::command]
@@ -850,7 +1024,7 @@ fn open_with_explorer(path: &std::path::Path) -> Result<(), String> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let application = tauri::Builder::default()
         .setup(|app| {
             let store = ResearchStore::open_default().map_err(|error| error.to_string())?;
             let research_settings = SettingsStore::new(store.root());
@@ -899,6 +1073,9 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
+                if let Err(error) = state.runtime.stop_orphaned_kestrel_processes().await {
+                    eprintln!("Kestrel could not clean up an abandoned model process: {error}");
+                }
                 let research = match state.research_settings.load() {
                     Ok(value) => value,
                     Err(_) => return,
@@ -943,6 +1120,7 @@ pub fn run() {
             apply_model_runtime,
             start_local_model,
             stop_local_model,
+            release_ai_memory,
             list_chat_sessions,
             get_chat_session,
             delete_chat_session,
@@ -951,12 +1129,19 @@ pub fn run() {
             list_computer_tasks,
             get_computer_task,
             start_computer_task,
+            resume_computer_task,
             stop_computer_task,
             open_task_artifact,
             run_native_diagnostics,
             run_codex_repair,
             open_bonsai_control_center,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Kestrel Local");
+        .build(tauri::generate_context!())
+        .expect("error while building Kestrel Local");
+    application.run(|handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            let runtime = handle.state::<AppState>().runtime.clone();
+            let _ = tauri::async_runtime::block_on(runtime.stop_managed());
+        }
+    });
 }

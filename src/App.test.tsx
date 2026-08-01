@@ -130,6 +130,7 @@ describe("computer task terminal states", () => {
     ["cancelled", "cancelled"],
     ["error", "failed"],
     ["limit", "failed"],
+    ["question", "waiting"],
   ])("maps %s to %s", (kind, expected) => {
     expect(terminalTaskStatus(kind, "running")).toBe(expected);
   });

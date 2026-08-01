@@ -161,6 +161,9 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// Present when an assistant turn is partial or stopped at the configured output limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     pub created_at: String,
 }
 
@@ -223,6 +226,13 @@ pub struct ComputerTaskRequest {
     pub access: ComputerTaskAccess,
     pub max_steps: u32,
     pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeComputerTaskRequest {
+    pub run_id: String,
+    pub answer: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

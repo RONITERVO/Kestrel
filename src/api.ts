@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { demoReport, demoSnapshot } from "./demo";
-import type { AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ChatStreamEvent, ComputerTaskEvent, ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot, DeveloperRepairReport, OperationProgress, ProfileTransfer, ResearchProgress, ResearchReport, ResearchSettings, RunResearchRequest, StartChatRequest, SystemSnapshot } from "./types";
+import type { AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ChatStreamEvent, ComputerTaskEvent, ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot, DeveloperRepairReport, OperationProgress, ProfileTransfer, ResearchProgress, ResearchReport, ResearchSettings, ResumeComputerTaskRequest, RunResearchRequest, StartChatRequest, SystemSnapshot } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
 
@@ -116,6 +116,11 @@ export async function stopLocalModel(): Promise<ControlSnapshot> {
   return invoke<ControlSnapshot>("stop_local_model");
 }
 
+export async function releaseAiMemory(): Promise<ControlSnapshot> {
+  if (!isTauri()) return { ...demoSnapshot.control, runtime: { ...demoSnapshot.control.runtime, phase: "stopped", mode: "none", modelId: undefined, modelName: undefined } };
+  return invoke<ControlSnapshot>("release_ai_memory");
+}
+
 export async function listChatSessions(): Promise<ChatSessionSummary[]> {
   if (!isTauri()) return [];
   return invoke<ChatSessionSummary[]>("list_chat_sessions");
@@ -157,6 +162,11 @@ export async function getComputerTask(id: string): Promise<ComputerTaskRun> {
 export async function startComputerTask(request: ComputerTaskRequest): Promise<ComputerTaskRun> {
   if (!isTauri()) throw new Error("Computer Tasks require the desktop application.");
   return invoke<ComputerTaskRun>("start_computer_task", { request });
+}
+
+export async function resumeComputerTask(request: ResumeComputerTaskRequest): Promise<ComputerTaskRun> {
+  if (!isTauri()) throw new Error("Computer Tasks require the desktop application.");
+  return invoke<ComputerTaskRun>("resume_computer_task", { request });
 }
 
 export async function stopComputerTask(runId: string): Promise<void> {

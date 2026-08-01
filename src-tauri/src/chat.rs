@@ -12,6 +12,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
+const CHAT_SYSTEM_PROMPT: &str = "You are Kestrel, a capable fully offline assistant. Be clear, practical, and honest about uncertainty. Before committing to an answer, notice decision-critical ambiguity. Ask exactly one focused question per turn instead of guessing when different interpretations would materially change the target, scope, safety, irreversible action, required format, or success criteria. Choose the single most important ambiguity; never bundle several numbered questions. When useful, put two or three concise choices inside that one question and recommend one. Do not interrogate the user or ask about preferences that do not matter: take a safe, reversible default and state it. Never claim an action occurred in ordinary chat; computer actions require Computer Tasks.";
+
 pub struct ChatStreamJob {
     pub app: Option<AppHandle>,
     pub runtime: Arc<RuntimeManager>,
@@ -43,6 +45,13 @@ impl ChatStreamJob {
                 lease.map_err(|error| error.to_string())?
             }
             _ = cancel.cancelled() => {
+                store.add_chat_message_with_status(
+                    &session_id,
+                    "assistant",
+                    "Generation stopped before the first token.".into(),
+                    None,
+                    Some("interrupted".into()),
+                )?;
                 emit(app.as_ref(), &request_id, &session_id, "cancelled", None, None);
                 return Ok(());
             }
@@ -74,7 +83,14 @@ impl ChatStreamJob {
             .and_then(|reserved| settings.context_window.checked_sub(reserved))
             .unwrap_or(1_024)
             .saturating_mul(4) as usize;
-        let (messages, omitted) = fit_recent_messages(&all_messages, prompt_chars.max(4_096));
+        let history_budget = prompt_chars
+            .max(4_096)
+            .saturating_sub(CHAT_SYSTEM_PROMPT.len());
+        let (history, omitted) = fit_recent_messages(&all_messages, history_budget.max(2_048));
+        let included = history.len();
+        let mut messages = Vec::with_capacity(history.len() + 1);
+        messages.push(json!({"role":"system","content":CHAT_SYSTEM_PROMPT}));
+        messages.extend(history);
         if omitted > 0 {
             emit(
             app.as_ref(),
@@ -83,9 +99,9 @@ impl ChatStreamJob {
             "context",
             Some(format!(
                 "Using the newest {} messages; {} older messages remain saved but are outside this model turn.",
-                messages.len(), omitted
+                included, omitted
             )),
-            Some(json!({"included":messages.len(),"omitted":omitted})),
+            Some(json!({"included":included,"omitted":omitted})),
         );
         }
         let body = json!({
@@ -124,16 +140,26 @@ impl ChatStreamJob {
         let mut content = String::new();
         let mut reasoning = String::new();
         let mut completed = false;
+        let mut finish_reason = None::<String>;
         loop {
             let next = tokio::select! {
                 value = bytes.next() => value,
                 _ = cancel.cancelled() => {
                     if !content.is_empty() || !reasoning.is_empty() {
-                        store.add_chat_message(
+                        store.add_chat_message_with_status(
                             &session_id,
                             "assistant",
                             content,
                             (!reasoning.is_empty()).then_some(reasoning),
+                            Some("interrupted".into()),
+                        )?;
+                    } else {
+                        store.add_chat_message_with_status(
+                            &session_id,
+                            "assistant",
+                            "Generation stopped before the first token.".into(),
+                            None,
+                            Some("interrupted".into()),
                         )?;
                     }
                     emit(app.as_ref(), &request_id, &session_id, "cancelled", None, None);
@@ -145,11 +171,12 @@ impl ChatStreamJob {
                 Ok(chunk) => chunk,
                 Err(error) => {
                     if !content.is_empty() || !reasoning.is_empty() {
-                        store.add_chat_message(
+                        store.add_chat_message_with_status(
                             &session_id,
                             "assistant",
                             content,
                             (!reasoning.is_empty()).then_some(reasoning),
+                            Some("interrupted".into()),
                         )?;
                     }
                     return Err(error.to_string());
@@ -183,6 +210,12 @@ impl ChatStreamJob {
                         None,
                     );
                 }
+                if let Some(reason) = value
+                    .pointer("/choices/0/finish_reason")
+                    .and_then(Value::as_str)
+                {
+                    finish_reason = Some(reason.to_string());
+                }
                 if let Some(token) = value
                     .pointer("/choices/0/delta/reasoning_content")
                     .or_else(|| value.pointer("/choices/0/delta/reasoning"))
@@ -210,22 +243,46 @@ impl ChatStreamJob {
                 }
             }
         }
-        if !completed && content.is_empty() && reasoning.is_empty() {
-            return Err("local model stream ended before producing an answer".into());
+        if !completed {
+            if content.is_empty() && reasoning.is_empty() {
+                return Err("local model stream ended before producing an answer".into());
+            }
+            store.add_chat_message_with_status(
+                &session_id,
+                "assistant",
+                content,
+                (!reasoning.is_empty()).then_some(reasoning),
+                Some("interrupted".into()),
+            )?;
+            return Err("local model stream ended before confirming completion; the partial answer was saved".into());
         }
-        store.add_chat_message(
+        let message_status =
+            (finish_reason.as_deref() == Some("length")).then(|| "limited".to_string());
+        store.add_chat_message_with_status(
             &session_id,
             "assistant",
             content,
             (!reasoning.is_empty()).then_some(reasoning),
+            message_status,
         )?;
-        emit(app.as_ref(), &request_id, &session_id, "done", None, None);
+        emit(
+            app.as_ref(),
+            &request_id,
+            &session_id,
+            "done",
+            None,
+            finish_reason.map(|reason| json!({"finishReason":reason})),
+        );
         Ok(())
     }
 }
 
 pub fn emit_error(app: Option<&AppHandle>, request_id: &str, session_id: &str, detail: String) {
     emit(app, request_id, session_id, "error", Some(detail), None);
+}
+
+pub fn emit_settled(app: Option<&AppHandle>, request_id: &str, session_id: &str) {
+    emit(app, request_id, session_id, "settled", None, None);
 }
 
 fn emit(

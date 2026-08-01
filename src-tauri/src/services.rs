@@ -18,6 +18,8 @@ pub enum ServiceError {
     MissingScript(String),
     #[error("could not start {name}: {details}")]
     StartFailed { name: String, details: String },
+    #[error("could not stop {name}: {details}")]
+    StopFailed { name: String, details: String },
     #[error("local service check failed: {0}")]
     Request(#[from] reqwest::Error),
 }
@@ -70,10 +72,64 @@ pub async fn restart_bonsai(bonsai_root: &str) -> Result<(), ServiceError> {
     .await
 }
 
+/// Stop the configured Bonsai server and telemetry proxy, but no other model host. Executable
+/// paths and the server's private backend port are verified inside the fixed PowerShell program.
+pub async fn stop_bonsai(bonsai_root: &str) -> Result<Vec<u32>, ServiceError> {
+    const SCRIPT: &str = r#"$ErrorActionPreference='Stop'
+$root=[IO.Path]::GetFullPath($env:KESTREL_BONSAI_ROOT)
+$server=[IO.Path]::GetFullPath((Join-Path $root 'runtime\llama-server.exe'))
+$proxy=[IO.Path]::GetFullPath((Join-Path $root 'BonsaiTelemetryProxy.exe'))
+$targets=@(Get-CimInstance Win32_Process | Where-Object {
+  ($_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $proxy) -or
+  ($_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $server -and $_.CommandLine -match '(--port|-p)\s+8081(?:\s|$)')
+})
+foreach($item in $targets){
+  try {
+    Stop-Process -Id $item.ProcessId -Force -ErrorAction Stop
+    Write-Output $item.ProcessId
+  } catch {
+    Write-Warning "Could not stop Bonsai process $($item.ProcessId): $($_.Exception.Message)"
+  }
+}"#;
+    let mut command = Command::new("powershell.exe");
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        SCRIPT,
+    ]);
+    command.env("KESTREL_BONSAI_ROOT", bonsai_root);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = command
+        .output()
+        .await
+        .map_err(|error| ServiceError::StopFailed {
+            name: "Bonsai shutdown".into(),
+            details: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(ServiceError::StopFailed {
+            name: "Bonsai shutdown".into(),
+            details: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect())
+}
+
 pub async fn system_snapshot(settings: ResearchSettings) -> SystemSnapshot {
     let status = status().await;
     let gpu = gpu_snapshot().await;
-    let runtime = runtime_snapshot(&settings);
+    let mut runtime = runtime_snapshot(&settings);
+    if status.bonsai != "ready" {
+        runtime.model_vram_mib = 0;
+    }
     SystemSnapshot {
         status,
         gpu,

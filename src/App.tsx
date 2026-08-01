@@ -46,6 +46,7 @@ import {
   openBonsaiControlCenter,
   openStandalone,
   prepareServices,
+  releaseAiMemory,
   revealLibrary,
   runResearch,
   saveResearchSettings,
@@ -480,7 +481,7 @@ function CitationRow({ ids, onFocus, labels }: { ids: string[]; onFocus: (id: st
 function SystemConsole({ initialSettings, onSaved, onImported, onError }: { initialSettings: ResearchSettings; onSaved: (settings: ResearchSettings) => void; onImported: (snapshot: AppSnapshot) => void; onError: (message: string) => void }) {
   const [system, setSystem] = useState<SystemSnapshot | null>(null);
   const [draft, setDraft] = useState<ResearchSettings>(initialSettings);
-  const [busy, setBusy] = useState<"save" | "apply" | "export" | "import" | null>(null);
+  const [busy, setBusy] = useState<"save" | "apply" | "release" | "export" | "import" | null>(null);
   const [profilePath, setProfilePath] = useState("");
   const [profileStatus, setProfileStatus] = useState("");
 
@@ -533,6 +534,18 @@ function SystemConsole({ initialSettings, onSaved, onImported, onError }: { init
       onError(String(cause));
     }
   };
+  const releaseMemory = async () => {
+    if (!window.confirm("Release all AI memory controlled by Kestrel? Active Kestrel work will stop, the configured Bonsai service will shut down, and unrelated model apps will be left alone.")) return;
+    setBusy("release");
+    try {
+      await releaseAiMemory();
+      await refreshSystem();
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
   const exportProfile = async () => {
     setBusy("export");
     try {
@@ -573,7 +586,7 @@ function SystemConsole({ initialSettings, onSaved, onImported, onError }: { init
     <div className="system-console">
       <header className="system-hero">
         <div><span className="eyebrow">Local engine & research capacity</span><h1>System</h1><p>See what occupies the GPU, tune the solo researcher, and move back to Research from the header without losing a running job.</p></div>
-        <button className="quiet-button" onClick={() => void refreshSystem()}><RefreshCw size={15} /> Refresh</button>
+        <div className="system-hero-actions"><button className="quiet-button" disabled={!!busy} onClick={() => void releaseMemory()}>{busy === "release" ? <LoaderCircle className="spin" size={15}/> : <CircleStop size={15}/>} Release AI memory</button><button className="quiet-button" onClick={() => void refreshSystem()}><RefreshCw size={15} /> Refresh</button></div>
       </header>
 
       <section className="telemetry-grid" aria-label="Live system telemetry">
