@@ -32,6 +32,9 @@ describe("Kestrel research experience", () => {
     expect(await screen.findByRole("heading", { name: "System" })).toBeInTheDocument();
     expect(screen.getByText(/one model researcher/i)).toBeInTheDocument();
     expect(screen.getByText(/intentionally uncapped/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Portable setup" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Export safe profile/i })).toBeInTheDocument();
+    expect(screen.getByText(/never contain weights, chats, research, credentials/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Research$/i }));
     expect(await screen.findByText("Your research")).toBeInTheDocument();
   });

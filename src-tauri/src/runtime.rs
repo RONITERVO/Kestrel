@@ -5,12 +5,14 @@
 //! Kestrel-managed Bonsai processes. An already-running Bonsai service is attached read-only.
 
 use crate::model::ModelInfo;
-use crate::models::{ControlSettings, ManagedRuntimeSnapshot, ResearchSettings, RuntimeLog};
+use crate::models::{
+    ControlSettings, EngineCandidate, ManagedRuntimeSnapshot, ResearchSettings, RuntimeLog,
+};
 use reqwest::Client;
 use serde_json::json;
 use sha2::Digest;
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -27,6 +29,92 @@ use tokio::{
 
 const EXTERNAL_ENDPOINT: &str = "http://127.0.0.1:8080/v1";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Finds only well-known local engine locations. It never searches whole drives and never
+/// downloads or executes a candidate during discovery.
+pub fn detect_engines(configured: &str, bonsai_root: &str) -> Vec<EngineCandidate> {
+    let mut candidates = Vec::new();
+    push_engine(&mut candidates, PathBuf::from(configured), "Configured");
+    push_engine(
+        &mut candidates,
+        Path::new(bonsai_root)
+            .join("runtime")
+            .join("llama-server.exe"),
+        "Bonsai installation",
+    );
+    if let Some(base) = directories::BaseDirs::new() {
+        let jan = base
+            .data_dir()
+            .join("Jan")
+            .join("data")
+            .join("llamacpp")
+            .join("backends");
+        if jan.is_dir() {
+            for entry in walkdir::WalkDir::new(jan)
+                .follow_links(false)
+                .max_depth(5)
+                .into_iter()
+                .filter_map(Result::ok)
+            {
+                if entry.file_type().is_file()
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case("llama-server.exe")
+                {
+                    push_engine(&mut candidates, entry.path().to_path_buf(), "Jan backend");
+                }
+            }
+        }
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            push_engine(
+                &mut candidates,
+                directory.join("llama-server.exe"),
+                "Windows PATH",
+            );
+        }
+    }
+    let mut seen = HashSet::new();
+    candidates.retain(|candidate| seen.insert(candidate.path.to_lowercase()));
+    candidates.sort_by_key(engine_rank);
+    candidates
+}
+
+fn engine_rank(candidate: &EngineCandidate) -> (u8, u8, String) {
+    let path = candidate.path.to_lowercase();
+    let source = match candidate.source.as_str() {
+        "Configured" => 0,
+        "Bonsai installation" => 1,
+        "Jan backend" => 2,
+        _ => 3,
+    };
+    let backend = if path.contains("bonsai") {
+        0
+    } else if path.contains("cuda") {
+        1
+    } else if path.contains("vulkan") {
+        2
+    } else {
+        3
+    };
+    (source, backend, path)
+}
+
+fn push_engine(candidates: &mut Vec<EngineCandidate>, path: PathBuf, source: &str) {
+    if path.is_file()
+        && path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("llama-server.exe"))
+    {
+        candidates.push(EngineCandidate {
+            path: path.to_string_lossy().into_owned(),
+            source: source.into(),
+        });
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -588,6 +676,31 @@ mod tests {
         assert!(!path.to_string_lossy().contains("session-secret"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "session-secret\n");
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn configured_engine_is_discovered_first_without_execution() {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = directory.path().join("llama-server.exe");
+        fs::write(&engine, b"not executable during discovery").unwrap();
+
+        let candidates = detect_engines(&engine.to_string_lossy(), "Z:\\missing-bonsai");
+
+        assert_eq!(candidates.first().unwrap().path, engine.to_string_lossy());
+        assert_eq!(candidates.first().unwrap().source, "Configured");
+    }
+
+    #[test]
+    fn engine_discovery_rejects_other_executables() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("program.exe");
+        fs::write(&program, b"not a llama server").unwrap();
+
+        let candidates = detect_engines(&program.to_string_lossy(), "Z:\\missing-bonsai");
+
+        assert!(!candidates
+            .iter()
+            .any(|candidate| candidate.path == program.to_string_lossy()));
     }
 
     #[tokio::test]

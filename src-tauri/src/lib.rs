@@ -9,6 +9,7 @@ mod html;
 mod kiwix;
 mod model;
 mod models;
+mod profile;
 mod runtime;
 mod services;
 mod store;
@@ -17,12 +18,12 @@ mod workspace;
 use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
-use model::{default_roots, ModelInfo};
+use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
 use models::{
     AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess,
     ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
-    DeveloperRepairReport, DeveloperRepairRequest, ResearchReport, ResearchSettings,
-    RunResearchRequest, StartChatRequest, SystemSnapshot,
+    DeveloperRepairReport, DeveloperRepairRequest, ProfileTransfer, ResearchReport,
+    ResearchSettings, RunResearchRequest, StartChatRequest, SystemSnapshot,
 };
 use runtime::RuntimeManager;
 use std::{
@@ -33,7 +34,7 @@ use std::{
     },
 };
 use store::ResearchStore;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use workspace::WorkspaceStore;
@@ -45,7 +46,9 @@ struct AppState {
     harness: ResearchHarness,
     research_settings: SettingsStore,
     control_settings: ControlSettingsStore,
+    model_catalog: ModelCatalogStore,
     models: RwLock<Vec<ModelInfo>>,
+    engine_candidates: RwLock<Vec<models::EngineCandidate>>,
     runtime: Arc<RuntimeManager>,
     developer: DeveloperAssistant,
     workspace: WorkspaceStore,
@@ -208,12 +211,55 @@ async fn scan_local_models(state: State<'_, AppState>) -> Result<ControlSnapshot
     let found = tokio::task::spawn_blocking(move || model::scan(&roots))
         .await
         .map_err(|error| format!("model scan failed: {error}"))?;
+    let _ = state.model_catalog.save(&found);
     *state.models.write().await = found;
     control_snapshot(&state, true).await
 }
 
 #[tauri::command]
-fn save_research_settings(
+async fn export_setup_profile(state: State<'_, AppState>) -> Result<ProfileTransfer, String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let models = state.models.read().await.clone();
+    profile::export(state.store.root(), &research, &control, &models)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn import_setup_profile(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    ensure_workspace_idle(&state)?;
+    if !std::path::Path::new(&path).is_absolute() {
+        return Err("setup profile path must be absolute".into());
+    }
+    let imported = profile::import(
+        std::path::Path::new(&path),
+        &state.research_settings,
+        &state.control_settings,
+    )
+    .map_err(|error| error.to_string())?;
+    let roots = default_roots(
+        &imported.control.extra_model_roots,
+        &imported.research.bonsai_root,
+    );
+    if let Ok(found) = tokio::task::spawn_blocking(move || model::scan(&roots)).await {
+        let _ = state.model_catalog.save(&found);
+        *state.models.write().await = found;
+    }
+    refresh_engine_candidates(&state, &imported.control, &imported.research).await;
+    snapshot(&state).await
+}
+
+#[tauri::command]
+async fn save_research_settings(
     settings: ResearchSettings,
     state: State<'_, AppState>,
 ) -> Result<ResearchSettings, String> {
@@ -235,6 +281,7 @@ fn save_research_settings(
         .control_settings
         .save(&control)
         .map_err(|error| error.to_string())?;
+    refresh_engine_candidates(&state, &control, &settings).await;
     Ok(settings)
 }
 
@@ -261,6 +308,7 @@ async fn save_control_settings(
         .research_settings
         .save(&research)
         .map_err(|error| error.to_string())?;
+    refresh_engine_candidates(&state, &settings, &research).await;
     control_snapshot(&state, true).await
 }
 
@@ -288,6 +336,7 @@ async fn apply_model_runtime(
         .control_settings
         .save(&control)
         .map_err(|error| error.to_string())?;
+    refresh_engine_candidates(&state, &control, &settings).await;
     state
         .runtime
         .stop_managed()
@@ -690,6 +739,7 @@ async fn control_snapshot(
         state.developer.status(&settings.project_root).await
     };
     Ok(ControlSnapshot {
+        engine_candidates: state.engine_candidates.read().await.clone(),
         settings,
         models: state.models.read().await.clone(),
         runtime: state.runtime.snapshot().await,
@@ -697,6 +747,15 @@ async fn control_snapshot(
         developer,
         runtime_logs: state.runtime.recent_logs(100).await,
     })
+}
+
+async fn refresh_engine_candidates(
+    state: &AppState,
+    control: &ControlSettings,
+    research: &ResearchSettings,
+) {
+    *state.engine_candidates.write().await =
+        runtime::detect_engines(&control.engine_path, &research.bonsai_root);
 }
 
 fn ensure_workspace_idle(state: &AppState) -> Result<(), String> {
@@ -751,10 +810,24 @@ pub fn run() {
             let research = research_settings
                 .load()
                 .map_err(|error| error.to_string())?;
-            control_settings.load().map_err(|error| error.to_string())?;
-            // Startup stays fast: inspect Bonsai immediately and let an explicit rescan cover large libraries.
+            let mut control = control_settings.load().map_err(|error| error.to_string())?;
+            let mut engine_candidates =
+                runtime::detect_engines(&control.engine_path, &research.bonsai_root);
+            if !std::path::Path::new(&control.engine_path).is_file() {
+                if let Some(candidate) = engine_candidates.first() {
+                    control.engine_path.clone_from(&candidate.path);
+                    control_settings
+                        .save(&control)
+                        .map_err(|error| error.to_string())?;
+                    engine_candidates =
+                        runtime::detect_engines(&control.engine_path, &research.bonsai_root);
+                }
+            }
+            // Startup stays fast: merge the valid cache with an immediate Bonsai inspection.
+            let model_catalog = ModelCatalogStore::new(store.root());
+            let cached = model_catalog.load().unwrap_or_default();
             let bonsai_root = vec![std::path::Path::new(&research.bonsai_root).join("models")];
-            let models = model::scan(&bonsai_root);
+            let models = merge_catalogs(cached, model::scan(&bonsai_root));
             let harness = ResearchHarness::new(store.clone());
             let developer = DeveloperAssistant::new(store.root());
             let workspace = WorkspaceStore::new(store.root())?;
@@ -763,7 +836,9 @@ pub fn run() {
                 harness,
                 research_settings,
                 control_settings,
+                model_catalog,
                 models: RwLock::new(models),
+                engine_candidates: RwLock::new(engine_candidates),
                 runtime: Arc::new(RuntimeManager::new()),
                 developer,
                 workspace,
@@ -771,6 +846,26 @@ pub fn run() {
                 work_active: AtomicBool::new(false),
                 jobs: Mutex::new(HashMap::new()),
                 interactive_jobs: Mutex::new(HashMap::new()),
+            });
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<AppState>();
+                let research = match state.research_settings.load() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                let control = match state.control_settings.load() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                let roots = default_roots(&control.extra_model_roots, &research.bonsai_root);
+                let found = match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                let _ = state.model_catalog.save(&found);
+                *state.models.write().await = found.clone();
+                let _ = handle.emit("model-catalog-updated", found);
             });
             Ok(())
         })
@@ -785,6 +880,8 @@ pub fn run() {
             get_system_snapshot,
             get_control_snapshot,
             scan_local_models,
+            export_setup_profile,
+            import_setup_profile,
             save_research_settings,
             save_control_settings,
             apply_model_runtime,

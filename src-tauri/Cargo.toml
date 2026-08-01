@@ -1,6 +1,6 @@
 [package]
 name = "kestrel-local"
-version = "0.8.0"
+version = "0.9.0"
 description = "Transparent local model control and durable offline research"
 authors = ["Kestrel contributors"]
 edition = "2021"

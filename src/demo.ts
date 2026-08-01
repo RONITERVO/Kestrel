@@ -141,6 +141,10 @@ export const demoSnapshot: AppSnapshot = {
       quantization: "TQ2_0",
       recommendation: "Validated Bonsai profile: one slot, Q4 KV, flash attention, full GPU",
     }],
+    engineCandidates: [{
+      path: "D:\\LocalAI\\Bonsai27B\\runtime\\llama-server.exe",
+      source: "Bonsai installation",
+    }],
     runtime: {
       phase: "ready",
       mode: "attached",

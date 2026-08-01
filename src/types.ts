@@ -147,10 +147,21 @@ export interface DeveloperStatus {
 export interface ControlSnapshot {
   settings: ControlSettings;
   models: ModelInfo[];
+  engineCandidates: EngineCandidate[];
   runtime: ManagedRuntimeSnapshot;
   gpu?: GpuSnapshot;
   developer: DeveloperStatus;
   runtimeLogs: RuntimeLog[];
+}
+
+export interface EngineCandidate {
+  path: string;
+  source: string;
+}
+
+export interface ProfileTransfer {
+  path: string;
+  message: string;
 }
 
 export interface RuntimeLog {
