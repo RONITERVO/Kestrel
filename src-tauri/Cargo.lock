@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-local"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "directories",

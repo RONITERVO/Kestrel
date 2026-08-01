@@ -87,6 +87,10 @@ export const demoReport: ResearchReport = {
   htmlPath: "demo/index.html",
   wordCount: 1187,
   readingMinutes: 6,
+  researchProfile: "solo-expedition",
+  contextWindow: 98_304,
+  outputBudget: 32_768,
+  researchLanes: 6,
 };
 
 export const demoSnapshot: AppSnapshot = {
@@ -98,6 +102,18 @@ export const demoSnapshot: AppSnapshot = {
     offlineOnly: true,
   },
   libraryRoot: "D:\\Kestrel Research",
+  settings: {
+    advancedMode: false,
+    bonsaiRoot: "D:\\LocalAI\\Bonsai27B",
+    contextWindow: 98_304,
+    maxOutputTokens: 32_768,
+    researchLanes: 6,
+    resultsPerLane: 6,
+    sourceTarget: 12,
+    toolTurns: 24,
+    thinkingBudget: 4_096,
+    maxSourceChars: 20_000,
+  },
   reports: [
     { id: demoReport.id, title: demoReport.title, query: demoReport.query, dek: demoReport.dek, updatedAt: demoReport.updatedAt, edition: demoReport.edition, sourceCount: 3, readingMinutes: 6 },
     { id: "demo-byzantine", title: "Byzantine signal beacons", query: "How did the Byzantine beacon system work?", dek: "A chain of fire signals and the limits of what historians can reconstruct.", updatedAt: "2026-07-23T16:05:00Z", edition: 2, sourceCount: 5, readingMinutes: 8 },

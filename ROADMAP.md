@@ -12,6 +12,8 @@ Kestrel Research is not described as finished or the best possible workflow. Imp
 - [x] Visible progress, elapsed time, activity, and bounded cancellation.
 - [x] Self-contained accessible/printable HTML.
 - [x] Live first-edition and expansion acceptance tests.
+- [x] Opt-in single-context expedition with concurrent archive lanes and shared candidate memory.
+- [x] Live VRAM/runtime visibility and uncapped advanced tuning with explicit restart.
 - [ ] Add a one-click catalog integrity check and SQLite rebuild from report folders.
 - [ ] Hash every report artifact in provenance and verify on open.
 - [ ] Add crash recovery for a report interrupted between file publication and catalog insertion.

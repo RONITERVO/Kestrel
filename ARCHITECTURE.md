@@ -29,6 +29,12 @@ Rust research controller
 
 There is no general shell tool, browser tool, MCP client, subprocess agent, remote provider, or second model in the research loop.
 
+### Solo expedition
+
+The installed 98,304-token Bonsai runtime exposes one GPU inference slot and leaves little spare VRAM. Kestrel therefore does not simulate breadth by launching duplicate model processes or independent KV caches. An opt-in expedition performs one structured planning pass, searches the resulting Wikipedia lanes concurrently, serializes compact candidate references into shared context memory, and continues through the existing two-tool lead-researcher loop. Candidates become citable only after `read_source` succeeds.
+
+The advanced profile persists context/output and orchestration values without product-level upper clamps. Positive-value validation prevents meaningless zero settings; the UI explicitly warns that the runtime may reject or exhaust resources with invalid values. The context setting is applied through the installed Bonsai settings file and requires a deliberate engine restart. Every published expedition records profile, context, output allowance, and lane count in report JSON, provenance JSON, in-app context, and standalone HTML.
+
 ## Bonsai-specific harness
 
 The installed 27B generation supports native OpenAI-style `tool_calls` when `llama-server` runs with `--jinja`. Kestrel therefore sends standard tool schemas and round-trips tool results without prompt-format hacks.
@@ -40,7 +46,7 @@ The stable tool prefix contains two functions:
 | `search_archive(query, limit)` | Returns compact matches from prior Kestrel research and local Wikipedia. |
 | `read_source(source_ref, section, max_chars)` | Opens one exact result, records evidence, and returns a bounded excerpt. |
 
-Focused mode requires at least two distinct Wikipedia articles; thorough mode requires four. Tool loops are bounded to 9 and 14 turns respectively. Parallel tool calls are disabled for predictable single-slot inference.
+Focused mode requires at least two distinct Wikipedia articles; thorough mode requires four. Tool loops are bounded to 9 and 14 turns respectively, and parallel model tool calls stay disabled for predictable single-slot inference. Solo expedition instead uses the user-selected source target and tool-turn budget. Its archive lane searches run concurrently before the lead tool loop, and the completion request may return multiple tool calls while all model inference remains inside the same server slot and shared context.
 
 Final synthesis uses a strict JSON schema. Field lengths are bounded for readable pages. If the first structured response is incomplete, Kestrel performs one compact retry with thinking disabled for that retry only. The normal research/tool calls retain a reasoning budget.
 

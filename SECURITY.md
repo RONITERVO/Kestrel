@@ -16,6 +16,7 @@ There is no configurable remote provider in this feature. The React WebView cann
 - Wikipedia references are canonicalized only after validating a local relative path or `http://127.0.0.1:8085` / `localhost:8085` URL.
 - HTTPS, other hosts, other ports, path traversal, backslashes, queries, fragments, control characters, and excessively long references are rejected.
 - The model has two read-only logical tools. It has no shell, program execution, arbitrary file path, browser, MCP, upload, delete, or network tool.
+- Concurrent expedition scouts only call the fixed local Kiwix search endpoint. They do not create model processes, model slots, file tools, or additional network authorities.
 - Search results cannot be cited. Evidence IDs are created only when `read_source` opens a result.
 - Model-supplied citation IDs are intersected with the native evidence ledger before publication.
 - Prior report identity, parent linkage, edition number, output paths, and IDs are native decisions, not model-controlled paths.
@@ -29,6 +30,8 @@ There is no configurable remote provider in this feature. The React WebView cann
 The exact installed telemetry proxy at port 8080 does not require an API key. This is acceptable only because it binds to loopback and is a user-managed local service. A future Kestrel-owned runtime should use a random per-launch key that is not exposed to the WebView.
 
 Model output is untrusted. Strict schemas help shape it, but native code still validates citations, paths, source identity, sizes, and storage. Factual accuracy remains bounded by the model and Wikipedia snapshot.
+
+Advanced runtime application is a direct user action from the System view, never a model tool. It writes only `settings.json` beneath the user-entered Bonsai root and launches only `Start-BonsaiServer.ps1` from that root. The UI warns that values are uncapped and can exhaust resources; a confirmation precedes restart.
 
 ## Storage and OS synchronization
 

@@ -66,6 +66,10 @@ export interface ResearchReport {
   htmlPath: string;
   wordCount: number;
   readingMinutes: number;
+  researchProfile: string;
+  contextWindow: number;
+  outputBudget: number;
+  researchLanes: number;
 }
 
 export interface ReportSummary {
@@ -83,6 +87,44 @@ export interface AppSnapshot {
   status: ServiceStatus;
   reports: ReportSummary[];
   libraryRoot: string;
+  settings: ResearchSettings;
+}
+
+export interface ResearchSettings {
+  advancedMode: boolean;
+  bonsaiRoot: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  researchLanes: number;
+  resultsPerLane: number;
+  sourceTarget: number;
+  toolTurns: number;
+  thinkingBudget: number;
+  maxSourceChars: number;
+}
+
+export interface GpuSnapshot {
+  name: string;
+  totalMib: number;
+  usedMib: number;
+  freeMib: number;
+  utilizationPercent: number;
+}
+
+export interface RuntimeSnapshot {
+  contextWindow: number;
+  maxOutputTokens: number;
+  parallelSlots: number;
+  kvCache: string;
+  modelVramMib: number;
+  modelRoot: string;
+}
+
+export interface SystemSnapshot {
+  status: ServiceStatus;
+  gpu?: GpuSnapshot;
+  runtime: RuntimeSnapshot;
+  settings: ResearchSettings;
 }
 
 export type ProgressStage =
@@ -108,5 +150,5 @@ export interface ResearchProgress {
 
 export interface RunResearchRequest {
   query: string;
-  depth: "focused" | "thorough";
+  depth: "focused" | "thorough" | "expedition";
 }

@@ -1,11 +1,12 @@
 use crate::kiwix::{KiwixClient, SNAPSHOT};
 use crate::models::{
-    Finding, ResearchDraft, ResearchProgress, ResearchReport, ResearchSection, RunResearchRequest,
-    Source,
+    Finding, ResearchDraft, ResearchProgress, ResearchReport, ResearchSection, ResearchSettings,
+    RunResearchRequest, Source, Term, TimelineItem,
 };
 use crate::store::{slugify, ResearchStore, StoreError};
 use chrono::Utc;
 use reqwest::Client;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::Instant;
@@ -18,7 +19,29 @@ const MODEL_ENDPOINT: &str = "http://127.0.0.1:8080/v1/chat/completions";
 const MODEL_ID: &str = "bonsai-27b";
 const MODEL_LABEL: &str = "Ternary Bonsai 27B Q2_0";
 const ARCHIVE_LABEL: &str = "English Wikipedia · 12 January 2024";
-const HARNESS_VERSION: &str = "bonsai-wikipedia-v1";
+const HARNESS_VERSION: &str = "bonsai-wikipedia-v2";
+
+#[derive(Debug, Deserialize)]
+struct ResearchPlan {
+    lanes: Vec<ResearchLane>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchLane {
+    name: String,
+    query: String,
+    purpose: String,
+}
+
+struct ReportContext<'a> {
+    query: &'a str,
+    now: String,
+    edition: u32,
+    parent_id: Option<String>,
+    sources: Vec<Source>,
+    expedition: bool,
+    settings: &'a ResearchSettings,
+}
 
 #[derive(Debug, Error)]
 pub enum ResearchError {
@@ -51,7 +74,7 @@ impl ResearchHarness {
             store,
             kiwix: KiwixClient::new(),
             http: Client::builder()
-                .timeout(std::time::Duration::from_secs(360))
+                .timeout(std::time::Duration::from_secs(3_600))
                 .build()
                 .expect("local HTTP client"),
         }
@@ -61,6 +84,7 @@ impl ResearchHarness {
         &self,
         app: Option<&AppHandle>,
         request: RunResearchRequest,
+        settings: ResearchSettings,
         job_id: &str,
         cancel: CancellationToken,
     ) -> Result<ResearchReport, ResearchError> {
@@ -68,7 +92,36 @@ impl ResearchHarness {
         if query.chars().count() < 4 {
             return Err(ResearchError::InvalidQuery);
         }
+        let expedition = request.depth == "expedition" && settings.advanced_mode;
         let thorough = request.depth != "focused";
+        let required_wikipedia = if expedition {
+            settings.source_target as usize
+        } else if thorough {
+            4usize
+        } else {
+            2usize
+        };
+        let max_turns = if expedition {
+            settings.tool_turns
+        } else if thorough {
+            14
+        } else {
+            9
+        };
+        let max_output = if expedition {
+            settings.max_output_tokens
+        } else if thorough {
+            11_000
+        } else {
+            7_000
+        };
+        let thinking_budget = if expedition {
+            settings.thinking_budget
+        } else if thorough {
+            2_048
+        } else {
+            1_024
+        };
         let started = Instant::now();
         emit(
             app,
@@ -148,19 +201,61 @@ impl ResearchHarness {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let system = system_prompt(thorough);
+        let lane_context = if expedition {
+            emit(
+                app,
+                job_id,
+                started,
+                "searching",
+                "Mapping the research",
+                &format!(
+                    "Bonsai is dividing the question into {} coordinated evidence lanes",
+                    settings.research_lanes
+                ),
+                2,
+            )?;
+            let planning_messages = vec![
+                json!({"role":"system","content":format!("You are the planning pass for Kestrel's single-context offline researcher. Design complementary Wikipedia research lanes for breadth without duplicating work. Each lane needs a short name, a focused Wikipedia search query, and a one-sentence purpose. Cover mechanisms, chronology, competing interpretations, limitations, and useful context when relevant. Return strict JSON only. The archive ends {SNAPSHOT}.")}),
+                json!({"role":"user","content":format!("Question: {query}\nCreate exactly {} distinct research lanes.", settings.research_lanes)}),
+            ];
+            let response = tokio::select! {
+                _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
+                result = self.complete(&planning_messages, None, Some(plan_schema(settings.research_lanes)), max_output, thinking_budget, false) => result?,
+            };
+            let content = response_message(&response)?
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let mut plan: ResearchPlan = serde_json::from_str(&content)
+                .unwrap_or_else(|_| fallback_plan(query, settings.research_lanes));
+            plan.lanes.truncate(settings.research_lanes as usize);
+            emit(
+                app,
+                job_id,
+                started,
+                "searching",
+                "Scouting the archive",
+                &format!(
+                    "Searching {} Wikipedia lanes concurrently while keeping one shared GPU context",
+                    plan.lanes.len()
+                ),
+                2,
+            )?;
+            self.presearch_lanes(&plan.lanes, settings.results_per_lane, &cancel)
+                .await?
+        } else {
+            "No preplanned lanes; use the tools adaptively.".into()
+        };
+        let system = system_prompt(thorough, expedition, &settings);
         let user = format!(
-            "Research question: {query}\n\nExisting-library matches:\n{related_context}\n\nUse search_archive and read_source. Inspect at least {} distinct relevant Wikipedia articles. If prior research exists, inspect it and make a concrete improvement. Distinguish sourced statements from inference, explain specialist terms, preserve uncertainty, and remember the archive cutoff. Do not claim the result is final or the best possible.",
-            if thorough { 4 } else { 2 }
+            "Research question: {query}\n\nExisting-library matches:\n{related_context}\n\nShared lane memory (candidate references, not evidence until opened):\n{lane_context}\n\nUse search_archive and read_source. Inspect at least {required_wikipedia} distinct relevant Wikipedia articles. If prior research exists, inspect it and make a concrete improvement. Distinguish sourced statements from inference, explain specialist terms, preserve uncertainty, and remember the archive cutoff. Do not claim the result is final or the best possible."
         );
         let mut messages = vec![
             json!({"role":"system","content":system}),
             json!({"role":"user","content":user}),
         ];
-        let tools = tool_schema();
-        let required_wikipedia = if thorough { 4 } else { 2 };
-        let max_turns = if thorough { 14 } else { 9 };
-        let mut forced_retry = false;
+        let tools = tool_schema(expedition, settings.max_source_chars);
 
         emit(
             app,
@@ -175,7 +270,7 @@ impl ResearchHarness {
             self.ensure_not_cancelled(&cancel)?;
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-                result = self.complete(&messages, Some(&tools), None, 1800, if thorough { 2048 } else { 1024 }) => result?,
+                result = self.complete(&messages, Some(&tools), None, if expedition { max_output } else { 1_800 }, thinking_budget, expedition) => result?,
             };
             let assistant = response_message(&response)?;
             let calls = assistant
@@ -189,14 +284,12 @@ impl ResearchHarness {
                     .iter()
                     .filter(|source| source.kind == "wikipedia")
                     .count();
-                if wikipedia_count >= required_wikipedia || forced_retry || turn + 1 == max_turns {
+                if wikipedia_count >= required_wikipedia || turn + 1 == max_turns {
                     break;
                 }
-                forced_retry = true;
                 messages.push(json!({"role":"user","content":format!("You have inspected {wikipedia_count} Wikipedia articles. Inspect at least {required_wikipedia} distinct relevant articles before synthesis; broaden or refine the search if needed.")}));
                 continue;
             }
-            forced_retry = false;
             for call in calls {
                 self.ensure_not_cancelled(&cancel)?;
                 let id = call
@@ -227,7 +320,9 @@ impl ResearchHarness {
                             .and_then(Value::as_u64)
                             .unwrap_or(8)
                             .clamp(1, 12) as usize;
-                        let result = self.search_all(search_query, limit).await?;
+                        let result = self.search_all(search_query, limit).await.unwrap_or_else(|error| {
+                            json!({"error": error.to_string(), "recovery": "Try a shorter or differently phrased query."})
+                        });
                         emit(
                             app,
                             job_id,
@@ -250,14 +345,24 @@ impl ResearchHarness {
                             .get("section")
                             .and_then(Value::as_str)
                             .filter(|value| !value.trim().is_empty());
-                        let max_chars = arguments
+                        let requested_chars = arguments
                             .get("max_chars")
                             .and_then(Value::as_u64)
-                            .unwrap_or(if thorough { 14_000 } else { 9_000 })
-                            as usize;
+                            .unwrap_or(if expedition {
+                                settings.max_source_chars as u64
+                            } else if thorough {
+                                14_000
+                            } else {
+                                9_000
+                            });
+                        let max_chars = if expedition {
+                            requested_chars.min(settings.max_source_chars as u64)
+                        } else {
+                            requested_chars.min(40_000)
+                        } as usize;
                         let (text, title) = self
-                            .read_source(reference, section, max_chars, &mut evidence)
-                            .await?;
+                            .read_source_for_tool(reference, section, max_chars, &mut evidence)
+                            .await;
                         emit(
                             app,
                             job_id,
@@ -281,10 +386,19 @@ impl ResearchHarness {
         }
 
         self.ensure_not_cancelled(&cancel)?;
-        if !evidence.iter().any(|source| source.kind == "wikipedia") {
+        let wikipedia_count = evidence
+            .iter()
+            .filter(|source| source.kind == "wikipedia")
+            .count();
+        if wikipedia_count == 0 {
             return Err(ResearchError::InvalidModelOutput(
                 "no Wikipedia article was inspected; try a more specific question".into(),
             ));
+        }
+        if wikipedia_count < required_wikipedia {
+            return Err(ResearchError::InvalidModelOutput(format!(
+                "the source target was not met: inspected {wikipedia_count} of {required_wikipedia} requested Wikipedia articles; add tool turns or lower the source target"
+            )));
         }
         emit(
             app,
@@ -301,35 +415,36 @@ impl ResearchHarness {
         messages.push(json!({
             "role":"user",
             "content":format!(
-                "Now publish the research document as strict JSON. You inspected these valid citation IDs: {}. Every finding, section, and timeline entry must cite only these IDs. The improvement field must name a concrete improvement over {}. Use plain language without flattening uncertainty. Keep the answer concise, but make the sections genuinely explanatory.",
+                "Now publish the research document as strict JSON. You inspected these valid citation IDs: {}. Every finding, section, and timeline entry must cite only these IDs. The improvement field must name a concrete improvement over {}. Use plain language without flattening uncertainty. Keep the short answer concise, but make the sections genuinely explanatory. {}",
                 evidence.iter().map(|source| format!("{} ({})", source.id, source.title)).collect::<Vec<_>>().join(", "),
-                parent.as_ref().map(|item| format!("edition {} of {}", item.edition, item.title)).unwrap_or_else(|| "a blank first-edition baseline".into())
+                parent.as_ref().map(|item| format!("edition {} of {}", item.edition, item.title)).unwrap_or_else(|| "a blank first-edition baseline".into()),
+                if expedition { "This is a solo expedition: integrate the distinct lanes, compare conflicts, state coverage gaps, and use the larger output budget for depth rather than repetition." } else { "" }
             )
         }));
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-            result = self.complete(&messages, None, Some(report_schema()), if thorough { 11_000 } else { 7_000 }, if thorough { 2048 } else { 1024 }) => result?,
+            result = self.complete(&messages, None, Some(report_schema(expedition)), max_output, thinking_budget, false) => result?,
         };
         let mut content = response_message(&response)?
             .get("content")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let draft: ResearchDraft = match serde_json::from_str(&content) {
+        let draft: ResearchDraft = match parse_research_draft(&content) {
             Ok(draft) => draft,
             Err(first_error) => {
                 messages.push(json!({"role":"assistant","content":content}));
-                messages.push(json!({"role":"user","content":"The previous JSON was incomplete. Retry once with compact prose: at most 4 findings, 4 sections, 2 paragraphs per section, 8 timeline items, and 8 terms. Return the complete strict JSON object only. Preserve the same evidence IDs and concrete improvement."}));
+                messages.push(json!({"role":"user","content":if expedition { "The previous JSON was incomplete. Retry once with concise but complete prose that fits the schema. Return the strict JSON object only; preserve the evidence IDs, lane coverage, uncertainty, and concrete improvement." } else { "The previous JSON was incomplete. Retry once with compact prose: at most 4 findings, 4 sections, 2 paragraphs per section, 8 timeline items, and 8 terms. Return the complete strict JSON object only. Preserve the same evidence IDs and concrete improvement." }}));
                 let retry = tokio::select! {
                     _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-                    result = self.complete(&messages, None, Some(report_schema()), 9_000, 0) => result?,
+                    result = self.complete(&messages, None, Some(report_schema(expedition)), if expedition { max_output } else { 9_000 }, 0, false) => result?,
                 };
                 content = response_message(&retry)?
                     .get("content")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned();
-                serde_json::from_str(&content).map_err(|retry_error| {
+                parse_research_draft(&content).map_err(|retry_error| {
                     ResearchError::InvalidModelOutput(format!(
                         "initial {first_error}; retry {retry_error}; retry began: {}",
                         truncate(&content, 220)
@@ -344,11 +459,15 @@ impl ResearchHarness {
             .unwrap_or(1);
         let mut report = normalize_report(
             draft,
-            query,
-            now,
-            edition,
-            parent.as_ref().map(|item| item.id.clone()),
-            evidence,
+            ReportContext {
+                query,
+                now,
+                edition,
+                parent_id: parent.as_ref().map(|item| item.id.clone()),
+                sources: evidence,
+                expedition,
+                settings: &settings,
+            },
         );
 
         emit(
@@ -375,6 +494,42 @@ impl ResearchHarness {
             6,
         )?;
         Ok(report)
+    }
+
+    async fn presearch_lanes(
+        &self,
+        lanes: &[ResearchLane],
+        results_per_lane: u32,
+        cancel: &CancellationToken,
+    ) -> Result<String, ResearchError> {
+        let mut tasks = tokio::task::JoinSet::new();
+        for lane in lanes {
+            let harness = self.clone();
+            let name = lane.name.clone();
+            let purpose = lane.purpose.clone();
+            let query = lane.query.clone();
+            tasks.spawn(async move {
+                let results = harness
+                    .search_all(&query, results_per_lane as usize)
+                    .await?;
+                Ok::<_, ResearchError>((name, purpose, query, results))
+            });
+        }
+        let mut memory = Vec::new();
+        while let Some(result) = tokio::select! {
+            _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
+            result = tasks.join_next() => result,
+        } {
+            let (name, purpose, query, results) = result
+                .map_err(|error| ResearchError::Model(format!("archive lane failed: {error}")))??;
+            memory.push(json!({
+                "lane": name,
+                "purpose": purpose,
+                "query": query,
+                "candidates": compact_candidates(&results),
+            }));
+        }
+        Ok(serde_json::to_string(&memory).unwrap_or_default())
     }
 
     async fn search_all(&self, query: &str, limit: usize) -> Result<Value, ResearchError> {
@@ -444,26 +599,42 @@ impl ResearchHarness {
         Ok((format!("Evidence ID: {evidence_id}\nTitle: {}\nSnapshot: {SNAPSHOT}\nSection: {}\nSource ref: {}\n\n{}", article.title, article.section.as_deref().unwrap_or("Full article"), article.reference, article.text), article.title))
     }
 
+    async fn read_source_for_tool(
+        &self,
+        reference: &str,
+        section: Option<&str>,
+        max_chars: usize,
+        evidence: &mut Vec<Source>,
+    ) -> (String, String) {
+        self.read_source(reference, section, max_chars, evidence)
+            .await
+            .unwrap_or_else(|error| {
+                (
+                    format!(
+                        "Source could not be read: {error}. Search again and choose another exact sourceRef."
+                    ),
+                    "Unreadable archive result".into(),
+                )
+            })
+    }
+
     async fn complete(
         &self,
         messages: &[Value],
         tools: Option<&Value>,
         response_format: Option<Value>,
         max_tokens: u32,
-        thinking_budget: i32,
+        thinking_budget: u32,
+        parallel_tool_calls: bool,
     ) -> Result<Value, ResearchError> {
-        let mut request = json!({
-            "model": MODEL_ID, "messages": messages, "stream": false, "temperature": 0.2, "top_p": 0.9,
-            "max_tokens": max_tokens, "thinking_budget_tokens": thinking_budget
-        });
-        if let Some(tools) = tools {
-            request["tools"] = tools.clone();
-            request["tool_choice"] = json!("auto");
-            request["parallel_tool_calls"] = json!(false);
-        }
-        if let Some(format) = response_format {
-            request["response_format"] = format;
-        }
+        let request = completion_request(
+            messages,
+            tools,
+            response_format,
+            max_tokens,
+            thinking_budget,
+            parallel_tool_calls,
+        );
         let response = self.http.post(MODEL_ENDPOINT).json(&request).send().await?;
         let status = response.status();
         let body = response.text().await?;
@@ -484,6 +655,29 @@ impl ResearchHarness {
             Ok(())
         }
     }
+}
+
+fn completion_request(
+    messages: &[Value],
+    tools: Option<&Value>,
+    response_format: Option<Value>,
+    max_tokens: u32,
+    thinking_budget: u32,
+    parallel_tool_calls: bool,
+) -> Value {
+    let mut request = json!({
+        "model": MODEL_ID, "messages": messages, "stream": false, "temperature": 0.2, "top_p": 0.9,
+        "max_tokens": max_tokens, "thinking_budget_tokens": thinking_budget
+    });
+    if let Some(tools) = tools {
+        request["tools"] = tools.clone();
+        request["tool_choice"] = json!("auto");
+        request["parallel_tool_calls"] = json!(parallel_tool_calls);
+    }
+    if let Some(format) = response_format {
+        request["response_format"] = format;
+    }
+    request
 }
 
 fn emit(
@@ -525,43 +719,306 @@ fn response_message(response: &Value) -> Result<Value, ResearchError> {
         })
 }
 
-fn system_prompt(thorough: bool) -> String {
+fn system_prompt(thorough: bool, expedition: bool, settings: &ResearchSettings) -> String {
     format!(
-        "You are Kestrel's offline research model, running as {MODEL_LABEL}. You have two tools only: search_archive finds both immutable Kestrel reports and the January 2024 English Wikipedia archive; read_source opens one result. Work entirely from these tools. Never imply internet access or knowledge newer than the archive. Read before citing. Wikipedia is tertiary: attribute it and preserve disputes, uncertainty, dates, and the snapshot cutoff. Search with multiple phrasings when useful. Related prior research is context to improve, never authority. Always make at least one concrete improvement and identify open questions; never call a report final or best possible. Use simple explanations first and define specialist language. Research depth: {}. Harness: {HARNESS_VERSION}.",
-        if thorough { "thorough" } else { "focused" }
+        "You are Kestrel's offline research model, running as {MODEL_LABEL}. You have two tools only: search_archive finds both immutable Kestrel reports and the January 2024 English Wikipedia archive; read_source opens one result. Work entirely from these tools. Never imply internet access or knowledge newer than the archive. Read before citing. Wikipedia is tertiary: attribute it and preserve disputes, uncertainty, dates, and the snapshot cutoff. Search with multiple phrasings when useful. Related prior research is context to improve, never authority. Always make at least one concrete improvement and identify open questions; never call a report final or best possible. Use simple explanations first and define specialist language. Research depth: {}. {} Harness: {HARNESS_VERSION}.",
+        if expedition { "solo expedition" } else if thorough { "thorough" } else { "focused" },
+        if expedition { format!("Act as one lead researcher coordinating {} complementary lanes inside one shared GPU context. Treat the supplied lane map as candidate memory, inspect before citing, keep a coverage checklist, resolve duplication and disagreement, and aim for at least {} distinct Wikipedia sources.", settings.research_lanes, settings.source_target) } else { String::new() }
     )
 }
 
-fn tool_schema() -> Value {
+fn tool_schema(expedition: bool, max_source_chars: u32) -> Value {
+    let max_chars = if expedition { max_source_chars } else { 40_000 };
     json!([
       {"type":"function","function":{"name":"search_archive","description":"Search local Wikipedia and existing Kestrel research. Use several focused searches rather than one broad query.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"Short article title or focused keywords"},"limit":{"type":"integer","minimum":1,"maximum":12}},"required":["query"]}}},
-      {"type":"function","function":{"name":"read_source","description":"Open a sourceRef returned by search_archive. Reading is required before citation.","parameters":{"type":"object","properties":{"source_ref":{"type":"string","description":"Exact sourceRef from search_archive"},"section":{"type":"string","description":"Optional heading for a focused excerpt"},"max_chars":{"type":"integer","minimum":2000,"maximum":40000}},"required":["source_ref"]}}}
+      {"type":"function","function":{"name":"read_source","description":"Open a sourceRef returned by search_archive. Reading is required before citation.","parameters":{"type":"object","properties":{"source_ref":{"type":"string","description":"Exact sourceRef from search_archive"},"section":{"type":"string","description":"Optional heading for a focused excerpt"},"max_chars":{"type":"integer","minimum":2000,"maximum":max_chars}},"required":["source_ref"]}}}
     ])
 }
 
-fn report_schema() -> Value {
+fn plan_schema(lanes: u32) -> Value {
+    json!({"type":"json_schema","json_schema":{"name":"kestrel_research_map","strict":true,"schema":{
+        "type":"object","additionalProperties":false,"required":["lanes"],"properties":{
+            "lanes":{"type":"array","minItems":lanes,"maxItems":lanes,"items":{
+                "type":"object","additionalProperties":false,"required":["name","query","purpose"],"properties":{
+                    "name":{"type":"string","maxLength":80},
+                    "query":{"type":"string","maxLength":160},
+                    "purpose":{"type":"string","maxLength":280}
+                }
+            }}
+        }
+    }}})
+}
+
+fn compact_candidates(results: &Value) -> Value {
+    let mut candidates = Vec::new();
+    for kind in ["research", "wikipedia"] {
+        if let Some(items) = results.get(kind).and_then(Value::as_array) {
+            for item in items {
+                candidates.push(json!({
+                    "kind": kind,
+                    "sourceRef": item.get("sourceRef").and_then(Value::as_str).unwrap_or_default(),
+                    "title": item.get("title").and_then(Value::as_str).unwrap_or_default(),
+                    "snippet": truncate(item.get("snippet").and_then(Value::as_str).unwrap_or_default(), 240),
+                }));
+            }
+        }
+    }
+    Value::Array(candidates)
+}
+
+fn fallback_plan(query: &str, lane_count: u32) -> ResearchPlan {
+    let focuses = [
+        (
+            "Core account",
+            "overview definition",
+            "Establish the central account and vocabulary.",
+        ),
+        (
+            "Mechanism",
+            "mechanism operation",
+            "Explain how the relevant process or system works.",
+        ),
+        (
+            "Chronology",
+            "history chronology",
+            "Trace dates, development, and turning points.",
+        ),
+        (
+            "Evidence",
+            "evidence discovery",
+            "Find the observations or records behind the account.",
+        ),
+        (
+            "Debate",
+            "controversy interpretation",
+            "Surface competing interpretations and disputes.",
+        ),
+        (
+            "Limits",
+            "limitations uncertainty",
+            "Identify missing evidence, limitations, and uncertainty.",
+        ),
+        (
+            "Context",
+            "historical context",
+            "Connect the topic to its wider setting.",
+        ),
+        (
+            "Consequences",
+            "impact significance",
+            "Examine consequences and why the topic matters.",
+        ),
+    ];
+    ResearchPlan {
+        lanes: (0..lane_count)
+            .map(|index| {
+                let focus = focuses[index as usize % focuses.len()];
+                ResearchLane {
+                    name: if index < focuses.len() as u32 {
+                        focus.0.into()
+                    } else {
+                        format!("{} {}", focus.0, index + 1)
+                    },
+                    query: format!("{query} {}", focus.1),
+                    purpose: focus.2.into(),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn report_schema(expedition: bool) -> Value {
+    let findings = if expedition { 12 } else { 6 };
+    let sections = if expedition { 16 } else { 7 };
+    let body_items = if expedition { 10 } else { 5 };
+    let paragraph_chars = 1_200;
+    let timeline = if expedition { 24 } else { 12 };
+    let terms = if expedition { 24 } else { 12 };
+    let questions = if expedition { 16 } else { 8 };
     json!({"type":"json_schema","json_schema":{"name":"kestrel_research","strict":true,"schema":{
       "type":"object","additionalProperties":false,
       "required":["title","dek","answer","improvement","findings","sections","timeline","terms","openQuestions"],
       "properties":{
         "title":{"type":"string","maxLength":120},"dek":{"type":"string","maxLength":260},"answer":{"type":"string","maxLength":1000},"improvement":{"type":"string","maxLength":600},
-        "findings":{"type":"array","minItems":3,"maxItems":6,"items":{"type":"object","additionalProperties":false,"required":["title","explanation","citations"],"properties":{"title":{"type":"string","maxLength":120},"explanation":{"type":"string","maxLength":650},"citations":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":12}}}}},
-        "sections":{"type":"array","minItems":2,"maxItems":7,"items":{"type":"object","additionalProperties":false,"required":["id","heading","summary","body","citations"],"properties":{"id":{"type":"string","maxLength":100},"heading":{"type":"string","maxLength":140},"summary":{"type":"string","maxLength":500},"body":{"type":"array","minItems":1,"maxItems":5,"items":{"type":"string","maxLength":1200}},"citations":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":12}}}}},
-        "timeline":{"type":"array","maxItems":12,"items":{"type":"object","additionalProperties":false,"required":["label","date","description","citations"],"properties":{"label":{"type":"string","maxLength":100},"date":{"type":"string","maxLength":80},"description":{"type":"string","maxLength":500},"citations":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":12}}}}},
-        "terms":{"type":"array","maxItems":12,"items":{"type":"object","additionalProperties":false,"required":["term","meaning"],"properties":{"term":{"type":"string","maxLength":100},"meaning":{"type":"string","maxLength":500}}}},
-        "openQuestions":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"string","maxLength":500}}
+        "findings":{"type":"array","minItems":3,"maxItems":findings,"items":{"type":"object","additionalProperties":false,"required":["title","explanation","citations"],"properties":{"title":{"type":"string","maxLength":120},"explanation":{"type":"string","maxLength":650},"citations":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":12}}}}},
+        "sections":{"type":"array","minItems":2,"maxItems":sections,"items":{"type":"object","additionalProperties":false,"required":["id","heading","summary","body","citations"],"properties":{"id":{"type":"string","maxLength":100},"heading":{"type":"string","maxLength":140},"summary":{"type":"string","maxLength":500},"body":{"type":"array","minItems":1,"maxItems":body_items,"items":{"type":"string","maxLength":paragraph_chars}},"citations":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":12}}}}},
+        "timeline":{"type":"array","maxItems":timeline,"items":{"type":"object","additionalProperties":false,"required":["label","date","description","citations"],"properties":{"label":{"type":"string","maxLength":100},"date":{"type":"string","maxLength":80},"description":{"type":"string","maxLength":500},"citations":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":12}}}}},
+        "terms":{"type":"array","maxItems":terms,"items":{"type":"object","additionalProperties":false,"required":["term","meaning"],"properties":{"term":{"type":"string","maxLength":100},"meaning":{"type":"string","maxLength":500}}}},
+        "openQuestions":{"type":"array","minItems":2,"maxItems":questions,"items":{"type":"string","maxLength":500}}
       }
     }}})
 }
 
-fn normalize_report(
-    draft: ResearchDraft,
-    query: &str,
-    now: String,
-    edition: u32,
-    parent_id: Option<String>,
-    sources: Vec<Source>,
-) -> ResearchReport {
+fn parse_research_draft(content: &str) -> Result<ResearchDraft, String> {
+    let original = content.trim();
+    let without_prefix = original.strip_prefix("```json").unwrap_or(original).trim();
+    let trimmed = without_prefix
+        .strip_suffix("```")
+        .unwrap_or(without_prefix)
+        .trim();
+    let value: Value = serde_json::from_str(trimmed).map_err(|error| error.to_string())?;
+    if let Ok(draft) = serde_json::from_value::<ResearchDraft>(value.clone()) {
+        return Ok(draft);
+    }
+
+    let title = text_field(&value, &["title"]).unwrap_or_default();
+    let answer = text_field(&value, &["answer", "shortAnswer", "short_answer"]).unwrap_or_default();
+    if title.is_empty() || answer.is_empty() {
+        return Err("missing a usable title or short answer".into());
+    }
+    let sections = value
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let heading = text_field(item, &["heading", "title"])?;
+                    let content = text_field(item, &["content", "text"]);
+                    let body = item
+                        .get("body")
+                        .and_then(Value::as_array)
+                        .map(|items| string_array(items))
+                        .filter(|items| !items.is_empty())
+                        .or_else(|| content.clone().map(|text| vec![text]))
+                        .unwrap_or_default();
+                    let summary = text_field(item, &["summary"])
+                        .or_else(|| content.as_deref().map(first_sentence))
+                        .unwrap_or_else(|| heading.clone());
+                    Some(ResearchSection {
+                        id: String::new(),
+                        heading,
+                        summary,
+                        body,
+                        citations: citation_array(item),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if sections.is_empty() {
+        return Err("missing usable research sections".into());
+    }
+    let findings = value
+        .get("findings")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_json::from_value::<Finding>(item.clone()).ok())
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| {
+            sections
+                .iter()
+                .take(6)
+                .map(|section| Finding {
+                    title: section.heading.clone(),
+                    explanation: section.summary.clone(),
+                    citations: section.citations.clone(),
+                })
+                .collect()
+        });
+    let timeline = value
+        .get("timeline")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let date = text_field(item, &["date"])?;
+                    let description = text_field(item, &["description", "event"])?;
+                    Some(TimelineItem {
+                        label: text_field(item, &["label"])
+                            .unwrap_or_else(|| truncate(&description, 90)),
+                        date,
+                        description,
+                        citations: citation_array(item),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let terms = value
+        .get("terms")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_json::from_value::<Term>(item.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut open_questions = Vec::new();
+    for key in [
+        "openQuestions",
+        "open_questions",
+        "coverage_gaps",
+        "conflicts_and_debates",
+    ] {
+        if let Some(items) = value.get(key).and_then(Value::as_array) {
+            open_questions.extend(string_array(items));
+        }
+    }
+    Ok(ResearchDraft {
+        title,
+        dek: text_field(&value, &["dek", "subtitle"]).unwrap_or_else(|| truncate(&answer, 240)),
+        answer,
+        improvement: text_field(&value, &["improvement"]).unwrap_or_default(),
+        findings,
+        sections,
+        timeline,
+        terms,
+        open_questions,
+    })
+}
+
+fn text_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+}
+
+fn string_array(items: &[Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn citation_array(value: &Value) -> Vec<String> {
+    value
+        .get("citations")
+        .and_then(Value::as_array)
+        .map(|items| string_array(items))
+        .unwrap_or_default()
+}
+
+fn first_sentence(value: &str) -> String {
+    let sentence = value
+        .split_inclusive(['.', '!', '?'])
+        .next()
+        .unwrap_or(value)
+        .trim();
+    truncate(sentence, 500)
+}
+
+fn normalize_report(draft: ResearchDraft, context: ReportContext<'_>) -> ResearchReport {
+    let ReportContext {
+        query,
+        now,
+        edition,
+        parent_id,
+        sources,
+        expedition,
+        settings,
+    } = context;
     let valid = sources
         .iter()
         .map(|source| source.id.clone())
@@ -584,7 +1041,7 @@ fn normalize_report(
     let findings = draft
         .findings
         .into_iter()
-        .take(6)
+        .take(if expedition { 12 } else { 6 })
         .map(|finding| Finding {
             title: finding.title,
             explanation: finding.explanation,
@@ -594,7 +1051,7 @@ fn normalize_report(
     let sections = draft
         .sections
         .into_iter()
-        .take(7)
+        .take(if expedition { 16 } else { 7 })
         .enumerate()
         .map(|(index, section)| ResearchSection {
             id: {
@@ -607,14 +1064,18 @@ fn normalize_report(
             },
             heading: section.heading,
             summary: section.summary,
-            body: section.body.into_iter().take(5).collect(),
+            body: section
+                .body
+                .into_iter()
+                .take(if expedition { 10 } else { 5 })
+                .collect(),
             citations: normalize_citations(section.citations),
         })
         .collect::<Vec<_>>();
     let timeline = draft
         .timeline
         .into_iter()
-        .take(12)
+        .take(if expedition { 24 } else { 12 })
         .map(|item| crate::models::TimelineItem {
             citations: normalize_citations(item.citations),
             ..item
@@ -648,12 +1109,40 @@ fn normalize_report(
         findings,
         sections,
         timeline,
-        terms: draft.terms.into_iter().take(12).collect(),
-        open_questions: draft.open_questions.into_iter().take(8).collect(),
+        terms: draft
+            .terms
+            .into_iter()
+            .take(if expedition { 24 } else { 12 })
+            .collect(),
+        open_questions: draft
+            .open_questions
+            .into_iter()
+            .take(if expedition { 16 } else { 8 })
+            .collect(),
         sources,
         html_path: String::new(),
         word_count,
         reading_minutes: word_count.div_ceil(220).max(1),
+        research_profile: if expedition {
+            "solo-expedition".into()
+        } else {
+            "standard".into()
+        },
+        context_window: if expedition {
+            settings.context_window
+        } else {
+            0
+        },
+        output_budget: if expedition {
+            settings.max_output_tokens
+        } else {
+            0
+        },
+        research_lanes: if expedition {
+            settings.research_lanes
+        } else {
+            1
+        },
     }
 }
 
@@ -731,11 +1220,109 @@ mod tests {
             reference: "/x".into(),
             excerpt: "x".into(),
         }];
-        let report = normalize_report(draft, "query", Utc::now().to_rfc3339(), 1, None, sources);
+        let settings = ResearchSettings::default();
+        let report = normalize_report(
+            draft,
+            ReportContext {
+                query: "query",
+                now: Utc::now().to_rfc3339(),
+                edition: 1,
+                parent_id: None,
+                sources,
+                expedition: false,
+                settings: &settings,
+            },
+        );
         assert_eq!(report.findings[0].citations, vec!["S1"]);
         assert_eq!(report.sections[0].citations, vec!["S1"]);
         assert!(!report.improvement.to_lowercase().contains("best possible"));
         assert_eq!(report.sections[0].id, "useful-section");
+    }
+
+    #[test]
+    fn advanced_request_preserves_validated_high_capacity_values() {
+        let request = completion_request(
+            &[json!({"role":"user","content":"test"})],
+            Some(&tool_schema(true, 65_536)),
+            None,
+            32_768,
+            8_192,
+            true,
+        );
+        assert_eq!(request["max_tokens"], 32_768);
+        assert_eq!(request["thinking_budget_tokens"], 8_192);
+        assert_eq!(request["parallel_tool_calls"], true);
+        assert_eq!(
+            request.pointer("/tools/1/function/parameters/properties/max_chars/maximum"),
+            Some(&json!(65_536))
+        );
+    }
+
+    #[test]
+    fn adapts_bonsai_expedition_shape_without_weakening_citations() {
+        let content = json!({
+            "title": "Adapted report",
+            "short_answer": "A concise answer.",
+            "sections": [{"title":"Mechanism","content":"A clear explanation. More detail.","citations":["S1"]}],
+            "timeline": [{"date":"1901","event":"The object was recovered.","citations":["S1"]}],
+            "coverage_gaps": ["Which workshop built it?"],
+            "conflicts_and_debates": ["The calibration date remains disputed."],
+            "improvement": "Added explicit uncertainty."
+        })
+        .to_string();
+        let draft = parse_research_draft(&content).unwrap();
+        assert_eq!(draft.answer, "A concise answer.");
+        assert_eq!(draft.sections[0].heading, "Mechanism");
+        assert_eq!(draft.sections[0].citations, vec!["S1"]);
+        assert_eq!(draft.timeline[0].description, "The object was recovered.");
+        assert_eq!(draft.open_questions.len(), 2);
+        assert!(!draft.findings.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live Bonsai on 127.0.0.1:8080 and Kiwix on 127.0.0.1:8085"]
+    async fn live_solo_expedition_uses_shared_lanes_and_high_output_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ResearchStore::open(directory.path().to_path_buf()).unwrap();
+        let harness = ResearchHarness::new(store.clone());
+        let settings = ResearchSettings {
+            advanced_mode: true,
+            context_window: 98_304,
+            max_output_tokens: 32_768,
+            research_lanes: 3,
+            results_per_lane: 4,
+            source_target: 4,
+            tool_turns: 16,
+            thinking_budget: 2_048,
+            max_source_chars: 16_000,
+            ..ResearchSettings::default()
+        };
+        let report = harness
+            .run(
+                None,
+                RunResearchRequest {
+                    query: "How did the Antikythera mechanism model eclipse cycles, and which parts of its reconstruction remain uncertain?".into(),
+                    depth: "expedition".into(),
+                },
+                settings,
+                "live-expedition",
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.research_profile, "solo-expedition");
+        assert_eq!(report.context_window, 98_304);
+        assert_eq!(report.output_budget, 32_768);
+        assert_eq!(report.research_lanes, 3);
+        assert!(
+            report
+                .sources
+                .iter()
+                .filter(|source| source.kind == "wikipedia")
+                .count()
+                >= 4
+        );
+        assert!(directory.path().join(&report.html_path).is_file());
     }
 
     #[tokio::test]
@@ -752,12 +1339,14 @@ mod tests {
             sections: vec![], timeline: vec![], terms: vec![], open_questions: vec!["How were eclipse characteristics encoded?".into()],
             sources: vec![Source { id: "S1".into(), kind: "wikipedia".into(), title: "Antikythera mechanism".into(), section: None, snapshot: Some(SNAPSHOT.into()), reference: format!("/content/{}/A/Antikythera_mechanism", crate::kiwix::BOOK), excerpt: "Earlier evidence.".into() }],
             html_path: String::new(), word_count: 50, reading_minutes: 1,
+            research_profile: "standard".into(), context_window: 0, output_budget: 0, research_lanes: 1,
         };
         store.save(&mut prior).unwrap();
         let harness = ResearchHarness::new(store.clone());
         let report = harness.run(
             None,
             RunResearchRequest { query: "How did the Antikythera mechanism predict eclipses, and what remains uncertain?".into(), depth: "focused".into() },
+            ResearchSettings::default(),
             "live-acceptance",
             CancellationToken::new(),
         ).await.unwrap();

@@ -6,30 +6,43 @@ import {
   ChevronRight,
   CircleStop,
   Clock3,
+  Cpu,
   ExternalLink,
   Feather,
   FileText,
   FolderOpen,
+  Gauge,
   History,
+  Layers3,
   Library,
   LoaderCircle,
+  MemoryStick,
   Menu,
+  MonitorCog,
   Plus,
+  RefreshCw,
   Search,
+  Settings2,
   ShieldCheck,
   Sparkles,
+  TriangleAlert,
   X,
+  Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   bootstrap,
   cancelResearch,
+  applyModelRuntime,
   getReport,
+  getSystemSnapshot,
   onProgress,
+  openBonsaiControlCenter,
   openStandalone,
   prepareServices,
   revealLibrary,
   runResearch,
+  saveResearchSettings,
 } from "./api";
 import type {
   AppSnapshot,
@@ -37,7 +50,9 @@ import type {
   ReportSummary,
   ResearchProgress,
   ResearchReport,
+  ResearchSettings,
   ServiceState,
+  SystemSnapshot,
 } from "./types";
 
 const emptyProgress: ResearchProgress = {
@@ -73,6 +88,7 @@ function App() {
   const [progress, setProgress] = useState<ResearchProgress | null>(null);
   const [activity, setActivity] = useState<ResearchProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<"research" | "system">("research");
 
   const refresh = useCallback(async () => {
     try {
@@ -123,7 +139,7 @@ function App() {
     return (snapshot?.reports ?? []).filter((item) => `${item.title} ${item.query} ${item.dek}`.toLowerCase().includes(needle));
   }, [filter, snapshot]);
 
-  const handleResearch = async (query: string, depth: "focused" | "thorough") => {
+  const handleResearch = async (query: string, depth: "focused" | "thorough" | "expedition") => {
     setNewResearchOpen(false);
     setActivity([]);
     setProgress({ ...emptyProgress, detail: `Preparing “${query}”` });
@@ -151,6 +167,8 @@ function App() {
     <div className="app-shell">
       <AppHeader
         status={snapshot.status}
+        view={view}
+        onView={setView}
         onMenu={() => setSidebarOpen((value) => !value)}
         onNew={() => setNewResearchOpen(true)}
         onPrepare={async () => {
@@ -164,8 +182,8 @@ function App() {
           }
         }}
       />
-      <div className="workspace">
-        <LibrarySidebar
+      <div className={`workspace ${view === "system" ? "system-workspace" : ""}`}>
+        {view === "research" && <LibrarySidebar
           open={sidebarOpen}
           reports={visibleReports}
           selectedId={selectedId}
@@ -175,10 +193,16 @@ function App() {
           onSelect={chooseReport}
           onNew={() => setNewResearchOpen(true)}
           onReveal={() => void revealLibrary()}
-        />
+        />}
         <main className="main-stage">
           {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
-          {!selectedId && snapshot.reports.length === 0 ? (
+          {view === "system" ? (
+            <SystemConsole
+              initialSettings={snapshot.settings}
+              onSaved={(settings) => setSnapshot((current) => current ? { ...current, settings } : current)}
+              onError={(message) => setError(message)}
+            />
+          ) : !selectedId && snapshot.reports.length === 0 ? (
             <EmptyLibrary onNew={() => setNewResearchOpen(true)} />
           ) : !report ? (
             <ReaderSkeleton />
@@ -187,7 +211,7 @@ function App() {
           )}
         </main>
       </div>
-      {newResearchOpen && <NewResearchDialog onClose={() => setNewResearchOpen(false)} onSubmit={handleResearch} />}
+      {newResearchOpen && <NewResearchDialog advancedEnabled={snapshot.settings.advancedMode} onClose={() => setNewResearchOpen(false)} onSubmit={handleResearch} />}
       {progress && (
         <ProgressPanel
           progress={progress}
@@ -215,11 +239,15 @@ function AppBoot({ error, onRetry }: { error: string | null; onRetry: () => Prom
 
 function AppHeader({
   status,
+  view,
+  onView,
   onMenu,
   onNew,
   onPrepare,
 }: {
   status: AppSnapshot["status"];
+  view: "research" | "system";
+  onView: (view: "research" | "system") => void;
   onMenu: () => void;
   onNew: () => void;
   onPrepare: () => void;
@@ -232,6 +260,10 @@ function AppHeader({
         <div className="brand-mark"><Feather size={19} /></div>
         <div className="brand-copy"><strong>Kestrel</strong><span>Research</span></div>
       </div>
+      <nav className="view-switcher" aria-label="Kestrel sections">
+        <button className={view === "research" ? "active" : ""} onClick={() => onView("research")}><Library size={14} /> Research</button>
+        <button className={view === "system" ? "active" : ""} onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
+      </nav>
       <div className="header-status" role="status">
         <StatusPill state={status.wikipedia} label={status.archive} />
         <StatusPill state={status.bonsai} label={status.model} />
@@ -239,7 +271,7 @@ function AppHeader({
       </div>
       <div className="header-actions">
         {!allReady && <button className="quiet-button" onClick={onPrepare}>Prepare services</button>}
-        <button className="primary-button compact" onClick={onNew}><Plus size={16} /> New research</button>
+        {view === "research" && <button className="primary-button compact" onClick={onNew}><Plus size={16} /> New research</button>}
       </div>
     </header>
   );
@@ -413,7 +445,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
           <a href="#terms">Terms & questions</a>
           <a href="#sources">Sources</a>
         </div>
-        <div className="rail-card context-card"><Archive size={18} /><strong>Research context</strong><span>{report.model}</span><span>{report.archiveSnapshot}</span><span>Edition {report.edition}, never overwritten</span></div>
+        <div className="rail-card context-card"><Archive size={18} /><strong>Research context</strong><span>{report.model}</span><span>{report.archiveSnapshot}</span>{report.researchProfile === "solo-expedition" && <><span>{report.researchLanes} coordinated lanes</span><span>{report.contextWindow.toLocaleString()} context · {report.outputBudget.toLocaleString()} output</span></>}<span>Edition {report.edition}, never overwritten</span></div>
       </aside>
     </div>
   );
@@ -423,9 +455,115 @@ function CitationRow({ ids, onFocus, labels }: { ids: string[]; onFocus: (id: st
   return <div className="citation-row" aria-label="Citations">{ids.map((id) => <button key={id} onClick={() => onFocus(id)} title={labels?.get(id)?.title ?? `Source ${id}`}>{id}</button>)}</div>;
 }
 
-function NewResearchDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (query: string, depth: "focused" | "thorough") => Promise<void> }) {
+function SystemConsole({ initialSettings, onSaved, onError }: { initialSettings: ResearchSettings; onSaved: (settings: ResearchSettings) => void; onError: (message: string) => void }) {
+  const [system, setSystem] = useState<SystemSnapshot | null>(null);
+  const [draft, setDraft] = useState<ResearchSettings>(initialSettings);
+  const [busy, setBusy] = useState<"save" | "apply" | null>(null);
+
+  const refreshSystem = useCallback(async () => {
+    try {
+      setSystem(await getSystemSnapshot());
+    } catch (cause) {
+      onError(String(cause));
+    }
+  }, [onError]);
+
+  useEffect(() => {
+    void refreshSystem();
+    const timer = window.setInterval(() => void refreshSystem(), 2_500);
+    return () => window.clearInterval(timer);
+  }, [refreshSystem]);
+
+  const updateNumber = (key: keyof ResearchSettings, value: string) => {
+    setDraft((current) => ({ ...current, [key]: Number.parseInt(value, 10) || 0 }));
+  };
+  const save = async () => {
+    setBusy("save");
+    try {
+      const saved = await saveResearchSettings(draft);
+      onSaved(saved);
+      setSystem((current) => current ? { ...current, settings: saved } : current);
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const apply = async () => {
+    if (!window.confirm("Apply these context/output values and restart the local Bonsai model? Active research will be interrupted.")) return;
+    setBusy("apply");
+    try {
+      const next = await applyModelRuntime(draft);
+      setSystem(next);
+      onSaved(next.settings);
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const openControls = async () => {
+    try {
+      await openBonsaiControlCenter();
+    } catch (cause) {
+      onError(String(cause));
+    }
+  };
+  const gpu = system?.gpu;
+  const usedPercent = gpu ? Math.min(100, (gpu.usedMib / gpu.totalMib) * 100) : 0;
+
+  return (
+    <div className="system-console">
+      <header className="system-hero">
+        <div><span className="eyebrow">Local engine & research capacity</span><h1>System</h1><p>See what occupies the GPU, tune the solo researcher, and move back to Research from the header without losing a running job.</p></div>
+        <button className="quiet-button" onClick={() => void refreshSystem()}><RefreshCw size={15} /> Refresh</button>
+      </header>
+
+      <section className="telemetry-grid" aria-label="Live system telemetry">
+        <article className="telemetry-card gpu-card">
+          <div className="telemetry-title"><Gauge /><span><small>GPU memory</small><strong>{gpu?.name ?? "GPU telemetry unavailable"}</strong></span></div>
+          {gpu && <><div className="vram-number"><strong>{formatMib(gpu.usedMib)}</strong><span>of {formatMib(gpu.totalMib)} used</span></div><div className="vram-track"><span style={{ width: `${usedPercent}%` }} /></div><div className="telemetry-foot"><span>{formatMib(gpu.freeMib)} free</span><span>{gpu.utilizationPercent}% compute</span></div></>}
+        </article>
+        <article className="telemetry-card"><div className="telemetry-title"><MemoryStick /><span><small>Loaded model footprint</small><strong>{formatMib(system?.runtime.modelVramMib ?? 0)}</strong></span></div><p>Measured VRAM delta at model load. Other GPU applications can affect the live total.</p></article>
+        <article className="telemetry-card"><div className="telemetry-title"><Cpu /><span><small>Active runtime</small><strong>{(system?.runtime.contextWindow ?? 0).toLocaleString()} context</strong></span></div><div className="runtime-facts"><span>{(system?.runtime.maxOutputTokens ?? 0).toLocaleString()} max answer</span><span>{system?.runtime.parallelSlots ?? 1} GPU slot</span><span>{system?.runtime.kvCache ?? "â€”"} KV</span></div></article>
+      </section>
+
+      <section className="single-context-note"><Zap /><div><strong>Why Kestrel uses one model researcher</strong><p>Your current 98K context leaves little spare VRAM. Multiple model workers would duplicate KV state and compete for one server slot. Solo expedition instead runs archive searches concurrently, then lets one long-lived GPU context coordinate every lane through a shared, compact candidate ledger.</p></div></section>
+
+      <section className="settings-panel">
+        <div className="settings-heading"><div><span className="eyebrow">Opt-in expert controls</span><h2>Solo researcher profile</h2><p>Standard research keeps tested internal budgets. Enable advanced mode to expose every runtime and orchestration value.</p></div><label className="advanced-toggle"><input type="checkbox" checked={draft.advancedMode} onChange={(event) => setDraft((current) => ({ ...current, advancedMode: event.target.checked }))} /><span /><strong>Advanced mode</strong></label></div>
+
+        <div className={`advanced-settings ${draft.advancedMode ? "enabled" : "disabled"}`}>
+          <label className="wide-field"><span>Bonsai installation root</span><input value={draft.bonsaiRoot} disabled={!draft.advancedMode} onChange={(event) => setDraft((current) => ({ ...current, bonsaiRoot: event.target.value }))} /></label>
+          <NumberSetting label="Context window" hint="Model server startup" value={draft.contextWindow} disabled={!draft.advancedMode} onChange={(value) => updateNumber("contextWindow", value)} />
+          <NumberSetting label="Maximum answer" hint="Per model response" value={draft.maxOutputTokens} disabled={!draft.advancedMode} onChange={(value) => updateNumber("maxOutputTokens", value)} />
+          <NumberSetting label="Research lanes" hint="Distinct planning angles" value={draft.researchLanes} disabled={!draft.advancedMode} onChange={(value) => updateNumber("researchLanes", value)} />
+          <NumberSetting label="Results per lane" hint="Compact candidate memory" value={draft.resultsPerLane} disabled={!draft.advancedMode} onChange={(value) => updateNumber("resultsPerLane", value)} />
+          <NumberSetting label="Source target" hint="Wikipedia pages to inspect" value={draft.sourceTarget} disabled={!draft.advancedMode} onChange={(value) => updateNumber("sourceTarget", value)} />
+          <NumberSetting label="Tool turns" hint="Adaptive read/search rounds" value={draft.toolTurns} disabled={!draft.advancedMode} onChange={(value) => updateNumber("toolTurns", value)} />
+          <NumberSetting label="Thinking budget" hint="Tokens per reasoning pass" value={draft.thinkingBudget} disabled={!draft.advancedMode} onChange={(value) => updateNumber("thinkingBudget", value)} />
+          <NumberSetting label="Source characters" hint="Maximum per opened section" value={draft.maxSourceChars} disabled={!draft.advancedMode} onChange={(value) => updateNumber("maxSourceChars", value)} />
+        </div>
+
+        <div className="advanced-warning"><TriangleAlert /><div><strong>Expert values are intentionally uncapped.</strong><span>Warning: invalid or oversized values can stop startup or exhaust VRAM. The model runtime still enforces its physical and architectural limits.</span></div></div>
+        <div className="settings-actions"><button className="quiet-button" onClick={() => void openControls()}><Settings2 size={15} /> Open Bonsai controls</button><span /><button className="quiet-button" disabled={!!busy} onClick={() => void save()}>{busy === "save" ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save research profile</button><button className="primary-button" disabled={!draft.advancedMode || !!busy} onClick={() => void apply()}>{busy === "apply" ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />} Apply & restart model</button></div>
+      </section>
+    </div>
+  );
+}
+
+function NumberSetting({ label, hint, value, disabled, onChange }: { label: string; hint: string; value: number; disabled: boolean; onChange: (value: string) => void }) {
+  return <label className="number-setting"><span>{label}<small>{hint}</small></span><input type="number" step="1" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} /></label>;
+}
+
+function formatMib(value: number): string {
+  if (!value) return "â€”";
+  return value >= 1024 ? `${(value / 1024).toFixed(1)} GiB` : `${value.toLocaleString()} MiB`;
+}
+
+function NewResearchDialog({ advancedEnabled, onClose, onSubmit }: { advancedEnabled: boolean; onClose: () => void; onSubmit: (query: string, depth: "focused" | "thorough" | "expedition") => Promise<void> }) {
   const [query, setQuery] = useState("");
-  const [depth, setDepth] = useState<"focused" | "thorough">("thorough");
+  const [depth, setDepth] = useState<"focused" | "thorough" | "expedition">(advancedEnabled ? "expedition" : "thorough");
   const submit = () => {
     if (query.trim().length >= 4) void onSubmit(query.trim(), depth);
   };
@@ -441,6 +579,7 @@ function NewResearchDialog({ onClose, onSubmit }: { onClose: () => void; onSubmi
         <div className="depth-picker">
           <button className={depth === "focused" ? "selected" : ""} onClick={() => setDepth("focused")}><strong>Focused</strong><span>A concise brief from the most relevant sources</span></button>
           <button className={depth === "thorough" ? "selected" : ""} onClick={() => setDepth("thorough")}><strong>Thorough</strong><span>Broader reading, nuance, gaps, and a timeline</span></button>
+          {advancedEnabled && <button className={`expedition-choice ${depth === "expedition" ? "selected" : ""}`} onClick={() => setDepth("expedition")}><strong><Layers3 size={14} /> Solo expedition</strong><span>One shared 98K-capable GPU context coordinates many archive lanes and a longer synthesis</span></button>}
         </div>
         <div className="dialog-assurance"><ShieldCheck size={16} /><span>No web requests. Model, archive, research, and HTML stay on this computer.</span></div>
         <div className="dialog-actions"><span><kbd>Ctrl</kbd> + <kbd>Enter</kbd></span><button className="primary-button" disabled={query.trim().length < 4} onClick={submit}>Begin research <ChevronRight size={16} /></button></div>

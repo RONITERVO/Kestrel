@@ -67,7 +67,7 @@ impl KiwixClient {
         url.query_pairs_mut()
             .append_pair("content", BOOK)
             .append_pair("pattern", query)
-            .append_pair("pageLength", &limit.clamp(1, 20).to_string());
+            .append_pair("pageLength", &limit.max(1).to_string());
         let html = self
             .client
             .get(url)

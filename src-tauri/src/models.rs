@@ -16,6 +16,70 @@ pub struct AppSnapshot {
     pub status: ServiceStatus,
     pub reports: Vec<ReportSummary>,
     pub library_root: String,
+    pub settings: ResearchSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchSettings {
+    pub advanced_mode: bool,
+    pub bonsai_root: String,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub research_lanes: u32,
+    pub results_per_lane: u32,
+    pub source_target: u32,
+    pub tool_turns: u32,
+    pub thinking_budget: u32,
+    pub max_source_chars: u32,
+}
+
+impl Default for ResearchSettings {
+    fn default() -> Self {
+        Self {
+            advanced_mode: false,
+            bonsai_root: r"D:\LocalAI\Bonsai27B".into(),
+            context_window: 98_304,
+            max_output_tokens: 32_768,
+            research_lanes: 6,
+            results_per_lane: 6,
+            source_target: 12,
+            tool_turns: 24,
+            thinking_budget: 4_096,
+            max_source_chars: 20_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuSnapshot {
+    pub name: String,
+    pub total_mib: u64,
+    pub used_mib: u64,
+    pub free_mib: u64,
+    pub utilization_percent: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSnapshot {
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub parallel_slots: u32,
+    pub kv_cache: String,
+    pub model_vram_mib: u64,
+    pub model_root: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemSnapshot {
+    pub status: ServiceStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuSnapshot>,
+    pub runtime: RuntimeSnapshot,
+    pub settings: ResearchSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +165,18 @@ pub struct ResearchReport {
     pub html_path: String,
     pub word_count: u32,
     pub reading_minutes: u32,
+    #[serde(default = "default_profile")]
+    pub research_profile: String,
+    #[serde(default)]
+    pub context_window: u32,
+    #[serde(default)]
+    pub output_budget: u32,
+    #[serde(default)]
+    pub research_lanes: u32,
+}
+
+fn default_profile() -> String {
+    "standard".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

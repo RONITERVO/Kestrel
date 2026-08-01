@@ -12,19 +12,22 @@
 
 | Layer | Check | Result |
 | --- | --- | --- |
-| Frontend | Reader and new-research behavior | 2 passed |
-| Native unit | Storage, FTS, parent matching, HTML escaping, citations, Kiwix parsing/path safety | 8 passed |
+| Frontend | Reader, navigation, settings, and new-research behavior | 3 passed |
+| Native unit | Storage, FTS, matching, HTML/citations, Kiwix safety, uncapped/recoverable settings, expedition requests | 13 passed |
 | Build | TypeScript + Vite production assets | passed |
 | Live Kiwix | Search and read the Antikythera mechanism from the real 102.3 GiB ZIM | passed, 0.11 s |
 | Live pipeline | Empty-library research through real Bonsai/Kiwix to indexed HTML bundle | passed, 128.11 s |
 | Live expansion | Seeded prior report → edition 2, correct parent, prior-research evidence, 2+ fresh Wikipedia sources, FTS, HTML | passed, 241.60 s |
+| Live Solo expedition | 3 shared lanes, 98,304 context profile, 32,768 output allowance, 4+ opened Wikipedia sources, indexed HTML | passed, 236.52 s |
 
 ## Visual acceptance
 
 - Desktop reader inspected at 1265 × 711: library, report hierarchy, short answer, source rail, and evidence context were legible without clipping.
-- New-research modal inspected with a filled question: focused/thorough choice, offline assurance, and enabled-state behavior were clear.
+- New-research modal inspected with a filled question: focused/thorough choices, advanced-only Solo expedition, offline assurance, and enabled-state behavior were clear.
 - Live progress drawer inspected during the real model run: stage, current activity, six-step sequence, spinner, and safe stop were visible.
-- Responsive pass at 720 × 800: no horizontal page overflow; sidebar collapsed behind the menu; report hierarchy remained readable.
+- System view inspected with live RTX 5070 VRAM, loaded-model footprint, context/output/KV state, tuning controls, and direct Research/System navigation.
+- Advanced profile inspected with every tunable field visible, no product-level maximum attributes, and the startup/VRAM warning beside the restart action.
+- Responsive pass at 720 × 800: no horizontal page overflow; telemetry collapsed to one column; report hierarchy remained readable.
 - Native Tauri first-use pass found and fixed an indefinite empty-library skeleton. The app now presents a clear first-research state.
 
 ## Failures found and fixed during live acceptance
@@ -33,6 +36,8 @@
 2. A 4,300-token focused synthesis ended in valid but truncated JSON because reasoning and visible structured output shared the allowance. Field bounds, larger evidence-appropriate allowances, and one compact no-thinking retry now make publication reliable. The following live run passed.
 3. Windows Documents resolved into OneDrive on the tested machine. The default research root moved to the unsynced local home directory to preserve the offline/privacy expectation.
 4. An empty catalog displayed a permanent loading skeleton. It now displays an actionable first-use explanation.
+5. Bonsai returned a valid alternate structured expedition shape after a large grammar-constrained response failed. A narrow Bonsai adapter now normalizes the known shape before native citation validation; a regression test covers it.
+6. One Kiwix search result could not be opened and originally aborted the expedition. Unreadable local results now return bounded tool feedback, remain outside the evidence ledger, and let the lead researcher choose another result.
 
 ## Offline-readiness boundary
 

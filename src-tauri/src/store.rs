@@ -189,6 +189,10 @@ impl ResearchStore {
                 "improvement": report.improvement,
                 "model": report.model,
                 "archiveSnapshot": report.archive_snapshot,
+                "researchProfile": report.research_profile,
+                "contextWindow": report.context_window,
+                "outputBudget": report.output_budget,
+                "researchLanes": report.research_lanes,
                 "offlineOnly": true,
             }),
         )?;
@@ -383,6 +387,10 @@ mod tests {
             html_path: String::new(),
             word_count: 10,
             reading_minutes: 1,
+            research_profile: "standard".into(),
+            context_window: 0,
+            output_budget: 0,
+            research_lanes: 1,
         }
     }
 

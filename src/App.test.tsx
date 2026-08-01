@@ -1,6 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import App from "./App";
+
+afterEach(cleanup);
 
 describe("Kestrel research experience", () => {
   it("opens the durable library and renders evidence-oriented research", async () => {
@@ -21,5 +23,15 @@ describe("Kestrel research experience", () => {
     expect(begin).toBeDisabled();
     fireEvent.change(screen.getByPlaceholderText(/Ask a question/), { target: { value: "How did Roman concrete work?" } });
     expect(begin).toBeEnabled();
+  });
+
+  it("keeps system and advanced controls one step from research", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));
+    expect(await screen.findByRole("heading", { name: "System" })).toBeInTheDocument();
+    expect(screen.getByText(/one model researcher/i)).toBeInTheDocument();
+    expect(screen.getByText(/intentionally uncapped/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Research$/i }));
+    expect(await screen.findByText("Your research")).toBeInTheDocument();
   });
 });
