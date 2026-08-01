@@ -33,6 +33,10 @@ pub struct ControlSettings {
     pub max_output_tokens: u32,
     pub threads: u32,
     pub project_root: String,
+    pub agent_workspace_roots: Vec<String>,
+    pub allow_full_access_agent: bool,
+    pub agent_max_steps: u32,
+    pub agent_max_output_tokens: u32,
 }
 
 impl Default for ControlSettings {
@@ -42,6 +46,15 @@ impl Default for ControlSettings {
             .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
             .to_string_lossy()
             .into_owned();
+        let mut workspace_roots = Vec::new();
+        if let Some(user) = directories::UserDirs::new() {
+            for path in [user.desktop_dir(), user.document_dir(), user.download_dir()]
+                .into_iter()
+                .flatten()
+            {
+                workspace_roots.push(path.to_string_lossy().into_owned());
+            }
+        }
         Self {
             advanced_mode: false,
             engine_path: r"D:\LocalAI\Bonsai27B\runtime\llama-server.exe".into(),
@@ -53,6 +66,10 @@ impl Default for ControlSettings {
                 .map(|value| value.get() as u32)
                 .unwrap_or(4),
             project_root,
+            agent_workspace_roots: workspace_roots,
+            allow_full_access_agent: false,
+            agent_max_steps: 30,
+            agent_max_output_tokens: 8_192,
         }
     }
 }
@@ -110,11 +127,53 @@ pub struct ControlSnapshot {
     pub runtime: ManagedRuntimeSnapshot,
     pub gpu: Option<GpuSnapshot>,
     pub developer: DeveloperStatus,
+    pub runtime_logs: Vec<RuntimeLog>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLog {
+    pub stream: String,
+    pub line: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSession {
+    pub id: String,
+    pub title: String,
+    pub model_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub messages: Vec<ChatMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSessionSummary {
+    pub id: String,
+    pub title: String,
+    pub model_id: String,
+    pub updated_at: String,
+    pub message_count: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatRequest {
+pub struct StartChatRequest {
+    pub session_id: Option<String>,
     pub model_id: String,
     pub message: String,
     pub temperature: f32,
@@ -125,9 +184,76 @@ pub struct ChatRequest {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatResponse {
-    pub content: String,
-    pub reasoning: Option<String>,
+pub struct ChatStart {
+    pub request_id: String,
+    pub session: ChatSession,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatStreamEvent {
+    pub request_id: String,
+    pub session_id: String,
+    pub kind: String,
+    pub content: Option<String>,
+    pub data: Option<serde_json::Value>,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerTaskRequest {
+    pub model_id: String,
+    pub objective: String,
+    pub access: ComputerTaskAccess,
+    pub max_steps: u32,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ComputerTaskAccess {
+    Workspace,
+    Full,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerTaskEvent {
+    pub run_id: String,
+    pub step: u32,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub data: Option<serde_json::Value>,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerTaskRun {
+    pub id: String,
+    pub objective: String,
+    pub model_id: String,
+    pub access: ComputerTaskAccess,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub events: Vec<ComputerTaskEvent>,
+    pub artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerTaskSummary {
+    pub id: String,
+    pub objective: String,
+    pub model_id: String,
+    pub access: ComputerTaskAccess,
+    pub status: String,
+    pub updated_at: String,
+    pub event_count: usize,
+    pub artifact_count: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -370,4 +496,21 @@ pub struct ResearchDraft {
     pub terms: Vec<Term>,
     #[serde(default)]
     pub open_questions: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn computer_task_access_rejects_unknown_values() {
+        let request = serde_json::from_value::<ComputerTaskRequest>(serde_json::json!({
+            "modelId": "model",
+            "objective": "inspect files",
+            "access": "network",
+            "maxSteps": 1,
+            "maxOutputTokens": 1
+        }));
+        assert!(request.is_err());
+    }
 }

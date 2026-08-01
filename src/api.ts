@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { demoReport, demoSnapshot } from "./demo";
-import type { AppSnapshot, ChatRequest, ChatResponse, ControlSettings, ControlSnapshot, DeveloperRepairReport, OperationProgress, ResearchProgress, ResearchReport, ResearchSettings, RunResearchRequest, SystemSnapshot } from "./types";
+import type { AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ChatStreamEvent, ComputerTaskEvent, ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot, DeveloperRepairReport, OperationProgress, ResearchProgress, ResearchReport, ResearchSettings, RunResearchRequest, StartChatRequest, SystemSnapshot } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
 
@@ -81,9 +81,9 @@ export async function openBonsaiControlCenter(): Promise<void> {
   if (isTauri()) await invoke("open_bonsai_control_center");
 }
 
-export async function getControlSnapshot(): Promise<ControlSnapshot> {
+export async function getControlSnapshot(probeDeveloper = true): Promise<ControlSnapshot> {
   if (!isTauri()) return demoSnapshot.control;
-  return invoke<ControlSnapshot>("get_control_snapshot");
+  return invoke<ControlSnapshot>("get_control_snapshot", { probeDeveloper });
 }
 
 export async function scanLocalModels(): Promise<ControlSnapshot> {
@@ -106,9 +106,60 @@ export async function stopLocalModel(): Promise<ControlSnapshot> {
   return invoke<ControlSnapshot>("stop_local_model");
 }
 
-export async function sendLocalChat(request: ChatRequest): Promise<ChatResponse> {
-  if (!isTauri()) return { content: `Preview response from the local model to: ${request.message}` };
-  return invoke<ChatResponse>("send_local_chat", { request });
+export async function listChatSessions(): Promise<ChatSessionSummary[]> {
+  if (!isTauri()) return [];
+  return invoke<ChatSessionSummary[]>("list_chat_sessions");
+}
+
+export async function getChatSession(id: string): Promise<ChatSession> {
+  if (!isTauri()) throw new Error("Preview conversations are not persisted.");
+  return invoke<ChatSession>("get_chat_session", { id });
+}
+
+export async function deleteChatSession(id: string): Promise<void> {
+  if (isTauri()) await invoke("delete_chat_session", { id });
+}
+
+export async function startChatStream(request: StartChatRequest): Promise<ChatStart> {
+  if (!isTauri()) throw new Error("Preview conversations cannot stream or persist.");
+  return invoke<ChatStart>("start_chat_stream", { request });
+}
+
+export async function cancelChatStream(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_chat_stream", { requestId });
+}
+
+export async function onChatStream(callback: (event: ChatStreamEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<ChatStreamEvent>("chat-stream", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function listComputerTasks(): Promise<ComputerTaskSummary[]> {
+  if (!isTauri()) return [];
+  return invoke<ComputerTaskSummary[]>("list_computer_tasks");
+}
+
+export async function getComputerTask(id: string): Promise<ComputerTaskRun> {
+  if (!isTauri()) throw new Error("Preview tasks are not persisted.");
+  return invoke<ComputerTaskRun>("get_computer_task", { id });
+}
+
+export async function startComputerTask(request: ComputerTaskRequest): Promise<ComputerTaskRun> {
+  if (!isTauri()) throw new Error("Computer Tasks require the desktop application.");
+  return invoke<ComputerTaskRun>("start_computer_task", { request });
+}
+
+export async function stopComputerTask(runId: string): Promise<void> {
+  if (isTauri()) await invoke("stop_computer_task", { runId });
+}
+
+export async function onComputerTaskEvent(callback: (event: ComputerTaskEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<ComputerTaskEvent>("computer-task-event", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function openTaskArtifact(runId: string, path: string): Promise<void> {
+  if (isTauri()) await invoke("open_task_artifact", { runId, path });
 }
 
 export async function runNativeDiagnostics(): Promise<string> {

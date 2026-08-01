@@ -5,16 +5,22 @@
 //! Kestrel-managed Bonsai processes. An already-running Bonsai service is attached read-only.
 
 use crate::model::ModelInfo;
-use crate::models::{
-    ChatRequest, ChatResponse, ControlSettings, ManagedRuntimeSnapshot, ResearchSettings,
-};
+use crate::models::{ControlSettings, ManagedRuntimeSnapshot, ResearchSettings, RuntimeLog};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::json;
 use sha2::Digest;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::{Child, Command},
     sync::{Mutex, OwnedSemaphorePermit, Semaphore},
 };
@@ -38,8 +44,6 @@ pub enum RuntimeError {
     Request(#[from] reqwest::Error),
     #[error("local model returned invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("model response did not contain an answer")]
-    MissingAnswer,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +61,7 @@ pub struct InferenceLease {
 
 struct RuntimeProcess {
     child: Option<Child>,
+    api_key_file: Option<PathBuf>,
     connection: ModelConnection,
     snapshot: ManagedRuntimeSnapshot,
 }
@@ -65,6 +70,7 @@ pub struct RuntimeManager {
     process: Mutex<Option<RuntimeProcess>>,
     gate: Arc<Semaphore>,
     http: Client,
+    logs: Arc<Mutex<VecDeque<RuntimeLog>>>,
 }
 
 impl RuntimeManager {
@@ -76,6 +82,7 @@ impl RuntimeManager {
                 .timeout(Duration::from_secs(3_600))
                 .build()
                 .expect("local runtime HTTP client"),
+            logs: Arc::new(Mutex::new(VecDeque::with_capacity(500))),
         }
     }
 
@@ -103,6 +110,20 @@ impl RuntimeManager {
             return current.snapshot.clone();
         }
         ManagedRuntimeSnapshot::default()
+    }
+
+    /// Full history is retained for native diagnostics and tests. UI snapshots use `recent_logs`.
+    #[allow(dead_code)]
+    pub async fn logs(&self) -> Vec<RuntimeLog> {
+        self.logs.lock().await.iter().cloned().collect()
+    }
+
+    pub async fn recent_logs(&self, limit: usize) -> Vec<RuntimeLog> {
+        let logs = self.logs.lock().await;
+        logs.iter()
+            .skip(logs.len().saturating_sub(limit))
+            .cloned()
+            .collect()
     }
 
     pub async fn attach_external_if_ready(
@@ -133,6 +154,7 @@ impl RuntimeManager {
         };
         *process = Some(RuntimeProcess {
             child: None,
+            api_key_file: None,
             connection: connection.clone(),
             snapshot,
         });
@@ -227,6 +249,7 @@ impl RuntimeManager {
         let api_key = hex::encode(sha2::Sha256::digest(
             format!("{}:{port}:{}", model.id, chrono::Utc::now()).as_bytes(),
         ));
+        let api_key_file = create_api_key_file(&api_key)?;
         let context = settings.context_window.max(1);
         let mut args = vec![
             "--model".into(),
@@ -237,8 +260,8 @@ impl RuntimeManager {
             "127.0.0.1".into(),
             "--port".into(),
             port.to_string(),
-            "--api-key".into(),
-            api_key.clone(),
+            "--api-key-file".into(),
+            api_key_file.to_string_lossy().into_owned(),
             "--parallel".into(),
             "1".into(),
             "--ctx-size".into(),
@@ -277,22 +300,33 @@ impl RuntimeManager {
                 "on".into(),
             ]);
         }
-        let mut visible_args = args.clone();
-        if let Some(index) = visible_args.iter().position(|value| value == "--api-key") {
-            visible_args[index + 1] = "<session-secret>".into();
-        }
+        let visible_args = args.clone();
         let mut command = Command::new(&settings.engine_path);
         command
             .args(&args)
             .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         if let Some(parent) = Path::new(&settings.engine_path).parent() {
             command.current_dir(parent);
         }
         #[cfg(windows)]
         command.creation_flags(0x08000000);
-        let child = command.spawn()?;
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = fs::remove_file(&api_key_file);
+                return Err(error.into());
+            }
+        };
         let pid = child.id();
+        if let Some(stdout) = child.stdout.take() {
+            spawn_log_reader(stdout, "stdout", self.logs.clone(), app.cloned());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_log_reader(stderr, "stderr", self.logs.clone(), app.cloned());
+        }
         let connection = ModelConnection {
             endpoint: format!("http://127.0.0.1:{port}/v1"),
             api_key: Some(api_key),
@@ -315,6 +349,7 @@ impl RuntimeManager {
             let mut process = self.process.lock().await;
             *process = Some(RuntimeProcess {
                 child: Some(child),
+                api_key_file: Some(api_key_file),
                 connection: connection.clone(),
                 snapshot,
             });
@@ -350,71 +385,45 @@ impl RuntimeManager {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
             }
+            if let Some(path) = current.api_key_file.take() {
+                let _ = fs::remove_file(path);
+            }
         }
         *process = None;
         Ok(())
     }
 
-    pub async fn chat(
+    /// Obtain the single inference slot for an interactive feature. The lease keeps the gate
+    /// occupied until streaming or an agent loop has completely stopped.
+    pub async fn lease_model(
         self: &Arc<Self>,
-        request: ChatRequest,
+        model_id: &str,
         models: &[ModelInfo],
         settings: &ControlSettings,
-    ) -> Result<ChatResponse, RuntimeError> {
+        app: Option<&AppHandle>,
+    ) -> Result<InferenceLease, RuntimeError> {
         let model = models
             .iter()
-            .find(|model| model.id == request.model_id)
-            .ok_or_else(|| RuntimeError::MissingModel(request.model_id.clone()))?;
+            .find(|model| model.id == model_id)
+            .ok_or_else(|| RuntimeError::MissingModel(model_id.to_string()))?;
         let connection = match self.current_for_model(&model.id).await {
             Some(current) => current,
-            _ => {
-                self.start_model(model, settings, None).await?;
+            None => {
+                self.start_model(model, settings, app).await?;
                 self.current_healthy()
                     .await
                     .ok_or_else(|| RuntimeError::Startup("runtime disappeared".into()))?
             }
         };
-        let _permit = self.gate.acquire().await.expect("inference gate");
-        let body = json!({
-            "model": connection.model_id,
-            "messages": [{"role":"user","content":request.message}],
-            "temperature": request.temperature,
-            "top_p": request.top_p,
-            "top_k": request.top_k,
-            "max_tokens": request.max_output_tokens,
-            "stream": false
-        });
-        let response = authorized(
-            self.http
-                .post(format!("{}/chat/completions", connection.endpoint)),
-            &connection,
-        )
-        .json(&body)
-        .send()
-        .await?;
-        let status = response.status();
-        let text = response.text().await?;
-        if !status.is_success() {
-            return Err(RuntimeError::Startup(format!(
-                "HTTP {status}: {}",
-                truncate(&text, 500)
-            )));
-        }
-        let value: Value = serde_json::from_str(&text)?;
-        let message = value
-            .pointer("/choices/0/message")
-            .ok_or(RuntimeError::MissingAnswer)?;
-        Ok(ChatResponse {
-            content: message
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .into(),
-            reasoning: message
-                .get("reasoning_content")
-                .or_else(|| message.get("reasoning"))
-                .and_then(Value::as_str)
-                .map(Into::into),
+        let permit = self
+            .gate
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("inference gate is never closed");
+        Ok(InferenceLease {
+            connection,
+            _permit: permit,
         })
     }
 
@@ -479,6 +488,76 @@ fn emit_runtime(app: Option<&AppHandle>, phase: &str, detail: &str) {
     }
 }
 
+fn spawn_log_reader<R>(
+    reader: R,
+    stream: &'static str,
+    logs: Arc<Mutex<VecDeque<RuntimeLog>>>,
+    app: Option<AppHandle>,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(error) => {
+                    let record = RuntimeLog {
+                        stream: "kestrel".into(),
+                        line: format!("Failed to read managed runtime {stream}: {error}"),
+                        at: chrono::Utc::now().to_rfc3339(),
+                    };
+                    {
+                        let mut values = logs.lock().await;
+                        if values.len() == 500 {
+                            values.pop_front();
+                        }
+                        values.push_back(record.clone());
+                    }
+                    if let Some(app) = &app {
+                        let _ = app.emit("runtime-log", &record);
+                    }
+                    break;
+                }
+            };
+            let record = RuntimeLog {
+                stream: stream.into(),
+                line: truncate(&line, 4_000),
+                at: chrono::Utc::now().to_rfc3339(),
+            };
+            {
+                let mut values = logs.lock().await;
+                if values.len() == 500 {
+                    values.pop_front();
+                }
+                values.push_back(record.clone());
+            }
+            if let Some(app) = &app {
+                let _ = app.emit("runtime-log", &record);
+            }
+        }
+    });
+}
+
+fn create_api_key_file(api_key: &str) -> Result<PathBuf, std::io::Error> {
+    let path =
+        std::env::temp_dir().join(format!("kestrel-runtime-key-{}.txt", uuid::Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    if let Err(error) = file.write_all(format!("{api_key}\n").as_bytes()) {
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(path)
+}
+
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
@@ -503,6 +582,14 @@ mod tests {
         assert_eq!(managed.api_key.as_deref(), Some("secret"));
     }
 
+    #[test]
+    fn api_key_file_does_not_expose_the_secret_in_its_path() {
+        let path = create_api_key_file("session-secret").unwrap();
+        assert!(!path.to_string_lossy().contains("session-secret"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "session-secret\n");
+        fs::remove_file(path).unwrap();
+    }
+
     #[tokio::test]
     async fn inference_gate_allows_exactly_one_owner() {
         let manager = RuntimeManager::new();
@@ -520,6 +607,31 @@ mod tests {
         )
         .await
         .is_ok());
+    }
+
+    #[tokio::test]
+    async fn recent_logs_returns_newest_records_in_order() {
+        let manager = RuntimeManager::new();
+        {
+            let mut logs = manager.logs.lock().await;
+            for index in 0..5 {
+                logs.push_back(RuntimeLog {
+                    stream: "test".into(),
+                    line: index.to_string(),
+                    at: index.to_string(),
+                });
+            }
+        }
+        assert_eq!(
+            manager
+                .recent_logs(3)
+                .await
+                .into_iter()
+                .map(|record| record.line)
+                .collect::<Vec<_>>(),
+            ["2", "3", "4"]
+        );
+        assert_eq!(manager.logs().await.len(), 5);
     }
 
     #[tokio::test]

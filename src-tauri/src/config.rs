@@ -42,11 +42,22 @@ impl ControlSettingsStore {
     }
 
     pub fn save(&self, settings: &ControlSettings) -> Result<(), ConfigError> {
-        if settings.context_window == 0 || settings.max_output_tokens == 0 || settings.threads == 0
+        if settings.context_window == 0
+            || settings.max_output_tokens == 0
+            || settings.threads == 0
+            || settings.agent_max_steps == 0
+            || settings.agent_max_output_tokens == 0
         {
             return Err(ConfigError::InvalidAdvancedValue);
         }
-        atomic_json_write(&self.path, &serde_json::to_vec_pretty(settings)?)
+        let mut stored = settings.clone();
+        if !stored.advanced_mode {
+            stored.context_window = stored.context_window.min(98_304);
+            stored.max_output_tokens = stored.max_output_tokens.min(32_768);
+            stored.agent_max_steps = stored.agent_max_steps.min(50);
+            stored.agent_max_output_tokens = stored.agent_max_output_tokens.min(32_768);
+        }
+        atomic_json_write(&self.path, &serde_json::to_vec_pretty(&stored)?)
     }
 }
 
@@ -100,6 +111,27 @@ fn legacy_control_settings() -> Option<ControlSettings> {
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(settings.threads);
+    settings.allow_full_access_agent = value
+        .get("allow_full_access_agent")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    settings.agent_workspace_roots = value
+        .get("agent_workspace_roots")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(Into::into)
+                .collect()
+        })
+        .filter(|values: &Vec<String>| !values.is_empty())
+        .unwrap_or(settings.agent_workspace_roots);
+    settings.agent_max_output_tokens = value
+        .get("agent_max_tokens")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(settings.agent_max_output_tokens);
     Some(settings)
 }
 
@@ -118,7 +150,19 @@ impl SettingsStore {
 
     pub fn save(&self, settings: &ResearchSettings) -> Result<(), ConfigError> {
         validate(settings)?;
-        atomic_json_write(&self.path, &serde_json::to_vec_pretty(settings)?)
+        let mut stored = settings.clone();
+        if !stored.advanced_mode {
+            let defaults = ResearchSettings::default();
+            stored.context_window = stored.context_window.min(defaults.context_window);
+            stored.max_output_tokens = stored.max_output_tokens.min(defaults.max_output_tokens);
+            stored.research_lanes = stored.research_lanes.min(defaults.research_lanes);
+            stored.results_per_lane = stored.results_per_lane.min(defaults.results_per_lane);
+            stored.source_target = stored.source_target.min(defaults.source_target);
+            stored.tool_turns = stored.tool_turns.min(defaults.tool_turns);
+            stored.thinking_budget = stored.thinking_budget.min(defaults.thinking_budget);
+            stored.max_source_chars = stored.max_source_chars.min(defaults.max_source_chars);
+        }
+        atomic_json_write(&self.path, &serde_json::to_vec_pretty(&stored)?)
     }
 }
 
@@ -234,6 +278,49 @@ mod tests {
         };
         store.save(&settings).unwrap();
         assert_eq!(store.load().unwrap(), settings);
+    }
+
+    #[test]
+    fn standard_control_profile_keeps_tested_internal_ceiling() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ControlSettingsStore::new(directory.path());
+        let settings = ControlSettings {
+            advanced_mode: false,
+            context_window: 500_000,
+            max_output_tokens: 100_000,
+            agent_max_steps: 500,
+            agent_max_output_tokens: 100_000,
+            ..ControlSettings::default()
+        };
+        store.save(&settings).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.context_window, 98_304);
+        assert_eq!(loaded.max_output_tokens, 32_768);
+        assert_eq!(loaded.agent_max_steps, 50);
+        assert_eq!(loaded.agent_max_output_tokens, 32_768);
+    }
+
+    #[test]
+    fn advanced_control_profile_preserves_supplied_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ControlSettingsStore::new(directory.path());
+        let settings = ControlSettings {
+            advanced_mode: true,
+            context_window: 196_608,
+            max_output_tokens: 65_536,
+            agent_max_steps: 100,
+            agent_max_output_tokens: 65_536,
+            ..ControlSettings::default()
+        };
+        store.save(&settings).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.context_window, settings.context_window);
+        assert_eq!(loaded.max_output_tokens, settings.max_output_tokens);
+        assert_eq!(loaded.agent_max_steps, settings.agent_max_steps);
+        assert_eq!(
+            loaded.agent_max_output_tokens,
+            settings.agent_max_output_tokens
+        );
     }
 
     #[test]
