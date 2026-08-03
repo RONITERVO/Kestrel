@@ -20,7 +20,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex as StoreMutex, MutexGuard as StoreMutexGuard},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter};
@@ -516,6 +516,7 @@ fn default_weight() -> f64 {
 pub struct VideoStore {
     root: PathBuf,
     settings_path: PathBuf,
+    project_lock: Arc<StoreMutex<()>>,
 }
 
 impl VideoStore {
@@ -526,6 +527,7 @@ impl VideoStore {
         let store = Self {
             settings_path: root.join("settings.json"),
             root,
+            project_lock: Arc::new(StoreMutex::new(())),
         };
         store.recover_interrupted_projects()?;
         Ok(store)
@@ -563,14 +565,36 @@ impl VideoStore {
         Ok(self.root.join("projects").join(id).join("project.json"))
     }
 
+    fn lock_projects(&self) -> Result<StoreMutexGuard<'_, ()>, String> {
+        self.project_lock
+            .lock()
+            .map_err(|_| "Video project store lock is unavailable.".to_string())
+    }
+
     pub fn save_project(&self, project: &VideoProject) -> Result<(), String> {
+        let _guard = self.lock_projects()?;
+        self.save_project_unlocked(project)
+    }
+
+    fn save_project_unlocked(&self, project: &VideoProject) -> Result<(), String> {
         let path = self.project_path(&project.id)?;
-        fs::create_dir_all(path.parent().expect("project file has a parent"))
+        let project_dir = path.parent().expect("project file has a parent");
+        if !project_dir.is_dir() && self.has_archived_project_unlocked(&project.id)? {
+            return Err(
+                "Video project was archived; refusing to recreate its active folder.".into(),
+            );
+        }
+        fs::create_dir_all(project_dir)
             .map_err(|error| format!("could not create video project folder: {error}"))?;
         atomic_json(&path, project)
     }
 
     pub fn get_project(&self, id: &str) -> Result<VideoProject, String> {
+        let _guard = self.lock_projects()?;
+        self.get_project_unlocked(id)
+    }
+
+    fn get_project_unlocked(&self, id: &str) -> Result<VideoProject, String> {
         let path = self.project_path(id)?;
         match read_project_file(&path) {
             Ok(project) => Ok(project),
@@ -586,6 +610,7 @@ impl VideoStore {
     }
 
     pub fn list_projects(&self) -> Result<Vec<VideoProjectSummary>, String> {
+        let _guard = self.lock_projects()?;
         let mut summaries = Vec::new();
         for item in fs::read_dir(self.root.join("projects")).map_err(|error| error.to_string())? {
             let Ok(item) = item else { continue };
@@ -593,7 +618,7 @@ impl VideoStore {
                 continue;
             }
             let id = item.file_name().to_string_lossy().into_owned();
-            let Ok(project) = self.get_project(&id) else {
+            let Ok(project) = self.get_project_unlocked(&id) else {
                 continue;
             };
             summaries.push(VideoProjectSummary::from(&project));
@@ -603,13 +628,14 @@ impl VideoStore {
     }
 
     fn recover_interrupted_projects(&self) -> Result<(), String> {
+        let _guard = self.lock_projects()?;
         for item in fs::read_dir(self.root.join("projects")).map_err(|error| error.to_string())? {
             let Ok(item) = item else { continue };
             if !item.path().is_dir() {
                 continue;
             }
             let id = item.file_name().to_string_lossy().into_owned();
-            let Ok(mut project) = self.get_project(&id) else {
+            let Ok(mut project) = self.get_project_unlocked(&id) else {
                 continue;
             };
             if !matches!(
@@ -629,12 +655,13 @@ impl VideoStore {
                     );
                 }
             }
-            self.save_project(&project)?;
+            self.save_project_unlocked(&project)?;
         }
         Ok(())
     }
 
     pub fn archive_project(&self, id: &str) -> Result<PathBuf, String> {
+        let _guard = self.lock_projects()?;
         let project_dir = self.project_dir(id)?;
         if !project_dir.is_dir() {
             return Err("Video project was not found.".into());
@@ -650,6 +677,21 @@ impl VideoStore {
         fs::rename(&project_dir, &archive_dir)
             .map_err(|error| format!("Could not archive the video project: {error}"))?;
         Ok(archive_dir)
+    }
+
+    fn has_archived_project_unlocked(&self, id: &str) -> Result<bool, String> {
+        let deleted_root = self.root.join("deleted-projects");
+        if !deleted_root.is_dir() {
+            return Ok(false);
+        }
+        let prefix = format!("{id}.deleted-");
+        for item in fs::read_dir(deleted_root).map_err(|error| error.to_string())? {
+            let Ok(item) = item else { continue };
+            if item.file_name().to_string_lossy().starts_with(&prefix) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn project_dir(&self, id: &str) -> Result<PathBuf, String> {
@@ -3460,6 +3502,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("changed after import"));
+
+        let active_dir = store.project_dir(&chapter_reference.id).unwrap();
+        store.archive_project(&chapter_reference.id).unwrap();
+        let error = store.save_project(&chapter_reference).unwrap_err();
+        assert!(error.contains("archived"));
+        assert!(!active_dir.exists());
     }
 
     #[test]

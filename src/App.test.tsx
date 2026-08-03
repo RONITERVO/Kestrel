@@ -7,17 +7,20 @@ import { estimateClipCount } from "./VideoStudio";
 import type { ContextAttachment } from "./types";
 
 const profileApi = vi.hoisted(() => ({
+  deleteVideoProject: vi.fn(),
   exportSetupProfile: vi.fn(),
   importSetupProfile: vi.fn(),
 }));
 
 vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
+  deleteVideoProject: profileApi.deleteVideoProject,
   exportSetupProfile: profileApi.exportSetupProfile,
   importSetupProfile: profileApi.importSetupProfile,
 }));
 
 beforeEach(() => {
+  profileApi.deleteVideoProject.mockReset().mockResolvedValue(undefined);
   profileApi.exportSetupProfile.mockReset().mockResolvedValue({ path: "C:\\Research\\portable.json", message: "Safe profile exported." });
   profileApi.importSetupProfile.mockReset().mockResolvedValue(demoSnapshot);
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
@@ -131,6 +134,24 @@ describe("Kestrel research experience", () => {
 
     expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/recoverable deleted-projects archive/i));
     expect(await screen.findByRole("heading", { name: /Your production plan will appear here/i })).toBeInTheDocument();
+  });
+
+  it("keeps refresh disabled until project deletion finishes", async () => {
+    let finishDeletion: (() => void) | undefined;
+    profileApi.deleteVideoProject.mockImplementation(() => new Promise<void>((resolve) => { finishDeletion = resolve; }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Video$/i }));
+    fireEvent.change(await screen.findByLabelText("Video prompt"), { target: { value: "A project with serialized deletion." } });
+    fireEvent.click(screen.getByRole("button", { name: /Plan production/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Delete project/i }));
+
+    expect(screen.getByRole("button", { name: /Refresh video projects/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Delete project/i })).toBeDisabled();
+
+    finishDeletion?.();
+    expect(await screen.findByRole("heading", { name: /Your production plan will appear here/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Refresh video projects/i })).toBeEnabled();
   });
 
   it("displays safe exports and explains clipboard failures", async () => {

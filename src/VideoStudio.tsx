@@ -122,7 +122,9 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
       setSnapshot(next);
       if (project) {
         try {
-          setProject(await getVideoProject(project.id));
+          const refreshedId = project.id;
+          const refreshed = await getVideoProject(refreshedId);
+          setProject((current) => current?.id === refreshedId ? refreshed : current);
         } catch {
           // Browser preview plans are intentionally not durable.
         }
@@ -130,7 +132,7 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
     } catch (cause) {
       onError(String(cause));
     } finally {
-      setBusy(null);
+      setBusy((current) => current === "deleting" ? current : null);
     }
   }, [onError, project?.id]);
 
@@ -168,6 +170,7 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
   const running = project ? ["starting", "running", "verifying", "assembling"].includes(project.status) : false;
 
   const chooseProject = async (id: string) => {
+    if (busy === "deleting") return;
     try {
       setProject(await getVideoProject(id));
       setEvents([]);
@@ -222,20 +225,21 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
 
   const removeProject = async () => {
     if (!project) return;
+    const deletingId = project.id;
     const accepted = window.confirm(
       `Delete “${project.title}” from Kestrel?\n\nThe complete project folder—including references and generated clips—will move to the recoverable deleted-projects archive. Running projects cannot be deleted.`,
     );
     if (!accepted) return;
     setBusy("deleting");
     try {
-      await deleteVideoProject(project.id);
-      setProject(null);
-      setEvents([]);
+      await deleteVideoProject(deletingId);
+      setProject((current) => current?.id === deletingId ? null : current);
+      setEvents((current) => current.filter((event) => event.projectId !== deletingId));
       setSnapshot(await getVideoSnapshot());
     } catch (cause) {
       onError(String(cause));
     } finally {
-      setBusy(null);
+      setBusy((current) => current === "deleting" ? null : current);
     }
   };
 
@@ -313,8 +317,8 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
         <aside className="video-project-column">
           <ProjectInspector project={project} presetStatus={project ? snapshot.presets.find((item) => item.id === project.preset) : undefined} running={running} busy={busy} events={events} onStart={start} onStop={async () => { if (!project) return; try { await stopVideoProject(project.id); } catch (cause) { onError(String(cause)); } }} onDelete={() => void removeProject()} onReveal={() => project && void revealVideoProject(project.id)} onEdit={async (clipIndex, prompt) => { if (!project) return; try { setProject(await updateVideoClipPrompt(project.id, clipIndex, prompt)); } catch (cause) { onError(String(cause)); } }} onProject={setProject} onError={onError} />
           <section className="recent-projects">
-            <div className="recent-heading"><span><Clock3 size={15} /> Durable projects</span><button type="button" className="icon-button" aria-label="Refresh video projects" onClick={() => void refresh()}><RefreshCw size={15} /></button></div>
-            {snapshot.projects.length ? snapshot.projects.slice(0, 12).map((item) => <button type="button" key={item.id} className={project?.id === item.id ? "selected" : ""} onClick={() => void chooseProject(item.id)}><span><strong>{item.title}</strong><small>{presetCopy[item.preset].kicker} · {formatDuration(item.totalDurationSeconds)}</small></span><span className={`project-status status-${item.status}`}>{humanStatus(item.status)}</span><small>{item.completedClips}/{item.clipCount} verified{item.failedClips ? ` · ${item.failedClips} failed` : ""}</small></button>) : <div className="no-video-projects"><Film size={20} /><span>Your reviewed plans and recoverable runs appear here.</span></div>}
+            <div className="recent-heading"><span><Clock3 size={15} /> Durable projects</span><button type="button" className="icon-button" aria-label="Refresh video projects" disabled={busy === "deleting"} onClick={() => void refresh()}><RefreshCw size={15} /></button></div>
+            {snapshot.projects.length ? snapshot.projects.slice(0, 12).map((item) => <button type="button" key={item.id} disabled={busy === "deleting"} className={project?.id === item.id ? "selected" : ""} onClick={() => void chooseProject(item.id)}><span><strong>{item.title}</strong><small>{presetCopy[item.preset].kicker} · {formatDuration(item.totalDurationSeconds)}</small></span><span className={`project-status status-${item.status}`}>{humanStatus(item.status)}</span><small>{item.completedClips}/{item.clipCount} verified{item.failedClips ? ` · ${item.failedClips} failed` : ""}</small></button>) : <div className="no-video-projects"><Film size={20} /><span>Your reviewed plans and recoverable runs appear here.</span></div>}
           </section>
         </aside>
       </div>
