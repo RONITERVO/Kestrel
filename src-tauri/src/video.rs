@@ -31,9 +31,11 @@ const VIDEO_ENDPOINT: &str = "http://127.0.0.1:8188";
 const MAX_PROJECT_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REFERENCES: usize = 4_096;
 const MAX_PROMPT_CHARS: usize = 32_768;
+const MAX_MODEL_PROMPT_CHARS: usize = 1_800;
 const MAX_CLIPS: u32 = 20_000;
 const MAX_TOTAL_SECONDS: u32 = 43_200;
 const MAX_CHAPTERS: usize = 48;
+const PROMPT_CONTRACT_VERSION: u32 = 1;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const NON_RETRYABLE_COMFY_ERROR: &str = "Non-retryable ComfyUI error: ";
 
@@ -86,7 +88,7 @@ impl VideoPreset {
             Self::Wan13GpuOnly => 2,
             Self::WanVace13Reference => 5,
             Self::KandinskyDistilled | Self::KandinskySft => 5,
-            Self::Wan22Offload => 3,
+            Self::Wan22Offload => 5,
         }
     }
 
@@ -102,14 +104,14 @@ impl VideoPreset {
             Self::Wan13GpuOnly => 33,
             Self::WanVace13Reference => 81,
             Self::KandinskyDistilled | Self::KandinskySft => 121,
-            Self::Wan22Offload => 81,
+            Self::Wan22Offload => 121,
         }
     }
 
     fn steps(&self) -> u32 {
         match self {
-            Self::Wan13GpuOnly => 30,
-            Self::WanVace13Reference => 30,
+            Self::Wan13GpuOnly => 50,
+            Self::WanVace13Reference => 50,
             Self::KandinskyDistilled => 16,
             Self::KandinskySft => 100,
             Self::Wan22Offload => 20,
@@ -118,9 +120,77 @@ impl VideoPreset {
 
     fn cfg(&self) -> f64 {
         match self {
-            Self::Wan13GpuOnly | Self::WanVace13Reference => 6.0,
+            Self::Wan13GpuOnly => 6.0,
+            Self::WanVace13Reference => 5.0,
             Self::KandinskyDistilled => 1.0,
             Self::KandinskySft | Self::Wan22Offload => 5.0,
+        }
+    }
+
+    fn sampler(&self) -> &'static str {
+        match self {
+            Self::KandinskyDistilled | Self::KandinskySft => "euler_ancestral",
+            _ => "uni_pc",
+        }
+    }
+
+    fn scheduler(&self) -> &'static str {
+        match self {
+            Self::KandinskyDistilled | Self::KandinskySft => "beta",
+            _ => "simple",
+        }
+    }
+
+    fn shift(&self) -> f64 {
+        match self {
+            Self::Wan13GpuOnly | Self::Wan22Offload => 8.0,
+            Self::WanVace13Reference => 16.0,
+            Self::KandinskyDistilled | Self::KandinskySft => 5.0,
+        }
+    }
+
+    fn prompt_style(&self) -> &'static str {
+        match self {
+            Self::Wan13GpuOnly | Self::Wan22Offload => "wan-expanded-english-v1",
+            Self::WanVace13Reference => "wan-vace-descriptive-english-v1",
+            Self::KandinskyDistilled | Self::KandinskySft => "kandinsky-expanded-english-v1",
+        }
+    }
+
+    fn prompt_contract(&self) -> &'static str {
+        match self {
+            Self::Wan13GpuOnly | Self::Wan22Offload => {
+                "Write each prompt as 80-100 words of natural English descriptive prose. Preserve the requested meaning. Include the main subject's stable appearance, expression or pose where relevant, the environment and spatial relationships, a precise visual style, shot scale, lighting and color, one clear natural action using direct verbs, and one coherent camera movement. Describe one continuous shot only."
+            }
+            Self::WanVace13Reference => {
+                "Write each prompt as 80-100 words of natural English descriptive prose, not an instruction to the model. Describe the referenced subject's visible role without inventing identity details that could conflict with a later reference image. Include environment, spatial relationships, precise visual style, shot scale, lighting and color, one clear natural action using direct verbs, and one coherent camera movement. Describe one continuous shot only."
+            }
+            Self::KandinskyDistilled | Self::KandinskySft => {
+                "Write each prompt as 80-100 words of natural English cinematic descriptive prose. Preserve the requested meaning. Include stable subject details, action, environment, composition, shot scale, camera angle and movement, lighting, color palette, texture, and a precise visual style. Use one continuous scene and one readable action; do not write a storyboard or editing sequence."
+            }
+        }
+    }
+
+    fn default_negative_prompt(&self) -> &'static str {
+        match self {
+            Self::KandinskyDistilled | Self::KandinskySft => {
+                "Static, 2D cartoon, cartoon, 2D animation, paintings, images, worst quality, low quality, ugly, deformed, walking backwards"
+            }
+            _ => {
+                "Bright tones, overexposed, static, blurred details, subtitles, paintings, still image, overall gray, worst quality, low quality, JPEG compression artifacts, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, messy background, three legs, crowded background, walking backwards"
+            }
+        }
+    }
+
+    fn inference_contract(&self) -> VideoInferenceContract {
+        VideoInferenceContract {
+            version: PROMPT_CONTRACT_VERSION,
+            preset: self.id().into(),
+            prompt_style: self.prompt_style().into(),
+            max_prompt_chars: MAX_MODEL_PROMPT_CHARS as u32,
+            sampler: self.sampler().into(),
+            scheduler: self.scheduler().into(),
+            shift: self.shift(),
         }
     }
 
@@ -321,6 +391,32 @@ pub struct VideoContinuitySettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VideoInferenceContract {
+    pub version: u32,
+    pub preset: String,
+    pub prompt_style: String,
+    pub max_prompt_chars: u32,
+    pub sampler: String,
+    pub scheduler: String,
+    pub shift: f64,
+}
+
+impl Default for VideoInferenceContract {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            preset: String::new(),
+            prompt_style: String::new(),
+            max_prompt_chars: MAX_MODEL_PROMPT_CHARS as u32,
+            sampler: String::new(),
+            scheduler: String::new(),
+            shift: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoPlanRequest {
     pub prompt: String,
@@ -390,6 +486,8 @@ pub struct VideoProject {
     pub steps: u32,
     pub cfg: f64,
     pub negative_prompt: String,
+    #[serde(default)]
+    pub inference: VideoInferenceContract,
     pub continuity_bible: String,
     pub planning_note: String,
     pub chapters: Vec<VideoChapter>,
@@ -1272,7 +1370,8 @@ pub async fn plan_project(
         frames_per_clip: request.preset.frames(),
         steps: request.preset.steps(),
         cfg: request.preset.cfg(),
-        negative_prompt: request.negative_prompt.trim().to_string(),
+        negative_prompt: effective_negative_prompt(&request.preset, &request.negative_prompt),
+        inference: request.preset.inference_contract(),
         continuity_bible: truncate(&brief.0.continuity_bible, 12_000),
         planning_note: brief.1,
         chapters,
@@ -1316,9 +1415,12 @@ async fn plan_with_model(
         .map_err(|error| error.to_string())?;
     let chapter_target =
         (request.total_duration_seconds.div_ceil(600) as usize).clamp(1, MAX_CHAPTERS.min(12));
-    let system = "You are Kestrel's offline video production planner. Return strict JSON only. Build a coherent visual story bible that can guide thousands of independently generated clips. Do not include copyrighted character names, camera brand marketing, or promises that a model cannot guarantee.";
+    let system = format!(
+        "You are Kestrel's offline video production planner and prompt expander. Return strict JSON only. Build a coherent visual story bible and model-ready English positive prompts that can guide thousands of independently generated clips. Never put labels such as Chapter, Goal, Prompt, Shot, or Maintain continuity inside prompt_seed. Never write commands to the generator, negative-prompt terms, multiple cuts, dialogue, captions, or editing instructions. Do not include copyrighted character names, camera-brand marketing, or promises that a model cannot guarantee. The native expander adds an action phase and camera movement, then bounds the final prompt to the model contract. Model prompt contract: {}",
+        request.preset.prompt_contract()
+    );
     let user = format!(
-        "Create a compact plan for this local generative-video project.\nPrompt: {}\nAudience: {}\nUse case: {}\nTarget runtime: {} seconds\nNative clips: {}\nPreset: {}\nReturn JSON with title, continuity_bible, and exactly {} chapters. Each chapter needs title, narrative_goal, prompt_seed, duration_weight. Keep continuity_bible under 1500 words and each field concrete, visual, and reusable.",
+        "Create a compact plan for this local generative-video project.\nPrompt: {}\nAudience: {}\nUse case: {}\nTarget runtime: {} seconds\nNative clips: {}\nPreset: {}\nReturn JSON with title, continuity_bible, and exactly {} chapters. Each chapter needs title, narrative_goal, prompt_seed, duration_weight. Write continuity_bible as concise descriptive facts about stable subject identity, wardrobe or materials, geography, palette, lighting, and visual style; keep it under 600 words. Every prompt_seed must independently restate the essential subject and scene, follow the model prompt contract, describe one native clip, and contain 68-82 English words of generator-ready prose. Kestrel appends the action phase and camera move to produce the final 80-100-word prompt; do not emit arrays or per-clip records.",
         request.prompt.trim(), request.audience.trim(), request.use_case.trim(),
         request.total_duration_seconds, clip_count, request.preset.label(), chapter_target
     );
@@ -1391,7 +1493,7 @@ fn deterministic_brief(request: &VideoPlanRequest, clip_count: u32) -> CreativeB
                 request.audience.trim()
             ),
             prompt_seed: format!(
-                "{}; visual progression {} of {}; coherent location, subjects, palette, and lighting",
+                "{}. Visual progression {} of {} uses a coherent subject, location, palette, and lighting",
                 request.prompt.trim(),
                 index + 1,
                 count
@@ -1402,8 +1504,8 @@ fn deterministic_brief(request: &VideoPlanRequest, clip_count: u32) -> CreativeB
     CreativeBrief {
         title: title_from_prompt(&request.prompt),
         continuity_bible: format!(
-            "Core concept: {}. Audience: {}. Intended use: {}. Maintain consistent subject identity, wardrobe, geography, color palette, lighting logic, lens language, motion direction, and era. Prefer visual explanation over on-screen text. Each clip must be understandable alone while matching adjacent clips. Planned native clip count: {}.",
-            request.prompt.trim(), request.audience.trim(), request.use_case.trim(), clip_count
+            "Stable visual identity and concept: {}. Subject identity, wardrobe or material details, geography, color palette, lighting logic, lens language, motion direction, and era remain coherent across the production. The visual explanation uses concrete action instead of on-screen text. Planned native clip count: {}.",
+            request.prompt.trim(), clip_count
         ),
         chapters,
     }
@@ -1488,22 +1590,32 @@ fn expand_plan(
     for (chapter_index, (chapter, allocation)) in brief.chapters.iter().zip(allocations).enumerate()
     {
         let first = global;
+        let prompt_seed = model_ready_prompt_seed(&chapter.prompt_seed, request);
         for local in 0..allocation {
-            let prompt = format!(
-                "Chapter: {}. Goal: {}. Shot {}/{}: {}; {}.",
-                chapter.title,
-                chapter.narrative_goal,
-                local + 1,
-                allocation,
-                chapter.prompt_seed,
-                motion[((global - 1) as usize) % motion.len()],
+            let moment = if allocation == 1 {
+                "One continuous, physically plausible action reaches a clear visual beat"
+            } else if local == 0 {
+                "The continuous action begins from a clear, readable pose"
+            } else if local + 1 == allocation {
+                "The continuous action settles into a clean closing visual beat"
+            } else {
+                "The continuous action develops through natural, physically plausible motion"
+            };
+            let prompt = truncate_words(
+                &format!(
+                    "{}. {}. {}.",
+                    prompt_seed,
+                    moment,
+                    motion[((global - 1) as usize) % motion.len()],
+                ),
+                100,
             );
             clips.push(VideoClip {
                 index: global,
                 chapter_index: chapter_index as u32 + 1,
-                // Keep the durable ledger compact enough for 20,000-clip plans. The shared
-                // concept and continuity bible are joined only while constructing the graph.
-                prompt: truncate(&prompt, 900),
+                // Keep the durable ledger compact enough for 20,000-clip plans. The prompt is
+                // already generator-ready and is sent without planning metadata.
+                prompt: truncate(&prompt, 1_200),
                 seed: base_seed.wrapping_add(global as u64 * 1_000_003),
                 status: "planned".into(),
                 attempts: 0,
@@ -1523,13 +1635,44 @@ fn expand_plan(
             index: chapter_index as u32 + 1,
             title: chapter.title.clone(),
             narrative_goal: chapter.narrative_goal.clone(),
-            prompt_seed: chapter.prompt_seed.clone(),
+            prompt_seed,
             first_clip: first,
             last_clip: global - 1,
             reference_asset_id: None,
         });
     }
     (chapters, clips)
+}
+
+fn model_ready_prompt_seed(value: &str, request: &VideoPlanRequest) -> String {
+    let value = compact_whitespace(value);
+    let lowered = value.to_ascii_lowercase();
+    let has_planning_metadata = [
+        "chapter:",
+        "chapter 1:",
+        "goal:",
+        "prompt:",
+        "shot:",
+        "maintain continuity",
+        "audience:",
+    ]
+    .iter()
+    .any(|label| lowered.contains(label));
+    if !has_planning_metadata && value.split_whitespace().count() >= 68 {
+        return truncate_words(&value, 82);
+    }
+    let safe_seed = if has_planning_metadata {
+        request.prompt.trim()
+    } else {
+        value.as_str()
+    };
+    truncate_words(
+        &format!(
+            "{}. {}. The main subject is clearly identifiable through stable appearance, posture, proportions, and material detail in a coherent environment with readable spatial relationships. The scene has a precise visual style, deliberate shot scale, clear depth, realistic texture, and a consistent color palette. Lighting direction, atmosphere, geography, and time of day remain visually coherent. One natural, physically plausible action unfolds with simple direct movement.",
+            request.prompt.trim(), safe_seed
+        ),
+        82,
+    )
 }
 
 fn brief_clip_seconds(request: &VideoPlanRequest) -> u32 {
@@ -2374,11 +2517,16 @@ fn wan_graph(
         }
     }
     graph.insert("6".into(), node(latent_node, latent_inputs));
+    let sampler = resolved_sampler(project);
+    let scheduler = resolved_scheduler(project);
     graph.insert(
         "7".into(),
-        node("ModelSamplingSD3", json!({"model":["1",0],"shift":8.0})),
+        node(
+            "ModelSamplingSD3",
+            json!({"model":["1",0],"shift":resolved_shift(project)}),
+        ),
     );
-    graph.insert("8".into(), node("KSampler", json!({"model":["7",0],"seed":clip.seed,"steps":project.steps,"cfg":project.cfg,"sampler_name":"uni_pc","scheduler":"simple","positive":["4",0],"negative":["5",0],"latent_image":["6",0],"denoise":1.0})));
+    graph.insert("8".into(), node("KSampler", json!({"model":["7",0],"seed":clip.seed,"steps":project.steps,"cfg":project.cfg,"sampler_name":sampler,"scheduler":scheduler,"positive":["4",0],"negative":["5",0],"latent_image":["6",0],"denoise":1.0})));
     let decoder = if latent_node == "EmptyHunyuanLatentVideo" {
         node("VAEDecode", json!({"samples":["8",0],"vae":["3",0]}))
     } else {
@@ -2414,6 +2562,8 @@ fn kandinsky_graph(
         "kandinsky5lite_t2v_distilled16steps_5s.safetensors"
     };
     let prompt = generation_prompt(project, clip);
+    let sampler = resolved_sampler(project);
+    let scheduler = resolved_scheduler(project);
     let mut graph = json!({
         "1": node("DualCLIPLoader", json!({"clip_name1":"qwen_2.5_vl_7b_fp8_scaled.safetensors","clip_name2":"clip_l.safetensors","type":"kandinsky5","device":"default"})),
         "2": node("VAELoader", json!({"vae_name":"hunyuan_video_vae_bf16.safetensors"})),
@@ -2421,8 +2571,8 @@ fn kandinsky_graph(
         "4": node("CLIPTextEncode", json!({"text":prompt,"clip":["1",0]})),
         "5": node("CLIPTextEncode", json!({"text":project.negative_prompt,"clip":["1",0]})),
         "6": node("Kandinsky5ImageToVideo", json!({"positive":["4",0],"negative":["5",0],"vae":["2",0],"width":project.width,"height":project.height,"length":project.frames_per_clip,"batch_size":1})),
-        "7": node("ModelSamplingSD3", json!({"model":["3",0],"shift":5.0})),
-        "8": node("KSampler", json!({"model":["7",0],"seed":clip.seed,"steps":project.steps,"cfg":project.cfg,"sampler_name":"euler_ancestral","scheduler":"beta","positive":["6",0],"negative":["6",1],"latent_image":["6",2],"denoise":1.0})),
+        "7": node("ModelSamplingSD3", json!({"model":["3",0],"shift":resolved_shift(project)})),
+        "8": node("KSampler", json!({"model":["7",0],"seed":clip.seed,"steps":project.steps,"cfg":project.cfg,"sampler_name":sampler,"scheduler":scheduler,"positive":["6",0],"negative":["6",1],"latent_image":["6",2],"denoise":1.0})),
         "9": tiled_vae_decode(json!(["8",0]), json!(["2",0])),
         "10": node("CreateVideo", json!({"images":["9",0],"fps":project.fps as f64})),
         "11": node("SaveVideo", json!({"video":["10",0],"filename_prefix":prefix,"format":"mp4","codec":"h264"}))
@@ -2441,6 +2591,8 @@ fn vace_graph(
     references: &PreparedReferences,
 ) -> Value {
     let prompt = generation_prompt(project, clip);
+    let sampler = resolved_sampler(project);
+    let scheduler = resolved_scheduler(project);
     let mut graph = json!({
         "1": node("UNETLoader", json!({"unet_name":"wan2.1_vace_1.3B_fp16.safetensors","weight_dtype":"default"})),
         "2": node("CLIPLoader", json!({"clip_name":"umt5_xxl_fp8_e4m3fn_scaled.safetensors","type":"wan","device":"default"})),
@@ -2448,8 +2600,8 @@ fn vace_graph(
         "4": node("CLIPTextEncode", json!({"text":prompt,"clip":["2",0]})),
         "5": node("CLIPTextEncode", json!({"text":project.negative_prompt,"clip":["2",0]})),
         "6": node("WanVaceToVideo", json!({"positive":["4",0],"negative":["5",0],"vae":["3",0],"width":project.width,"height":project.height,"length":project.frames_per_clip,"batch_size":1,"strength":1.0})),
-        "7": node("ModelSamplingSD3", json!({"model":["1",0],"shift":8.0})),
-        "8": node("KSampler", json!({"model":["7",0],"seed":clip.seed,"steps":project.steps,"cfg":project.cfg,"sampler_name":"uni_pc","scheduler":"simple","positive":["6",0],"negative":["6",1],"latent_image":["6",2],"denoise":1.0})),
+        "7": node("ModelSamplingSD3", json!({"model":["1",0],"shift":resolved_shift(project)})),
+        "8": node("KSampler", json!({"model":["7",0],"seed":clip.seed,"steps":project.steps,"cfg":project.cfg,"sampler_name":sampler,"scheduler":scheduler,"positive":["6",0],"negative":["6",1],"latent_image":["6",2],"denoise":1.0})),
         "9": node("TrimVideoLatent", json!({"samples":["8",0],"trim_amount":["6",3]})),
         "10": tiled_vae_decode(json!(["9",0]), json!(["3",0])),
         "11": node("CreateVideo", json!({"images":["10",0],"fps":project.fps as f64})),
@@ -2482,16 +2634,73 @@ fn tiled_vae_decode(samples: Value, vae: Value) -> Value {
 }
 
 fn generation_prompt(project: &VideoProject, clip: &VideoClip) -> String {
-    truncate(
-        &format!(
-            "{}. {}. Maintain this continuity: {}. Audience: {}. No subtitles, captions, logos, watermarks, title cards, or readable text.",
-            project.prompt.trim(),
-            clip.prompt.trim(),
-            project.continuity_bible.trim(),
-            project.audience.trim(),
-        ),
-        14_000,
-    )
+    let clip_prompt = compact_whitespace(&clip.prompt);
+    let prompt = if uses_snapshot_contract(project) {
+        truncate_words(&clip_prompt, 100)
+    } else {
+        let continuity = truncate(&compact_whitespace(&project.continuity_bible), 420);
+        let concept = truncate(&compact_whitespace(&project.prompt), 360);
+        format!("{concept}. {clip_prompt}. Consistent visual identity and setting: {continuity}")
+    };
+    truncate(&prompt, resolved_prompt_limit(project))
+}
+
+fn effective_negative_prompt(preset: &VideoPreset, value: &str) -> String {
+    let value = compact_whitespace(value);
+    let prompt = if value.is_empty() {
+        preset.default_negative_prompt()
+    } else {
+        &value
+    };
+    truncate(prompt, MAX_MODEL_PROMPT_CHARS)
+}
+
+fn resolved_prompt_limit(project: &VideoProject) -> usize {
+    if !uses_snapshot_contract(project) {
+        return MAX_MODEL_PROMPT_CHARS;
+    }
+    let requested = project.inference.max_prompt_chars as usize;
+    if (512..=MAX_MODEL_PROMPT_CHARS).contains(&requested) {
+        requested
+    } else {
+        MAX_MODEL_PROMPT_CHARS
+    }
+}
+
+fn resolved_sampler(project: &VideoProject) -> &str {
+    if !uses_snapshot_contract(project) {
+        return project.preset.sampler();
+    }
+    match project.inference.sampler.as_str() {
+        "uni_pc" | "euler_ancestral" => &project.inference.sampler,
+        _ => project.preset.sampler(),
+    }
+}
+
+fn resolved_scheduler(project: &VideoProject) -> &str {
+    if !uses_snapshot_contract(project) {
+        return project.preset.scheduler();
+    }
+    match project.inference.scheduler.as_str() {
+        "simple" | "beta" => &project.inference.scheduler,
+        _ => project.preset.scheduler(),
+    }
+}
+
+fn resolved_shift(project: &VideoProject) -> f64 {
+    if uses_snapshot_contract(project)
+        && project.inference.shift.is_finite()
+        && (1.0..=20.0).contains(&project.inference.shift)
+    {
+        project.inference.shift
+    } else {
+        project.preset.shift()
+    }
+}
+
+fn uses_snapshot_contract(project: &VideoProject) -> bool {
+    project.inference.version >= PROMPT_CONTRACT_VERSION
+        && project.inference.preset == project.preset.id()
 }
 
 fn node(class_type: &str, inputs: Value) -> Value {
@@ -3024,13 +3233,15 @@ fn validated_ffmpeg_command(value: &str) -> Result<PathBuf, String> {
 
 fn dimensions(preset: &VideoPreset, orientation: &str) -> Result<(u32, u32), String> {
     match (preset, orientation) {
-        (VideoPreset::Wan13GpuOnly | VideoPreset::Wan22Offload, "landscape") => Ok((832, 480)),
-        (VideoPreset::Wan13GpuOnly | VideoPreset::Wan22Offload, "portrait") => Ok((480, 832)),
+        (VideoPreset::Wan13GpuOnly, "landscape") => Ok((832, 480)),
+        (VideoPreset::Wan13GpuOnly, "portrait") => Ok((480, 832)),
+        (VideoPreset::Wan22Offload, "landscape") => Ok((1280, 704)),
+        (VideoPreset::Wan22Offload, "portrait") => Ok((704, 1280)),
         (VideoPreset::WanVace13Reference, "landscape") => Ok((832, 480)),
         (VideoPreset::WanVace13Reference, "portrait") => Ok((480, 832)),
-        (VideoPreset::WanVace13Reference, "square") => Ok((624, 624)),
+        (VideoPreset::WanVace13Reference, "square") => Ok((640, 640)),
         (VideoPreset::Wan13GpuOnly, "square") => Ok((624, 624)),
-        (VideoPreset::Wan22Offload, "square") => Ok((640, 608)),
+        (VideoPreset::Wan22Offload, "square") => Ok((960, 960)),
         (_, "landscape") => Ok((768, 512)),
         (_, "portrait") => Ok((512, 768)),
         (_, "square") => Ok((624, 624)),
@@ -3143,6 +3354,18 @@ fn truncate(value: &str, chars: usize) -> String {
     }
 }
 
+fn compact_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_words(value: &str, words: usize) -> String {
+    value
+        .split_whitespace()
+        .take(words)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn emit(
     app: Option<&AppHandle>,
     kind: &str,
@@ -3208,6 +3431,100 @@ mod tests {
             serde_json::from_str::<VideoPreset>("\"wan22-offload\"").unwrap(),
             VideoPreset::Wan22Offload
         );
+    }
+
+    #[test]
+    fn model_prompt_and_sampling_contracts_match_audited_profiles() {
+        let cases = [
+            (VideoPreset::Wan13GpuOnly, 2, 33, 50, 6.0, 8.0),
+            (VideoPreset::WanVace13Reference, 5, 81, 50, 5.0, 16.0),
+            (VideoPreset::KandinskyDistilled, 5, 121, 16, 1.0, 5.0),
+            (VideoPreset::KandinskySft, 5, 121, 100, 5.0, 5.0),
+            (VideoPreset::Wan22Offload, 5, 121, 20, 5.0, 8.0),
+        ];
+
+        for (preset, seconds, frames, steps, cfg, shift) in cases {
+            let contract = preset.inference_contract();
+            assert_eq!(preset.native_seconds(), seconds);
+            assert_eq!(preset.frames(), frames);
+            assert_eq!(preset.steps(), steps);
+            assert_eq!(preset.cfg(), cfg);
+            assert_eq!(contract.version, PROMPT_CONTRACT_VERSION);
+            assert_eq!(contract.preset, preset.id());
+            assert_eq!(contract.shift, shift);
+            assert_eq!(contract.max_prompt_chars, MAX_MODEL_PROMPT_CHARS as u32);
+            assert!(!contract.prompt_style.is_empty());
+        }
+
+        assert_eq!(
+            dimensions(&VideoPreset::Wan22Offload, "landscape").unwrap(),
+            (1280, 704)
+        );
+        assert_eq!(
+            dimensions(&VideoPreset::Wan22Offload, "portrait").unwrap(),
+            (704, 1280)
+        );
+        assert_eq!(
+            dimensions(&VideoPreset::WanVace13Reference, "square").unwrap(),
+            (640, 640)
+        );
+    }
+
+    #[test]
+    fn deterministic_expansion_produces_bounded_model_ready_prompts() {
+        for preset in [
+            VideoPreset::Wan13GpuOnly,
+            VideoPreset::WanVace13Reference,
+            VideoPreset::KandinskyDistilled,
+            VideoPreset::KandinskySft,
+            VideoPreset::Wan22Offload,
+        ] {
+            let request = request(preset.native_seconds(), preset.clone());
+            let brief = deterministic_brief(&request, 1);
+            let (_, clips) = expand_plan(&request, &brief, 1);
+            let clip = &clips[0];
+            let words = clip.prompt.split_whitespace().count();
+            assert!(
+                (80..=100).contains(&words),
+                "{} emitted {words} words",
+                preset.id()
+            );
+            assert!(clip.prompt.chars().count() <= 1_200);
+            for forbidden in [
+                "Chapter:",
+                "Goal:",
+                "Shot ",
+                "Maintain continuity",
+                "Audience:",
+            ] {
+                assert!(
+                    !clip.prompt.contains(forbidden),
+                    "{} contained {forbidden}",
+                    preset.id()
+                );
+            }
+            assert_eq!(
+                effective_negative_prompt(&preset, ""),
+                preset.default_negative_prompt()
+            );
+        }
+
+        let request = request(5, VideoPreset::WanVace13Reference);
+        let mut malformed = deterministic_brief(&request, 1);
+        malformed.chapters[0].prompt_seed = "Chapter: Opening. Goal: maintain continuity. Shot: ask the generator to avoid blur and add captions. This planner metadata is deliberately padded with enough repeated words to look superficially complete even though it is not a valid descriptive video-model prompt for a single continuous scene.".into();
+        let (_, clips) = expand_plan(&request, &malformed, 1);
+        let prompt = &clips[0].prompt;
+        for forbidden in [
+            "Chapter:",
+            "Goal:",
+            "Shot:",
+            "maintain continuity",
+            "captions",
+        ] {
+            assert!(!prompt
+                .to_ascii_lowercase()
+                .contains(&forbidden.to_ascii_lowercase()));
+        }
     }
 
     #[test]
@@ -3392,6 +3709,7 @@ mod tests {
             steps: 16,
             cfg: 1.0,
             negative_prompt: request.negative_prompt,
+            inference: VideoPreset::KandinskyDistilled.inference_contract(),
             continuity_bible: brief.continuity_bible,
             planning_note: "test".into(),
             chapters,
@@ -3562,6 +3880,7 @@ mod tests {
             steps: 16,
             cfg: 1.0,
             negative_prompt: request.negative_prompt,
+            inference: VideoPreset::KandinskyDistilled.inference_contract(),
             continuity_bible: brief.continuity_bible,
             planning_note: "test".into(),
             chapters: Vec::new(),
@@ -3606,19 +3925,35 @@ mod tests {
         );
         let mut wan = project.clone();
         wan.preset = VideoPreset::Wan13GpuOnly;
+        wan.inference = wan.preset.inference_contract();
         wan.width = 832;
         wan.height = 480;
         wan.frames_per_clip = 33;
+        wan.steps = 50;
+        wan.cfg = 6.0;
         let wan_graph = build_graph(&wan, &clips[0], "video/wan", &PreparedReferences::default());
         assert_eq!(
             wan_graph.pointer("/6/class_type").and_then(Value::as_str),
             Some("EmptyHunyuanLatentVideo")
         );
         assert!(wan_graph.pointer("/6/inputs/vae").is_none());
+        assert_eq!(
+            wan_graph.pointer("/7/inputs/shift").and_then(Value::as_f64),
+            Some(8.0)
+        );
+        assert_eq!(
+            wan_graph.pointer("/8/inputs/steps").and_then(Value::as_u64),
+            Some(50)
+        );
 
         let mut wan22 = wan.clone();
         wan22.preset = VideoPreset::Wan22Offload;
-        wan22.frames_per_clip = 81;
+        wan22.inference = wan22.preset.inference_contract();
+        wan22.width = 1280;
+        wan22.height = 704;
+        wan22.frames_per_clip = 121;
+        wan22.steps = 20;
+        wan22.cfg = 5.0;
         let wan22_graph = build_graph(
             &wan22,
             &clips[0],
@@ -3635,11 +3970,26 @@ mod tests {
                 .and_then(Value::as_str),
             Some("3")
         );
+        assert_eq!(
+            wan22_graph
+                .pointer("/6/inputs/length")
+                .and_then(Value::as_u64),
+            Some(121)
+        );
+        assert_eq!(
+            wan22_graph
+                .pointer("/6/inputs/width")
+                .and_then(Value::as_u64),
+            Some(1280)
+        );
         let mut vace = project.clone();
         vace.preset = VideoPreset::WanVace13Reference;
+        vace.inference = vace.preset.inference_contract();
         vace.width = 832;
         vace.height = 480;
         vace.frames_per_clip = 81;
+        vace.steps = 50;
+        vace.cfg = 5.0;
         let vace_graph = build_graph(&vace, &clips[0], "video/vace", &references);
         assert_eq!(
             vace_graph.pointer("/6/class_type").and_then(Value::as_str),
@@ -3660,6 +4010,16 @@ mod tests {
                 .pointer("/6/inputs/control_video/0")
                 .and_then(Value::as_str),
             Some("15")
+        );
+        assert_eq!(
+            vace_graph
+                .pointer("/7/inputs/shift")
+                .and_then(Value::as_f64),
+            Some(16.0)
+        );
+        assert_eq!(
+            vace_graph.pointer("/8/inputs/cfg").and_then(Value::as_f64),
+            Some(5.0)
         );
     }
 }

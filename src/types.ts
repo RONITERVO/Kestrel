@@ -473,6 +473,16 @@ export interface VideoContinuitySettings {
   primaryReferenceId?: string;
 }
 
+export interface VideoInferenceContract {
+  version: number;
+  preset: VideoPreset;
+  promptStyle: string;
+  maxPromptChars: number;
+  sampler: string;
+  scheduler: string;
+  shift: number;
+}
+
 export interface VideoProject {
   id: string;
   title: string;
@@ -492,6 +502,7 @@ export interface VideoProject {
   steps: number;
   cfg: number;
   negativePrompt: string;
+  inference: VideoInferenceContract;
   continuityBible: string;
   planningNote: string;
   chapters: VideoChapter[];

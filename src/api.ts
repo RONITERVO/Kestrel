@@ -25,6 +25,7 @@ import type {
   StartChatRequest,
   SystemSnapshot,
   VideoContinuityMode,
+  VideoInferenceContract,
   VideoPlanRequest,
   VideoPreset,
   VideoPresetStatus,
@@ -355,17 +356,32 @@ type PreviewPresetConfig = VideoPresetStatus & {
   fps: number;
   framesPerClip: number;
   cfg: number;
+  inference: VideoInferenceContract;
+  defaultNegativePrompt: string;
 };
+
+const wanNegativePrompt = "Bright tones, overexposed, static, blurred details, subtitles, paintings, still image, overall gray, worst quality, low quality, JPEG compression artifacts, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, messy background, three legs, crowded background, walking backwards";
+const kandinskyNegativePrompt = "Static, 2D cartoon, cartoon, 2D animation, paintings, images, worst quality, low quality, ugly, deformed, walking backwards";
+
+function previewInference(
+  preset: VideoPreset,
+  promptStyle: string,
+  sampler: string,
+  scheduler: string,
+  shift: number,
+): VideoInferenceContract {
+  return { version: 1, preset, promptStyle, maxPromptChars: 1800, sampler, scheduler, shift };
+}
 
 const previewPresetTable: Record<VideoPreset, PreviewPresetConfig> = {
-  "wan-1.3b-gpu-only": { id: "wan-1.3b-gpu-only", label: "Wan 2.1 1.3B · GPU only", profile: "gpu-only", offloading: "forbidden", nativeClipSeconds: 2, steps: 30, available: true, missingFiles: [], supportsImageReference: false, supportsVideoReference: false, dimensions: { landscape: [832, 480], portrait: [480, 832], square: [624, 624] }, fps: 16, framesPerClip: 33, cfg: 6 },
-  "wan-vace-1.3b-reference": { id: "wan-vace-1.3b-reference", label: "Wan VACE 1.3B · Reference studio", profile: "reference-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 30, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: true, dimensions: { landscape: [832, 480], portrait: [480, 832], square: [624, 624] }, fps: 16, framesPerClip: 81, cfg: 6 },
-  "kandinsky-distilled": { id: "kandinsky-distilled", label: "Kandinsky 5 Lite · Distilled", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 16, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false, dimensions: { landscape: [768, 512], portrait: [512, 768], square: [624, 624] }, fps: 24, framesPerClip: 121, cfg: 1 },
-  "kandinsky-sft": { id: "kandinsky-sft", label: "Kandinsky 5 Lite · SFT quality", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 100, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false, dimensions: { landscape: [768, 512], portrait: [512, 768], square: [624, 624] }, fps: 24, framesPerClip: 121, cfg: 5 },
-  "wan-2.2-5b-offload": { id: "wan-2.2-5b-offload", label: "Wan 2.2 5B · Predictable offload", profile: "forced-offload", offloading: "forced", nativeClipSeconds: 3, steps: 20, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false, dimensions: { landscape: [832, 480], portrait: [480, 832], square: [640, 608] }, fps: 24, framesPerClip: 81, cfg: 5 },
+  "wan-1.3b-gpu-only": { id: "wan-1.3b-gpu-only", label: "Wan 2.1 1.3B · GPU only", profile: "gpu-only", offloading: "forbidden", nativeClipSeconds: 2, steps: 50, available: true, missingFiles: [], supportsImageReference: false, supportsVideoReference: false, dimensions: { landscape: [832, 480], portrait: [480, 832], square: [624, 624] }, fps: 16, framesPerClip: 33, cfg: 6, inference: previewInference("wan-1.3b-gpu-only", "wan-expanded-english-v1", "uni_pc", "simple", 8), defaultNegativePrompt: wanNegativePrompt },
+  "wan-vace-1.3b-reference": { id: "wan-vace-1.3b-reference", label: "Wan VACE 1.3B · Reference studio", profile: "reference-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 50, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: true, dimensions: { landscape: [832, 480], portrait: [480, 832], square: [640, 640] }, fps: 16, framesPerClip: 81, cfg: 5, inference: previewInference("wan-vace-1.3b-reference", "wan-vace-descriptive-english-v1", "uni_pc", "simple", 16), defaultNegativePrompt: wanNegativePrompt },
+  "kandinsky-distilled": { id: "kandinsky-distilled", label: "Kandinsky 5 Lite · Distilled", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 16, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false, dimensions: { landscape: [768, 512], portrait: [512, 768], square: [624, 624] }, fps: 24, framesPerClip: 121, cfg: 1, inference: previewInference("kandinsky-distilled", "kandinsky-expanded-english-v1", "euler_ancestral", "beta", 5), defaultNegativePrompt: kandinskyNegativePrompt },
+  "kandinsky-sft": { id: "kandinsky-sft", label: "Kandinsky 5 Lite · SFT quality", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 100, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false, dimensions: { landscape: [768, 512], portrait: [512, 768], square: [624, 624] }, fps: 24, framesPerClip: 121, cfg: 5, inference: previewInference("kandinsky-sft", "kandinsky-expanded-english-v1", "euler_ancestral", "beta", 5), defaultNegativePrompt: kandinskyNegativePrompt },
+  "wan-2.2-5b-offload": { id: "wan-2.2-5b-offload", label: "Wan 2.2 5B · Predictable offload", profile: "forced-offload", offloading: "forced", nativeClipSeconds: 5, steps: 20, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false, dimensions: { landscape: [1280, 704], portrait: [704, 1280], square: [960, 960] }, fps: 24, framesPerClip: 121, cfg: 5, inference: previewInference("wan-2.2-5b-offload", "wan-expanded-english-v1", "uni_pc", "simple", 8), defaultNegativePrompt: wanNegativePrompt },
 };
 
-const previewPresetStatuses = Object.values(previewPresetTable).map(({ dimensions: _dimensions, fps: _fps, framesPerClip: _framesPerClip, cfg: _cfg, ...status }) => status);
+const previewPresetStatuses = Object.values(previewPresetTable).map(({ dimensions: _dimensions, fps: _fps, framesPerClip: _framesPerClip, cfg: _cfg, inference: _inference, defaultNegativePrompt: _defaultNegativePrompt, ...status }) => status);
 
 const previewVideoSnapshot: VideoSnapshot = {
   settings: {
@@ -460,14 +476,15 @@ export async function planVideoProject(request: VideoPlanRequest): Promise<Video
       framesPerClip: preset.framesPerClip,
       steps: preset.steps,
       cfg: preset.cfg,
-      negativePrompt: request.negativePrompt,
-      continuityBible: `Maintain subject, palette, geography, lighting, and motion continuity for ${request.audience}.`,
+      negativePrompt: request.negativePrompt.trim() || preset.defaultNegativePrompt,
+      inference: preset.inference,
+      continuityBible: `The primary subject keeps the same visible identity, wardrobe, proportions, and distinguishing details. The setting keeps a stable palette, geography, lighting direction, and time of day.`,
       planningNote: "Preview plan; the desktop app uses the selected local model and persists native queue state.",
       chapters: [{ index: 1, title: "Visual arc", narrativeGoal: request.useCase, promptSeed: request.prompt, firstClip: 1, lastClip: clipCount }],
       clips: Array.from({ length: clipCount }, (_, index) => ({
         index: index + 1,
         chapterIndex: 1,
-        prompt: `${request.prompt}. Shot ${index + 1} of ${clipCount}.`,
+        prompt: `${request.prompt}. The primary subject remains clearly identifiable while completing one natural, readable action in a coherent setting. The composition uses a deliberate shot scale, consistent lighting and color, realistic spatial relationships, and one smooth camera movement. This is one continuous scene with stable visual style and no cuts, captions, dialogue, or editing instructions.`,
         seed: index + 1,
         status: "planned",
         attempts: 0,

@@ -44,13 +44,15 @@ Video Studio separates planning from generation. A selected local llama.cpp mode
 
 Five explicit RTX 5070 12 GiB profiles are supported:
 
-- **Wan 2.1 1.3B GPU only** is the fast medium-quality path. Kestrel launches ComfyUI with `--gpu-only`, disables asynchronous and dynamic offload, and fails the job rather than silently changing the timing policy.
-- **Wan VACE 1.3B Reference Studio** is the 480p continuity and motion-control path. It accepts a subject/storyboard image and, per shot, an optional motion-reference video through native ComfyUI nodes. Its fixed staged profile uses ComfyUI's normal-VRAM mode and declares whole-model stage-boundary movement because the model and UMT5 encoder cannot be simultaneously resident on a 12 GiB card; smart memory management, dynamic VRAM, and asynchronous offload are disabled, and VAE decoding is tiled.
+- **Wan 2.1 1.3B GPU only** is the fast medium-quality path: 50 steps and 33 frames for a two-second native clip. Kestrel launches ComfyUI with `--gpu-only`, disables asynchronous and dynamic offload, and fails the job rather than silently changing the timing policy.
+- **Wan VACE 1.3B Reference Studio** is the 50-step, 480p continuity and motion-control path. It accepts a subject/storyboard image and, per shot, an optional motion-reference video through native ComfyUI nodes. Its fixed staged profile uses ComfyUI's normal-VRAM mode and declares whole-model stage-boundary movement because the model and UMT5 encoder cannot be simultaneously resident on a 12 GiB card; smart memory management, dynamic VRAM, and asynchronous offload are disabled, and VAE decoding is tiled.
 - **Kandinsky 5 Lite Distilled** is the recommended 16-step daily driver. Its fixed staged profile uses normal-VRAM mode and permits only predictable whole-model stage-boundary movement; smart memory management, dynamic VRAM, and asynchronous offload are disabled.
 - **Kandinsky 5 Lite SFT** uses the same declared memory profile with 100 quality-first steps.
-- **Wan 2.2 TI2V 5B** always uses the declared low-VRAM asynchronous-offload profile.
+- **Wan 2.2 TI2V 5B** generates five-second, 121-frame native 1280x704 clips with the official ComfyUI 20-step profile and always uses the declared low-VRAM asynchronous-offload profile.
 
 Kestrel validates required local model files before enabling a preset. It refuses an existing unowned service on port 8188 because its launch flags cannot be proven. During generation it copies each completed clip into the project directory, verifies size and SHA-256, retries within the reviewed limit, restarts its owned backend between retries, and pauses at any failure, runtime, disk, or cancellation boundary. Final assembly trims the native-clip sequence at the reviewed target runtime. Interrupted projects become explicitly resumable after restart and never auto-resume.
+
+The Bonsai planner now writes model-specific descriptive prompt seeds rather than storyboard metadata. Native code repairs terse planner output, adds one action phase and camera move, and enforces an 80-100-word final positive prompt without injecting the audience, negative concepts, or the full continuity bible into the text encoder. Sampling and prompt behavior are versioned in every durable project. The audited values, upstream source ledger, deliberate deviations, and future migration rules live in [docs/video-model-contracts.md](docs/video-model-contracts.md).
 
 ### Subject, storyboard, and motion continuity
 

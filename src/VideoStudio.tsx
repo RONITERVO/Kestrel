@@ -59,12 +59,12 @@ const presetCopy: Record<VideoPreset, { kicker: string; description: string; qua
   "wan-1.3b-gpu-only": {
     kicker: "Fast, deterministic",
     description: "No CPU offload. A job that exceeds VRAM fails instead of changing its timing policy.",
-    quality: "Medium quality · 30 steps · 2-second native clips",
+    quality: "Medium quality · 50 steps · 2-second speed clips",
   },
   "wan-vace-1.3b-reference": {
     kicker: "Continuity and motion studio",
     description: "Native image and control-video conditioning for subject anchors, storyboards, and motion transfer.",
-    quality: "Reference-first · 30 steps · 5-second native clips",
+    quality: "Reference-first · 50 steps · 5-second native clips",
   },
   "kandinsky-distilled": {
     kicker: "Recommended daily driver",
@@ -79,7 +79,7 @@ const presetCopy: Record<VideoPreset, { kicker: string; description: string; qua
   "wan-2.2-5b-offload": {
     kicker: "Flexible all-rounder",
     description: "Forced low-VRAM loading with two known asynchronous transfer streams.",
-    quality: "High quality · 20 steps · 3-second native clips",
+    quality: "High quality · 20 steps · 5-second 720p native clips",
   },
 };
 
@@ -112,7 +112,7 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
   const [hours, setHours] = useState(0);
   const [minutes, setMinutes] = useState(1);
   const [seconds, setSeconds] = useState(0);
-  const [negativePrompt, setNegativePrompt] = useState("blurry, low quality, static, distorted anatomy, text, subtitles, captions, logos, watermark");
+  const [negativePrompt, setNegativePrompt] = useState("");
   const [plannerModelId, setPlannerModelId] = useState(control.settings.selectedModelId ?? control.models[0]?.id ?? "");
   const [boundaries, setBoundaries] = useState(defaultBoundaries);
 
@@ -307,7 +307,7 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
                 <NumberField label="Minimum free disk (GiB)" value={boundaries.minFreeDiskGib} min={0} max={10_000} onChange={(value) => setBoundaries({ ...boundaries, minFreeDiskGib: value })} />
                 <label className="assembly-toggle"><input type="checkbox" checked={boundaries.assembleFinalVideo} onChange={(event) => setBoundaries({ ...boundaries, assembleFinalVideo: event.target.checked })} /><span><strong>Assemble verified clips</strong><small>Local FFmpeg concat after every clip passes verification.</small></span></label>
               </div>
-              <label className="negative-field"><span>Negative prompt</span><textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} /></label>
+              <label className="negative-field"><span>Negative prompt override</span><textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} placeholder="Leave blank for the audited model-specific default" /><small>Blank uses the preset's offline-tested baseline. Entering text replaces it completely for artistic control.</small></label>
             </div>}
             {boundaryExceeded && <div className="video-warning"><AlertTriangle size={17} /><span>This plan needs {estimatedClips.toLocaleString()} clips, above the {boundaries.maxClips.toLocaleString()} boundary. Raise it deliberately or shorten the runtime.</span></div>}
             <div className="plan-actions"><div><ShieldCheck size={15} /><span>Planning loads only the local LLM. ComfyUI starts after review.</span></div><button type="button" className="primary-button" disabled={busy !== null || !prompt.trim() || totalSeconds < 2 || boundaryExceeded || !selectedPreset?.available} onClick={() => void plan()}>{busy === "planning" ? <LoaderCircle className="spin" /> : <WandSparkles size={16} />} Plan production</button></div>
