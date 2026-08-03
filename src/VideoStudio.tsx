@@ -19,11 +19,13 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Trash2,
   WandSparkles,
   Video,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  deleteVideoProject,
   getVideoProject,
   getVideoReferencePreview,
   getVideoSnapshot,
@@ -99,7 +101,7 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
   const [snapshot, setSnapshot] = useState<VideoSnapshot | null>(null);
   const [project, setProject] = useState<VideoProject | null>(null);
   const [events, setEvents] = useState<VideoProjectEvent[]>([]);
-  const [busy, setBusy] = useState<"loading" | "planning" | "saving" | "starting" | null>("loading");
+  const [busy, setBusy] = useState<"loading" | "planning" | "saving" | "starting" | "deleting" | null>("loading");
   const [showSetup, setShowSetup] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -218,6 +220,25 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
     }
   };
 
+  const removeProject = async () => {
+    if (!project) return;
+    const accepted = window.confirm(
+      `Delete “${project.title}” from Kestrel?\n\nThe complete project folder—including references and generated clips—will move to the recoverable deleted-projects archive. Running projects cannot be deleted.`,
+    );
+    if (!accepted) return;
+    setBusy("deleting");
+    try {
+      await deleteVideoProject(project.id);
+      setProject(null);
+      setEvents([]);
+      setSnapshot(await getVideoSnapshot());
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (!snapshot) {
     return <div className="video-loading"><LoaderCircle className="spin" /><span>Inspecting the offline video backend…</span></div>;
   }
@@ -290,7 +311,7 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
         </div>
 
         <aside className="video-project-column">
-          <ProjectInspector project={project} presetStatus={project ? snapshot.presets.find((item) => item.id === project.preset) : undefined} running={running} busy={busy} events={events} onStart={start} onStop={async () => { if (!project) return; try { await stopVideoProject(project.id); } catch (cause) { onError(String(cause)); } }} onReveal={() => project && void revealVideoProject(project.id)} onEdit={async (clipIndex, prompt) => { if (!project) return; try { setProject(await updateVideoClipPrompt(project.id, clipIndex, prompt)); } catch (cause) { onError(String(cause)); } }} onProject={setProject} onError={onError} />
+          <ProjectInspector project={project} presetStatus={project ? snapshot.presets.find((item) => item.id === project.preset) : undefined} running={running} busy={busy} events={events} onStart={start} onStop={async () => { if (!project) return; try { await stopVideoProject(project.id); } catch (cause) { onError(String(cause)); } }} onDelete={() => void removeProject()} onReveal={() => project && void revealVideoProject(project.id)} onEdit={async (clipIndex, prompt) => { if (!project) return; try { setProject(await updateVideoClipPrompt(project.id, clipIndex, prompt)); } catch (cause) { onError(String(cause)); } }} onProject={setProject} onError={onError} />
           <section className="recent-projects">
             <div className="recent-heading"><span><Clock3 size={15} /> Durable projects</span><button type="button" className="icon-button" aria-label="Refresh video projects" onClick={() => void refresh()}><RefreshCw size={15} /></button></div>
             {snapshot.projects.length ? snapshot.projects.slice(0, 12).map((item) => <button type="button" key={item.id} className={project?.id === item.id ? "selected" : ""} onClick={() => void chooseProject(item.id)}><span><strong>{item.title}</strong><small>{presetCopy[item.preset].kicker} · {formatDuration(item.totalDurationSeconds)}</small></span><span className={`project-status status-${item.status}`}>{humanStatus(item.status)}</span><small>{item.completedClips}/{item.clipCount} verified{item.failedClips ? ` · ${item.failedClips} failed` : ""}</small></button>) : <div className="no-video-projects"><Film size={20} /><span>Your reviewed plans and recoverable runs appear here.</span></div>}
@@ -328,7 +349,7 @@ function PresetCard({ item, selected, onSelect }: { item: VideoPresetStatus; sel
   </button>;
 }
 
-function ProjectInspector({ project, presetStatus, running, busy, events, onStart, onStop, onReveal, onEdit, onProject, onError }: { project: VideoProject | null; presetStatus?: VideoPresetStatus; running: boolean; busy: string | null; events: VideoProjectEvent[]; onStart: () => void; onStop: () => void; onReveal: () => void; onEdit: (clipIndex: number, prompt: string) => Promise<void>; onProject: (project: VideoProject) => void; onError: (message: string) => void }) {
+function ProjectInspector({ project, presetStatus, running, busy, events, onStart, onStop, onDelete, onReveal, onEdit, onProject, onError }: { project: VideoProject | null; presetStatus?: VideoPresetStatus; running: boolean; busy: string | null; events: VideoProjectEvent[]; onStart: () => void; onStop: () => void; onDelete: () => void; onReveal: () => void; onEdit: (clipIndex: number, prompt: string) => Promise<void>; onProject: (project: VideoProject) => void; onError: (message: string) => void }) {
   const [selectedClipIndex, setSelectedClipIndex] = useState<number | null>(null);
   const [clipPage, setClipPage] = useState(0);
   useEffect(() => { setSelectedClipIndex(null); setClipPage(0); }, [project?.id]);
@@ -354,7 +375,7 @@ function ProjectInspector({ project, presetStatus, running, busy, events, onStar
     {selectedClip && <ClipPromptEditor clip={selectedClip} references={project.references} disabled={running || selectedClip.status === "complete"} onSave={(prompt) => onEdit(selectedClip.index, prompt)} onReference={async (referenceAssetId) => { try { onProject(await setVideoClipReference(project.id, selectedClip.index, referenceAssetId)); } catch (cause) { onError(String(cause)); } }} />}
     {!!events.length && <div className="video-event-log">{events.slice(-6).reverse().map((event, index) => <div key={`${event.at}-${index}`}><span /><p><strong>{event.title}</strong>{event.detail}</p></div>)}</div>}
     {!!project.errors.length && <details className="project-errors"><summary><AlertTriangle size={14} /> {project.errors.length} recorded issue{project.errors.length === 1 ? "" : "s"}</summary>{project.errors.slice(-12).map((error, index) => <p key={index}>{error}</p>)}</details>}
-    <div className="project-actions"><button type="button" className="quiet-button" onClick={onReveal}><FolderOpen size={15} /> Project files</button><span />{running ? <button type="button" className="danger-button" onClick={onStop}><CircleStop size={15} /> Stop safely</button> : <button type="button" className="primary-button" disabled={!canStart || busy !== null} onClick={onStart}>{busy === "starting" ? <LoaderCircle className="spin" /> : <Play size={15} />} {project.status === "planned" ? "Start generation" : "Resume unfinished clips"}</button>}</div>
+    <div className="project-actions"><button type="button" className="quiet-button" onClick={onReveal}><FolderOpen size={15} /> Project files</button><span />{!running && <button type="button" className="danger-button" disabled={busy !== null} onClick={onDelete}>{busy === "deleting" ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete project</button>}{running ? <button type="button" className="danger-button" onClick={onStop}><CircleStop size={15} /> Stop safely</button> : <button type="button" className="primary-button" disabled={!canStart || busy !== null} onClick={onStart}>{busy === "starting" ? <LoaderCircle className="spin" /> : <Play size={15} />} {project.status === "planned" ? "Start generation" : "Resume unfinished clips"}</button>}</div>
   </section>;
 }
 

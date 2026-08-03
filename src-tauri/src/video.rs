@@ -37,12 +37,16 @@ const MAX_CHAPTERS: usize = 48;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
 pub enum VideoPreset {
+    #[serde(rename = "wan-1.3b-gpu-only", alias = "wan13-gpu-only")]
     Wan13GpuOnly,
+    #[serde(rename = "wan-vace-1.3b-reference", alias = "wan-vace13-reference")]
     WanVace13Reference,
+    #[serde(rename = "kandinsky-distilled")]
     KandinskyDistilled,
+    #[serde(rename = "kandinsky-sft")]
     KandinskySft,
+    #[serde(rename = "wan-2.2-5b-offload", alias = "wan22-offload")]
     Wan22Offload,
 }
 
@@ -610,6 +614,24 @@ impl VideoStore {
         }
         summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(summaries)
+    }
+
+    pub fn archive_project(&self, id: &str) -> Result<PathBuf, String> {
+        let project_dir = self.project_dir(id)?;
+        if !project_dir.is_dir() {
+            return Err("Video project was not found.".into());
+        }
+        let deleted_root = self.root.join("deleted-projects");
+        fs::create_dir_all(&deleted_root)
+            .map_err(|error| format!("Could not create the deleted-project archive: {error}"))?;
+        let archive_dir = deleted_root.join(format!(
+            "{id}.deleted-{}-{}",
+            Utc::now().timestamp(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::rename(&project_dir, &archive_dir)
+            .map_err(|error| format!("Could not archive the video project: {error}"))?;
+        Ok(archive_dir)
     }
 
     fn project_dir(&self, id: &str) -> Result<PathBuf, String> {
@@ -2859,6 +2881,77 @@ fn emit(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn video_preset_wire_ids_match_the_frontend_contract() {
+        let presets = [
+            (VideoPreset::Wan13GpuOnly, "wan-1.3b-gpu-only"),
+            (VideoPreset::WanVace13Reference, "wan-vace-1.3b-reference"),
+            (VideoPreset::KandinskyDistilled, "kandinsky-distilled"),
+            (VideoPreset::KandinskySft, "kandinsky-sft"),
+            (VideoPreset::Wan22Offload, "wan-2.2-5b-offload"),
+        ];
+
+        for (preset, wire_id) in presets {
+            assert_eq!(preset.id(), wire_id);
+            assert_eq!(
+                serde_json::to_string(&preset).unwrap(),
+                format!("\"{wire_id}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<VideoPreset>(&format!("\"{wire_id}\"")).unwrap(),
+                preset
+            );
+        }
+    }
+
+    #[test]
+    fn video_preset_accepts_ids_written_by_the_broken_release() {
+        assert_eq!(
+            serde_json::from_str::<VideoPreset>("\"wan13-gpu-only\"").unwrap(),
+            VideoPreset::Wan13GpuOnly
+        );
+        assert_eq!(
+            serde_json::from_str::<VideoPreset>("\"wan-vace13-reference\"").unwrap(),
+            VideoPreset::WanVace13Reference
+        );
+        assert_eq!(
+            serde_json::from_str::<VideoPreset>("\"wan22-offload\"").unwrap(),
+            VideoPreset::Wan22Offload
+        );
+    }
+
+    #[test]
+    fn deleting_a_project_retains_its_complete_folder_as_an_archive() {
+        let directory = tempdir().unwrap();
+        let store = VideoStore::new(directory.path()).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let project_dir = store.root.join("projects").join(&id);
+        fs::create_dir_all(project_dir.join("clips")).unwrap();
+        fs::write(project_dir.join("project.json"), b"durable project record").unwrap();
+        fs::write(
+            project_dir.join("clips").join("clip-0001.mp4"),
+            b"verified clip",
+        )
+        .unwrap();
+
+        let archive_dir = store.archive_project(&id).unwrap();
+
+        assert!(!project_dir.exists());
+        assert!(archive_dir.starts_with(store.root.join("deleted-projects")));
+        assert_eq!(
+            fs::read(archive_dir.join("project.json")).unwrap(),
+            b"durable project record"
+        );
+        assert_eq!(
+            fs::read(archive_dir.join("clips").join("clip-0001.mp4")).unwrap(),
+            b"verified clip"
+        );
+        assert!(store
+            .archive_project(&id)
+            .unwrap_err()
+            .contains("not found"));
+    }
 
     fn request(total: u32, preset: VideoPreset) -> VideoPlanRequest {
         VideoPlanRequest {

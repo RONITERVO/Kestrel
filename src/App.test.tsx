@@ -120,6 +120,19 @@ describe("Kestrel research experience", () => {
     expect(screen.getByRole("button", { name: /Save clip prompt/i })).toBeEnabled();
   });
 
+  it("confirms project deletion and explains that project files remain recoverable", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Video$/i }));
+    fireEvent.change(await screen.findByLabelText("Video prompt"), { target: { value: "A short project to archive." } });
+    fireEvent.click(screen.getByRole("button", { name: /Plan production/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Delete project/i }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/recoverable deleted-projects archive/i));
+    expect(await screen.findByRole("heading", { name: /Your production plan will appear here/i })).toBeInTheDocument();
+  });
+
   it("displays safe exports and explains clipboard failures", async () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
     render(<App />);
