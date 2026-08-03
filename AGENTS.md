@@ -9,7 +9,7 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `RuntimeManager` owns the only Kestrel model process and its semaphore owns the only inference slot. Research, chat, and Computer Tasks must acquire that gate.
 - Ordinary chat is tool-free. Computer Tasks is the only local-model path with mutation authority; workspace access is the default and full access requires two explicit user opt-ins.
 - Chat sessions and task transcripts are durable user data. Never silently discard them or auto-resume an interrupted computer task.
-- Video plans, clip ledgers, and verified outputs are durable user data. Never attach to an unowned ComfyUI service, silently change an offload profile, or auto-resume interrupted video work.
+- Video plans, imported references, clip ledgers, continuity frames, and verified outputs are durable user data. Never attach to an unowned ComfyUI service, silently change an offload profile, trust a changed reference hash, or auto-resume interrupted video work.
 - Codex exists only in `developer.rs`, is user-triggered, repository-scoped, ephemeral, uncommitted, and unavailable during research.
 - Search results are not evidence. Only successfully opened sources receive citation IDs; native code validates citations before publication.
 - Published report IDs are immutable. Expansion creates a child edition.
@@ -19,7 +19,7 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 ## Backend map
 
 - `lib.rs`: Tauri commands, strict research lock, state boundaries.
-- `video.rs`: local planning, exact ComfyUI profiles/process ownership, durable clip orchestration, verification, retry boundaries, and FFmpeg assembly.
+- `video.rs`: local planning, hashed subject/storyboard/motion references, exact ComfyUI profiles/process ownership, native reference adapters, durable clip orchestration, verification, retry boundaries, and FFmpeg assembly.
 - `runtime.rs`: attach/start/stop model runtime and single inference lease.
 - `attachments.rs`: content-addressed local files, bounded extraction, and capability-gated media blocks.
 - `chat.rs`: cancellable SSE chat stream; never add tools here.

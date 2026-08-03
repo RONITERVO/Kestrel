@@ -9,6 +9,7 @@ import {
   FolderOpen,
   Gauge,
   HardDrive,
+  ImagePlus,
   Layers3,
   LoaderCircle,
   MonitorUp,
@@ -19,11 +20,14 @@ import {
   ShieldCheck,
   Sparkles,
   WandSparkles,
+  Video,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getVideoProject,
+  getVideoReferencePreview,
   getVideoSnapshot,
+  importVideoReference,
   onVideoProjectEvent,
   pickComfyRoot,
   planVideoProject,
@@ -32,11 +36,15 @@ import {
   startVideoProject,
   stopVideoBackend,
   stopVideoProject,
+  setVideoClipReference,
+  setVideoChapterReference,
+  setVideoContinuity,
   updateVideoClipPrompt,
 } from "./api";
 import type {
   ControlSnapshot,
   VideoBoundarySettings,
+  VideoContinuityMode,
   VideoPlanRequest,
   VideoPreset,
   VideoPresetStatus,
@@ -50,6 +58,11 @@ const presetCopy: Record<VideoPreset, { kicker: string; description: string; qua
     kicker: "Fast, deterministic",
     description: "No CPU offload. A job that exceeds VRAM fails instead of changing its timing policy.",
     quality: "Medium quality · 30 steps · 2-second native clips",
+  },
+  "wan-vace-1.3b-reference": {
+    kicker: "Continuity and motion studio",
+    description: "Native image and control-video conditioning for subject anchors, storyboards, and motion transfer.",
+    quality: "Reference-first · 30 steps · 5-second native clips",
   },
   "kandinsky-distilled": {
     kicker: "Recommended daily driver",
@@ -66,6 +79,14 @@ const presetCopy: Record<VideoPreset, { kicker: string; description: string; qua
     description: "Forced low-VRAM loading with two known asynchronous transfer streams.",
     quality: "High quality · 20 steps · 3-second native clips",
   },
+};
+
+const runtimePolicy: Record<VideoPreset, { profile: string; offloading: string }> = {
+  "wan-1.3b-gpu-only": { profile: "gpu-only", offloading: "forbidden" },
+  "wan-vace-1.3b-reference": { profile: "reference-staged", offloading: "stage-boundary-only" },
+  "kandinsky-distilled": { profile: "kandinsky-staged", offloading: "stage-boundary-only" },
+  "kandinsky-sft": { profile: "kandinsky-staged", offloading: "stage-boundary-only" },
+  "wan-2.2-5b-offload": { profile: "forced-offload", offloading: "forced" },
 };
 
 const defaultBoundaries: VideoBoundarySettings = {
@@ -181,8 +202,9 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
 
   const start = async () => {
     if (!project) return;
+    const policy = snapshot?.presets.find((item) => item.id === project.preset);
     const accepted = window.confirm(
-      `Start ${project.clips.length.toLocaleString()} serial generations with ${presetCopy[project.preset].kicker}? Kestrel will stop the local planning model, claim ComfyUI port 8188, and enforce ${project.preset === "wan-1.3b-gpu-only" ? "zero offload" : "the declared offload profile"}.`,
+      `Start ${project.clips.length.toLocaleString()} serial generations with ${presetCopy[project.preset].kicker}?\n\nOffloading: ${policy?.offloading ?? "unknown"}\nMemory profile: ${policy?.profile ?? "unknown"}\n\nKestrel will stop the local planning model, claim ComfyUI port 8188, and refuse an unowned backend whose policy cannot be proven.`,
     );
     if (!accepted) return;
     setBusy("starting");
@@ -269,7 +291,7 @@ export function VideoStudio({ control, onError }: { control: ControlSnapshot; on
         </div>
 
         <aside className="video-project-column">
-          <ProjectInspector project={project} running={running} busy={busy} events={events} onStart={start} onStop={async () => { if (!project) return; try { await stopVideoProject(project.id); } catch (cause) { onError(String(cause)); } }} onReveal={() => project && void revealVideoProject(project.id)} onEdit={async (clipIndex, prompt) => { if (!project) return; try { setProject(await updateVideoClipPrompt(project.id, clipIndex, prompt)); } catch (cause) { onError(String(cause)); } }} />
+          <ProjectInspector project={project} running={running} busy={busy} events={events} onStart={start} onStop={async () => { if (!project) return; try { await stopVideoProject(project.id); } catch (cause) { onError(String(cause)); } }} onReveal={() => project && void revealVideoProject(project.id)} onEdit={async (clipIndex, prompt) => { if (!project) return; try { setProject(await updateVideoClipPrompt(project.id, clipIndex, prompt)); } catch (cause) { onError(String(cause)); } }} onProject={setProject} onError={onError} />
           <section className="recent-projects">
             <div className="recent-heading"><span><Clock3 size={15} /> Durable projects</span><button className="icon-button" aria-label="Refresh video projects" onClick={() => void refresh()}><RefreshCw size={15} /></button></div>
             {snapshot.projects.length ? snapshot.projects.slice(0, 12).map((item) => <button key={item.id} className={project?.id === item.id ? "selected" : ""} onClick={() => void chooseProject(item.id)}><span><strong>{item.title}</strong><small>{presetCopy[item.preset].kicker} · {formatDuration(item.totalDurationSeconds)}</small></span><span className={`project-status status-${item.status}`}>{humanStatus(item.status)}</span><small>{item.completedClips}/{item.clipCount} verified{item.failedClips ? ` · ${item.failedClips} failed` : ""}</small></button>) : <div className="no-video-projects"><Film size={20} /><span>Your reviewed plans and recoverable runs appear here.</span></div>}
@@ -307,13 +329,17 @@ function PresetCard({ item, selected, onSelect }: { item: VideoPresetStatus; sel
   </button>;
 }
 
-function ProjectInspector({ project, running, busy, events, onStart, onStop, onReveal, onEdit }: { project: VideoProject | null; running: boolean; busy: string | null; events: VideoProjectEvent[]; onStart: () => void; onStop: () => void; onReveal: () => void; onEdit: (clipIndex: number, prompt: string) => Promise<void> }) {
+function ProjectInspector({ project, running, busy, events, onStart, onStop, onReveal, onEdit, onProject, onError }: { project: VideoProject | null; running: boolean; busy: string | null; events: VideoProjectEvent[]; onStart: () => void; onStop: () => void; onReveal: () => void; onEdit: (clipIndex: number, prompt: string) => Promise<void>; onProject: (project: VideoProject) => void; onError: (message: string) => void }) {
   const [selectedClipIndex, setSelectedClipIndex] = useState<number | null>(null);
-  useEffect(() => setSelectedClipIndex(null), [project?.id]);
+  const [clipPage, setClipPage] = useState(0);
+  useEffect(() => { setSelectedClipIndex(null); setClipPage(0); }, [project?.id]);
   if (!project) return <section className="project-inspector empty"><div className="project-empty-icon"><Sparkles /></div><span className="eyebrow">Review before generation</span><h2>Your production plan will appear here.</h2><p>Kestrel saves the story bible, chapter boundaries, seeds, prompts, retries, verified hashes, and assembly result as durable local data.</p><div className="inspector-assurances"><span><ShieldCheck size={14} /> No hidden offload changes</span><span><Layers3 size={14} /> Serial queue</span><span><HardDrive size={14} /> Restart recovery</span></div></section>;
   const completed = project.clips.filter((clip) => clip.status === "complete").length;
   const failed = project.clips.filter((clip) => clip.status === "failed").length;
   const percent = project.clips.length ? Math.round(completed / project.clips.length * 100) : 0;
+  const clipPageSize = 120;
+  const clipPageCount = Math.max(1, Math.ceil(project.clips.length / clipPageSize));
+  const visibleClips = project.clips.slice(clipPage * clipPageSize, (clipPage + 1) * clipPageSize);
   const canStart = !running && !["completed", "completed-with-warnings"].includes(project.status);
   const selectedClip = project.clips.find((clip) => clip.index === selectedClipIndex);
   return <section className="project-inspector">
@@ -321,17 +347,59 @@ function ProjectInspector({ project, running, busy, events, onStart, onStop, onR
     <p className="planning-note">{project.planningNote}</p>
     <div className="project-facts"><span><Film size={14} /><strong>{project.clips.length.toLocaleString()}</strong> clips</span><span><MonitorUp size={14} /><strong>{project.width}×{project.height}</strong></span><span><Gauge size={14} /><strong>{project.steps}</strong> steps</span><span><Clock3 size={14} /><strong>{formatDuration(project.totalDurationSeconds)}</strong></span></div>
     <div className="project-progress"><div><span>{completed.toLocaleString()} verified</span><span>{failed ? `${failed} failed · ` : ""}{percent}%</span></div><div><span style={{ width: `${percent}%` }} /></div></div>
+    <div className="project-runtime-policy"><ShieldCheck size={14} /><span><small>Locked generation policy</small><strong>Offloading {runtimePolicy[project.preset].offloading} · {runtimePolicy[project.preset].profile}</strong></span></div>
+    <ReferenceStudio project={project} disabled={running} onProject={onProject} onError={onError} />
     <details className="continuity-card" open={project.status === "planned"}><summary><Sparkles size={15} /> Story bible and continuity</summary><p>{project.continuityBible}</p></details>
-    <div className="chapter-list"><span className="eyebrow">Chapter boundaries</span>{project.chapters.slice(0, 12).map((chapter) => <div key={chapter.index}><span>{String(chapter.index).padStart(2, "0")}</span><div><strong>{chapter.title}</strong><small>Clips {chapter.firstClip}–{chapter.lastClip} · {chapter.narrativeGoal}</small></div></div>)}{project.chapters.length > 12 && <small>+ {project.chapters.length - 12} additional chapters in the durable plan</small>}</div>
-    <div className="clip-ledger"><div className="ledger-heading"><span className="eyebrow">Clip ledger</span><small>Select a clip to inspect or edit · showing 120</small></div><div>{project.clips.slice(0, 120).map((clip) => <button type="button" key={clip.index} className={`clip-dot clip-${clip.status} ${selectedClipIndex === clip.index ? "selected" : ""}`} title={`Clip ${clip.index}: ${clip.status}${clip.error ? ` — ${clip.error}` : ""}`} onClick={() => setSelectedClipIndex(clip.index)}>{clip.status === "complete" ? <CheckCircle2 /> : clip.status === "generating" || clip.status === "verifying" ? <LoaderCircle className="spin" /> : clip.status === "failed" ? <AlertTriangle /> : clip.index}</button>)}</div></div>
-    {selectedClip && <ClipPromptEditor clip={selectedClip} disabled={running || selectedClip.status === "complete"} onSave={(prompt) => onEdit(selectedClip.index, prompt)} />}
+    <div className="chapter-list"><span className="eyebrow">Chapter boundaries · {project.chapters.length}</span>{project.chapters.map((chapter) => <div key={chapter.index}><span>{String(chapter.index).padStart(2, "0")}</span><div><strong>{chapter.title}</strong><small>Clips {chapter.firstClip}–{chapter.lastClip} · {chapter.narrativeGoal}</small>{!!project.references.length && <select aria-label={`Chapter ${chapter.index} opening reference`} disabled={running} value={chapter.referenceAssetId ?? ""} onChange={async (event) => { try { onProject(await setVideoChapterReference(project.id, chapter.index, event.target.value || undefined)); } catch (cause) { onError(String(cause)); } }}><option value="">Default continuity at opening</option>{project.references.map((asset) => <option key={asset.id} value={asset.id}>{asset.kind === "video" ? "Motion" : humanStatus(asset.role)} · {asset.name}</option>)}</select>}</div></div>)}</div>
+    <div className="clip-ledger"><div className="ledger-heading"><span className="eyebrow">Clip ledger</span><span className="ledger-pages"><button className="icon-button" aria-label="Previous clip page" disabled={clipPage === 0} onClick={() => setClipPage((value) => Math.max(0, value - 1))}>‹</button><small>{clipPage + 1} / {clipPageCount} · clips {visibleClips[0]?.index ?? 0}–{visibleClips.at(-1)?.index ?? 0}</small><button className="icon-button" aria-label="Next clip page" disabled={clipPage + 1 >= clipPageCount} onClick={() => setClipPage((value) => Math.min(clipPageCount - 1, value + 1))}>›</button></span></div><div>{visibleClips.map((clip) => <button type="button" key={clip.index} className={`clip-dot clip-${clip.status} ${selectedClipIndex === clip.index ? "selected" : ""}`} title={`Clip ${clip.index}: ${clip.status}${clip.error ? ` — ${clip.error}` : ""}`} onClick={() => setSelectedClipIndex(clip.index)}>{clip.status === "complete" ? <CheckCircle2 /> : clip.status === "generating" || clip.status === "verifying" ? <LoaderCircle className="spin" /> : clip.status === "failed" ? <AlertTriangle /> : clip.index}</button>)}</div></div>
+    {selectedClip && <ClipPromptEditor clip={selectedClip} references={project.references} disabled={running || selectedClip.status === "complete"} onSave={(prompt) => onEdit(selectedClip.index, prompt)} onReference={async (referenceAssetId) => { try { onProject(await setVideoClipReference(project.id, selectedClip.index, referenceAssetId)); } catch (cause) { onError(String(cause)); } }} />}
     {!!events.length && <div className="video-event-log">{events.slice(-6).reverse().map((event, index) => <div key={`${event.at}-${index}`}><span /><p><strong>{event.title}</strong>{event.detail}</p></div>)}</div>}
     {!!project.errors.length && <details className="project-errors"><summary><AlertTriangle size={14} /> {project.errors.length} recorded issue{project.errors.length === 1 ? "" : "s"}</summary>{project.errors.slice(-12).map((error, index) => <p key={index}>{error}</p>)}</details>}
     <div className="project-actions"><button className="quiet-button" onClick={onReveal}><FolderOpen size={15} /> Project files</button><span />{running ? <button className="danger-button" onClick={onStop}><CircleStop size={15} /> Stop safely</button> : <button className="primary-button" disabled={!canStart || busy !== null} onClick={onStart}>{busy === "starting" ? <LoaderCircle className="spin" /> : <Play size={15} />} {project.status === "planned" ? "Start generation" : "Resume unfinished clips"}</button>}</div>
   </section>;
 }
 
-function ClipPromptEditor({ clip, disabled, onSave }: { clip: VideoProject["clips"][number]; disabled: boolean; onSave: (prompt: string) => Promise<void> }) {
+function ReferenceStudio({ project, disabled, onProject, onError }: { project: VideoProject; disabled: boolean; onProject: (project: VideoProject) => void; onError: (message: string) => void }) {
+  const [importing, setImporting] = useState<"subject" | "storyboard" | "motion" | null>(null);
+  const supportsImages = project.preset !== "wan-1.3b-gpu-only";
+  const supportsVideo = project.preset === "wan-vace-1.3b-reference";
+  const images = project.references.filter((asset) => asset.kind === "image");
+  const updateContinuity = async (mode: VideoContinuityMode, primaryReferenceId = project.continuity.primaryReferenceId) => {
+    try { onProject(await setVideoContinuity(project.id, mode, primaryReferenceId)); } catch (cause) { onError(String(cause)); }
+  };
+  const add = async (role: "subject" | "storyboard" | "motion") => {
+    setImporting(role);
+    try {
+      const next = await importVideoReference(project.id, role);
+      if (next) onProject(next);
+    } catch (cause) { onError(String(cause)); } finally { setImporting(null); }
+  };
+  return <section className="reference-studio">
+    <div className="reference-heading"><div><ImagePlus size={16} /><span><strong>Subject & storyboard references</strong><small>Hashed project copies; source files can move later.</small></span></div><span>{project.references.length} asset{project.references.length === 1 ? "" : "s"}</span></div>
+    {!supportsImages ? <p className="reference-unavailable">This strict GPU-only Wan model is text-to-video. Re-plan with Kandinsky, Wan 2.2 TI2V, or Wan VACE to condition shots on durable references.</p> : <>
+      <div className="reference-actions"><button className="quiet-button" disabled={disabled || importing !== null} onClick={() => void add("subject")}><ImagePlus size={13} /> {importing === "subject" ? "Importing…" : "Subject image"}</button><button className="quiet-button" disabled={disabled || importing !== null} onClick={() => void add("storyboard")}><Film size={13} /> {importing === "storyboard" ? "Importing…" : "Storyboard frame"}</button><button className="quiet-button" title={supportsVideo ? "Import a control-video reference" : "Wan VACE is required for motion video"} disabled={!supportsVideo || disabled || importing !== null} onClick={() => void add("motion")}><Video size={13} /> {importing === "motion" ? "Importing…" : "Motion video"}</button></div>
+      {!!project.references.length && <div className="reference-assets">{project.references.map((asset) => <span key={asset.id} className={`reference-${asset.kind}`}><ReferenceThumbnail projectId={project.id} asset={asset} /><span><strong>{asset.name}</strong><small>{humanStatus(asset.role)} · {(asset.bytes / 1024 / 1024).toFixed(1)} MiB</small></span></span>)}</div>}
+      <div className="continuity-controls"><label><span>Continuity policy</span><select disabled={disabled} value={project.continuity.mode} onChange={(event) => void updateContinuity(event.target.value as VideoContinuityMode)}><option value="none">Independent shots</option><option value="anchor">Anchor every shot to primary image</option><option value="previous-frame">Chain previous verified end frame</option></select></label><label><span>Primary subject / look</span><select disabled={disabled || !images.length} value={project.continuity.primaryReferenceId ?? ""} onChange={(event) => void updateContinuity(project.continuity.mode === "none" ? "anchor" : project.continuity.mode, event.target.value || undefined)}><option value="">No primary image</option>{images.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label></div>
+      <p className="continuity-note">Anchor mode uses the selected subject/look image on every shot. Chain mode uses it for the first shot, then extracts each verified final frame locally for the next shot; an explicit clip storyboard overrides that frame.</p>
+    </>}
+  </section>;
+}
+
+function ReferenceThumbnail({ projectId, asset }: { projectId: string; asset: VideoProject["references"][number] }) {
+  const [preview, setPreview] = useState<string>();
+  useEffect(() => {
+    let active = true;
+    if (!asset.previewPath) return undefined;
+    void getVideoReferencePreview(projectId, asset.id).then((value) => {
+      if (active) setPreview(value);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [asset.id, asset.previewPath, projectId]);
+  if (preview) return <img className="reference-thumbnail" src={preview} alt="" />;
+  return <span className="reference-thumbnail-fallback">{asset.kind === "image" ? <ImagePlus size={13} /> : <Video size={13} />}</span>;
+}
+
+function ClipPromptEditor({ clip, references, disabled, onSave, onReference }: { clip: VideoProject["clips"][number]; references: VideoProject["references"]; disabled: boolean; onSave: (prompt: string) => Promise<void>; onReference: (referenceAssetId?: string) => Promise<void> }) {
   const [prompt, setPrompt] = useState(clip.prompt);
   const [saving, setSaving] = useState(false);
   useEffect(() => setPrompt(clip.prompt), [clip.index, clip.prompt]);
@@ -339,7 +407,7 @@ function ClipPromptEditor({ clip, disabled, onSave }: { clip: VideoProject["clip
     setSaving(true);
     try { await onSave(prompt); } finally { setSaving(false); }
   };
-  return <div className="clip-prompt-editor"><div><span><strong>Clip {clip.index}</strong><small>Seed {clip.seed} · {humanStatus(clip.status)}</small></span>{clip.error && <em>{clip.error}</em>}</div><textarea aria-label={`Clip ${clip.index} prompt`} value={prompt} disabled={disabled} maxLength={14_000} onChange={(event) => setPrompt(event.target.value)} /><div><small>{prompt.length.toLocaleString()} / 14,000 characters</small><button className="quiet-button" disabled={disabled || saving || !prompt.trim() || prompt === clip.prompt} onClick={() => void save()}>{saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />} Save clip prompt</button></div></div>;
+  return <div className="clip-prompt-editor"><div><span><strong>Clip {clip.index}</strong><small>Seed {clip.seed} · {humanStatus(clip.status)}</small></span>{clip.error && <em>{clip.error}</em>}</div>{!!references.length && <label className="clip-reference-select"><span>Shot-specific storyboard or motion reference</span><select disabled={disabled} value={clip.referenceAssetId ?? ""} onChange={(event) => void onReference(event.target.value || undefined)}><option value="">Use project continuity policy</option>{references.map((asset) => <option key={asset.id} value={asset.id}>{asset.kind === "video" ? "Motion" : humanStatus(asset.role)} · {asset.name}</option>)}</select></label>}<textarea aria-label={`Clip ${clip.index} prompt`} value={prompt} disabled={disabled} maxLength={14_000} onChange={(event) => setPrompt(event.target.value)} /><div><small>{prompt.length.toLocaleString()} / 14,000 characters</small><button className="quiet-button" disabled={disabled || saving || !prompt.trim() || prompt === clip.prompt} onClick={() => void save()}>{saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />} Save clip prompt</button></div></div>;
 }
 
 function NumberField({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange: (value: number) => void }) {

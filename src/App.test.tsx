@@ -101,6 +101,7 @@ describe("Kestrel research experience", () => {
     expect(screen.getByText(/without an online service or hidden runtime decisions/i)).toBeInTheDocument();
     expect(screen.getByText(/Offloading:/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Wan 2.1 1.3B/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Wan VACE 1.3B/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Kandinsky 5 Lite.*Distilled/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Plan production/i })).toBeDisabled();
 
@@ -108,6 +109,9 @@ describe("Kestrel research experience", () => {
     const plan = screen.getByRole("button", { name: /Plan production/i });
     expect(plan).toBeEnabled();
     fireEvent.click(plan);
+    expect(await screen.findByRole("button", { name: /Subject image/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Storyboard frame/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Motion video/i })).toBeDisabled();
     fireEvent.click(await screen.findByRole("button", { name: "1" }));
     const clipPrompt = screen.getByLabelText("Clip 1 prompt");
     expect((clipPrompt as HTMLTextAreaElement).value).toContain("forest recovery");

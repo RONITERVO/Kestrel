@@ -9,6 +9,7 @@ Kestrel should keep improving while preserving its small model-specific harness,
 - [x] Recoverable research, control, and Bonsai settings writes.
 - [x] One runtime owner and inference lease across chat/research.
 - [x] Durable offline video plans with explicit memory profiles, bounded retries, verified clip hashes, and manual restart recovery.
+- [x] Project-owned subject, storyboard, and motion references with native I2V/VACE conditioning and previous-frame continuity.
 - [x] Optional repository-scoped Codex repair with fixed verification.
 - [ ] Hash and verify every immutable artifact.
 - [ ] Add a visible library integrity/rebuild command.

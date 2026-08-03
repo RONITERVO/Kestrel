@@ -21,7 +21,8 @@ Rust application boundary
   |     `-- native image/audio blocks only for advertised projector capabilities
   |-- VideoManager + VideoStore
   |     |-- exact owned ComfyUI process/profile on 127.0.0.1:8188
-  |     |-- durable plans, clip ledger, retries, hashes, and restart recovery
+  |     |-- durable plans, hashed subject/storyboard/motion references, and clip ledger
+  |     |-- native I2V/VACE adapters, previous-frame continuity, retries, and recovery
   |     `-- optional local FFmpeg concat after verification
   `-- DeveloperAssistant: optional, user-triggered Codex child
 ```
@@ -36,4 +37,4 @@ The optional developer boundary executes fixed diagnostic commands without a she
 
 Attachments are imported through a native picker and copied before use; original paths are not the durable source of truth. Chat messages and task records reference immutable attachment metadata. Native media travels only as base64 data on the authenticated loopback request. Extracted document text is bounded per object and per turn. The Computer Tasks `read_attachment` tool accepts only IDs declared on that task, so it cannot become an arbitrary path-reading bypass.
 
-Video planning and execution are deliberately separate state transitions. Planning may take a serialized local-model lease but never starts ComfyUI. Native code bounds and expands the hierarchical outline into clip records. Execution refuses unowned port 8188, launches the selected immutable argument profile, submits native ComfyUI graphs serially, validates output paths against the ComfyUI output root, copies and hashes completed artifacts, and persists every transition atomically. On restart, in-flight clips/projects are marked interrupted and remain stopped until an explicit resume.
+Video planning and execution are deliberately separate state transitions. Planning may take a serialized local-model lease but never starts ComfyUI. Native code bounds and expands the hierarchical outline into clip records. Reference imports become hashed project-owned files with bounded local thumbnails; generation revalidates every source hash before the GPU is claimed. The adapter resolves a shot-specific storyboard/motion asset first, a chapter-opening reset second, a prior verified end frame third, and the primary subject/look anchor last. Only temporary copies enter ComfyUI's input directory, and they are removed at every stopped state. Execution refuses unowned port 8188, launches the selected immutable argument profile, submits native ComfyUI graphs serially, validates output paths against the ComfyUI output root, copies and hashes completed artifacts, and persists every transition atomically. On restart, in-flight clips/projects are marked interrupted and remain stopped until an explicit resume.

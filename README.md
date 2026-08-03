@@ -42,18 +42,31 @@ The validated advanced Bonsai profile is 98,304 context tokens and 32,768 maximu
 
 Video Studio separates planning from generation. A selected local llama.cpp model may create a compact story bible and chapter outline; deterministic native code expands it into a bounded clip ledger, so even a multi-hour request does not ask the model to emit thousands of records. The user reviews runtime, clip count, model preset, offload policy, retry limit, failure boundary, runtime boundary, disk reserve, and individual unfinished clip prompts before ComfyUI starts.
 
-Four explicit RTX 5070 12 GiB profiles are supported:
+Five explicit RTX 5070 12 GiB profiles are supported:
 
 - **Wan 2.1 1.3B GPU only** is the fast medium-quality path. Kestrel launches ComfyUI with `--gpu-only`, disables asynchronous and dynamic offload, and fails the job rather than silently changing the timing policy.
-- **Kandinsky 5 Lite Distilled** is the recommended 16-step daily driver. Its declared resident profile permits only predictable stage-boundary movement.
+- **Wan VACE 1.3B Reference Studio** is the 480p continuity and motion-control path. It accepts a subject/storyboard image and, per shot, an optional motion-reference video through native ComfyUI nodes. Its fixed normal-VRAM profile declares whole-model stage-boundary movement because the model and UMT5 encoder cannot be simultaneously resident on a 12 GiB card; dynamic and asynchronous offload are disabled, and VAE decoding is tiled.
+- **Kandinsky 5 Lite Distilled** is the recommended 16-step daily driver. Its fixed normal-VRAM profile permits only predictable whole-model stage-boundary movement; dynamic and asynchronous offload are disabled.
 - **Kandinsky 5 Lite SFT** uses the same declared memory profile with 100 quality-first steps.
 - **Wan 2.2 TI2V 5B** always uses the declared low-VRAM asynchronous-offload profile.
 
 Kestrel validates required local model files before enabling a preset. It refuses an existing unowned service on port 8188 because its launch flags cannot be proven. During generation it copies each completed clip into the project directory, verifies size and SHA-256, retries within the reviewed limit, restarts its owned backend between retries, and pauses at any failure, runtime, disk, or cancellation boundary. Final assembly trims the native-clip sequence at the reviewed target runtime. Interrupted projects become explicitly resumable after restart and never auto-resume.
 
+### Subject, storyboard, and motion continuity
+
+References are imported into the durable project rather than linked to their original path. Kestrel records the original name, role, byte size, and SHA-256, then refuses generation if a project copy is missing or changed. Three policies are available:
+
+- **Anchor every shot** conditions every clip on one primary subject/look image. Kandinsky 5, Wan 2.2 TI2V, and Wan VACE support this.
+- **Previous verified frame** starts from the primary image, extracts each completed clip's final frame locally with FFmpeg, and uses it to condition the next clip. A shot-specific storyboard frame resets the chain at a deliberate cut.
+- **Independent shots** uses only explicitly assigned storyboard or motion references. Wan VACE additionally accepts a local reference video as control frames for a shot.
+
+Every imported asset receives a local thumbnail. A reference can be assigned to an individual shot or to a chapter opening, which lets a long production reset composition and identity at intentional scene boundaries without applying one storyboard to every clip.
+
+The strict GPU-only Wan 2.1 T2V preset remains intentionally reference-free; Kestrel surfaces that limitation instead of pretending text prompts can preserve identity. Temporary ComfyUI input copies are recreated from the durable project at execution time and deleted at every stopped state.
+
 ComfyUI stays warm across the entire serial batch, then Kestrel releases it at every terminal or paused state before llama.cpp can reclaim the GPU. This keeps generation fast within a batch without allowing two model runtimes to contend afterward.
 
-Configure the ComfyUI root from Video Studio. The default tested root is `D:\AI\ComfyUI`; FFmpeg is optional unless final assembly is enabled. Projects live under `Kestrel Research\video-studio\projects` with open JSON state and ordinary video files.
+Configure the ComfyUI root from Video Studio. The default tested root is `D:\AI\ComfyUI`; FFmpeg is required for reference thumbnails, previous-frame chaining, and final assembly. Projects live under `Kestrel Research\video-studio\projects` with open JSON state and ordinary video files.
 
 ## Research harness
 
@@ -81,7 +94,7 @@ C:\Users\<you>\Kestrel Research\
 |-- workspace\attachments # content-addressed local context objects and extractions
 |-- workspace\chats       # recoverable chat transcripts and attachment references
 |-- workspace\tasks       # recoverable computer-task transcripts
-|-- video-studio\          # durable plans, verified clips, logs, final assemblies
+|-- video-studio\          # durable plans, hashed references, continuity frames, clips, assemblies
 `-- reports\YYYY\MM\<title>--<id>\
     |-- index.html        # self-contained, printable research page
     |-- report.json       # complete structured edition

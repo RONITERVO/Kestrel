@@ -8,13 +8,14 @@ use crate::{
     models::ControlSettings,
     runtime::{authorized, RuntimeManager},
 };
+use base64::Engine;
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
@@ -28,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 const VIDEO_ENDPOINT: &str = "http://127.0.0.1:8188";
 const MAX_PROJECT_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_REFERENCES: usize = 4_096;
 const MAX_PROMPT_CHARS: usize = 32_768;
 const MAX_CLIPS: u32 = 20_000;
 const MAX_TOTAL_SECONDS: u32 = 43_200;
@@ -38,6 +40,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[serde(rename_all = "kebab-case")]
 pub enum VideoPreset {
     Wan13GpuOnly,
+    WanVace13Reference,
     KandinskyDistilled,
     KandinskySft,
     Wan22Offload,
@@ -47,6 +50,7 @@ impl VideoPreset {
     pub fn id(&self) -> &'static str {
         match self {
             Self::Wan13GpuOnly => "wan-1.3b-gpu-only",
+            Self::WanVace13Reference => "wan-vace-1.3b-reference",
             Self::KandinskyDistilled => "kandinsky-distilled",
             Self::KandinskySft => "kandinsky-sft",
             Self::Wan22Offload => "wan-2.2-5b-offload",
@@ -56,6 +60,7 @@ impl VideoPreset {
     fn label(&self) -> &'static str {
         match self {
             Self::Wan13GpuOnly => "Wan 2.1 1.3B · GPU only",
+            Self::WanVace13Reference => "Wan VACE 1.3B · Reference studio",
             Self::KandinskyDistilled => "Kandinsky 5 Lite · Distilled",
             Self::KandinskySft => "Kandinsky 5 Lite · SFT quality",
             Self::Wan22Offload => "Wan 2.2 5B · Predictable offload",
@@ -65,6 +70,7 @@ impl VideoPreset {
     fn profile(&self) -> VideoMemoryProfile {
         match self {
             Self::Wan13GpuOnly => VideoMemoryProfile::GpuOnly,
+            Self::WanVace13Reference => VideoMemoryProfile::ReferenceResident,
             Self::KandinskyDistilled | Self::KandinskySft => VideoMemoryProfile::KandinskyResident,
             Self::Wan22Offload => VideoMemoryProfile::ForcedOffload,
         }
@@ -73,6 +79,7 @@ impl VideoPreset {
     fn native_seconds(&self) -> u32 {
         match self {
             Self::Wan13GpuOnly => 2,
+            Self::WanVace13Reference => 5,
             Self::KandinskyDistilled | Self::KandinskySft => 5,
             Self::Wan22Offload => 3,
         }
@@ -80,7 +87,7 @@ impl VideoPreset {
 
     fn fps(&self) -> u32 {
         match self {
-            Self::Wan13GpuOnly => 16,
+            Self::Wan13GpuOnly | Self::WanVace13Reference => 16,
             _ => 24,
         }
     }
@@ -88,6 +95,7 @@ impl VideoPreset {
     fn frames(&self) -> u32 {
         match self {
             Self::Wan13GpuOnly => 33,
+            Self::WanVace13Reference => 81,
             Self::KandinskyDistilled | Self::KandinskySft => 121,
             Self::Wan22Offload => 81,
         }
@@ -96,6 +104,7 @@ impl VideoPreset {
     fn steps(&self) -> u32 {
         match self {
             Self::Wan13GpuOnly => 30,
+            Self::WanVace13Reference => 30,
             Self::KandinskyDistilled => 16,
             Self::KandinskySft => 100,
             Self::Wan22Offload => 20,
@@ -104,7 +113,7 @@ impl VideoPreset {
 
     fn cfg(&self) -> f64 {
         match self {
-            Self::Wan13GpuOnly => 6.0,
+            Self::Wan13GpuOnly | Self::WanVace13Reference => 6.0,
             Self::KandinskyDistilled => 1.0,
             Self::KandinskySft | Self::Wan22Offload => 5.0,
         }
@@ -114,6 +123,11 @@ impl VideoPreset {
         match self {
             Self::Wan13GpuOnly => &[
                 "models/diffusion_models/wan2.1_t2v_1.3B_bf16.safetensors",
+                "models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+                "models/vae/wan_2.1_vae.safetensors",
+            ],
+            Self::WanVace13Reference => &[
+                "models/diffusion_models/wan2.1_vace_1.3B_fp16.safetensors",
                 "models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
                 "models/vae/wan_2.1_vae.safetensors",
             ],
@@ -136,12 +150,21 @@ impl VideoPreset {
             ],
         }
     }
+
+    fn supports_image_reference(&self) -> bool {
+        !matches!(self, Self::Wan13GpuOnly)
+    }
+
+    fn supports_video_reference(&self) -> bool {
+        matches!(self, Self::WanVace13Reference)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum VideoMemoryProfile {
     GpuOnly,
+    ReferenceResident,
     KandinskyResident,
     ForcedOffload,
 }
@@ -150,7 +173,8 @@ impl VideoMemoryProfile {
     fn id(self) -> &'static str {
         match self {
             Self::GpuOnly => "gpu-only",
-            Self::KandinskyResident => "kandinsky-resident",
+            Self::ReferenceResident => "reference-staged",
+            Self::KandinskyResident => "kandinsky-staged",
             Self::ForcedOffload => "forced-offload",
         }
     }
@@ -158,6 +182,7 @@ impl VideoMemoryProfile {
     fn offloading(self) -> &'static str {
         match self {
             Self::GpuOnly => "forbidden",
+            Self::ReferenceResident => "stage-boundary-only",
             Self::KandinskyResident => "stage-boundary-only",
             Self::ForcedOffload => "forced",
         }
@@ -174,7 +199,16 @@ impl VideoMemoryProfile {
                 "--cache-none",
             ],
             Self::KandinskyResident => &[
-                "--highvram",
+                "--normalvram",
+                "--disable-async-offload",
+                "--disable-dynamic-vram",
+                "--reserve-vram",
+                "0.75",
+                "--cache-lru",
+                "2",
+            ],
+            Self::ReferenceResident => &[
+                "--normalvram",
                 "--disable-async-offload",
                 "--disable-dynamic-vram",
                 "--reserve-vram",
@@ -235,6 +269,52 @@ impl Default for VideoBoundarySettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoReferenceKind {
+    Image,
+    Video,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoReferenceRole {
+    Subject,
+    Storyboard,
+    Motion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoReferenceAsset {
+    pub id: String,
+    pub name: String,
+    pub kind: VideoReferenceKind,
+    pub role: VideoReferenceRole,
+    pub stored_path: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub preview_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoContinuityMode {
+    #[default]
+    None,
+    Anchor,
+    PreviousFrame,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VideoContinuitySettings {
+    pub mode: VideoContinuityMode,
+    pub primary_reference_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoPlanRequest {
@@ -258,6 +338,8 @@ pub struct VideoChapter {
     pub prompt_seed: String,
     pub first_clip: u32,
     pub last_clip: u32,
+    #[serde(default)]
+    pub reference_asset_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +358,10 @@ pub struct VideoClip {
     pub error: Option<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    #[serde(default)]
+    pub reference_asset_id: Option<String>,
+    #[serde(default)]
+    pub continuity_frame_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,6 +393,10 @@ pub struct VideoProject {
     pub output_directory: String,
     pub final_output_path: Option<String>,
     pub errors: Vec<String>,
+    #[serde(default)]
+    pub references: Vec<VideoReferenceAsset>,
+    #[serde(default)]
+    pub continuity: VideoContinuitySettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,6 +448,8 @@ pub struct VideoPresetStatus {
     pub steps: u32,
     pub available: bool,
     pub missing_files: Vec<String>,
+    pub supports_image_reference: bool,
+    pub supports_video_reference: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -938,6 +1030,8 @@ pub async fn plan_project(
         output_directory: project_dir.to_string_lossy().into_owned(),
         final_output_path: None,
         errors: Vec::new(),
+        references: Vec::new(),
+        continuity: VideoContinuitySettings::default(),
     };
     bound_project(&mut project);
     store.save_project(&project)?;
@@ -1169,6 +1263,8 @@ fn expand_plan(
                 error: None,
                 started_at: None,
                 completed_at: None,
+                reference_asset_id: None,
+                continuity_frame_path: None,
             });
             global += 1;
         }
@@ -1179,6 +1275,7 @@ fn expand_plan(
             prompt_seed: chapter.prompt_seed.clone(),
             first_clip: first,
             last_clip: global - 1,
+            reference_asset_id: None,
         });
     }
     (chapters, clips)
@@ -1204,6 +1301,7 @@ pub async fn execute_project(
     ) {
         return Err("This video project is already complete.".into());
     }
+    verify_project_references(&store, &project).await?;
     project.status = "starting".into();
     project.updated_at = Utc::now().to_rfc3339();
     store.save_project(&project)?;
@@ -1279,6 +1377,8 @@ pub async fn execute_project(
             return Ok(());
         }
         let clip_index = project.clips[position].index;
+        let prepared_references =
+            prepare_clip_references(&settings, &store, &project, position).await?;
         let mut last_error = None;
         for attempt in 0..=project.boundaries.max_retries_per_clip {
             project.clips[position].attempts += 1;
@@ -1301,15 +1401,35 @@ pub async fn execute_project(
                 Some(clip_index),
             );
             let prefix = format!("video/kestrel/{}/clip_{clip_index:05}", project.id);
-            let graph = build_graph(&project, &project.clips[position], &prefix);
-            let result = async {
+            let graph = build_graph(
+                &project,
+                &project.clips[position],
+                &prefix,
+                &prepared_references,
+            );
+            let result: Result<VerifiedOutput, String> = async {
                 let prompt_id = manager.submit(graph).await?;
                 project.clips[position].comfy_prompt_id = Some(prompt_id.clone());
                 store.save_project(&project)?;
                 let output = manager
                     .wait_for_output(&prompt_id, &cancel, deadline)
                     .await?;
-                verify_and_copy_output(&settings, &store, &project.id, clip_index, output).await
+                let mut verified =
+                    verify_and_copy_output(&settings, &store, &project.id, clip_index, output)
+                        .await?;
+                if project.continuity.mode == VideoContinuityMode::PreviousFrame {
+                    verified.continuity_frame_path = Some(
+                        extract_continuity_frame(
+                            &settings,
+                            &store,
+                            &project.id,
+                            clip_index,
+                            &verified.path,
+                        )
+                        .await?,
+                    );
+                }
+                Ok(verified)
             }
             .await;
             match result {
@@ -1319,6 +1439,7 @@ pub async fn execute_project(
                     project.clips[position].bytes = Some(verified.bytes);
                     project.clips[position].sha256 = Some(verified.sha256);
                     project.clips[position].completed_at = Some(Utc::now().to_rfc3339());
+                    project.clips[position].continuity_frame_path = verified.continuity_frame_path;
                     project.clips[position].error = None;
                     project.updated_at = Utc::now().to_rfc3339();
                     store.save_project(&project)?;
@@ -1467,10 +1588,294 @@ pub async fn execute_project(
     Ok(())
 }
 
+async fn verify_project_references(
+    store: &VideoStore,
+    project: &VideoProject,
+) -> Result<(), String> {
+    let mut used_reference_ids = BTreeSet::new();
+    if project.continuity.mode != VideoContinuityMode::None
+        && project.continuity.primary_reference_id.is_none()
+    {
+        return Err(
+            "The selected continuity policy needs a primary subject/storyboard image.".into(),
+        );
+    }
+    if let Some(primary) = project.continuity.primary_reference_id.as_deref() {
+        let asset = find_reference(project, primary)?;
+        if asset.kind != VideoReferenceKind::Image {
+            return Err("The primary continuity reference must be an image.".into());
+        }
+        if project.continuity.mode != VideoContinuityMode::None {
+            used_reference_ids.insert(primary.to_string());
+        }
+    }
+    for clip in &project.clips {
+        if let Some(reference_id) = clip.reference_asset_id.as_deref() {
+            let asset = find_reference(project, reference_id)?;
+            used_reference_ids.insert(reference_id.to_string());
+            if asset.kind == VideoReferenceKind::Video && !project.preset.supports_video_reference()
+            {
+                return Err(format!(
+                    "Clip {} has a motion video but this preset cannot consume it.",
+                    clip.index
+                ));
+            }
+        }
+    }
+    for chapter in &project.chapters {
+        if let Some(reference_id) = chapter.reference_asset_id.as_deref() {
+            let asset = find_reference(project, reference_id)?;
+            used_reference_ids.insert(reference_id.to_string());
+            if asset.kind == VideoReferenceKind::Video && !project.preset.supports_video_reference()
+            {
+                return Err(format!(
+                    "Chapter {} has a motion video but this preset cannot consume it.",
+                    chapter.index
+                ));
+            }
+        }
+    }
+    let project_dir = store.project_dir(&project.id)?;
+    let assets = project
+        .references
+        .iter()
+        .filter(|asset| used_reference_ids.contains(&asset.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    tokio::task::spawn_blocking(move || {
+        let canonical_project = project_dir
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve the video project: {error}"))?;
+        for asset in assets {
+            let path = PathBuf::from(&asset.stored_path);
+            let canonical = path
+                .canonicalize()
+                .map_err(|error| format!("Reference {} is unavailable: {error}", asset.name))?;
+            if !canonical.starts_with(&canonical_project) {
+                return Err(format!(
+                    "Reference {} escaped its durable project directory.",
+                    asset.name
+                ));
+            }
+            let bytes = fs::metadata(&canonical)
+                .map_err(|error| error.to_string())?
+                .len();
+            if bytes != asset.bytes || hash_file(&canonical)? != asset.sha256 {
+                return Err(format!(
+                    "Reference {} changed after import. Re-import it before generation.",
+                    asset.name
+                ));
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Reference verification worker stopped: {error}"))?
+}
+
 struct VerifiedOutput {
     path: String,
     bytes: u64,
     sha256: String,
+    continuity_frame_path: Option<String>,
+}
+
+#[derive(Default)]
+struct PreparedReferences {
+    image_input: Option<String>,
+    video_input: Option<String>,
+}
+
+async fn prepare_clip_references(
+    settings: &VideoSettings,
+    store: &VideoStore,
+    project: &VideoProject,
+    position: usize,
+) -> Result<PreparedReferences, String> {
+    let clip = &project.clips[position];
+    let explicit = clip
+        .reference_asset_id
+        .as_deref()
+        .map(|id| find_reference(project, id))
+        .transpose()?;
+    let chapter_reference = project
+        .chapters
+        .iter()
+        .find(|chapter| chapter.index == clip.chapter_index && chapter.first_clip == clip.index)
+        .and_then(|chapter| chapter.reference_asset_id.as_deref())
+        .map(|id| find_reference(project, id))
+        .transpose()?;
+    let explicit_image = explicit
+        .filter(|asset| asset.kind == VideoReferenceKind::Image)
+        .or_else(|| chapter_reference.filter(|asset| asset.kind == VideoReferenceKind::Image));
+    let explicit_video = explicit
+        .filter(|asset| asset.kind == VideoReferenceKind::Video)
+        .or_else(|| chapter_reference.filter(|asset| asset.kind == VideoReferenceKind::Video));
+    let continuity_frame = if explicit_image.is_none()
+        && project.continuity.mode == VideoContinuityMode::PreviousFrame
+        && position > 0
+    {
+        project.clips[..position]
+            .iter()
+            .rev()
+            .find(|previous| previous.status == "complete")
+            .and_then(|previous| previous.continuity_frame_path.as_deref())
+            .map(PathBuf::from)
+    } else {
+        None
+    };
+    let primary = if explicit_image.is_none()
+        && continuity_frame.is_none()
+        && project.continuity.mode != VideoContinuityMode::None
+    {
+        project
+            .continuity
+            .primary_reference_id
+            .as_deref()
+            .map(|id| find_reference(project, id))
+            .transpose()?
+            .filter(|asset| asset.kind == VideoReferenceKind::Image)
+    } else {
+        None
+    };
+    let (image_source, image_stem) = if let Some(asset) = explicit_image {
+        (
+            Some(PathBuf::from(&asset.stored_path)),
+            format!("asset_{}", asset.id),
+        )
+    } else if let Some(frame) = continuity_frame {
+        (Some(frame), format!("clip_{:05}_continuity", clip.index))
+    } else if let Some(asset) = primary {
+        (
+            Some(PathBuf::from(&asset.stored_path)),
+            format!("asset_{}", asset.id),
+        )
+    } else {
+        (None, format!("clip_{:05}_reference", clip.index))
+    };
+    let video_source = explicit_video.map(|asset| {
+        (
+            PathBuf::from(&asset.stored_path),
+            format!("asset_{}", asset.id),
+        )
+    });
+    let project_dir = store.project_dir(&project.id)?;
+    let image_input = if let Some(source) = image_source {
+        Some(stage_comfy_input(settings, &project_dir, &project.id, source, &image_stem).await?)
+    } else {
+        None
+    };
+    let video_input = if let Some((source, stem)) = video_source {
+        Some(stage_comfy_input(settings, &project_dir, &project.id, source, &stem).await?)
+    } else {
+        None
+    };
+    Ok(PreparedReferences {
+        image_input,
+        video_input,
+    })
+}
+
+async fn stage_comfy_input(
+    settings: &VideoSettings,
+    project_dir: &Path,
+    project_id: &str,
+    source: PathBuf,
+    stem: &str,
+) -> Result<String, String> {
+    let comfy_input = PathBuf::from(&settings.comfy_root)
+        .join("input")
+        .join("kestrel")
+        .join(project_id);
+    let project_dir = project_dir.to_path_buf();
+    let relative = format!(
+        "kestrel/{project_id}/{stem}.{}",
+        source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("bin")
+            .to_ascii_lowercase()
+    );
+    let destination = PathBuf::from(&settings.comfy_root)
+        .join("input")
+        .join(relative.replace('/', "\\"));
+    tokio::task::spawn_blocking(move || {
+        let canonical_project = project_dir
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve the video project: {error}"))?;
+        let canonical_source = source
+            .canonicalize()
+            .map_err(|error| format!("Reference asset is unavailable: {error}"))?;
+        if !canonical_source.starts_with(&canonical_project) {
+            return Err("Reference asset escaped its durable project directory.".into());
+        }
+        fs::create_dir_all(&comfy_input).map_err(|error| error.to_string())?;
+        let source_bytes = fs::metadata(&canonical_source)
+            .map_err(|error| error.to_string())?
+            .len();
+        if fs::metadata(&destination).is_ok_and(|metadata| metadata.len() == source_bytes) {
+            return Ok(relative);
+        }
+        let partial = destination.with_extension("partial");
+        fs::copy(&canonical_source, &partial)
+            .map_err(|error| format!("Could not stage the reference for ComfyUI: {error}"))?;
+        if destination.exists() {
+            fs::remove_file(&destination).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&partial, &destination).map_err(|error| error.to_string())?;
+        Ok(relative)
+    })
+    .await
+    .map_err(|error| format!("Reference staging worker stopped: {error}"))?
+}
+
+async fn extract_continuity_frame(
+    settings: &VideoSettings,
+    store: &VideoStore,
+    project_id: &str,
+    clip_index: u32,
+    video_path: &str,
+) -> Result<String, String> {
+    let destination = store
+        .project_dir(project_id)?
+        .join("continuity")
+        .join(format!("clip_{clip_index:05}_last.png"));
+    fs::create_dir_all(
+        destination
+            .parent()
+            .ok_or_else(|| "Continuity frame has no parent directory.".to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let ffmpeg = validated_ffmpeg_command(&settings.ffmpeg_path)?;
+    let mut command = Command::new(ffmpeg);
+    command
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-sseof",
+            "-0.1",
+            "-i",
+        ])
+        .arg(video_path)
+        .args(["-frames:v", "1"])
+        .arg(&destination);
+    #[cfg(windows)]
+    command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .output()
+        .await
+        .map_err(|error| format!("FFmpeg could not extract the continuity frame: {error}"))?;
+    if !output.status.success()
+        || fs::metadata(&destination).map_or(true, |metadata| metadata.len() < 256)
+    {
+        return Err(format!(
+            "Could not extract a verified last frame for continuity: {}",
+            truncate(&String::from_utf8_lossy(&output.stderr), 600)
+        ));
+    }
+    Ok(destination.to_string_lossy().into_owned())
 }
 
 async fn verify_and_copy_output(
@@ -1519,6 +1924,7 @@ async fn verify_and_copy_output(
             path: path.to_string_lossy().into_owned(),
             bytes,
             sha256,
+            continuity_frame_path: None,
         })
     })
     .await
@@ -1584,7 +1990,12 @@ async fn assemble(
     Ok(final_path.to_string_lossy().into_owned())
 }
 
-fn build_graph(project: &VideoProject, clip: &VideoClip, prefix: &str) -> Value {
+fn build_graph(
+    project: &VideoProject,
+    clip: &VideoClip,
+    prefix: &str,
+    references: &PreparedReferences,
+) -> Value {
     match project.preset {
         VideoPreset::Wan13GpuOnly => wan_graph(
             "wan2.1_t2v_1.3B_bf16.safetensors",
@@ -1593,7 +2004,9 @@ fn build_graph(project: &VideoProject, clip: &VideoClip, prefix: &str) -> Value 
             project,
             clip,
             prefix,
+            references,
         ),
+        VideoPreset::WanVace13Reference => vace_graph(project, clip, prefix, references),
         VideoPreset::Wan22Offload => wan_graph(
             "wan2.2_ti2v_5B_fp16.safetensors",
             "wan2.2_vae.safetensors",
@@ -1601,9 +2014,10 @@ fn build_graph(project: &VideoProject, clip: &VideoClip, prefix: &str) -> Value 
             project,
             clip,
             prefix,
+            references,
         ),
         VideoPreset::KandinskyDistilled | VideoPreset::KandinskySft => {
-            kandinsky_graph(project, clip, prefix)
+            kandinsky_graph(project, clip, prefix, references)
         }
     }
 }
@@ -1615,6 +2029,7 @@ fn wan_graph(
     project: &VideoProject,
     clip: &VideoClip,
     prefix: &str,
+    references: &PreparedReferences,
 ) -> Value {
     let mut graph = BTreeMap::<String, Value>::new();
     graph.insert(
@@ -1638,16 +2053,25 @@ fn wan_graph(
             json!({"text":project.negative_prompt,"clip":["2",0]}),
         ),
     );
-    graph.insert("6".into(), node(latent_node, json!({"vae":["3",0],"width":project.width,"height":project.height,"length":project.frames_per_clip,"batch_size":1})));
+    let mut latent_inputs = json!({"vae":["3",0],"width":project.width,"height":project.height,"length":project.frames_per_clip,"batch_size":1});
+    if latent_node != "EmptyHunyuanLatentVideo" {
+        if let Some(image) = references.image_input.as_deref() {
+            graph.insert("12".into(), node("LoadImage", json!({"image":image})));
+            latent_inputs["start_image"] = json!(["12", 0]);
+        }
+    }
+    graph.insert("6".into(), node(latent_node, latent_inputs));
     graph.insert(
         "7".into(),
         node("ModelSamplingSD3", json!({"model":["1",0],"shift":8.0})),
     );
     graph.insert("8".into(), node("KSampler", json!({"model":["7",0],"seed":clip.seed,"steps":project.steps,"cfg":project.cfg,"sampler_name":"uni_pc","scheduler":"simple","positive":["4",0],"negative":["5",0],"latent_image":["6",0],"denoise":1.0})));
-    graph.insert(
-        "9".into(),
-        node("VAEDecode", json!({"samples":["8",0],"vae":["3",0]})),
-    );
+    let decoder = if latent_node == "EmptyHunyuanLatentVideo" {
+        node("VAEDecode", json!({"samples":["8",0],"vae":["3",0]}))
+    } else {
+        tiled_vae_decode(json!(["8", 0]), json!(["3", 0]))
+    };
+    graph.insert("9".into(), decoder);
     graph.insert(
         "10".into(),
         node(
@@ -1665,14 +2089,19 @@ fn wan_graph(
     json!(graph)
 }
 
-fn kandinsky_graph(project: &VideoProject, clip: &VideoClip, prefix: &str) -> Value {
+fn kandinsky_graph(
+    project: &VideoProject,
+    clip: &VideoClip,
+    prefix: &str,
+    references: &PreparedReferences,
+) -> Value {
     let model = if project.preset == VideoPreset::KandinskySft {
         "kandinsky5lite_t2v_sft_5s.safetensors"
     } else {
         "kandinsky5lite_t2v_distilled16steps_5s.safetensors"
     };
     let prompt = generation_prompt(project, clip);
-    json!({
+    let mut graph = json!({
         "1": node("DualCLIPLoader", json!({"clip_name1":"qwen_2.5_vl_7b_fp8_scaled.safetensors","clip_name2":"clip_l.safetensors","type":"kandinsky5","device":"default"})),
         "2": node("VAELoader", json!({"vae_name":"hunyuan_video_vae_bf16.safetensors"})),
         "3": node("UNETLoader", json!({"unet_name":model,"weight_dtype":"default"})),
@@ -1681,10 +2110,62 @@ fn kandinsky_graph(project: &VideoProject, clip: &VideoClip, prefix: &str) -> Va
         "6": node("Kandinsky5ImageToVideo", json!({"positive":["4",0],"negative":["5",0],"vae":["2",0],"width":project.width,"height":project.height,"length":project.frames_per_clip,"batch_size":1})),
         "7": node("ModelSamplingSD3", json!({"model":["3",0],"shift":5.0})),
         "8": node("KSampler", json!({"model":["7",0],"seed":clip.seed,"steps":project.steps,"cfg":project.cfg,"sampler_name":"euler_ancestral","scheduler":"beta","positive":["6",0],"negative":["6",1],"latent_image":["6",2],"denoise":1.0})),
-        "9": node("VAEDecode", json!({"samples":["8",0],"vae":["2",0]})),
+        "9": tiled_vae_decode(json!(["8",0]), json!(["2",0])),
         "10": node("CreateVideo", json!({"images":["9",0],"fps":project.fps as f64})),
         "11": node("SaveVideo", json!({"video":["10",0],"filename_prefix":prefix,"format":"mp4","codec":"h264"}))
-    })
+    });
+    if let Some(image) = references.image_input.as_deref() {
+        graph["12"] = node("LoadImage", json!({"image":image}));
+        graph["6"]["inputs"]["start_image"] = json!(["12", 0]);
+    }
+    graph
+}
+
+fn vace_graph(
+    project: &VideoProject,
+    clip: &VideoClip,
+    prefix: &str,
+    references: &PreparedReferences,
+) -> Value {
+    let prompt = generation_prompt(project, clip);
+    let mut graph = json!({
+        "1": node("UNETLoader", json!({"unet_name":"wan2.1_vace_1.3B_fp16.safetensors","weight_dtype":"default"})),
+        "2": node("CLIPLoader", json!({"clip_name":"umt5_xxl_fp8_e4m3fn_scaled.safetensors","type":"wan","device":"default"})),
+        "3": node("VAELoader", json!({"vae_name":"wan_2.1_vae.safetensors"})),
+        "4": node("CLIPTextEncode", json!({"text":prompt,"clip":["2",0]})),
+        "5": node("CLIPTextEncode", json!({"text":project.negative_prompt,"clip":["2",0]})),
+        "6": node("WanVaceToVideo", json!({"positive":["4",0],"negative":["5",0],"vae":["3",0],"width":project.width,"height":project.height,"length":project.frames_per_clip,"batch_size":1,"strength":1.0})),
+        "7": node("ModelSamplingSD3", json!({"model":["1",0],"shift":8.0})),
+        "8": node("KSampler", json!({"model":["7",0],"seed":clip.seed,"steps":project.steps,"cfg":project.cfg,"sampler_name":"uni_pc","scheduler":"simple","positive":["6",0],"negative":["6",1],"latent_image":["6",2],"denoise":1.0})),
+        "9": node("TrimVideoLatent", json!({"samples":["8",0],"trim_amount":["6",3]})),
+        "10": tiled_vae_decode(json!(["9",0]), json!(["3",0])),
+        "11": node("CreateVideo", json!({"images":["10",0],"fps":project.fps as f64})),
+        "12": node("SaveVideo", json!({"video":["11",0],"filename_prefix":prefix,"format":"mp4","codec":"h264"}))
+    });
+    if let Some(image) = references.image_input.as_deref() {
+        graph["13"] = node("LoadImage", json!({"image":image}));
+        graph["6"]["inputs"]["reference_image"] = json!(["13", 0]);
+    }
+    if let Some(video) = references.video_input.as_deref() {
+        graph["14"] = node("LoadVideo", json!({"file":video}));
+        graph["15"] = node("GetVideoComponents", json!({"video":["14",0]}));
+        graph["6"]["inputs"]["control_video"] = json!(["15", 0]);
+    }
+    graph
+}
+
+fn tiled_vae_decode(samples: Value, vae: Value) -> Value {
+    node(
+        "VAEDecodeTiled",
+        json!({
+            "samples": samples,
+            "vae": vae,
+            "tile_size": 512,
+            "overlap": 64,
+            "temporal_size": 64,
+            "temporal_overlap": 8
+        }),
+    )
 }
 
 fn generation_prompt(project: &VideoProject, clip: &VideoClip) -> String {
@@ -1712,6 +2193,7 @@ pub fn snapshot(
     let root = PathBuf::from(&settings.comfy_root);
     let presets = [
         VideoPreset::Wan13GpuOnly,
+        VideoPreset::WanVace13Reference,
         VideoPreset::KandinskyDistilled,
         VideoPreset::KandinskySft,
         VideoPreset::Wan22Offload,
@@ -1735,6 +2217,8 @@ pub fn snapshot(
                 && root.join("main.py").is_file()
                 && root.join(".venv/Scripts/python.exe").is_file(),
             missing_files,
+            supports_image_reference: preset.supports_image_reference(),
+            supports_video_reference: preset.supports_video_reference(),
         }
     })
     .collect();
@@ -1754,6 +2238,28 @@ pub fn save_settings(store: &VideoStore, settings: VideoSettings) -> Result<Vide
 
 pub fn reveal_project(store: &VideoStore, id: &str) -> Result<PathBuf, String> {
     store.project_dir(id)
+}
+
+pub fn cleanup_staged_inputs(settings: &VideoSettings, id: &str) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err("Video project id is invalid.".into());
+    }
+    let input_root = PathBuf::from(&settings.comfy_root).join("input");
+    let target = input_root.join("kestrel").join(id);
+    if !target.exists() {
+        return Ok(());
+    }
+    let canonical_root = input_root
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve ComfyUI input root: {error}"))?;
+    let canonical_target = target
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve staged references: {error}"))?;
+    if !canonical_target.starts_with(canonical_root.join("kestrel")) {
+        return Err("Refused to clean a staged-reference path outside ComfyUI input.".into());
+    }
+    fs::remove_dir_all(&canonical_target)
+        .map_err(|error| format!("Could not clean staged ComfyUI references: {error}"))
 }
 
 pub fn update_clip_prompt(
@@ -1793,6 +2299,294 @@ pub fn update_clip_prompt(
     project.updated_at = Utc::now().to_rfc3339();
     store.save_project(&project)?;
     Ok(project)
+}
+
+pub fn import_reference(
+    store: &VideoStore,
+    settings: &VideoSettings,
+    id: &str,
+    source: &Path,
+    role: VideoReferenceRole,
+) -> Result<VideoProject, String> {
+    let mut project = store.get_project(id)?;
+    ensure_editable_project(&project)?;
+    if project.references.len() >= MAX_REFERENCES {
+        return Err(format!(
+            "A video project can contain at most {MAX_REFERENCES} reference assets."
+        ));
+    }
+    let source = source
+        .canonicalize()
+        .map_err(|error| format!("Reference file is unavailable: {error}"))?;
+    if !source.is_file() {
+        return Err("Reference must be a regular local file.".into());
+    }
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let kind = if matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp") {
+        VideoReferenceKind::Image
+    } else if matches!(extension.as_str(), "mp4" | "mov" | "webm" | "mkv" | "m4v") {
+        VideoReferenceKind::Video
+    } else {
+        return Err("Reference must be PNG, JPEG, WebP, BMP, MP4, MOV, WebM, MKV, or M4V.".into());
+    };
+    if kind == VideoReferenceKind::Image && !project.preset.supports_image_reference() {
+        return Err(format!(
+            "{} is text-to-video only. Choose Kandinsky, Wan 2.2 TI2V, or Wan VACE before planning a reference production.",
+            project.preset.label()
+        ));
+    }
+    if kind == VideoReferenceKind::Video && !project.preset.supports_video_reference() {
+        return Err(
+            "Motion-reference video requires the Wan VACE 1.3B Reference Studio preset.".into(),
+        );
+    }
+    if kind == VideoReferenceKind::Video && role != VideoReferenceRole::Motion {
+        return Err("Video references use the motion role.".into());
+    }
+    if kind == VideoReferenceKind::Image && role == VideoReferenceRole::Motion {
+        return Err("Motion references must be video files.".into());
+    }
+    let metadata = fs::metadata(&source).map_err(|error| error.to_string())?;
+    let limit = if kind == VideoReferenceKind::Image {
+        256 * 1024 * 1024
+    } else {
+        4 * 1024 * 1024 * 1024u64
+    };
+    if metadata.len() == 0 || metadata.len() > limit {
+        return Err(if kind == VideoReferenceKind::Image {
+            "Reference image must be between 1 byte and 256 MiB."
+        } else {
+            "Reference video must be between 1 byte and 4 GiB."
+        }
+        .into());
+    }
+    let asset_id = uuid::Uuid::new_v4().to_string();
+    let reference_dir = store.project_dir(id)?.join("references");
+    fs::create_dir_all(&reference_dir).map_err(|error| error.to_string())?;
+    let free = fs2::available_space(&reference_dir)
+        .map_err(|error| format!("Could not inspect free disk space: {error}"))?;
+    let reserve = project.boundaries.min_free_disk_gib as u64 * 1024 * 1024 * 1024;
+    if free < reserve.saturating_add(metadata.len()) {
+        return Err(format!(
+            "Importing this reference would cross the project's {} GiB free-disk boundary.",
+            project.boundaries.min_free_disk_gib
+        ));
+    }
+    let destination = reference_dir.join(format!("{asset_id}.{extension}"));
+    let partial = destination.with_extension(format!("{extension}.partial"));
+    fs::copy(&source, &partial)
+        .map_err(|error| format!("Could not copy reference into the project: {error}"))?;
+    fs::rename(&partial, &destination).map_err(|error| error.to_string())?;
+    let stored_bytes = fs::metadata(&destination)
+        .map_err(|error| error.to_string())?
+        .len();
+    let asset = VideoReferenceAsset {
+        id: asset_id.clone(),
+        name: source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("reference")
+            .to_string(),
+        kind,
+        role,
+        stored_path: destination.to_string_lossy().into_owned(),
+        bytes: stored_bytes,
+        sha256: hash_file(&destination)?,
+        created_at: Utc::now().to_rfc3339(),
+        preview_path: create_reference_preview(
+            settings,
+            &destination,
+            &reference_dir.join(format!("{asset_id}.preview.jpg")),
+        ),
+    };
+    if project.continuity.primary_reference_id.is_none() && asset.kind == VideoReferenceKind::Image
+    {
+        project.continuity.mode = VideoContinuityMode::Anchor;
+        project.continuity.primary_reference_id = Some(asset_id);
+    }
+    project.references.push(asset);
+    project.updated_at = Utc::now().to_rfc3339();
+    store.save_project(&project)?;
+    Ok(project)
+}
+
+pub fn reference_preview(store: &VideoStore, id: &str, asset_id: &str) -> Result<String, String> {
+    let project = store.get_project(id)?;
+    let asset = find_reference(&project, asset_id)?;
+    let preview = asset
+        .preview_path
+        .as_deref()
+        .ok_or_else(|| "This reference has no local thumbnail.".to_string())?;
+    let project_dir = store
+        .project_dir(id)?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let path = PathBuf::from(preview)
+        .canonicalize()
+        .map_err(|error| format!("Reference thumbnail is unavailable: {error}"))?;
+    if !path.starts_with(project_dir) {
+        return Err("Reference thumbnail escaped its project directory.".into());
+    }
+    let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("Reference thumbnail exceeds 2 MiB.".into());
+    }
+    Ok(format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+fn create_reference_preview(
+    settings: &VideoSettings,
+    source: &Path,
+    destination: &Path,
+) -> Option<String> {
+    let ffmpeg = validated_ffmpeg_command(&settings.ffmpeg_path).ok()?;
+    let mut command = std::process::Command::new(ffmpeg);
+    command
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(source)
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=512:-2:force_original_aspect_ratio=decrease",
+            "-q:v",
+            "3",
+        ])
+        .arg(destination);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().ok()?;
+    if output.status.success()
+        && fs::metadata(destination).is_ok_and(|metadata| metadata.len() >= 256)
+    {
+        Some(destination.to_string_lossy().into_owned())
+    } else {
+        let _ = fs::remove_file(destination);
+        None
+    }
+}
+
+pub fn set_continuity(
+    store: &VideoStore,
+    id: &str,
+    mode: VideoContinuityMode,
+    primary_reference_id: Option<String>,
+) -> Result<VideoProject, String> {
+    let mut project = store.get_project(id)?;
+    ensure_editable_project(&project)?;
+    if mode != VideoContinuityMode::None && !project.preset.supports_image_reference() {
+        return Err("This preset cannot consume an image reference.".into());
+    }
+    if let Some(reference_id) = primary_reference_id.as_deref() {
+        let asset = find_reference(&project, reference_id)?;
+        if asset.kind != VideoReferenceKind::Image {
+            return Err("The primary subject/storyboard reference must be an image.".into());
+        }
+    }
+    project.continuity = VideoContinuitySettings {
+        mode,
+        primary_reference_id,
+    };
+    project.updated_at = Utc::now().to_rfc3339();
+    store.save_project(&project)?;
+    Ok(project)
+}
+
+pub fn set_clip_reference(
+    store: &VideoStore,
+    id: &str,
+    clip_index: u32,
+    reference_asset_id: Option<String>,
+) -> Result<VideoProject, String> {
+    let mut project = store.get_project(id)?;
+    ensure_editable_project(&project)?;
+    if let Some(reference_id) = reference_asset_id.as_deref() {
+        let asset = find_reference(&project, reference_id)?;
+        if asset.kind == VideoReferenceKind::Image && !project.preset.supports_image_reference() {
+            return Err("This preset cannot consume image references.".into());
+        }
+        if asset.kind == VideoReferenceKind::Video && !project.preset.supports_video_reference() {
+            return Err("This preset cannot consume motion-reference video.".into());
+        }
+    }
+    let clip = project
+        .clips
+        .iter_mut()
+        .find(|clip| clip.index == clip_index)
+        .ok_or_else(|| format!("Clip {clip_index} was not found."))?;
+    if clip.status == "complete" {
+        return Err("A verified clip is immutable.".into());
+    }
+    clip.reference_asset_id = reference_asset_id;
+    clip.error = None;
+    project.updated_at = Utc::now().to_rfc3339();
+    store.save_project(&project)?;
+    Ok(project)
+}
+
+pub fn set_chapter_reference(
+    store: &VideoStore,
+    id: &str,
+    chapter_index: u32,
+    reference_asset_id: Option<String>,
+) -> Result<VideoProject, String> {
+    let mut project = store.get_project(id)?;
+    ensure_editable_project(&project)?;
+    if let Some(reference_id) = reference_asset_id.as_deref() {
+        let asset = find_reference(&project, reference_id)?;
+        if asset.kind == VideoReferenceKind::Image && !project.preset.supports_image_reference() {
+            return Err("This preset cannot consume image references.".into());
+        }
+        if asset.kind == VideoReferenceKind::Video && !project.preset.supports_video_reference() {
+            return Err("This preset cannot consume motion-reference video.".into());
+        }
+    }
+    let chapter = project
+        .chapters
+        .iter_mut()
+        .find(|chapter| chapter.index == chapter_index)
+        .ok_or_else(|| format!("Chapter {chapter_index} was not found."))?;
+    chapter.reference_asset_id = reference_asset_id;
+    project.updated_at = Utc::now().to_rfc3339();
+    store.save_project(&project)?;
+    Ok(project)
+}
+
+fn ensure_editable_project(project: &VideoProject) -> Result<(), String> {
+    if matches!(
+        project.status.as_str(),
+        "starting"
+            | "running"
+            | "verifying"
+            | "assembling"
+            | "completed"
+            | "completed-with-warnings"
+    ) {
+        Err("Only a stopped, unfinished project can change references.".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn find_reference<'a>(
+    project: &'a VideoProject,
+    reference_id: &str,
+) -> Result<&'a VideoReferenceAsset, String> {
+    if !valid_id(reference_id) {
+        return Err("Reference id is invalid.".into());
+    }
+    project
+        .references
+        .iter()
+        .find(|asset| asset.id == reference_id)
+        .ok_or_else(|| "Reference asset was not found in this project.".into())
 }
 
 fn validate_plan_request(request: &VideoPlanRequest) -> Result<(), String> {
@@ -1904,6 +2698,9 @@ fn dimensions(preset: &VideoPreset, orientation: &str) -> Result<(u32, u32), Str
     match (preset, orientation) {
         (VideoPreset::Wan13GpuOnly | VideoPreset::Wan22Offload, "landscape") => Ok((832, 480)),
         (VideoPreset::Wan13GpuOnly | VideoPreset::Wan22Offload, "portrait") => Ok((480, 832)),
+        (VideoPreset::WanVace13Reference, "landscape") => Ok((832, 480)),
+        (VideoPreset::WanVace13Reference, "portrait") => Ok((480, 832)),
+        (VideoPreset::WanVace13Reference, "square") => Ok((624, 624)),
         (VideoPreset::Wan13GpuOnly, "square") => Ok((624, 624)),
         (VideoPreset::Wan22Offload, "square") => Ok((640, 608)),
         (_, "landscape") => Ok((768, 512)),
@@ -2109,8 +2906,8 @@ mod tests {
         assert!(count > request.boundaries.max_clips);
     }
 
-    #[test]
-    fn interrupted_projects_recover_to_resumable_state() {
+    #[tokio::test]
+    async fn interrupted_projects_recover_to_resumable_state() {
         let directory = tempdir().unwrap();
         let store = VideoStore::new(directory.path()).unwrap();
         let request = request(10, VideoPreset::KandinskyDistilled);
@@ -2153,6 +2950,8 @@ mod tests {
             output_directory: project_dir.to_string_lossy().into_owned(),
             final_output_path: None,
             errors: Vec::new(),
+            references: Vec::new(),
+            continuity: VideoContinuitySettings::default(),
         };
         store.save_project(&project).unwrap();
         let summaries = store.list_projects().unwrap();
@@ -2165,6 +2964,78 @@ mod tests {
             .expect("stopped unfinished clips are editable");
         assert_eq!(edited.clips[0].prompt, "A corrected opening shot");
         assert_eq!(edited.clips[0].status, "planned");
+        let source = directory.path().join("subject.png");
+        fs::write(&source, vec![7u8; 2_048]).unwrap();
+        let referenced = import_reference(
+            &store,
+            &VideoSettings::default(),
+            &project.id,
+            &source,
+            VideoReferenceRole::Subject,
+        )
+        .unwrap();
+        assert_eq!(referenced.references.len(), 1);
+        assert_eq!(referenced.continuity.mode, VideoContinuityMode::Anchor);
+        assert!(Path::new(&referenced.references[0].stored_path).is_file());
+        let independent = set_continuity(
+            &store,
+            &project.id,
+            VideoContinuityMode::None,
+            Some(referenced.references[0].id.clone()),
+        )
+        .unwrap();
+        let prepared = prepare_clip_references(
+            &VideoSettings {
+                comfy_root: directory
+                    .path()
+                    .join("comfy")
+                    .to_string_lossy()
+                    .into_owned(),
+                ffmpeg_path: "ffmpeg.exe".into(),
+            },
+            &store,
+            &independent,
+            0,
+        )
+        .await
+        .unwrap();
+        assert!(prepared.image_input.is_none());
+        assert!(prepared.video_input.is_none());
+        let chapter_reference = set_chapter_reference(
+            &store,
+            &project.id,
+            1,
+            Some(referenced.references[0].id.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            chapter_reference.chapters[0].reference_asset_id,
+            Some(referenced.references[0].id.clone())
+        );
+    }
+
+    #[test]
+    fn memory_profiles_declare_fixed_offload_behavior() {
+        let gpu_only = VideoMemoryProfile::GpuOnly.args();
+        assert!(gpu_only.contains(&"--gpu-only"));
+        assert!(gpu_only.contains(&"--disable-async-offload"));
+        assert!(gpu_only.contains(&"--disable-dynamic-vram"));
+        assert_eq!(VideoMemoryProfile::GpuOnly.offloading(), "forbidden");
+
+        for profile in [
+            VideoMemoryProfile::ReferenceResident,
+            VideoMemoryProfile::KandinskyResident,
+        ] {
+            assert!(profile.args().contains(&"--normalvram"));
+            assert!(profile.args().contains(&"--disable-async-offload"));
+            assert!(profile.args().contains(&"--disable-dynamic-vram"));
+            assert_eq!(profile.offloading(), "stage-boundary-only");
+        }
+
+        let forced = VideoMemoryProfile::ForcedOffload.args();
+        assert!(forced.contains(&"--lowvram"));
+        assert!(forced.contains(&"--async-offload"));
+        assert_eq!(VideoMemoryProfile::ForcedOffload.offloading(), "forced");
     }
 
     #[test]
@@ -2199,17 +3070,65 @@ mod tests {
             output_directory: "test".into(),
             final_output_path: None,
             errors: Vec::new(),
+            references: Vec::new(),
+            continuity: VideoContinuitySettings::default(),
         };
-        let graph = build_graph(&project, &clips[0], "video/test");
+        let graph = build_graph(
+            &project,
+            &clips[0],
+            "video/test",
+            &PreparedReferences::default(),
+        );
         assert_eq!(
             graph.pointer("/6/class_type").and_then(Value::as_str),
             Some("Kandinsky5ImageToVideo")
+        );
+        assert_eq!(
+            graph.pointer("/9/class_type").and_then(Value::as_str),
+            Some("VAEDecodeTiled")
         );
         assert_eq!(
             graph
                 .pointer("/11/inputs/filename_prefix")
                 .and_then(Value::as_str),
             Some("video/test")
+        );
+        let references = PreparedReferences {
+            image_input: Some("kestrel/test/subject.png".into()),
+            video_input: Some("kestrel/test/motion.mp4".into()),
+        };
+        let referenced_kandinsky = build_graph(&project, &clips[0], "video/test", &references);
+        assert_eq!(
+            referenced_kandinsky
+                .pointer("/6/inputs/start_image/0")
+                .and_then(Value::as_str),
+            Some("12")
+        );
+        let mut vace = project.clone();
+        vace.preset = VideoPreset::WanVace13Reference;
+        vace.width = 832;
+        vace.height = 480;
+        vace.frames_per_clip = 81;
+        let vace_graph = build_graph(&vace, &clips[0], "video/vace", &references);
+        assert_eq!(
+            vace_graph.pointer("/6/class_type").and_then(Value::as_str),
+            Some("WanVaceToVideo")
+        );
+        assert_eq!(
+            vace_graph.pointer("/10/class_type").and_then(Value::as_str),
+            Some("VAEDecodeTiled")
+        );
+        assert_eq!(
+            vace_graph
+                .pointer("/6/inputs/reference_image/0")
+                .and_then(Value::as_str),
+            Some("13")
+        );
+        assert_eq!(
+            vace_graph
+                .pointer("/6/inputs/control_video/0")
+                .and_then(Value::as_str),
+            Some("15")
         );
     }
 }

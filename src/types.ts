@@ -371,6 +371,7 @@ export interface RunResearchRequest {
 
 export type VideoPreset =
   | "wan-1.3b-gpu-only"
+  | "wan-vace-1.3b-reference"
   | "kandinsky-distilled"
   | "kandinsky-sft"
   | "wan-2.2-5b-offload";
@@ -408,6 +409,7 @@ export interface VideoChapter {
   promptSeed: string;
   firstClip: number;
   lastClip: number;
+  referenceAssetId?: string;
 }
 
 export interface VideoClip {
@@ -424,6 +426,29 @@ export interface VideoClip {
   error?: string;
   startedAt?: string;
   completedAt?: string;
+  referenceAssetId?: string;
+  continuityFramePath?: string;
+}
+
+export type VideoReferenceKind = "image" | "video";
+export type VideoReferenceRole = "subject" | "storyboard" | "motion";
+export type VideoContinuityMode = "none" | "anchor" | "previous-frame";
+
+export interface VideoReferenceAsset {
+  id: string;
+  name: string;
+  kind: VideoReferenceKind;
+  role: VideoReferenceRole;
+  storedPath: string;
+  bytes: number;
+  sha256: string;
+  createdAt: string;
+  previewPath?: string;
+}
+
+export interface VideoContinuitySettings {
+  mode: VideoContinuityMode;
+  primaryReferenceId?: string;
 }
 
 export interface VideoProject {
@@ -453,6 +478,8 @@ export interface VideoProject {
   outputDirectory: string;
   finalOutputPath?: string;
   errors: string[];
+  references: VideoReferenceAsset[];
+  continuity: VideoContinuitySettings;
 }
 
 export interface VideoProjectSummary {
@@ -476,6 +503,8 @@ export interface VideoPresetStatus {
   steps: number;
   available: boolean;
   missingFiles: string[];
+  supportsImageReference: boolean;
+  supportsVideoReference: boolean;
 }
 
 export interface VideoBackendSnapshot {

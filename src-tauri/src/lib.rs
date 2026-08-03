@@ -526,6 +526,79 @@ fn update_video_clip_prompt(
 }
 
 #[tauri::command]
+async fn import_video_reference(
+    id: String,
+    role: video::VideoReferenceRole,
+    state: State<'_, AppState>,
+) -> Result<Option<video::VideoProject>, String> {
+    let _guard = claim_workspace(&state)?;
+    let dialog = rfd::AsyncFileDialog::new().set_title(match role {
+        video::VideoReferenceRole::Subject => "Select a subject reference image",
+        video::VideoReferenceRole::Storyboard => "Select a storyboard frame",
+        video::VideoReferenceRole::Motion => "Select a motion reference video",
+    });
+    let dialog = if role == video::VideoReferenceRole::Motion {
+        dialog.add_filter("Reference video", &["mp4", "mov", "webm", "mkv", "m4v"])
+    } else {
+        dialog.add_filter("Reference image", &["png", "jpg", "jpeg", "webp", "bmp"])
+    };
+    let Some(file) = dialog.pick_file().await else {
+        return Ok(None);
+    };
+    let source = file.path().to_path_buf();
+    let store = state.video_store.clone();
+    let settings = store.load_settings()?;
+    tokio::task::spawn_blocking(move || {
+        video::import_reference(&store, &settings, &id, &source, role)
+    })
+    .await
+    .map_err(|error| format!("Reference import worker stopped: {error}"))?
+    .map(Some)
+}
+
+#[tauri::command]
+fn get_video_reference_preview(
+    id: String,
+    asset_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    video::reference_preview(&state.video_store, &id, &asset_id)
+}
+
+#[tauri::command]
+fn set_video_continuity(
+    id: String,
+    mode: video::VideoContinuityMode,
+    primary_reference_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    ensure_workspace_idle(&state)?;
+    video::set_continuity(&state.video_store, &id, mode, primary_reference_id)
+}
+
+#[tauri::command]
+fn set_video_clip_reference(
+    id: String,
+    clip_index: u32,
+    reference_asset_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    ensure_workspace_idle(&state)?;
+    video::set_clip_reference(&state.video_store, &id, clip_index, reference_asset_id)
+}
+
+#[tauri::command]
+fn set_video_chapter_reference(
+    id: String,
+    chapter_index: u32,
+    reference_asset_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    ensure_workspace_idle(&state)?;
+    video::set_chapter_reference(&state.video_store, &id, chapter_index, reference_asset_id)
+}
+
+#[tauri::command]
 async fn plan_video_project(
     request: video::VideoPlanRequest,
     app: AppHandle,
@@ -576,6 +649,7 @@ async fn start_video_project(
     let returned = project.clone();
     tauri::async_runtime::spawn(async move {
         let managed = app.state::<AppState>();
+        let cleanup_settings = settings.clone();
         let result = async {
             let Some(_idle) = managed
                 .runtime
@@ -610,6 +684,21 @@ async fn start_video_project(
             .await
         }
         .await;
+        if result.is_err() {
+            let _ = managed.video.stop().await;
+        }
+        if let Err(error) = video::cleanup_staged_inputs(&cleanup_settings, &id) {
+            if let Ok(mut project) = managed.video_store.get_project(&id) {
+                if project.status == "completed" {
+                    project.status = "completed-with-warnings".into();
+                }
+                project
+                    .errors
+                    .push(format!("Staged reference cleanup needs attention: {error}"));
+                project.updated_at = chrono::Utc::now().to_rfc3339();
+                let _ = managed.video_store.save_project(&project);
+            }
+        }
         if let Err(error) = result {
             if let Ok(mut failed) = managed.video_store.get_project(&id) {
                 failed.status = "failed".into();
@@ -628,7 +717,6 @@ async fn start_video_project(
                     at: chrono::Utc::now().to_rfc3339(),
                 },
             );
-            let _ = managed.video.stop().await;
         }
         if let Ok(mut jobs) = managed.video_jobs.lock() {
             jobs.remove(&id);
@@ -1451,6 +1539,11 @@ pub fn run() {
             save_video_settings,
             get_video_project,
             update_video_clip_prompt,
+            import_video_reference,
+            get_video_reference_preview,
+            set_video_continuity,
+            set_video_clip_reference,
+            set_video_chapter_reference,
             plan_video_project,
             start_video_project,
             stop_video_project,

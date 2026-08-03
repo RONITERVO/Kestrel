@@ -24,11 +24,13 @@ import type {
   RunResearchRequest,
   StartChatRequest,
   SystemSnapshot,
+  VideoContinuityMode,
   VideoPlanRequest,
   VideoProject,
   VideoProjectEvent,
   VideoSnapshot,
   VideoSettings,
+  VideoReferenceRole,
 } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -361,10 +363,11 @@ const previewVideoSnapshot: VideoSnapshot = {
     detail: "ComfyUI is stopped. Kestrel will start the selected exact profile after planning.",
   },
   presets: [
-    { id: "wan-1.3b-gpu-only", label: "Wan 2.1 1.3B · GPU only", profile: "gpu-only", offloading: "forbidden", nativeClipSeconds: 2, steps: 30, available: true, missingFiles: [] },
-    { id: "kandinsky-distilled", label: "Kandinsky 5 Lite · Distilled", profile: "kandinsky-resident", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 16, available: true, missingFiles: [] },
-    { id: "kandinsky-sft", label: "Kandinsky 5 Lite · SFT quality", profile: "kandinsky-resident", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 100, available: true, missingFiles: [] },
-    { id: "wan-2.2-5b-offload", label: "Wan 2.2 5B · Predictable offload", profile: "forced-offload", offloading: "forced", nativeClipSeconds: 3, steps: 20, available: true, missingFiles: [] },
+    { id: "wan-1.3b-gpu-only", label: "Wan 2.1 1.3B · GPU only", profile: "gpu-only", offloading: "forbidden", nativeClipSeconds: 2, steps: 30, available: true, missingFiles: [], supportsImageReference: false, supportsVideoReference: false },
+    { id: "wan-vace-1.3b-reference", label: "Wan VACE 1.3B · Reference studio", profile: "reference-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 30, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: true },
+    { id: "kandinsky-distilled", label: "Kandinsky 5 Lite · Distilled", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 16, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false },
+    { id: "kandinsky-sft", label: "Kandinsky 5 Lite · SFT quality", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 100, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false },
+    { id: "wan-2.2-5b-offload", label: "Wan 2.2 5B · Predictable offload", profile: "forced-offload", offloading: "forced", nativeClipSeconds: 3, steps: 20, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false },
   ],
   projects: [],
   root: "D:\\Kestrel Research\\video-studio",
@@ -390,6 +393,31 @@ export async function updateVideoClipPrompt(id: string, clipIndex: number, promp
   return invoke<VideoProject>("update_video_clip_prompt", { id, clipIndex, prompt });
 }
 
+export async function importVideoReference(id: string, role: VideoReferenceRole): Promise<VideoProject | undefined> {
+  if (!isTauri()) throw new Error("Reference importing is persisted by the desktop application.");
+  return (await invoke<VideoProject | null>("import_video_reference", { id, role })) ?? undefined;
+}
+
+export async function getVideoReferencePreview(id: string, assetId: string): Promise<string> {
+  if (!isTauri()) throw new Error("Reference previews are provided by the desktop application.");
+  return invoke<string>("get_video_reference_preview", { id, assetId });
+}
+
+export async function setVideoContinuity(id: string, mode: VideoContinuityMode, primaryReferenceId?: string): Promise<VideoProject> {
+  if (!isTauri()) throw new Error("Continuity settings are persisted by the desktop application.");
+  return invoke<VideoProject>("set_video_continuity", { id, mode, primaryReferenceId });
+}
+
+export async function setVideoClipReference(id: string, clipIndex: number, referenceAssetId?: string): Promise<VideoProject> {
+  if (!isTauri()) throw new Error("Clip references are persisted by the desktop application.");
+  return invoke<VideoProject>("set_video_clip_reference", { id, clipIndex, referenceAssetId });
+}
+
+export async function setVideoChapterReference(id: string, chapterIndex: number, referenceAssetId?: string): Promise<VideoProject> {
+  if (!isTauri()) throw new Error("Chapter references are persisted by the desktop application.");
+  return invoke<VideoProject>("set_video_chapter_reference", { id, chapterIndex, referenceAssetId });
+}
+
 export async function planVideoProject(request: VideoPlanRequest): Promise<VideoProject> {
   if (!isTauri()) {
     const preset = previewVideoSnapshot.presets.find((item) => item.id === request.preset)!;
@@ -410,7 +438,7 @@ export async function planVideoProject(request: VideoPlanRequest): Promise<Video
       clipDurationSeconds: preset.nativeClipSeconds,
       width: request.orientation === "portrait" ? 480 : 832,
       height: request.orientation === "portrait" ? 832 : 480,
-      fps: request.preset === "wan-1.3b-gpu-only" ? 16 : 24,
+      fps: request.preset === "wan-1.3b-gpu-only" || request.preset === "wan-vace-1.3b-reference" ? 16 : 24,
       framesPerClip: request.preset.includes("kandinsky") ? 121 : request.preset === "wan-1.3b-gpu-only" ? 33 : 81,
       steps: preset.steps,
       cfg: request.preset === "kandinsky-distilled" ? 1 : request.preset.includes("kandinsky") ? 5 : 6,
@@ -429,6 +457,8 @@ export async function planVideoProject(request: VideoPlanRequest): Promise<Video
       boundaries: request.boundaries,
       outputDirectory: `${previewVideoSnapshot.root}\\projects\\${id}`,
       errors: [],
+      references: [],
+      continuity: { mode: "none" },
     };
   }
   return invoke<VideoProject>("plan_video_project", { request });
