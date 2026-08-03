@@ -14,6 +14,7 @@ mod profile;
 mod runtime;
 mod services;
 mod store;
+mod video;
 mod workspace;
 
 use attachments::{AttachmentStore, ContextAttachment};
@@ -56,10 +57,13 @@ struct AppState {
     developer: DeveloperAssistant,
     workspace: WorkspaceStore,
     attachments: AttachmentStore,
+    video_store: video::VideoStore,
+    video: Arc<video::VideoManager>,
     research_active: AtomicBool,
     work_active: AtomicBool,
     jobs: Mutex<HashMap<String, CancellationToken>>,
     interactive_jobs: Mutex<HashMap<String, CancellationToken>>,
+    video_jobs: Mutex<HashMap<String, CancellationToken>>,
 }
 
 struct ResearchGuard<'a> {
@@ -76,6 +80,12 @@ impl Drop for ResearchGuard<'_> {
 
 struct WorkGuard<'a>(&'a AtomicBool);
 
+struct VideoJobGuard<'a> {
+    jobs: &'a Mutex<HashMap<String, CancellationToken>>,
+    work: &'a AtomicBool,
+    id: String,
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextAttachmentImport {
@@ -86,6 +96,17 @@ struct ContextAttachmentImport {
 impl Drop for WorkGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+impl Drop for VideoJobGuard<'_> {
+    fn drop(&mut self) {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        jobs.remove(&self.id);
+        self.work.store(false, Ordering::Release);
     }
 }
 
@@ -440,7 +461,18 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        research.into_iter().chain(interactive).collect::<Vec<_>>()
+        let video = state
+            .video_jobs
+            .lock()
+            .map_err(|_| "video job registry is unavailable".to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        research
+            .into_iter()
+            .chain(interactive)
+            .chain(video)
+            .collect::<Vec<_>>()
     };
     for cancellation in cancellations {
         cancellation.cancel();
@@ -469,7 +501,306 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
         .stop_orphaned_kestrel_processes()
         .await
         .map_err(|error| error.to_string())?;
+    state.video.stop().await?;
     control_snapshot(&state, false).await
+}
+
+#[tauri::command]
+async fn get_video_snapshot(state: State<'_, AppState>) -> Result<video::VideoSnapshot, String> {
+    let settings = state.video_store.load_settings()?;
+    let backend = state.video.snapshot().await;
+    video::snapshot(&state.video_store, settings, backend)
+}
+
+#[tauri::command]
+async fn save_video_settings(
+    settings: video::VideoSettings,
+    state: State<'_, AppState>,
+) -> Result<video::VideoSnapshot, String> {
+    ensure_workspace_idle(&state)?;
+    let settings = video::save_settings(&state.video_store, settings)?;
+    let backend = state.video.snapshot().await;
+    video::snapshot(&state.video_store, settings, backend)
+}
+
+#[tauri::command]
+fn get_video_project(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    state.video_store.get_project(&id)
+}
+
+#[tauri::command]
+fn update_video_clip_prompt(
+    id: String,
+    clip_index: u32,
+    prompt: String,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    ensure_workspace_idle(&state)?;
+    video::update_clip_prompt(&state.video_store, &id, clip_index, &prompt)
+}
+
+#[tauri::command]
+async fn import_video_reference(
+    id: String,
+    role: video::VideoReferenceRole,
+    state: State<'_, AppState>,
+) -> Result<Option<video::VideoProject>, String> {
+    let _guard = claim_workspace(&state)?;
+    let dialog = rfd::AsyncFileDialog::new().set_title(match role {
+        video::VideoReferenceRole::Subject => "Select a subject reference image",
+        video::VideoReferenceRole::Storyboard => "Select a storyboard frame",
+        video::VideoReferenceRole::Motion => "Select a motion reference video",
+    });
+    let dialog = if role == video::VideoReferenceRole::Motion {
+        dialog.add_filter("Reference video", &["mp4", "mov", "webm", "mkv", "m4v"])
+    } else {
+        dialog.add_filter("Reference image", &["png", "jpg", "jpeg", "webp", "bmp"])
+    };
+    let Some(file) = dialog.pick_file().await else {
+        return Ok(None);
+    };
+    let source = file.path().to_path_buf();
+    let store = state.video_store.clone();
+    let settings = store.load_settings()?;
+    tokio::task::spawn_blocking(move || {
+        video::import_reference(&store, &settings, &id, &source, role)
+    })
+    .await
+    .map_err(|error| format!("Reference import worker stopped: {error}"))?
+    .map(Some)
+}
+
+#[tauri::command]
+fn get_video_reference_preview(
+    id: String,
+    asset_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    video::reference_preview(&state.video_store, &id, &asset_id)
+}
+
+#[tauri::command]
+fn set_video_continuity(
+    id: String,
+    mode: video::VideoContinuityMode,
+    primary_reference_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    ensure_workspace_idle(&state)?;
+    video::set_continuity(&state.video_store, &id, mode, primary_reference_id)
+}
+
+#[tauri::command]
+fn set_video_clip_reference(
+    id: String,
+    clip_index: u32,
+    reference_asset_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    ensure_workspace_idle(&state)?;
+    video::set_clip_reference(&state.video_store, &id, clip_index, reference_asset_id)
+}
+
+#[tauri::command]
+fn set_video_chapter_reference(
+    id: String,
+    chapter_index: u32,
+    reference_asset_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    ensure_workspace_idle(&state)?;
+    video::set_chapter_reference(&state.video_store, &id, chapter_index, reference_asset_id)
+}
+
+#[tauri::command]
+async fn plan_video_project(
+    request: video::VideoPlanRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    let _guard = claim_workspace(&state)?;
+    let models = state.models.read().await.clone();
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    video::plan_project(
+        &state.video_store,
+        state.runtime.clone(),
+        models,
+        control,
+        request,
+        Some(&app),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn start_video_project(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<video::VideoProject, String> {
+    ensure_workspace_idle(&state)?;
+    let project = state.video_store.get_project(&id)?;
+    let settings = state.video_store.load_settings()?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| {
+            "Another chat, research, computer task, or video project is active.".to_string()
+        })?;
+    let cancel = CancellationToken::new();
+    match state.video_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("video job registry is unavailable".into());
+        }
+    }
+    let returned = project.clone();
+    tauri::async_runtime::spawn(async move {
+        let managed = app.state::<AppState>();
+        let _job_guard = VideoJobGuard {
+            jobs: &managed.video_jobs,
+            work: &managed.work_active,
+            id: id.clone(),
+        };
+        let cleanup_settings = settings.clone();
+        let result = async {
+            let Some(_idle) = managed
+                .runtime
+                .wait_until_idle(std::time::Duration::from_secs(30))
+                .await
+            else {
+                return Err(
+                    "The planning model did not release its inference lease within 30 seconds."
+                        .to_string(),
+                );
+            };
+            managed
+                .runtime
+                .stop_managed()
+                .await
+                .map_err(|error| error.to_string())?;
+            let research = managed
+                .research_settings
+                .load()
+                .map_err(|error| error.to_string())?;
+            services::stop_bonsai(&research.bonsai_root)
+                .await
+                .map_err(|error| error.to_string())?;
+            video::execute_project(
+                app.clone(),
+                managed.video_store.clone(),
+                managed.video.clone(),
+                id.clone(),
+                settings,
+                cancel,
+            )
+            .await
+        }
+        .await;
+        if result.is_err() {
+            let _ = managed.video.stop().await;
+        }
+        if let Err(error) = video::cleanup_staged_inputs(&cleanup_settings, &id) {
+            if let Ok(mut project) = managed.video_store.get_project(&id) {
+                if project.status == "completed" {
+                    project.status = "completed-with-warnings".into();
+                }
+                project
+                    .errors
+                    .push(format!("Staged reference cleanup needs attention: {error}"));
+                project.updated_at = chrono::Utc::now().to_rfc3339();
+                let _ = managed.video_store.save_project(&project);
+            }
+        }
+        if let Err(error) = result {
+            if let Ok(mut failed) = managed.video_store.get_project(&id) {
+                failed.status = "failed".into();
+                failed.updated_at = chrono::Utc::now().to_rfc3339();
+                failed.errors.push(error.clone());
+                let _ = managed.video_store.save_project(&failed);
+            }
+            let _ = app.emit(
+                "video-project-event",
+                video::VideoProjectEvent {
+                    project_id: id.clone(),
+                    kind: "failed".into(),
+                    title: "Video project stopped".into(),
+                    detail: error,
+                    clip_index: None,
+                    at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+        }
+    });
+    Ok(returned)
+}
+
+#[tauri::command]
+fn stop_video_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let jobs = state
+        .video_jobs
+        .lock()
+        .map_err(|_| "video job registry is unavailable".to_string())?;
+    if let Some(cancel) = jobs.get(&id) {
+        cancel.cancel();
+        Ok(())
+    } else {
+        Err("That video project is not currently running.".into())
+    }
+}
+
+#[tauri::command]
+async fn stop_video_backend(state: State<'_, AppState>) -> Result<video::VideoSnapshot, String> {
+    ensure_workspace_idle(&state)?;
+    state.video.stop().await?;
+    let settings = state.video_store.load_settings()?;
+    video::snapshot(&state.video_store, settings, state.video.snapshot().await)
+}
+
+#[tauri::command]
+async fn pick_comfy_root() -> Result<Option<String>, String> {
+    rfd::AsyncFileDialog::new()
+        .set_title("Select the ComfyUI root")
+        .pick_folder()
+        .await
+        .map(|folder| {
+            folder
+                .path()
+                .canonicalize()
+                .map(path_for_user)
+                .map_err(|error| error.to_string())
+        })
+        .transpose()
+}
+
+fn path_for_user(path: std::path::PathBuf) -> String {
+    let value = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{unc}");
+        }
+        if let Some(dos) = value.strip_prefix(r"\\?\") {
+            if dos.as_bytes().get(1) == Some(&b':') {
+                return dos.to_string();
+            }
+        }
+    }
+    value.into_owned()
+}
+
+#[tauri::command]
+fn reveal_video_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    open_with_explorer(&video::reveal_project(&state.video_store, &id)?)
 }
 
 #[tauri::command]
@@ -540,7 +871,7 @@ async fn pick_local_model_folder() -> Result<Option<String>, String> {
             folder
                 .path()
                 .canonicalize()
-                .map(|value| value.to_string_lossy().into_owned())
+                .map(path_for_user)
                 .map_err(|error| error.to_string())
         })
         .transpose()
@@ -1076,7 +1407,7 @@ async fn refresh_engine_candidates(
 
 fn ensure_workspace_idle(state: &AppState) -> Result<(), String> {
     if state.work_active.load(Ordering::Acquire) {
-        Err("Chat, research, or a computer task is active. Stop or finish it before changing runtime or developer state.".into())
+        Err("Chat, research, a computer task, or a video project is active. Stop or finish it before changing runtime or developer state.".into())
     } else {
         Ok(())
     }
@@ -1087,7 +1418,7 @@ fn claim_workspace(state: &AppState) -> Result<WorkGuard<'_>, String> {
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| {
-            "Chat, research, or a computer task is active. Stop or finish it before changing runtime or developer state.".to_string()
+            "Chat, research, a computer task, or a video project is active. Stop or finish it before changing runtime or developer state.".to_string()
         })?;
     Ok(WorkGuard(&state.work_active))
 }
@@ -1149,6 +1480,7 @@ pub fn run() {
             let developer = DeveloperAssistant::new(store.root());
             let workspace = WorkspaceStore::new(store.root())?;
             let attachments = AttachmentStore::new(&store.root().join("workspace"))?;
+            let video_store = video::VideoStore::new(store.root())?;
             app.manage(AppState {
                 store,
                 harness,
@@ -1161,10 +1493,13 @@ pub fn run() {
                 developer,
                 workspace,
                 attachments,
+                video_store,
+                video: Arc::new(video::VideoManager::new()),
                 research_active: AtomicBool::new(false),
                 work_active: AtomicBool::new(false),
                 jobs: Mutex::new(HashMap::new()),
                 interactive_jobs: Mutex::new(HashMap::new()),
+                video_jobs: Mutex::new(HashMap::new()),
             });
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -1234,6 +1569,21 @@ pub fn run() {
             run_native_diagnostics,
             run_codex_repair,
             open_bonsai_control_center,
+            get_video_snapshot,
+            save_video_settings,
+            get_video_project,
+            update_video_clip_prompt,
+            import_video_reference,
+            get_video_reference_preview,
+            set_video_continuity,
+            set_video_clip_reference,
+            set_video_chapter_reference,
+            plan_video_project,
+            start_video_project,
+            stop_video_project,
+            stop_video_backend,
+            pick_comfy_root,
+            reveal_video_project,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Kestrel Local");
@@ -1241,6 +1591,8 @@ pub fn run() {
         if matches!(event, tauri::RunEvent::Exit) {
             let runtime = handle.state::<AppState>().runtime.clone();
             let _ = tauri::async_runtime::block_on(runtime.stop_managed());
+            let video = handle.state::<AppState>().video.clone();
+            let _ = tauri::async_runtime::block_on(video.stop());
         }
     });
 }
