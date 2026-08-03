@@ -532,6 +532,12 @@ fn get_video_project(
 }
 
 #[tauri::command]
+fn delete_video_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let _guard = claim_workspace(&state)?;
+    state.video_store.archive_project(&id).map(|_| ())
+}
+
+#[tauri::command]
 fn update_video_clip_prompt(
     id: String,
     clip_index: u32,
@@ -1572,6 +1578,7 @@ pub fn run() {
             get_video_snapshot,
             save_video_settings,
             get_video_project,
+            delete_video_project,
             update_video_clip_prompt,
             import_video_reference,
             get_video_reference_preview,

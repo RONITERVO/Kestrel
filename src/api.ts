@@ -401,6 +401,10 @@ export async function getVideoProject(id: string): Promise<VideoProject> {
   return invoke<VideoProject>("get_video_project", { id });
 }
 
+export async function deleteVideoProject(id: string): Promise<void> {
+  if (isTauri()) await invoke("delete_video_project", { id });
+}
+
 export async function updateVideoClipPrompt(id: string, clipIndex: number, prompt: string): Promise<VideoProject> {
   if (!isTauri()) throw new Error("Clip editing is persisted by the desktop application.");
   return invoke<VideoProject>("update_video_clip_prompt", { id, clipIndex, prompt });

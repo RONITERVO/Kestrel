@@ -16,11 +16,11 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex as StoreMutex, MutexGuard as StoreMutexGuard},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter};
@@ -35,14 +35,19 @@ const MAX_CLIPS: u32 = 20_000;
 const MAX_TOTAL_SECONDS: u32 = 43_200;
 const MAX_CHAPTERS: usize = 48;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const NON_RETRYABLE_COMFY_ERROR: &str = "Non-retryable ComfyUI error: ";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
 pub enum VideoPreset {
+    #[serde(rename = "wan-1.3b-gpu-only", alias = "wan13-gpu-only")]
     Wan13GpuOnly,
+    #[serde(rename = "wan-vace-1.3b-reference", alias = "wan-vace13-reference")]
     WanVace13Reference,
+    #[serde(rename = "kandinsky-distilled")]
     KandinskyDistilled,
+    #[serde(rename = "kandinsky-sft")]
     KandinskySft,
+    #[serde(rename = "wan-2.2-5b-offload", alias = "wan22-offload")]
     Wan22Offload,
 }
 
@@ -511,6 +516,7 @@ fn default_weight() -> f64 {
 pub struct VideoStore {
     root: PathBuf,
     settings_path: PathBuf,
+    project_lock: Arc<StoreMutex<()>>,
 }
 
 impl VideoStore {
@@ -518,10 +524,13 @@ impl VideoStore {
         let root = library_root.join("video-studio");
         fs::create_dir_all(root.join("projects"))
             .map_err(|error| format!("could not create video library: {error}"))?;
-        Ok(Self {
+        let store = Self {
             settings_path: root.join("settings.json"),
             root,
-        })
+            project_lock: Arc::new(StoreMutex::new(())),
+        };
+        store.recover_interrupted_projects()?;
+        Ok(store)
     }
 
     pub fn root(&self) -> &Path {
@@ -556,14 +565,36 @@ impl VideoStore {
         Ok(self.root.join("projects").join(id).join("project.json"))
     }
 
+    fn lock_projects(&self) -> Result<StoreMutexGuard<'_, ()>, String> {
+        self.project_lock
+            .lock()
+            .map_err(|_| "Video project store lock is unavailable.".to_string())
+    }
+
     pub fn save_project(&self, project: &VideoProject) -> Result<(), String> {
+        let _guard = self.lock_projects()?;
+        self.save_project_unlocked(project)
+    }
+
+    fn save_project_unlocked(&self, project: &VideoProject) -> Result<(), String> {
         let path = self.project_path(&project.id)?;
-        fs::create_dir_all(path.parent().expect("project file has a parent"))
+        let project_dir = path.parent().expect("project file has a parent");
+        if !project_dir.is_dir() && self.has_archived_project_unlocked(&project.id)? {
+            return Err(
+                "Video project was archived; refusing to recreate its active folder.".into(),
+            );
+        }
+        fs::create_dir_all(project_dir)
             .map_err(|error| format!("could not create video project folder: {error}"))?;
         atomic_json(&path, project)
     }
 
     pub fn get_project(&self, id: &str) -> Result<VideoProject, String> {
+        let _guard = self.lock_projects()?;
+        self.get_project_unlocked(id)
+    }
+
+    fn get_project_unlocked(&self, id: &str) -> Result<VideoProject, String> {
         let path = self.project_path(id)?;
         match read_project_file(&path) {
             Ok(project) => Ok(project),
@@ -579,6 +610,7 @@ impl VideoStore {
     }
 
     pub fn list_projects(&self) -> Result<Vec<VideoProjectSummary>, String> {
+        let _guard = self.lock_projects()?;
         let mut summaries = Vec::new();
         for item in fs::read_dir(self.root.join("projects")).map_err(|error| error.to_string())? {
             let Ok(item) = item else { continue };
@@ -586,30 +618,80 @@ impl VideoStore {
                 continue;
             }
             let id = item.file_name().to_string_lossy().into_owned();
-            let Ok(mut project) = self.get_project(&id) else {
+            let Ok(project) = self.get_project_unlocked(&id) else {
                 continue;
             };
-            if matches!(
-                project.status.as_str(),
-                "starting" | "running" | "verifying" | "assembling"
-            ) {
-                project.status = "interrupted".into();
-                project.updated_at = Utc::now().to_rfc3339();
-                for clip in &mut project.clips {
-                    if matches!(clip.status.as_str(), "queued" | "generating" | "verifying") {
-                        clip.status = "planned".into();
-                        clip.error = Some(
-                            "Kestrel restarted before this clip was verified; it is safe to resume."
-                                .into(),
-                        );
-                    }
-                }
-                let _ = self.save_project(&project);
-            }
             summaries.push(VideoProjectSummary::from(&project));
         }
         summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(summaries)
+    }
+
+    fn recover_interrupted_projects(&self) -> Result<(), String> {
+        let _guard = self.lock_projects()?;
+        for item in fs::read_dir(self.root.join("projects")).map_err(|error| error.to_string())? {
+            let Ok(item) = item else { continue };
+            if !item.path().is_dir() {
+                continue;
+            }
+            let id = item.file_name().to_string_lossy().into_owned();
+            let Ok(mut project) = self.get_project_unlocked(&id) else {
+                continue;
+            };
+            if !matches!(
+                project.status.as_str(),
+                "starting" | "running" | "verifying" | "assembling"
+            ) {
+                continue;
+            }
+            project.status = "interrupted".into();
+            project.updated_at = Utc::now().to_rfc3339();
+            for clip in &mut project.clips {
+                if matches!(clip.status.as_str(), "queued" | "generating" | "verifying") {
+                    clip.status = "planned".into();
+                    clip.error = Some(
+                        "Kestrel restarted before this clip was verified; it is safe to resume."
+                            .into(),
+                    );
+                }
+            }
+            self.save_project_unlocked(&project)?;
+        }
+        Ok(())
+    }
+
+    pub fn archive_project(&self, id: &str) -> Result<PathBuf, String> {
+        let _guard = self.lock_projects()?;
+        let project_dir = self.project_dir(id)?;
+        if !project_dir.is_dir() {
+            return Err("Video project was not found.".into());
+        }
+        let deleted_root = self.root.join("deleted-projects");
+        fs::create_dir_all(&deleted_root)
+            .map_err(|error| format!("Could not create the deleted-project archive: {error}"))?;
+        let archive_dir = deleted_root.join(format!(
+            "{id}.deleted-{}-{}",
+            Utc::now().timestamp(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::rename(&project_dir, &archive_dir)
+            .map_err(|error| format!("Could not archive the video project: {error}"))?;
+        Ok(archive_dir)
+    }
+
+    fn has_archived_project_unlocked(&self, id: &str) -> Result<bool, String> {
+        let deleted_root = self.root.join("deleted-projects");
+        if !deleted_root.is_dir() {
+            return Ok(false);
+        }
+        let prefix = format!("{id}.deleted-");
+        for item in fs::read_dir(deleted_root).map_err(|error| error.to_string())? {
+            let Ok(item) = item else { continue };
+            if item.file_name().to_string_lossy().starts_with(&prefix) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn project_dir(&self, id: &str) -> Result<PathBuf, String> {
@@ -629,6 +711,7 @@ struct OwnedComfyProcess {
 
 pub struct VideoManager {
     process: Mutex<Option<OwnedComfyProcess>>,
+    schema_catalog: Mutex<Option<Value>>,
     client: Client,
 }
 
@@ -636,6 +719,7 @@ impl VideoManager {
     pub fn new() -> Self {
         Self {
             process: Mutex::new(None),
+            schema_catalog: Mutex::new(None),
             client: Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
@@ -697,6 +781,46 @@ impl VideoManager {
             .is_ok_and(|response| response.status().is_success())
     }
 
+    async fn validate_graph(&self, graph: &Value) -> Result<(), String> {
+        if self.schema_catalog.lock().await.is_none() {
+            let response = self
+                .client
+                .get(format!("{VIDEO_ENDPOINT}/object_info"))
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .map_err(|error| {
+                    format!(
+                        "{NON_RETRYABLE_COMFY_ERROR}could not read the owned ComfyUI node schema: {error}"
+                    )
+                })?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "{NON_RETRYABLE_COMFY_ERROR}ComfyUI node-schema request returned {}.",
+                    response.status()
+                ));
+            }
+            let catalog: Value = response.json().await.map_err(|error| {
+                format!(
+                    "{NON_RETRYABLE_COMFY_ERROR}ComfyUI returned an invalid node schema: {error}"
+                )
+            })?;
+            if !catalog.is_object() {
+                return Err(format!(
+                    "{NON_RETRYABLE_COMFY_ERROR}ComfyUI returned a node schema with the wrong shape."
+                ));
+            }
+            *self.schema_catalog.lock().await = Some(catalog);
+        }
+        let catalog = self.schema_catalog.lock().await;
+        validate_graph_schema(
+            graph,
+            catalog
+                .as_ref()
+                .expect("schema catalog was populated before validation"),
+        )
+    }
+
     pub async fn start(
         &self,
         settings: &VideoSettings,
@@ -722,10 +846,30 @@ impl VideoManager {
         let root = PathBuf::from(&settings.comfy_root);
         validate_comfy_root(&root, preset)?;
         fs::create_dir_all(log_dir).map_err(|error| error.to_string())?;
-        let stdout = File::create(log_dir.join("comfy.stdout.log"))
-            .map_err(|error| format!("could not create ComfyUI stdout log: {error}"))?;
-        let stderr = File::create(log_dir.join("comfy.stderr.log"))
-            .map_err(|error| format!("could not create ComfyUI stderr log: {error}"))?;
+        let mut stdout = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("comfy.stdout.log"))
+            .map_err(|error| format!("could not open ComfyUI stdout log: {error}"))?;
+        let mut stderr = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("comfy.stderr.log"))
+            .map_err(|error| format!("could not open ComfyUI stderr log: {error}"))?;
+        let marker = format!(
+            "\n=== Kestrel ComfyUI start {} | profile {} | offloading {} ===\n",
+            Utc::now().to_rfc3339(),
+            profile.id(),
+            profile.offloading()
+        );
+        stdout
+            .write_all(marker.as_bytes())
+            .and_then(|_| stdout.flush())
+            .map_err(|error| format!("could not mark ComfyUI stdout log: {error}"))?;
+        stderr
+            .write_all(marker.as_bytes())
+            .and_then(|_| stderr.flush())
+            .map_err(|error| format!("could not mark ComfyUI stderr log: {error}"))?;
         let python = root.join(".venv").join("Scripts").join("python.exe");
         let mut command = Command::new(&python);
         command
@@ -787,6 +931,7 @@ impl VideoManager {
 
     pub async fn stop(&self) -> Result<(), String> {
         let owned = self.process.lock().await.take();
+        *self.schema_catalog.lock().await = None;
         if let Some(mut owned) = owned {
             let _ = self
                 .client
@@ -817,7 +962,7 @@ impl VideoManager {
             .map_err(|error| format!("ComfyUI returned invalid prompt JSON: {error}"))?;
         if !status.is_success() {
             return Err(format!(
-                "ComfyUI rejected the prompt ({status}): {}",
+                "{NON_RETRYABLE_COMFY_ERROR}ComfyUI rejected the prompt ({status}): {}",
                 truncate(&body.to_string(), 900)
             ));
         }
@@ -826,7 +971,7 @@ impl VideoManager {
             .is_some_and(|value| value.as_object().is_some_and(|items| !items.is_empty()))
         {
             return Err(format!(
-                "ComfyUI reported node errors: {}",
+                "{NON_RETRYABLE_COMFY_ERROR}ComfyUI reported node errors: {}",
                 truncate(&body.to_string(), 900)
             ));
         }
@@ -884,12 +1029,118 @@ impl VideoManager {
                         .ok_or_else(|| "ComfyUI completed without a saved video output.".into());
                 }
                 if completed || status == "error" {
-                    return Err(format!("ComfyUI generation ended with status {status}."));
+                    return Err(format!(
+                        "{NON_RETRYABLE_COMFY_ERROR}{}",
+                        comfy_history_error(entry, status)
+                    ));
                 }
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     }
+}
+
+fn validate_graph_schema(graph: &Value, catalog: &Value) -> Result<(), String> {
+    let nodes = graph.as_object().ok_or_else(|| {
+        format!("{NON_RETRYABLE_COMFY_ERROR}workflow graph is not a node object.")
+    })?;
+    for (node_id, node) in nodes {
+        let class_type = node
+            .get("class_type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!("{NON_RETRYABLE_COMFY_ERROR}workflow node {node_id} has no class_type.")
+            })?;
+        let schema = catalog.get(class_type).ok_or_else(|| {
+            format!(
+                "{NON_RETRYABLE_COMFY_ERROR}workflow node {node_id} requires unavailable ComfyUI node {class_type}."
+            )
+        })?;
+        let inputs = node
+            .get("inputs")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                format!(
+                    "{NON_RETRYABLE_COMFY_ERROR}workflow node {node_id} ({class_type}) has no input object."
+                )
+            })?;
+        let input_schema = schema.get("input").and_then(Value::as_object);
+        let mut allowed = BTreeSet::new();
+        let mut required = BTreeSet::new();
+        for group in ["required", "optional", "hidden"] {
+            let names = input_schema
+                .and_then(|value| value.get(group))
+                .and_then(Value::as_object)
+                .map(|value| value.keys())
+                .into_iter()
+                .flatten();
+            for name in names {
+                allowed.insert(name.as_str());
+                if group == "required" {
+                    required.insert(name.as_str());
+                }
+            }
+        }
+        let unsupported = inputs
+            .keys()
+            .filter(|name| !allowed.contains(name.as_str()))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if !unsupported.is_empty() {
+            return Err(format!(
+                "{NON_RETRYABLE_COMFY_ERROR}workflow node {node_id} ({class_type}) uses unsupported input(s): {}.",
+                unsupported.join(", ")
+            ));
+        }
+        let missing = required
+            .into_iter()
+            .filter(|name| !inputs.contains_key(*name))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "{NON_RETRYABLE_COMFY_ERROR}workflow node {node_id} ({class_type}) is missing required input(s): {}.",
+                missing.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn comfy_history_error(entry: &Value, status: &str) -> String {
+    let execution_error = entry
+        .pointer("/status/messages")
+        .and_then(Value::as_array)
+        .and_then(|messages| {
+            messages.iter().rev().find_map(|message| {
+                let parts = message.as_array()?;
+                (parts.first()?.as_str()? == "execution_error")
+                    .then(|| parts.get(1))
+                    .flatten()
+            })
+        });
+    let Some(error) = execution_error else {
+        return format!("generation ended with status {status} and no node detail.");
+    };
+    let node_id = error
+        .get("node_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let node_type = error
+        .get("node_type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown node");
+    let exception_type = error
+        .get("exception_type")
+        .and_then(Value::as_str)
+        .unwrap_or("execution error");
+    let message = error
+        .get("exception_message")
+        .and_then(Value::as_str)
+        .unwrap_or("ComfyUI supplied no exception message");
+    truncate(
+        &format!("node {node_id} ({node_type}) failed with {exception_type}: {message}"),
+        1_200,
+    )
 }
 
 #[cfg(windows)]
@@ -1326,6 +1577,38 @@ pub async fn execute_project(
         manager.stop().await?;
         return Err("ComfyUI started without the requested predictable memory policy.".into());
     }
+    if let Some(position) = project
+        .clips
+        .iter()
+        .position(|clip| clip.status != "complete")
+    {
+        let prepared_references =
+            prepare_clip_references(&settings, &store, &project, position).await?;
+        let clip_index = project.clips[position].index;
+        let prefix = format!("video/kestrel/{}/clip_{clip_index:05}", project.id);
+        let graph = build_graph(
+            &project,
+            &project.clips[position],
+            &prefix,
+            &prepared_references,
+        );
+        if let Err(error) = manager.validate_graph(&graph).await {
+            project.status = "failed".into();
+            project.errors.push(error.clone());
+            project.updated_at = Utc::now().to_rfc3339();
+            store.save_project(&project)?;
+            manager.stop().await?;
+            emit(
+                Some(&app),
+                "failed",
+                "Workflow compatibility check failed",
+                &error,
+                Some(&project.id),
+                Some(clip_index),
+            );
+            return Ok(());
+        }
+    }
     project.status = "running".into();
     project.updated_at = Utc::now().to_rfc3339();
     store.save_project(&project)?;
@@ -1408,6 +1691,7 @@ pub async fn execute_project(
                 &prepared_references,
             );
             let result: Result<VerifiedOutput, String> = async {
+                manager.validate_graph(&graph).await?;
                 let prompt_id = manager.submit(graph).await?;
                 project.clips[position].comfy_prompt_id = Some(prompt_id.clone());
                 store.save_project(&project)?;
@@ -1455,21 +1739,47 @@ pub async fn execute_project(
                     break;
                 }
                 Err(error) => {
+                    let non_retryable = error.starts_with(NON_RETRYABLE_COMFY_ERROR);
                     last_error = Some(error.clone());
                     project.clips[position].error = Some(error.clone());
                     store.save_project(&project)?;
                     emit(
                         Some(&app),
-                        "clip-retry",
+                        if non_retryable {
+                            "clip-failed"
+                        } else {
+                            "clip-retry"
+                        },
                         &format!("Clip {clip_index} needs attention"),
-                        &format!(
-                            "{error} Retry {}/{}.",
-                            attempt + 1,
-                            project.boundaries.max_retries_per_clip + 1
-                        ),
+                        &if non_retryable {
+                            format!("{error} Kestrel will not retry an identical workflow error.")
+                        } else {
+                            format!(
+                                "{error} Retry {}/{}.",
+                                attempt + 1,
+                                project.boundaries.max_retries_per_clip + 1
+                            )
+                        },
                         Some(&project.id),
                         Some(clip_index),
                     );
+                    if non_retryable {
+                        project.clips[position].status = "failed".into();
+                        project.status = "failed".into();
+                        project.errors.push(format!("Clip {clip_index}: {error}"));
+                        project.updated_at = Utc::now().to_rfc3339();
+                        store.save_project(&project)?;
+                        manager.stop().await?;
+                        emit(
+                            Some(&app),
+                            "failed",
+                            "Generation stopped on a deterministic ComfyUI error",
+                            &error,
+                            Some(&project.id),
+                            Some(clip_index),
+                        );
+                        return Ok(());
+                    }
                     if cancel.is_cancelled() {
                         break;
                     }
@@ -2055,8 +2365,9 @@ fn wan_graph(
             json!({"text":project.negative_prompt,"clip":["2",0]}),
         ),
     );
-    let mut latent_inputs = json!({"vae":["3",0],"width":project.width,"height":project.height,"length":project.frames_per_clip,"batch_size":1});
+    let mut latent_inputs = json!({"width":project.width,"height":project.height,"length":project.frames_per_clip,"batch_size":1});
     if latent_node != "EmptyHunyuanLatentVideo" {
+        latent_inputs["vae"] = json!(["3", 0]);
         if let Some(image) = references.image_input.as_deref() {
             graph.insert("12".into(), node("LoadImage", json!({"image":image})));
             latent_inputs["start_image"] = json!(["12", 0]);
@@ -2860,6 +3171,128 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[test]
+    fn video_preset_wire_ids_match_the_frontend_contract() {
+        let presets = [
+            (VideoPreset::Wan13GpuOnly, "wan-1.3b-gpu-only"),
+            (VideoPreset::WanVace13Reference, "wan-vace-1.3b-reference"),
+            (VideoPreset::KandinskyDistilled, "kandinsky-distilled"),
+            (VideoPreset::KandinskySft, "kandinsky-sft"),
+            (VideoPreset::Wan22Offload, "wan-2.2-5b-offload"),
+        ];
+
+        for (preset, wire_id) in presets {
+            assert_eq!(preset.id(), wire_id);
+            assert_eq!(
+                serde_json::to_string(&preset).unwrap(),
+                format!("\"{wire_id}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<VideoPreset>(&format!("\"{wire_id}\"")).unwrap(),
+                preset
+            );
+        }
+    }
+
+    #[test]
+    fn video_preset_accepts_ids_written_by_the_broken_release() {
+        assert_eq!(
+            serde_json::from_str::<VideoPreset>("\"wan13-gpu-only\"").unwrap(),
+            VideoPreset::Wan13GpuOnly
+        );
+        assert_eq!(
+            serde_json::from_str::<VideoPreset>("\"wan-vace13-reference\"").unwrap(),
+            VideoPreset::WanVace13Reference
+        );
+        assert_eq!(
+            serde_json::from_str::<VideoPreset>("\"wan22-offload\"").unwrap(),
+            VideoPreset::Wan22Offload
+        );
+    }
+
+    #[test]
+    fn graph_schema_validation_rejects_unknown_inputs_before_execution() {
+        let catalog = json!({
+            "EmptyHunyuanLatentVideo": {
+                "input": {
+                    "required": {
+                        "width": ["INT"],
+                        "height": ["INT"],
+                        "length": ["INT"],
+                        "batch_size": ["INT"]
+                    }
+                }
+            }
+        });
+        let invalid = json!({
+            "6": {
+                "class_type": "EmptyHunyuanLatentVideo",
+                "inputs": {"vae": ["3", 0], "width": 832, "height": 480, "length": 33, "batch_size": 1}
+            }
+        });
+        let error = validate_graph_schema(&invalid, &catalog).unwrap_err();
+        assert!(error.starts_with(NON_RETRYABLE_COMFY_ERROR));
+        assert!(error.contains("unsupported input(s): vae"));
+
+        let valid = json!({
+            "6": {
+                "class_type": "EmptyHunyuanLatentVideo",
+                "inputs": {"width": 832, "height": 480, "length": 33, "batch_size": 1}
+            }
+        });
+        validate_graph_schema(&valid, &catalog).unwrap();
+    }
+
+    #[test]
+    fn comfy_history_preserves_the_node_level_execution_error() {
+        let entry = json!({
+            "status": {
+                "messages": [["execution_error", {
+                    "node_id": "6",
+                    "node_type": "EmptyHunyuanLatentVideo",
+                    "exception_type": "TypeError",
+                    "exception_message": "unexpected keyword argument 'vae'"
+                }]]
+            }
+        });
+        assert_eq!(
+            comfy_history_error(&entry, "error"),
+            "node 6 (EmptyHunyuanLatentVideo) failed with TypeError: unexpected keyword argument 'vae'"
+        );
+    }
+
+    #[test]
+    fn deleting_a_project_retains_its_complete_folder_as_an_archive() {
+        let directory = tempdir().unwrap();
+        let store = VideoStore::new(directory.path()).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let project_dir = store.root.join("projects").join(&id);
+        fs::create_dir_all(project_dir.join("clips")).unwrap();
+        fs::write(project_dir.join("project.json"), b"durable project record").unwrap();
+        fs::write(
+            project_dir.join("clips").join("clip-0001.mp4"),
+            b"verified clip",
+        )
+        .unwrap();
+
+        let archive_dir = store.archive_project(&id).unwrap();
+
+        assert!(!project_dir.exists());
+        assert!(archive_dir.starts_with(store.root.join("deleted-projects")));
+        assert_eq!(
+            fs::read(archive_dir.join("project.json")).unwrap(),
+            b"durable project record"
+        );
+        assert_eq!(
+            fs::read(archive_dir.join("clips").join("clip-0001.mp4")).unwrap(),
+            b"verified clip"
+        );
+        assert!(store
+            .archive_project(&id)
+            .unwrap_err()
+            .contains("not found"));
+    }
+
     fn request(total: u32, preset: VideoPreset) -> VideoPlanRequest {
         VideoPlanRequest {
             prompt: "A visual history of flight".into(),
@@ -2972,6 +3405,13 @@ mod tests {
         };
         store.save_project(&project).unwrap();
         let summaries = store.list_projects().unwrap();
+        assert_eq!(summaries[0].status, "running");
+        assert_eq!(
+            store.get_project(&project.id).unwrap().clips[0].status,
+            "generating"
+        );
+        let store = VideoStore::new(directory.path()).unwrap();
+        let summaries = store.list_projects().unwrap();
         assert_eq!(summaries[0].status, "interrupted");
         assert_eq!(
             store.get_project(&project.id).unwrap().clips[0].status,
@@ -3062,6 +3502,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("changed after import"));
+
+        let active_dir = store.project_dir(&chapter_reference.id).unwrap();
+        store.archive_project(&chapter_reference.id).unwrap();
+        let error = store.save_project(&chapter_reference).unwrap_err();
+        assert!(error.contains("archived"));
+        assert!(!active_dir.exists());
     }
 
     #[test]
@@ -3157,6 +3603,37 @@ mod tests {
                 .pointer("/6/inputs/start_image/0")
                 .and_then(Value::as_str),
             Some("12")
+        );
+        let mut wan = project.clone();
+        wan.preset = VideoPreset::Wan13GpuOnly;
+        wan.width = 832;
+        wan.height = 480;
+        wan.frames_per_clip = 33;
+        let wan_graph = build_graph(&wan, &clips[0], "video/wan", &PreparedReferences::default());
+        assert_eq!(
+            wan_graph.pointer("/6/class_type").and_then(Value::as_str),
+            Some("EmptyHunyuanLatentVideo")
+        );
+        assert!(wan_graph.pointer("/6/inputs/vae").is_none());
+
+        let mut wan22 = wan.clone();
+        wan22.preset = VideoPreset::Wan22Offload;
+        wan22.frames_per_clip = 81;
+        let wan22_graph = build_graph(
+            &wan22,
+            &clips[0],
+            "video/wan22",
+            &PreparedReferences::default(),
+        );
+        assert_eq!(
+            wan22_graph.pointer("/6/class_type").and_then(Value::as_str),
+            Some("Wan22ImageToVideoLatent")
+        );
+        assert_eq!(
+            wan22_graph
+                .pointer("/6/inputs/vae/0")
+                .and_then(Value::as_str),
+            Some("3")
         );
         let mut vace = project.clone();
         vace.preset = VideoPreset::WanVace13Reference;
