@@ -1,11 +1,12 @@
 # Kestrel Local
 
-Kestrel is a Windows-first local model control plane and fully offline research workspace. The current model-specific path is Bonsai 27B plus an English Kiwix Wikipedia archive. It produces source-traceable research editions that remain usable as plain JSON and self-contained HTML without Kestrel, SQLite, Codex, or internet access.
+Kestrel is a Windows-first local model control plane with fully offline research and video-production workspaces. The research path uses Bonsai 27B plus an English Kiwix Wikipedia archive and produces source-traceable editions that remain usable as plain JSON and self-contained HTML without Kestrel, SQLite, Codex, or internet access. Video Studio adds durable local ComfyUI planning and generation without changing that offline boundary.
 
-The application has four adjacent workspaces:
+The application has five adjacent workspaces:
 
 - **Control** discovers GGUF files read-only, keeps a recoverable startup catalog, rediscovers installed Bonsai/Jan/PATH engines, attaches to an existing Bonsai service or starts one authenticated `llama-server`, shows live VRAM, exposes exact launch arguments, and offers durable multimodal chat and Computer Tasks.
 - **Research** runs a Bonsai-specific two-tool harness, visibly reports six stages, validates every citation, finds related prior work, and publishes immutable editions.
+- **Video** turns a prompt into a durable, reviewable production plan, then owns one exact local ComfyUI process while it serially generates, verifies, retries, and optionally assembles clips.
 - **Developer** runs fixed offline checks. If Codex CLI is installed and signed in, an explicit one-click action can repair this Git workspace under an ephemeral workspace-write sandbox. Research never depends on it.
 - **System** exposes the installed Bonsai/Kiwix state, GPU telemetry, and opt-in high-capacity research settings.
 
@@ -37,6 +38,23 @@ The validated advanced Bonsai profile is 98,304 context tokens and 32,768 maximu
 
 > Warning: invalid or oversized values can stop startup or exhaust VRAM. Runtime and hardware limits still apply.
 
+## Offline Video Studio
+
+Video Studio separates planning from generation. A selected local llama.cpp model may create a compact story bible and chapter outline; deterministic native code expands it into a bounded clip ledger, so even a multi-hour request does not ask the model to emit thousands of records. The user reviews runtime, clip count, model preset, offload policy, retry limit, failure boundary, runtime boundary, disk reserve, and individual unfinished clip prompts before ComfyUI starts.
+
+Four explicit RTX 5070 12 GiB profiles are supported:
+
+- **Wan 2.1 1.3B GPU only** is the fast medium-quality path. Kestrel launches ComfyUI with `--gpu-only`, disables asynchronous and dynamic offload, and fails the job rather than silently changing the timing policy.
+- **Kandinsky 5 Lite Distilled** is the recommended 16-step daily driver. Its declared resident profile permits only predictable stage-boundary movement.
+- **Kandinsky 5 Lite SFT** uses the same declared memory profile with 100 quality-first steps.
+- **Wan 2.2 TI2V 5B** always uses the declared low-VRAM asynchronous-offload profile.
+
+Kestrel validates required local model files before enabling a preset. It refuses an existing unowned service on port 8188 because its launch flags cannot be proven. During generation it copies each completed clip into the project directory, verifies size and SHA-256, retries within the reviewed limit, restarts its owned backend between retries, and pauses at any failure, runtime, disk, or cancellation boundary. Final assembly trims the native-clip sequence at the reviewed target runtime. Interrupted projects become explicitly resumable after restart and never auto-resume.
+
+ComfyUI stays warm across the entire serial batch, then Kestrel releases it at every terminal or paused state before llama.cpp can reclaim the GPU. This keeps generation fast within a batch without allowing two model runtimes to contend afterward.
+
+Configure the ComfyUI root from Video Studio. The default tested root is `D:\AI\ComfyUI`; FFmpeg is optional unless final assembly is enabled. Projects live under `Kestrel Research\video-studio\projects` with open JSON state and ordinary video files.
+
 ## Research harness
 
 The harness gives Bonsai two logical tools:
@@ -63,6 +81,7 @@ C:\Users\<you>\Kestrel Research\
 |-- workspace\attachments # content-addressed local context objects and extractions
 |-- workspace\chats       # recoverable chat transcripts and attachment references
 |-- workspace\tasks       # recoverable computer-task transcripts
+|-- video-studio\          # durable plans, verified clips, logs, final assemblies
 `-- reports\YYYY\MM\<title>--<id>\
     |-- index.html        # self-contained, printable research page
     |-- report.json       # complete structured edition
@@ -82,6 +101,7 @@ Portable setup profiles contain research/runtime tuning, path-independent model 
 
 - The WebView CSP permits no external network connection or remote asset.
 - Native research clients accept only fixed loopback services.
+- Video generation accepts only Kestrel's fixed loopback ComfyUI endpoint and never attaches to an unowned backend whose offload policy cannot be proven.
 - Kiwix runs with external access blocked.
 - Research receives only its two citation tools. Ordinary chat receives no mutation tools. Computer Tasks receives only typed, policy-checked tools; attachment reads are restricted to files explicitly selected for that task.
 - Codex is isolated to `developer.rs`, requires explicit confirmation, cannot run during research, creates no commit, and is not required for diagnostics or any offline feature.

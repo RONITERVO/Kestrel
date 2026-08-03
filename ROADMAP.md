@@ -8,6 +8,7 @@ Kestrel should keep improving while preserving its small model-specific harness,
 - [x] Automatic SQLite/JSONL reconstruction from report files.
 - [x] Recoverable research, control, and Bonsai settings writes.
 - [x] One runtime owner and inference lease across chat/research.
+- [x] Durable offline video plans with explicit memory profiles, bounded retries, verified clip hashes, and manual restart recovery.
 - [x] Optional repository-scoped Codex repair with fixed verification.
 - [ ] Hash and verify every immutable artifact.
 - [ ] Add a visible library integrity/rebuild command.
@@ -31,4 +32,5 @@ Kestrel should keep improving while preserving its small model-specific harness,
 - Catalog recovery produces the same report IDs from files alone.
 - 10,000-report search p95 remains below 200 ms on the supported baseline.
 - Interrupted/cancelled work leaves no visible partial edition.
+- Video generation never starts until Kestrel can prove the selected offload policy, and interrupted batches never auto-resume.
 - Standalone HTML remains readable with JavaScript disabled and Kestrel uninstalled.

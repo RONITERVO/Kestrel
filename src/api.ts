@@ -24,6 +24,11 @@ import type {
   RunResearchRequest,
   StartChatRequest,
   SystemSnapshot,
+  VideoPlanRequest,
+  VideoProject,
+  VideoProjectEvent,
+  VideoSnapshot,
+  VideoSettings,
 } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -339,4 +344,123 @@ export async function runCodexRepair(
   return invoke<DeveloperRepairReport>("run_codex_repair", {
     request: { issue },
   });
+}
+
+const previewVideoSnapshot: VideoSnapshot = {
+  settings: {
+    comfyRoot: "D:\\AI\\ComfyUI",
+    ffmpegPath: "ffmpeg.exe",
+  },
+  backend: {
+    endpoint: "http://127.0.0.1:8188",
+    running: false,
+    ready: false,
+    owned: false,
+    offloading: "none",
+    predictable: false,
+    detail: "ComfyUI is stopped. Kestrel will start the selected exact profile after planning.",
+  },
+  presets: [
+    { id: "wan-1.3b-gpu-only", label: "Wan 2.1 1.3B · GPU only", profile: "gpu-only", offloading: "forbidden", nativeClipSeconds: 2, steps: 30, available: true, missingFiles: [] },
+    { id: "kandinsky-distilled", label: "Kandinsky 5 Lite · Distilled", profile: "kandinsky-resident", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 16, available: true, missingFiles: [] },
+    { id: "kandinsky-sft", label: "Kandinsky 5 Lite · SFT quality", profile: "kandinsky-resident", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 100, available: true, missingFiles: [] },
+    { id: "wan-2.2-5b-offload", label: "Wan 2.2 5B · Predictable offload", profile: "forced-offload", offloading: "forced", nativeClipSeconds: 3, steps: 20, available: true, missingFiles: [] },
+  ],
+  projects: [],
+  root: "D:\\Kestrel Research\\video-studio",
+};
+
+export async function getVideoSnapshot(): Promise<VideoSnapshot> {
+  if (!isTauri()) return previewVideoSnapshot;
+  return invoke<VideoSnapshot>("get_video_snapshot");
+}
+
+export async function saveVideoSettings(settings: VideoSettings): Promise<VideoSnapshot> {
+  if (!isTauri()) return { ...previewVideoSnapshot, settings };
+  return invoke<VideoSnapshot>("save_video_settings", { settings });
+}
+
+export async function getVideoProject(id: string): Promise<VideoProject> {
+  if (!isTauri()) throw new Error(`Preview project is not durable: ${id}`);
+  return invoke<VideoProject>("get_video_project", { id });
+}
+
+export async function updateVideoClipPrompt(id: string, clipIndex: number, prompt: string): Promise<VideoProject> {
+  if (!isTauri()) throw new Error("Clip editing is persisted by the desktop application.");
+  return invoke<VideoProject>("update_video_clip_prompt", { id, clipIndex, prompt });
+}
+
+export async function planVideoProject(request: VideoPlanRequest): Promise<VideoProject> {
+  if (!isTauri()) {
+    const preset = previewVideoSnapshot.presets.find((item) => item.id === request.preset)!;
+    const clipCount = Math.ceil(request.totalDurationSeconds / preset.nativeClipSeconds);
+    const now = new Date().toISOString();
+    const id = `preview-${Date.now()}`;
+    return {
+      id,
+      title: request.prompt.split(/[.\n]/)[0] || "Preview video",
+      prompt: request.prompt,
+      audience: request.audience,
+      useCase: request.useCase,
+      preset: request.preset,
+      status: "planned",
+      createdAt: now,
+      updatedAt: now,
+      totalDurationSeconds: request.totalDurationSeconds,
+      clipDurationSeconds: preset.nativeClipSeconds,
+      width: request.orientation === "portrait" ? 480 : 832,
+      height: request.orientation === "portrait" ? 832 : 480,
+      fps: request.preset === "wan-1.3b-gpu-only" ? 16 : 24,
+      framesPerClip: request.preset.includes("kandinsky") ? 121 : request.preset === "wan-1.3b-gpu-only" ? 33 : 81,
+      steps: preset.steps,
+      cfg: request.preset === "kandinsky-distilled" ? 1 : request.preset.includes("kandinsky") ? 5 : 6,
+      negativePrompt: request.negativePrompt,
+      continuityBible: `Maintain subject, palette, geography, lighting, and motion continuity for ${request.audience}.`,
+      planningNote: "Preview plan; the desktop app uses the selected local model and persists native queue state.",
+      chapters: [{ index: 1, title: "Visual arc", narrativeGoal: request.useCase, promptSeed: request.prompt, firstClip: 1, lastClip: clipCount }],
+      clips: Array.from({ length: clipCount }, (_, index) => ({
+        index: index + 1,
+        chapterIndex: 1,
+        prompt: `${request.prompt}. Shot ${index + 1} of ${clipCount}.`,
+        seed: index + 1,
+        status: "planned",
+        attempts: 0,
+      })),
+      boundaries: request.boundaries,
+      outputDirectory: `${previewVideoSnapshot.root}\\projects\\${id}`,
+      errors: [],
+    };
+  }
+  return invoke<VideoProject>("plan_video_project", { request });
+}
+
+export async function startVideoProject(id: string): Promise<VideoProject> {
+  if (!isTauri()) throw new Error("Video generation requires the desktop application.");
+  return invoke<VideoProject>("start_video_project", { id });
+}
+
+export async function stopVideoProject(id: string): Promise<void> {
+  if (isTauri()) await invoke("stop_video_project", { id });
+}
+
+export async function stopVideoBackend(): Promise<VideoSnapshot> {
+  if (!isTauri()) return previewVideoSnapshot;
+  return invoke<VideoSnapshot>("stop_video_backend");
+}
+
+export async function pickComfyRoot(): Promise<string | undefined> {
+  if (!isTauri()) return "D:\\AI\\ComfyUI";
+  return (await invoke<string | null>("pick_comfy_root")) ?? undefined;
+}
+
+export async function revealVideoProject(id: string): Promise<void> {
+  if (isTauri()) await invoke("reveal_video_project", { id });
+}
+
+export async function onVideoProjectEvent(
+  callback: (event: VideoProjectEvent) => void,
+): Promise<UnlistenFn> {
+  if (isTauri())
+    return listen<VideoProjectEvent>("video-project-event", (event) => callback(event.payload));
+  return () => undefined;
 }

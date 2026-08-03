@@ -10,6 +10,7 @@ import {
   Download,
   ExternalLink,
   Feather,
+  Film,
   FileText,
   FolderOpen,
   Gauge,
@@ -52,6 +53,7 @@ import {
   saveResearchSettings,
 } from "./api";
 import { ControlPlane, DeveloperConsole } from "./ControlPlane";
+import { VideoStudio } from "./VideoStudio";
 import type {
   AppSnapshot,
   ProgressStage,
@@ -86,6 +88,8 @@ const stageNames: Record<ProgressStage, string> = {
   failed: "Failed",
 };
 
+type View = "control" | "research" | "video" | "developer" | "system";
+
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [report, setReport] = useState<ResearchReport | null>(null);
@@ -96,7 +100,7 @@ function App() {
   const [progress, setProgress] = useState<ResearchProgress | null>(null);
   const [activity, setActivity] = useState<ResearchProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"control" | "research" | "developer" | "system">("research");
+  const [view, setView] = useState<View>("research");
 
   const refresh = useCallback(async () => {
     try {
@@ -223,6 +227,8 @@ function App() {
               onImported={(next) => setSnapshot(next)}
               onError={(message) => setError(message)}
             />
+          ) : view === "video" ? (
+            <VideoStudio control={snapshot.control} onError={(message) => setError(message)} />
           ) : !selectedId && snapshot.reports.length === 0 ? (
             <EmptyLibrary onNew={() => setNewResearchOpen(true)} />
           ) : !report ? (
@@ -267,8 +273,8 @@ function AppHeader({
   onPrepare,
 }: {
   status: AppSnapshot["status"];
-  view: "control" | "research" | "developer" | "system";
-  onView: (view: "control" | "research" | "developer" | "system") => void;
+  view: View;
+  onView: (view: View) => void;
   onMenu: () => void;
   onNew: () => void;
   onPrepare: () => void;
@@ -279,11 +285,12 @@ function AppHeader({
       <div className="header-left">
         <button className="icon-button menu-button" aria-label="Toggle library" onClick={onMenu}><Menu /></button>
         <div className="brand-mark"><Feather size={19} /></div>
-        <div className="brand-copy"><strong>Kestrel</strong><span>{view === "control" ? "Control plane" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research"}</span></div>
+        <div className="brand-copy"><strong>Kestrel</strong><span>{view === "control" ? "Control plane" : view === "video" ? "Video Studio" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research"}</span></div>
       </div>
       <nav className="view-switcher" aria-label="Kestrel sections">
         <button className={view === "control" ? "active" : ""} onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
         <button className={view === "research" ? "active" : ""} onClick={() => onView("research")}><Library size={14} /> Research</button>
+        <button className={view === "video" ? "active" : ""} onClick={() => onView("video")}><Film size={14} /> Video</button>
         <button className={view === "developer" ? "active" : ""} onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
         <button className={view === "system" ? "active" : ""} onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
       </nav>

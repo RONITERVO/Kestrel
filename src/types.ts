@@ -368,3 +368,141 @@ export interface RunResearchRequest {
   query: string;
   depth: "focused" | "thorough" | "expedition";
 }
+
+export type VideoPreset =
+  | "wan-1.3b-gpu-only"
+  | "kandinsky-distilled"
+  | "kandinsky-sft"
+  | "wan-2.2-5b-offload";
+
+export interface VideoSettings {
+  comfyRoot: string;
+  ffmpegPath: string;
+}
+
+export interface VideoBoundarySettings {
+  maxClips: number;
+  maxRetriesPerClip: number;
+  maxFailedClips: number;
+  maxRuntimeMinutes: number;
+  minFreeDiskGib: number;
+  assembleFinalVideo: boolean;
+}
+
+export interface VideoPlanRequest {
+  prompt: string;
+  audience: string;
+  useCase: string;
+  plannerModelId?: string;
+  preset: VideoPreset;
+  totalDurationSeconds: number;
+  orientation: "landscape" | "portrait" | "square";
+  negativePrompt: string;
+  boundaries: VideoBoundarySettings;
+}
+
+export interface VideoChapter {
+  index: number;
+  title: string;
+  narrativeGoal: string;
+  promptSeed: string;
+  firstClip: number;
+  lastClip: number;
+}
+
+export interface VideoClip {
+  index: number;
+  chapterIndex: number;
+  prompt: string;
+  seed: number;
+  status: string;
+  attempts: number;
+  comfyPromptId?: string;
+  outputPath?: string;
+  bytes?: number;
+  sha256?: string;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface VideoProject {
+  id: string;
+  title: string;
+  prompt: string;
+  audience: string;
+  useCase: string;
+  preset: VideoPreset;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  totalDurationSeconds: number;
+  clipDurationSeconds: number;
+  width: number;
+  height: number;
+  fps: number;
+  framesPerClip: number;
+  steps: number;
+  cfg: number;
+  negativePrompt: string;
+  continuityBible: string;
+  planningNote: string;
+  chapters: VideoChapter[];
+  clips: VideoClip[];
+  boundaries: VideoBoundarySettings;
+  outputDirectory: string;
+  finalOutputPath?: string;
+  errors: string[];
+}
+
+export interface VideoProjectSummary {
+  id: string;
+  title: string;
+  preset: VideoPreset;
+  status: string;
+  updatedAt: string;
+  totalDurationSeconds: number;
+  clipCount: number;
+  completedClips: number;
+  failedClips: number;
+}
+
+export interface VideoPresetStatus {
+  id: VideoPreset;
+  label: string;
+  profile: string;
+  offloading: string;
+  nativeClipSeconds: number;
+  steps: number;
+  available: boolean;
+  missingFiles: string[];
+}
+
+export interface VideoBackendSnapshot {
+  endpoint: string;
+  running: boolean;
+  ready: boolean;
+  owned: boolean;
+  pid?: number;
+  profile?: string;
+  offloading: string;
+  predictable: boolean;
+  detail: string;
+}
+
+export interface VideoSnapshot {
+  settings: VideoSettings;
+  backend: VideoBackendSnapshot;
+  presets: VideoPresetStatus[];
+  projects: VideoProjectSummary[];
+  root: string;
+}
+
+export interface VideoProjectEvent {
+  projectId: string;
+  kind: string;
+  title: string;
+  detail: string;
+  clipIndex?: number;
+  at: string;
+}

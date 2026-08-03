@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { demoSnapshot } from "./demo";
 import { mergeAttachments, terminalTaskStatus } from "./OfflineWorkspace";
+import { estimateClipCount } from "./VideoStudio";
 import type { ContextAttachment } from "./types";
 
 const profileApi = vi.hoisted(() => ({
@@ -92,6 +93,29 @@ describe("Kestrel research experience", () => {
     expect(await screen.findByText("Your research")).toBeInTheDocument();
   });
 
+  it("opens a predictable offline video planner before touching the GPU", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Video$/i }));
+
+    expect(await screen.findByRole("heading", { name: "Video Studio" })).toBeInTheDocument();
+    expect(screen.getByText(/without an online service or hidden runtime decisions/i)).toBeInTheDocument();
+    expect(screen.getByText(/Offloading:/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Wan 2.1 1.3B/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Kandinsky 5 Lite.*Distilled/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Plan production/i })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Video prompt"), { target: { value: "A careful educational film about forest recovery." } });
+    const plan = screen.getByRole("button", { name: /Plan production/i });
+    expect(plan).toBeEnabled();
+    fireEvent.click(plan);
+    fireEvent.click(await screen.findByRole("button", { name: "1" }));
+    const clipPrompt = screen.getByLabelText("Clip 1 prompt");
+    expect((clipPrompt as HTMLTextAreaElement).value).toContain("forest recovery");
+    expect(screen.getByRole("button", { name: /Save clip prompt/i })).toBeDisabled();
+    fireEvent.change(clipPrompt, { target: { value: "A corrected opening shot with a clear visual subject." } });
+    expect(screen.getByRole("button", { name: /Save clip prompt/i })).toBeEnabled();
+  });
+
   it("displays safe exports and explains clipboard failures", async () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
     render(<App />);
@@ -173,5 +197,13 @@ describe("computer task terminal states", () => {
 
   it("promotes the starting fallback while waiting for events", () => {
     expect(terminalTaskStatus("start", "starting")).toBe("running");
+  });
+});
+
+describe("video production boundaries", () => {
+  it("uses ceiling division for multi-hour native clip plans", () => {
+    expect(estimateClipCount(3 * 60 * 60, 5)).toBe(2160);
+    expect(estimateClipCount(61, 5)).toBe(13);
+    expect(estimateClipCount(0, 5)).toBe(0);
   });
 });
