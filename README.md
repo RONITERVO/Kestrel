@@ -45,8 +45,8 @@ Video Studio separates planning from generation. A selected local llama.cpp mode
 Five explicit RTX 5070 12 GiB profiles are supported:
 
 - **Wan 2.1 1.3B GPU only** is the fast medium-quality path. Kestrel launches ComfyUI with `--gpu-only`, disables asynchronous and dynamic offload, and fails the job rather than silently changing the timing policy.
-- **Wan VACE 1.3B Reference Studio** is the 480p continuity and motion-control path. It accepts a subject/storyboard image and, per shot, an optional motion-reference video through native ComfyUI nodes. Its fixed normal-VRAM profile declares whole-model stage-boundary movement because the model and UMT5 encoder cannot be simultaneously resident on a 12 GiB card; dynamic and asynchronous offload are disabled, and VAE decoding is tiled.
-- **Kandinsky 5 Lite Distilled** is the recommended 16-step daily driver. Its fixed normal-VRAM profile permits only predictable whole-model stage-boundary movement; dynamic and asynchronous offload are disabled.
+- **Wan VACE 1.3B Reference Studio** is the 480p continuity and motion-control path. It accepts a subject/storyboard image and, per shot, an optional motion-reference video through native ComfyUI nodes. Its fixed staged profile uses ComfyUI's normal-VRAM mode and declares whole-model stage-boundary movement because the model and UMT5 encoder cannot be simultaneously resident on a 12 GiB card; smart memory management, dynamic VRAM, and asynchronous offload are disabled, and VAE decoding is tiled.
+- **Kandinsky 5 Lite Distilled** is the recommended 16-step daily driver. Its fixed staged profile uses normal-VRAM mode and permits only predictable whole-model stage-boundary movement; smart memory management, dynamic VRAM, and asynchronous offload are disabled.
 - **Kandinsky 5 Lite SFT** uses the same declared memory profile with 100 quality-first steps.
 - **Wan 2.2 TI2V 5B** always uses the declared low-VRAM asynchronous-offload profile.
 

@@ -199,18 +199,18 @@ impl VideoMemoryProfile {
                 "--cache-none",
             ],
             Self::KandinskyResident => &[
-                "--normalvram",
                 "--disable-async-offload",
                 "--disable-dynamic-vram",
+                "--disable-smart-memory",
                 "--reserve-vram",
                 "0.75",
                 "--cache-lru",
                 "2",
             ],
             Self::ReferenceResident => &[
-                "--normalvram",
                 "--disable-async-offload",
                 "--disable-dynamic-vram",
+                "--disable-smart-memory",
                 "--reserve-vram",
                 "0.75",
                 "--cache-lru",
@@ -3026,9 +3026,13 @@ mod tests {
             VideoMemoryProfile::ReferenceResident,
             VideoMemoryProfile::KandinskyResident,
         ] {
-            assert!(profile.args().contains(&"--normalvram"));
+            assert!(!profile.args().iter().any(|argument| matches!(
+                *argument,
+                "--gpu-only" | "--highvram" | "--lowvram" | "--novram"
+            )));
             assert!(profile.args().contains(&"--disable-async-offload"));
             assert!(profile.args().contains(&"--disable-dynamic-vram"));
+            assert!(profile.args().contains(&"--disable-smart-memory"));
             assert_eq!(profile.offloading(), "stage-boundary-only");
         }
 
