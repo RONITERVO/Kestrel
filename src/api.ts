@@ -26,6 +26,8 @@ import type {
   SystemSnapshot,
   VideoContinuityMode,
   VideoPlanRequest,
+  VideoPreset,
+  VideoPresetStatus,
   VideoProject,
   VideoProjectEvent,
   VideoSnapshot,
@@ -348,6 +350,23 @@ export async function runCodexRepair(
   });
 }
 
+type PreviewPresetConfig = VideoPresetStatus & {
+  dimensions: Record<VideoPlanRequest["orientation"], readonly [number, number]>;
+  fps: number;
+  framesPerClip: number;
+  cfg: number;
+};
+
+const previewPresetTable: Record<VideoPreset, PreviewPresetConfig> = {
+  "wan-1.3b-gpu-only": { id: "wan-1.3b-gpu-only", label: "Wan 2.1 1.3B · GPU only", profile: "gpu-only", offloading: "forbidden", nativeClipSeconds: 2, steps: 30, available: true, missingFiles: [], supportsImageReference: false, supportsVideoReference: false, dimensions: { landscape: [832, 480], portrait: [480, 832], square: [624, 624] }, fps: 16, framesPerClip: 33, cfg: 6 },
+  "wan-vace-1.3b-reference": { id: "wan-vace-1.3b-reference", label: "Wan VACE 1.3B · Reference studio", profile: "reference-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 30, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: true, dimensions: { landscape: [832, 480], portrait: [480, 832], square: [624, 624] }, fps: 16, framesPerClip: 81, cfg: 6 },
+  "kandinsky-distilled": { id: "kandinsky-distilled", label: "Kandinsky 5 Lite · Distilled", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 16, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false, dimensions: { landscape: [768, 512], portrait: [512, 768], square: [624, 624] }, fps: 24, framesPerClip: 121, cfg: 1 },
+  "kandinsky-sft": { id: "kandinsky-sft", label: "Kandinsky 5 Lite · SFT quality", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 100, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false, dimensions: { landscape: [768, 512], portrait: [512, 768], square: [624, 624] }, fps: 24, framesPerClip: 121, cfg: 5 },
+  "wan-2.2-5b-offload": { id: "wan-2.2-5b-offload", label: "Wan 2.2 5B · Predictable offload", profile: "forced-offload", offloading: "forced", nativeClipSeconds: 3, steps: 20, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false, dimensions: { landscape: [832, 480], portrait: [480, 832], square: [640, 608] }, fps: 24, framesPerClip: 81, cfg: 5 },
+};
+
+const previewPresetStatuses = Object.values(previewPresetTable).map(({ dimensions: _dimensions, fps: _fps, framesPerClip: _framesPerClip, cfg: _cfg, ...status }) => status);
+
 const previewVideoSnapshot: VideoSnapshot = {
   settings: {
     comfyRoot: "D:\\AI\\ComfyUI",
@@ -362,13 +381,7 @@ const previewVideoSnapshot: VideoSnapshot = {
     predictable: false,
     detail: "ComfyUI is stopped. Kestrel will start the selected exact profile after planning.",
   },
-  presets: [
-    { id: "wan-1.3b-gpu-only", label: "Wan 2.1 1.3B · GPU only", profile: "gpu-only", offloading: "forbidden", nativeClipSeconds: 2, steps: 30, available: true, missingFiles: [], supportsImageReference: false, supportsVideoReference: false },
-    { id: "wan-vace-1.3b-reference", label: "Wan VACE 1.3B · Reference studio", profile: "reference-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 30, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: true },
-    { id: "kandinsky-distilled", label: "Kandinsky 5 Lite · Distilled", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 16, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false },
-    { id: "kandinsky-sft", label: "Kandinsky 5 Lite · SFT quality", profile: "kandinsky-staged", offloading: "stage-boundary-only", nativeClipSeconds: 5, steps: 100, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false },
-    { id: "wan-2.2-5b-offload", label: "Wan 2.2 5B · Predictable offload", profile: "forced-offload", offloading: "forced", nativeClipSeconds: 3, steps: 20, available: true, missingFiles: [], supportsImageReference: true, supportsVideoReference: false },
-  ],
+  presets: previewPresetStatuses,
   projects: [],
   root: "D:\\Kestrel Research\\video-studio",
 };
@@ -420,7 +433,8 @@ export async function setVideoChapterReference(id: string, chapterIndex: number,
 
 export async function planVideoProject(request: VideoPlanRequest): Promise<VideoProject> {
   if (!isTauri()) {
-    const preset = previewVideoSnapshot.presets.find((item) => item.id === request.preset)!;
+    const preset = previewPresetTable[request.preset];
+    const [width, height] = preset.dimensions[request.orientation];
     const clipCount = Math.ceil(request.totalDurationSeconds / preset.nativeClipSeconds);
     const now = new Date().toISOString();
     const id = `preview-${Date.now()}`;
@@ -436,12 +450,12 @@ export async function planVideoProject(request: VideoPlanRequest): Promise<Video
       updatedAt: now,
       totalDurationSeconds: request.totalDurationSeconds,
       clipDurationSeconds: preset.nativeClipSeconds,
-      width: request.orientation === "portrait" ? 480 : 832,
-      height: request.orientation === "portrait" ? 832 : 480,
-      fps: request.preset === "wan-1.3b-gpu-only" || request.preset === "wan-vace-1.3b-reference" ? 16 : 24,
-      framesPerClip: request.preset.includes("kandinsky") ? 121 : request.preset === "wan-1.3b-gpu-only" ? 33 : 81,
+      width,
+      height,
+      fps: preset.fps,
+      framesPerClip: preset.framesPerClip,
       steps: preset.steps,
-      cfg: request.preset === "kandinsky-distilled" ? 1 : request.preset.includes("kandinsky") ? 5 : 6,
+      cfg: preset.cfg,
       negativePrompt: request.negativePrompt,
       continuityBible: `Maintain subject, palette, geography, lighting, and motion continuity for ${request.audience}.`,
       planningNote: "Preview plan; the desktop app uses the selected local model and persists native queue state.",

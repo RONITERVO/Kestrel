@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -1362,7 +1362,7 @@ pub async fn execute_project(
             manager.stop().await?;
             return Ok(());
         }
-        let free = fs2::available_space(&project_dir)
+        let free = fs4::available_space(&project_dir)
             .map_err(|error| format!("could not inspect free disk space: {error}"))?;
         let required = project.boundaries.min_free_disk_gib as u64 * 1024 * 1024 * 1024;
         if free < required {
@@ -1788,17 +1788,20 @@ async fn stage_comfy_input(
         .join("kestrel")
         .join(project_id);
     let project_dir = project_dir.to_path_buf();
-    let relative = format!(
-        "kestrel/{project_id}/{stem}.{}",
+    let filename = format!(
+        "{stem}.{}",
         source
             .extension()
             .and_then(|value| value.to_str())
             .unwrap_or("bin")
             .to_ascii_lowercase()
     );
+    let relative = format!("kestrel/{project_id}/{filename}");
     let destination = PathBuf::from(&settings.comfy_root)
         .join("input")
-        .join(relative.replace('/', "\\"));
+        .join("kestrel")
+        .join(project_id)
+        .join(filename);
     tokio::task::spawn_blocking(move || {
         let canonical_project = project_dir
             .canonicalize()
@@ -1890,38 +1893,37 @@ async fn verify_and_copy_output(
     }
     let root = PathBuf::from(&settings.comfy_root).join("output");
     let source = root.join(&output.subfolder).join(&output.filename);
-    let canonical_root = root
-        .canonicalize()
-        .map_err(|error| format!("could not resolve ComfyUI output folder: {error}"))?;
-    let canonical_source = source
-        .canonicalize()
-        .map_err(|error| format!("ComfyUI output is missing: {error}"))?;
-    if !canonical_source.starts_with(&canonical_root) {
-        return Err("ComfyUI output escaped its configured output folder.".into());
-    }
-    let metadata = fs::metadata(&canonical_source).map_err(|error| error.to_string())?;
-    if metadata.len() < 1_024 {
-        return Err("ComfyUI output is too small to be a valid video.".into());
-    }
     let destination = store
         .project_dir(project_id)?
         .join("clips")
         .join(format!("clip_{clip_index:05}.mp4"));
-    let partial = destination.with_extension("mp4.partial");
-    fs::copy(&canonical_source, &partial)
-        .map_err(|error| format!("could not copy verified clip into project: {error}"))?;
-    if destination.exists() {
-        fs::remove_file(&destination).map_err(|error| error.to_string())?;
-    }
-    fs::rename(&partial, &destination).map_err(|error| error.to_string())?;
-    let path = destination.clone();
     tokio::task::spawn_blocking(move || {
-        let bytes = fs::metadata(&path)
+        let canonical_root = root
+            .canonicalize()
+            .map_err(|error| format!("could not resolve ComfyUI output folder: {error}"))?;
+        let canonical_source = source
+            .canonicalize()
+            .map_err(|error| format!("ComfyUI output is missing: {error}"))?;
+        if !canonical_source.starts_with(&canonical_root) {
+            return Err("ComfyUI output escaped its configured output folder.".into());
+        }
+        let metadata = fs::metadata(&canonical_source).map_err(|error| error.to_string())?;
+        if metadata.len() < 1_024 {
+            return Err("ComfyUI output is too small to be a valid video.".into());
+        }
+        let partial = destination.with_extension("mp4.partial");
+        fs::copy(&canonical_source, &partial)
+            .map_err(|error| format!("could not copy verified clip into project: {error}"))?;
+        if destination.exists() {
+            fs::remove_file(&destination).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&partial, &destination).map_err(|error| error.to_string())?;
+        let bytes = fs::metadata(&destination)
             .map_err(|error| error.to_string())?
             .len();
-        let sha256 = hash_file(&path)?;
+        let sha256 = hash_file(&destination)?;
         Ok(VerifiedOutput {
-            path: path.to_string_lossy().into_owned(),
+            path: destination.to_string_lossy().into_owned(),
             bytes,
             sha256,
             continuity_frame_path: None,
@@ -2367,7 +2369,7 @@ pub fn import_reference(
     let asset_id = uuid::Uuid::new_v4().to_string();
     let reference_dir = store.project_dir(id)?.join("references");
     fs::create_dir_all(&reference_dir).map_err(|error| error.to_string())?;
-    let free = fs2::available_space(&reference_dir)
+    let free = fs4::available_space(&reference_dir)
         .map_err(|error| format!("Could not inspect free disk space: {error}"))?;
     let reserve = project.boundaries.min_free_disk_gib as u64 * 1024 * 1024 * 1024;
     if free < reserve.saturating_add(metadata.len()) {
@@ -2415,6 +2417,7 @@ pub fn import_reference(
 }
 
 pub fn reference_preview(store: &VideoStore, id: &str, asset_id: &str) -> Result<String, String> {
+    const MAX_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
     let project = store.get_project(id)?;
     let asset = find_reference(&project, asset_id)?;
     let preview = asset
@@ -2431,8 +2434,16 @@ pub fn reference_preview(store: &VideoStore, id: &str, asset_id: &str) -> Result
     if !path.starts_with(project_dir) {
         return Err("Reference thumbnail escaped its project directory.".into());
     }
-    let bytes = fs::read(&path).map_err(|error| error.to_string())?;
-    if bytes.len() > 2 * 1024 * 1024 {
+    let file = File::open(&path).map_err(|error| error.to_string())?;
+    let bytes = file.metadata().map_err(|error| error.to_string())?.len();
+    if bytes > MAX_PREVIEW_BYTES {
+        return Err("Reference thumbnail exceeds 2 MiB.".into());
+    }
+    let mut bytes = Vec::with_capacity(bytes as usize);
+    file.take(MAX_PREVIEW_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
         return Err("Reference thumbnail exceeds 2 MiB.".into());
     }
     Ok(format!(
@@ -2483,6 +2494,12 @@ pub fn set_continuity(
     ensure_editable_project(&project)?;
     if mode != VideoContinuityMode::None && !project.preset.supports_image_reference() {
         return Err("This preset cannot consume an image reference.".into());
+    }
+    if mode != VideoContinuityMode::None && primary_reference_id.is_none() {
+        return Err(
+            "Select a primary subject/storyboard image before choosing this continuity policy."
+                .into(),
+        );
     }
     if let Some(reference_id) = primary_reference_id.as_deref() {
         let asset = find_reference(&project, reference_id)?;
@@ -3012,6 +3029,39 @@ mod tests {
             chapter_reference.chapters[0].reference_asset_id,
             Some(referenced.references[0].id.clone())
         );
+
+        assert!(set_continuity(&store, &project.id, VideoContinuityMode::Anchor, None).is_err());
+
+        let mut missing_primary = chapter_reference.clone();
+        missing_primary.continuity = VideoContinuitySettings {
+            mode: VideoContinuityMode::PreviousFrame,
+            primary_reference_id: None,
+        };
+        let error = verify_project_references(&store, &missing_primary)
+            .await
+            .unwrap_err();
+        assert!(error.contains("needs a primary"));
+
+        let outside = directory.path().join("outside.png");
+        fs::write(&outside, vec![8u8; 2_048]).unwrap();
+        let mut escaped = chapter_reference.clone();
+        escaped.references[0].stored_path = outside.to_string_lossy().into_owned();
+        escaped.references[0].bytes = fs::metadata(&outside).unwrap().len();
+        escaped.references[0].sha256 = hash_file(&outside).unwrap();
+        let error = verify_project_references(&store, &escaped)
+            .await
+            .unwrap_err();
+        assert!(error.contains("escaped its durable project directory"));
+
+        fs::write(
+            &chapter_reference.references[0].stored_path,
+            vec![9u8; 2_049],
+        )
+        .unwrap();
+        let error = verify_project_references(&store, &chapter_reference)
+            .await
+            .unwrap_err();
+        assert!(error.contains("changed after import"));
     }
 
     #[test]

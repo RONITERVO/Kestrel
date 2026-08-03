@@ -402,6 +402,28 @@ export interface VideoPlanRequest {
   boundaries: VideoBoundarySettings;
 }
 
+export type VideoClipStatus =
+  | "planned"
+  | "queued"
+  | "generating"
+  | "verifying"
+  | "complete"
+  | "failed";
+
+export type VideoProjectStatus =
+  | "planned"
+  | "starting"
+  | "running"
+  | "verifying"
+  | "assembling"
+  | "completed"
+  | "completed-with-warnings"
+  | "cancelled"
+  | "interrupted"
+  | "paused-boundary"
+  | "paused-failures"
+  | "failed";
+
 export interface VideoChapter {
   index: number;
   title: string;
@@ -417,7 +439,7 @@ export interface VideoClip {
   chapterIndex: number;
   prompt: string;
   seed: number;
-  status: string;
+  status: VideoClipStatus;
   attempts: number;
   comfyPromptId?: string;
   outputPath?: string;
@@ -458,7 +480,7 @@ export interface VideoProject {
   audience: string;
   useCase: string;
   preset: VideoPreset;
-  status: string;
+  status: VideoProjectStatus;
   createdAt: string;
   updatedAt: string;
   totalDurationSeconds: number;
@@ -486,7 +508,7 @@ export interface VideoProjectSummary {
   id: string;
   title: string;
   preset: VideoPreset;
-  status: string;
+  status: VideoProjectStatus;
   updatedAt: string;
   totalDurationSeconds: number;
   clipCount: number;

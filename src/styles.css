@@ -555,7 +555,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .video-panel-heading { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 18px; }
 .video-panel-heading h2 { margin: 3px 0 0; font: 600 20px/1.2 var(--serif); }
 .step-badge { width: 25px; height: 25px; display: grid; flex: 0 0 auto; place-items: center; border: 1px solid #bed0c4; border-radius: 50%; color: var(--green); background: var(--green-wash); font-size: 10px; font-weight: 800; }
-.video-prompt-field, .negative-field, .video-form-grid label, .boundary-grid label, .setup-fields > label { display: flex; flex-direction: column; gap: 6px; color: #67655d; font-size: 10px; font-weight: 750; }
+.video-prompt-field, .negative-field, .video-form-grid label, .boundary-grid label, .setup-fields > label, .setup-field label { display: flex; flex-direction: column; gap: 6px; color: #67655d; font-size: 10px; font-weight: 750; }
 .video-studio input, .video-studio select, .video-studio textarea { width: 100%; border: 1px solid #d4cec3; border-radius: 9px; outline: 0; color: var(--ink); background: #fbf9f4; }
 .video-studio input, .video-studio select { height: 39px; padding: 0 11px; }
 .video-studio textarea { padding: 11px; resize: vertical; line-height: 1.5; }
@@ -715,8 +715,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .setup-heading small { color: var(--muted); font-size: 9px; font-weight: 400; }
 .setup-root { max-width: 42%; display: flex; align-items: center; gap: 5px; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .setup-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
-.setup-fields label > div { display: flex; gap: 6px; }
-.setup-fields label > div input { min-width: 0; flex: 1; }
+.setup-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; }
 .setup-actions { justify-content: flex-end; }
 
 @keyframes spin { to { transform: rotate(360deg); } }

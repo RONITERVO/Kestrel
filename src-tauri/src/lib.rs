@@ -80,6 +80,12 @@ impl Drop for ResearchGuard<'_> {
 
 struct WorkGuard<'a>(&'a AtomicBool);
 
+struct VideoJobGuard<'a> {
+    jobs: &'a Mutex<HashMap<String, CancellationToken>>,
+    work: &'a AtomicBool,
+    id: String,
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextAttachmentImport {
@@ -90,6 +96,17 @@ struct ContextAttachmentImport {
 impl Drop for WorkGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+impl Drop for VideoJobGuard<'_> {
+    fn drop(&mut self) {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        jobs.remove(&self.id);
+        self.work.store(false, Ordering::Release);
     }
 }
 
@@ -649,6 +666,11 @@ async fn start_video_project(
     let returned = project.clone();
     tauri::async_runtime::spawn(async move {
         let managed = app.state::<AppState>();
+        let _job_guard = VideoJobGuard {
+            jobs: &managed.video_jobs,
+            work: &managed.work_active,
+            id: id.clone(),
+        };
         let cleanup_settings = settings.clone();
         let result = async {
             let Some(_idle) = managed
@@ -718,10 +740,6 @@ async fn start_video_project(
                 },
             );
         }
-        if let Ok(mut jobs) = managed.video_jobs.lock() {
-            jobs.remove(&id);
-        }
-        managed.work_active.store(false, Ordering::Release);
     });
     Ok(returned)
 }
@@ -758,10 +776,26 @@ async fn pick_comfy_root() -> Result<Option<String>, String> {
             folder
                 .path()
                 .canonicalize()
-                .map(|value| value.to_string_lossy().into_owned())
+                .map(path_for_user)
                 .map_err(|error| error.to_string())
         })
         .transpose()
+}
+
+fn path_for_user(path: std::path::PathBuf) -> String {
+    let value = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{unc}");
+        }
+        if let Some(dos) = value.strip_prefix(r"\\?\") {
+            if dos.as_bytes().get(1) == Some(&b':') {
+                return dos.to_string();
+            }
+        }
+    }
+    value.into_owned()
 }
 
 #[tauri::command]
@@ -837,7 +871,7 @@ async fn pick_local_model_folder() -> Result<Option<String>, String> {
             folder
                 .path()
                 .canonicalize()
-                .map(|value| value.to_string_lossy().into_owned())
+                .map(path_for_user)
                 .map_err(|error| error.to_string())
         })
         .transpose()
