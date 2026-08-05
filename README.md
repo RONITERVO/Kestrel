@@ -6,7 +6,7 @@ The application has five adjacent workspaces:
 
 - **Control** discovers GGUF files read-only, keeps a recoverable startup catalog, rediscovers installed Bonsai/Jan/PATH engines, attaches to an existing Bonsai service or starts one authenticated `llama-server`, shows live VRAM, exposes exact launch arguments, and offers durable multimodal chat and Computer Tasks.
 - **Research** runs a Bonsai-specific two-tool harness, visibly reports six stages, validates every citation, finds related prior work, and publishes immutable editions.
-- **Studio** turns one unmodified user prompt into a Bonsai-authored screenplay, continuity bible, native-audio MiniMax H3 clips, and an editable first cut. It can consult offline Wikipedia through two sequential tools, then unloads Bonsai before H3 receives the GPU.
+- **Studio** turns one unmodified user prompt into a Bonsai-authored screenplay, continuity bible, native-audio MiniMax H3 clips, and an editable first cut. Optional producer pictures, videos, and audio are imported once, described in plain language, and bound through H3's native reference model. Studio can consult offline Wikipedia through two sequential tools, then unloads Bonsai before H3 receives the GPU.
 - **Developer** runs fixed offline checks. If Codex CLI is installed and signed in, an explicit one-click action can repair this Git workspace under an ephemeral workspace-write sandbox. Research never depends on it.
 - **System** exposes the installed Bonsai/Kiwix state, GPU telemetry, and opt-in high-capacity research settings.
 
@@ -68,8 +68,11 @@ C:\Users\<you>\Kestrel Research\
 |-- workspace\attachments # content-addressed local context objects and extractions
 |-- workspace\chats       # recoverable chat transcripts and attachment references
 |-- workspace\tasks       # recoverable computer-task transcripts
+|-- movies\_references     # SHA-256 producer-media objects + validated metadata
 |-- movies\<uuid>          # recoverable, versioned production
 |   |-- request.json       # exact user prompt + production settings
+|   |-- references.json    # producer jobs, stable asset IDs, H3 media metadata
+|   |-- references\*       # immutable hard-linked/copied project media
 |   |-- plan.json          # Bonsai screenplay and H3 clip prompts
 |   |-- sources.json       # only archive pages actually opened
 |   |-- project.json       # live status, edit decisions, provenance
@@ -91,6 +94,8 @@ This keeps thousands of editions searchable through FTS5 while local models and 
 Chat and Computer Tasks can attach any regular local file up to 128 MiB. Kestrel copies it into a SHA-256-addressed object store before inference. Images and audio use loopback-only llama.cpp multimodal content blocks when the selected GGUF projector advertises those modalities. PDF, DOCX, PPTX, XLSX, source code, markup, logs, and common text formats receive bounded local text extraction. Unknown binaries remain durable and clearly marked metadata-only; Kestrel never claims the model read content it could not decode. Computer Tasks can request additional ranges from a declared attachment through a read-only typed tool.
 
 Movie creation stores its project before inference begins and rewrites status atomically after every meaningful transition. On restart, active work becomes explicitly `interrupted`; it is never silently resumed. Resume skips already completed masters. Bonsai gets a compact director contract rather than a template screenplay: the user's text is its own unchanged message, output may use the validated 98,304/32,768 profile, creativity sampling remains adjustable, and only renderer/data-shape limits are enforced. H3 clips are 24 fps with native stereo audio. Bonsai may choose end-frame chaining for continuous action; fresh cuts keep self-contained continuity prompts. Advanced edits change an edit decision list and export a new MP4 without modifying source clips.
+
+Producer references deliberately use a separate large-media store rather than injecting binary media into Bonsai context. The native picker validates real streams with FFprobe, applies bounded image/audio/video sizes and H3 duration limits, copies while hashing, and verifies the SHA-256 object again when a project is created. Each attachment needs a producer description of the job it should do. Bonsai sees only those descriptions and opaque asset IDs, selects IDs per clip, and never claims it inspected raw media. Kestrel—not the model—renumbers and injects `<Picture n>`, `<Video n>`, and `<Audio n>` assignments, constructs Comfy's V3 autogrow inputs, and selects the installed `ref2va` weights. The supported production envelope is 9 pictures, 3 videos, and 3 audio signals; video soundtrack use is explicit and off by default. Reference-conditioned shots do not also chain a prior frame because those are separate native H3 conditioning paths.
 
 Portable setup profiles contain research/runtime tuning, path-independent model identities, and local path hints. They never include weights, chats, research, credentials, developer paths, or Full Access authority. Import validates a bounded JSON file, keeps local developer/workspace paths, locks Full Access, rediscovers a local engine, and rescans weights before returning control.
 
@@ -140,6 +145,7 @@ cargo test --manifest-path src-tauri\Cargo.toml live_archive_search_and_read -- 
 cargo test --manifest-path src-tauri\Cargo.toml live_bonsai_research_creates_a_complete_offline_bundle -- --ignored --nocapture
 cargo test --manifest-path src-tauri\Cargo.toml live_solo_expedition_uses_shared_lanes_and_high_output_budget -- --ignored --nocapture
 cargo test --manifest-path src-tauri\Cargo.toml live_one_prompt_movie_produces_a_native_audio_first_cut -- --ignored --nocapture
+cargo test --manifest-path src-tauri\Cargo.toml live_one_prompt_movie_uses_native_picture_and_audio_references -- --ignored --nocapture
 ```
 
 The in-app Developer screen runs the deterministic checks offline. Its optional Codex repair uses the same contract captured in `AGENTS.md`, but code, tests, recovery paths, and actionable errors remain the primary maintenance surface.

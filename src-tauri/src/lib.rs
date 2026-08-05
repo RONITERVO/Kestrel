@@ -38,7 +38,9 @@ use std::{
     },
 };
 use store::ResearchStore;
-use studio::{MovieEdit, MovieProject, MovieStudio, MovieSummary, StartMovieRequest};
+use studio::{
+    MovieEdit, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, StartMovieRequest,
+};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -187,6 +189,46 @@ fn list_movies(state: State<'_, AppState>) -> Result<Vec<MovieSummary>, String> 
 #[tauri::command]
 fn get_movie(id: String, state: State<'_, AppState>) -> Result<MovieProject, String> {
     state.studio.get(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn pick_movie_reference_files(
+    state: State<'_, AppState>,
+) -> Result<MovieReferenceImport, String> {
+    let paths = rfd::AsyncFileDialog::new()
+        .set_title("Attach H3 producer references")
+        .add_filter("Pictures", &["png", "jpg", "jpeg", "webp", "bmp"])
+        .add_filter(
+            "Video (2-15 seconds)",
+            &["mp4", "m4v", "mov", "mkv", "webm"],
+        )
+        .add_filter(
+            "Audio (up to 15 seconds)",
+            &["wav", "mp3", "flac", "ogg", "oga", "m4a", "aac"],
+        )
+        .pick_files()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|file| file.path().to_path_buf())
+        .collect::<Vec<_>>();
+    let studio = state.studio.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut references = Vec::new();
+        let mut failures = Vec::new();
+        for path in paths {
+            match studio.import_reference_path(&path) {
+                Ok(reference) => references.push(reference),
+                Err(error) => failures.push(format!("{}: {error}", path.display())),
+            }
+        }
+        MovieReferenceImport {
+            references,
+            failures,
+        }
+    })
+    .await
+    .map_err(|error| format!("Reference import stopped unexpectedly: {error}"))
 }
 
 #[tauri::command]
@@ -1407,6 +1449,7 @@ pub fn run() {
             cancel_research,
             list_movies,
             get_movie,
+            pick_movie_reference_files,
             start_movie,
             resume_movie,
             cancel_movie,

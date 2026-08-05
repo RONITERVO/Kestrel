@@ -10,8 +10,8 @@ Kestrel should keep improving while preserving its small model-specific harness,
 - [x] Durable per-clip recovery, safe cancellation/resume, and immutable masters.
 - [x] Live scene review plus non-destructive order, trim, inclusion, and audio-gain editing.
 - [x] First-cut and edited MP4 export with ordinary FFmpeg.
-- [ ] Add user-supplied H3 image/video/audio references behind the immutable attachment store.
-- [ ] Add optional ref2va identity/voice locking once its native Comfy API graph has a stable compatibility fixture.
+- [x] Add user-supplied H3 image/video/audio references behind a bounded immutable producer-media store.
+- [x] Add native ref2va identity, motion, style, camera, voice, and audio conditioning with a live compatibility fixture.
 - [ ] Add local captions, title cards, and accessibility tracks without changing H3 masters.
 - [ ] Add project archive/export plus restore verification.
 
@@ -46,3 +46,4 @@ Kestrel should keep improving while preserving its small model-specific harness,
 - Interrupted/cancelled work leaves no visible partial edition.
 - Standalone HTML remains readable with JavaScript disabled and Kestrel uninstalled.
 - A one-prompt live run unloads Bonsai before H3, preserves native audio, and produces a playable first cut.
+- A one-prompt live reference run preserves producer media, binds picture/audio IDs through native ref2va, and produces a probed playable cut.

@@ -26,6 +26,7 @@ import type {
   SystemSnapshot,
   MovieEdit,
   MovieProject,
+  MovieReferenceImport,
   MovieSummary,
   StartMovieRequest,
 } from "./types";
@@ -92,6 +93,11 @@ export async function listMovies(): Promise<MovieSummary[]> {
 export async function getMovie(id: string): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Movie projects require the desktop application.");
   return invoke<MovieProject>("get_movie", { id });
+}
+
+export async function pickMovieReferenceFiles(): Promise<MovieReferenceImport> {
+  if (!isTauri()) return { references: [], failures: [] };
+  return invoke<MovieReferenceImport>("pick_movie_reference_files");
 }
 
 export async function startMovie(request: StartMovieRequest): Promise<MovieProject> {

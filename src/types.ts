@@ -105,6 +105,53 @@ export interface MovieSettings {
   thinkingBudget: number;
   maxOutputTokens: number;
   comfyRoot: string;
+  refImageSize: "match" | "max";
+}
+
+export interface MovieReferenceAsset {
+  id: string;
+  name: string;
+  kind: "image" | "video" | "audio";
+  mimeType: string;
+  bytes: number;
+  durationSeconds: number;
+  width: number;
+  height: number;
+  hasAudio: boolean;
+  path: string;
+  createdAt: string;
+}
+
+export interface ProducerReferenceRequest {
+  assetId: string;
+  description: string;
+  useEmbeddedAudio: boolean;
+  embeddedAudioDescription: string;
+}
+
+export interface PendingMovieReference extends MovieReferenceAsset, ProducerReferenceRequest {}
+
+export interface MovieReferenceImport {
+  references: MovieReferenceAsset[];
+  failures: string[];
+}
+
+export interface MovieReference {
+  assetId: string;
+  tag: string;
+  audioTag: string;
+  name: string;
+  kind: "image" | "video" | "audio";
+  mimeType: string;
+  bytes: number;
+  durationSeconds: number;
+  width: number;
+  height: number;
+  hasAudio: boolean;
+  path: string;
+  description: string;
+  useEmbeddedAudio: boolean;
+  embeddedAudioDescription: string;
 }
 
 export interface PlannedClip {
@@ -118,6 +165,7 @@ export interface PlannedClip {
   transition: string;
   usePreviousFrame: boolean;
   sourceRefs: string[];
+  referenceIds: string[];
 }
 
 export interface MoviePlan {
@@ -177,6 +225,7 @@ export interface MovieProject {
   model: string;
   renderer: string;
   settings: MovieSettings;
+  references: MovieReference[];
   plan?: MoviePlan;
   sources: MovieSource[];
   clips: RenderedClip[];
@@ -198,6 +247,7 @@ export interface MovieSummary {
 export interface StartMovieRequest {
   prompt: string;
   settings: MovieSettings;
+  references: ProducerReferenceRequest[];
 }
 
 export interface ModelInfo {
