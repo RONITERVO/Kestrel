@@ -1144,10 +1144,11 @@ impl MovieStudio {
                 allowed_references.contains(reference.as_str())
                     && seen_references.insert(reference.clone())
             });
-            if !clip.reference_ids.is_empty() {
-                // H3's native ref2va node owns the conditioning path for this shot. It cannot be
-                // combined with fl2va's prior-frame input in the same native graph.
-                clip.use_previous_frame = false;
+            if clip.use_previous_frame && !clip.reference_ids.is_empty() {
+                return Err(StudioError::Planning(format!(
+                    "Bonsai review accepted clip {} with incompatible H3 continuation and native references; rendering was stopped before any media changed",
+                    index + 1
+                )));
             }
         }
         project.title.clone_from(&plan.title);
@@ -1596,7 +1597,10 @@ impl MovieStudio {
         if !manifest.is_empty() {
             messages.push(json!({"role":"user","content":manifest}));
         }
-        messages.push(json!({"role":"user","content":format!("Rewrite the complete plan, repairing every blocking finding below. Preserve what already works. Return only replacement JSON.\n{repair}")}));
+        messages.push(json!({"role":"user","content":format!(
+            "Rewrite the complete plan, repairing every blocking finding below. Preserve what already works. Apply the H3 mode constraint with the smallest possible scene-boundary, duration, or action change; do not broadly rewrite unaffected scenes.\n\n{}\n\nReturn only replacement JSON.\n{repair}",
+            reference_continuity_repair_brief()
+        )}));
         self.complete_plan(&messages, settings, connection, research)
             .await
     }
@@ -2412,9 +2416,13 @@ fn response_message(response: &Value) -> Result<Value, StudioError> {
 
 fn director_prompt(settings: &MovieSettings) -> String {
     format!(
-        "You are the autonomous writer-director-editor inside Kestrel Movie Studio. Turn the producer's request into a complete original MiniMax H3 plan and infer missing creative decisions without asking questions. Preserve story causality, identity, geography, screen direction, visual language, and sound across the cut.\n\nEvery clip prompt is the final renderer instruction, not a summary. Keep it between {MIN_H3_PROMPT_WORDS} and {MAX_H3_PROMPT_WORDS} words. Match the production specificity of official H3 examples: establish medium, genre, environment, lighting, palette, lens and texture; give a scene overview; cover the full duration with explicit timecoded shots or timed beats for a deliberate continuous take; specify framing, camera movement, subject blocking, physical action, transition, exact dialogue if any, ambience, effects, and score; finish with relevant exclusions such as no unwanted text, logos, subtitles, animation, or implausible motion. Every timed prompt must explicitly define picture, action, camera, and sound through the exact end of the clip; when the main action ends early, direct the remaining hold, settle, or reaction through that final timestamp. Do not add exclusions that conflict with the request. Prefer visible, achievable direction over abstract adjectives.\n\nProducer descriptions are planning instructions only. Select exact asset IDs in referenceIds wherever their stated job applies. An audio asset is native existing clip audio, not a symbolic voice-identity profile: assign it only to clips where that attached audio should condition the generated soundtrack. Never quote a producer description or put an asset ID in a clip prompt. Never write H3 reference tags; Kestrel binds and renumbers them. Use a picture reference on every clip where its referenced identity or visual subject must appear. Do not blanket-assign references to irrelevant clips. Chain a prior frame only when referenceIds is empty. There are no research tools; do not claim external verification or fabricate source credits. Return the required plan JSON without commentary. Renderer: 24fps, {}x{}, at most {} clips.",
+        "You are the autonomous writer-director-editor inside Kestrel Movie Studio. Turn the producer's request into a complete original MiniMax H3 plan and infer missing creative decisions without asking questions. Preserve story causality, identity, geography, screen direction, visual language, and sound across the cut.\n\nEvery clip prompt is the final renderer instruction, not a summary. Keep it between {MIN_H3_PROMPT_WORDS} and {MAX_H3_PROMPT_WORDS} words. Match the production specificity of official H3 examples: establish medium, genre, environment, lighting, palette, lens and texture; give a scene overview; cover the full duration with explicit timecoded shots or timed beats for a deliberate continuous take; specify framing, camera movement, subject blocking, physical action, transition, exact dialogue if any, ambience, effects, and score; finish with relevant exclusions such as no unwanted text, logos, subtitles, animation, or implausible motion. Every timed prompt must explicitly define picture, action, camera, and sound through the exact end of the clip; when the main action ends early, direct the remaining hold, settle, or reaction through that final timestamp. Do not add exclusions that conflict with the request. Prefer visible, achievable direction over abstract adjectives.\n\nProducer descriptions are planning instructions only. Select exact asset IDs in referenceIds wherever their stated job applies. An audio asset is native existing clip audio, not a symbolic voice-identity profile: assign it only to clips where that attached audio should condition the generated soundtrack. Never quote a producer description or put an asset ID in a clip prompt. Never write H3 reference tags; Kestrel binds and renumbers them. H3 reference conditioning and exact prior-frame continuation are mutually exclusive per clip. Use references for a reference-locked shot, or usePreviousFrame with an empty referenceIds list for a seamless continuation whose prior frame already carries the subject's appearance. Never request both. Do not blanket-assign references to irrelevant clips. There are no research tools; do not claim external verification or fabricate source credits. Return the required plan JSON without commentary. Renderer: 24fps, {}x{}, at most {} clips.",
         settings.width, settings.height, settings.max_clips
     )
+}
+
+fn reference_continuity_repair_brief() -> &'static str {
+    "MiniMax H3 has two mutually exclusive native conditioning modes per clip. ref2va applies referenceIds (character or product pictures, reference video, or existing audio) but cannot accept the preceding clip's exact last frame. fl2va accepts that last frame as frame zero when usePreviousFrame is true, but then referenceIds must be empty. Combining them is not an approximation: one conditioning path would be absent. A character can visibly jump in face, wardrobe, pose, lighting, camera position, or screen direction; a product can change shape; or required reference audio can disappear. Example: establish a referenced actor in a ref2va clip, end on the pose needed for the handoff, then continue with a reference-free fl2va clip because the carried frame already contains the actor. If reference audio is needed at the boundary, keep it in a reference-locked clip and move the seamless handoff before or after it. Repair conflicts with the smallest viable change: choose a motivated cut, move the boundary, slightly extend or shorten a neighboring 5-15 second clip, or split/rebalance the action without changing the story, approximate total runtime, or unaffected scenes. Never solve the conflict by silently dropping a reference or disabling requested continuation."
 }
 
 fn reference_manifest(references: &[MovieReference]) -> String {
@@ -2469,8 +2477,11 @@ struct MovieAssessment {
     blocking_issues: Vec<ReviewIssue>,
 }
 
-fn code_reviewer_prompt() -> &'static str {
-    "Act as a strict CodeRabbit-style production reviewer for a MiniMax H3 movie plan. Report only defects that would materially reduce the rendered film: story contradictions, broken continuity or screen direction, infeasible action, weak placement of a supplied reference, supplied native audio assigned where its existing clip sound does not belong, a supplied identity reference omitted where its subject appears, vague renderer prose, incomplete timed coverage, unclear camera/blocking, or underspecified sound. A producer may legitimately provide no references: never request, invent, or require an asset ID, URL, image, video, or audio absent from the manifest; judge reference-free continuity from the continuity bible and self-contained prompts. Treat each clip prompt as shippable production code and compare its specificity with excellent official H3 examples. The native gate findings are blocking. Use clipNumber 0 for plan-wide issues. Give concrete repair instructions, not rewrites or praise. Return an empty issues array only when the plan is genuinely ready."
+fn code_reviewer_prompt() -> String {
+    format!(
+        "Act as a strict CodeRabbit-style production reviewer for a MiniMax H3 movie plan. Report only defects that would materially reduce the rendered film: story contradictions, broken continuity or screen direction, infeasible action, weak placement of a supplied reference, supplied native audio assigned where its existing clip sound does not belong, a supplied identity reference omitted where its subject appears, vague renderer prose, incomplete timed coverage, unclear camera/blocking, or underspecified sound. A producer may legitimately provide no references: never request, invent, or require an asset ID, URL, image, video, or audio absent from the manifest; judge reference-free continuity from the continuity bible and self-contained prompts. Treat each clip prompt as shippable production code and compare its specificity with excellent official H3 examples. The native gate findings are blocking. Use clipNumber 0 for plan-wide issues. Give concrete repair instructions, not rewrites or praise. Return an empty issues array only when the plan is genuinely ready.\n\nReference/continuation audit: {}",
+        reference_continuity_repair_brief()
+    )
 }
 
 fn assessor_prompt() -> &'static str {
@@ -2478,7 +2489,7 @@ fn assessor_prompt() -> &'static str {
 }
 
 fn clip_assistant_prompt() -> &'static str {
-    "You are Bonsai at an advanced producer's scene desk. Propose one organized replacement scene; never mutate files or claim that the existing H3 master changed. Obey the producer's requested fix, preserve useful neighboring continuity, and keep native reference IDs only in referenceIds. The replacement prompt must be a complete 120-450 word MiniMax H3 renderer instruction with production medium, environment, lighting/texture, timed coverage through the exact clip endpoint, camera, blocking/action, sound, transition, and relevant exclusions. Return a concise producer summary, a practical verification checklist, and the complete structured replacement clip."
+    "You are Bonsai at an advanced producer's scene desk. Propose one organized replacement scene; never mutate files or claim that the existing H3 master changed. Obey the producer's requested fix and preserve useful neighboring continuity. MiniMax H3 cannot combine native referenceIds with an exact prior-frame continuation in one clip: choose referenceIds with usePreviousFrame false for a reference-locked cut, or usePreviousFrame true with empty referenceIds for a seamless handoff whose carried frame already contains the subject. Keep native reference IDs only in referenceIds. The replacement prompt must be a complete 120-450 word MiniMax H3 renderer instruction with production medium, environment, lighting/texture, timed coverage through the exact clip endpoint, camera, blocking/action, sound, transition, and relevant exclusions. Return a concise producer summary, a practical verification checklist, and the complete structured replacement clip."
 }
 
 fn clip_suggestion_schema() -> Value {
@@ -2627,8 +2638,8 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
         }
         if clip.use_previous_frame && !clip.reference_ids.is_empty() {
             issues.push(format!(
-                "Clip {} requests both a prior frame and native references, which H3 cannot combine in one graph.",
-                index + 1
+                "Clip {} requests both an exact prior-frame continuation and native references. H3 uses mutually exclusive fl2va and ref2va conditioning, so one input path would be absent and the cut can jump in identity, wardrobe, pose, product shape, lighting, camera position, or audio. Minimally reorganize this boundary: choose a reference-locked motivated cut, or end the preceding referenced clip on the required pose and make this a reference-free previous-frame continuation; if necessary move, split, extend, shorten, or rebalance only the affected 5-15 second scenes while preserving story and approximate total runtime.",
+                index + 1,
             ));
         }
         if clip.use_previous_frame
@@ -3387,7 +3398,15 @@ mod tests {
         assert!(!director.contains("archive"));
         assert!(!director.contains("Wikipedia"));
         assert!(director.split_whitespace().count() < 350);
-        assert!(code_reviewer_prompt().contains("never request, invent, or require"));
+        assert!(director.contains("mutually exclusive"));
+        let repair = reference_continuity_repair_brief();
+        assert!(repair.contains("ref2va"));
+        assert!(repair.contains("fl2va"));
+        assert!(repair.contains("smallest viable change"));
+        assert!(repair.contains("reference audio can disappear"));
+        let reviewer = code_reviewer_prompt();
+        assert!(reviewer.contains("never request, invent, or require"));
+        assert!(reviewer.contains("Reference/continuation audit"));
         assert!(assessor_prompt().contains("reference-free request is valid"));
         let schema = movie_schema(12);
         assert_eq!(
@@ -3433,6 +3452,29 @@ mod tests {
             }],
         };
         assert!(prompt_quality_issues(&plan, &[]).is_empty());
+        let mut conflict = plan.clone();
+        conflict.clips[0].use_previous_frame = true;
+        conflict.clips[0].reference_ids = vec!["actor-reference".into()];
+        let reference = MovieReference {
+            asset_id: "actor-reference".into(),
+            tag: "<Picture 1>".into(),
+            audio_tag: String::new(),
+            name: "actor.png".into(),
+            kind: "image".into(),
+            mime_type: "image/png".into(),
+            bytes: 1,
+            duration_seconds: 0.0,
+            width: 1,
+            height: 1,
+            has_audio: false,
+            path: "actor.png".into(),
+            description: "The lead actor's identity".into(),
+            use_embedded_audio: false,
+            embedded_audio_description: String::new(),
+        };
+        let conflict_issues = prompt_quality_issues(&conflict, &[reference]).join(" ");
+        assert!(conflict_issues.contains("mutually exclusive fl2va and ref2va"));
+        assert!(conflict_issues.contains("Minimally reorganize this boundary"));
         plan.clips[0].prompt = "A nice cinematic image with sound.".into();
         let issues = prompt_quality_issues(&plan, &[]).join(" ");
         assert!(issues.contains("120-450 words"));
