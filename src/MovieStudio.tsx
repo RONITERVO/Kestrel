@@ -59,10 +59,15 @@ export function MovieStudio({ advancedEnabled, onError }: { advancedEnabled: boo
 
   useEffect(() => {
     if (!project || project.status !== "running") return;
+    let active = true;
     const timer = window.setInterval(() => void getMovie(project.id).then((next) => {
+      if (!active) return;
       setProject(next); setEdits(next.edit.clips);
     }).catch(() => undefined), 2500);
-    return () => window.clearInterval(timer);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, [project?.id, project?.status]);
 
   const openProject = async (id: string) => {

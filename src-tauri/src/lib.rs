@@ -337,14 +337,8 @@ fn spawn_movie(
                     .map_err(|error| error.to_string())?;
                 drop(lease);
                 if planned.status == "awaiting-review" {
-                    managed
-                        .runtime
-                        .stop_managed()
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    services::stop_bonsai(&research.bonsai_root)
-                        .await
-                        .map_err(|error| error.to_string())?;
+                    let _ = managed.runtime.stop_managed().await;
+                    let _ = services::stop_bonsai(&research.bonsai_root).await;
                     return Ok(());
                 }
             }
@@ -398,7 +392,7 @@ fn cancel_movie(
 }
 
 #[tauri::command]
-fn save_movie_edits(
+async fn save_movie_edits(
     id: String,
     edit: MovieEdit,
     state: State<'_, AppState>,
@@ -406,11 +400,12 @@ fn save_movie_edits(
     state
         .studio
         .save_edits(&id, edit)
+        .await
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn save_movie_plan(
+async fn save_movie_plan(
     id: String,
     plan: MoviePlan,
     app: AppHandle,
@@ -420,6 +415,7 @@ fn save_movie_plan(
     state
         .studio
         .save_producer_plan(&id, plan, Some(&app))
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -470,7 +466,7 @@ async fn revise_movie_plan(
 }
 
 #[tauri::command]
-fn approve_movie_plan(
+async fn approve_movie_plan(
     id: String,
     app: AppHandle,
     state: State<'_, AppState>,
@@ -483,6 +479,7 @@ fn approve_movie_plan(
     let project = state
         .studio
         .approve_producer_plan(&id, Some(&app))
+        .await
         .map_err(|error| {
             state.work_active.store(false, Ordering::Release);
             error.to_string()

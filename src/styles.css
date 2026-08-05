@@ -609,7 +609,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .movie-advanced .producer-pause-toggle { padding: 12px; border: 1px solid #43543f; border-radius: 8px; background: #151e16; text-transform: none; }
 .producer-pause-toggle > span { display: flex; align-items: center; gap: 8px; color: #d5e2d1; font: 750 9px var(--sans); }
 .producer-pause-toggle input { width: auto; height: auto; accent-color: #a9dc5a; }
-.producer-pause-toggle small { color: #748278; font: 8px/1.5 var(--sans); }
+.producer-pause-toggle small { color: #78877e; font: 8px/1.5 var(--sans); }
 .movie-capabilities { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 16px; color: #68776e; font: 8px var(--mono); }
 .movie-capabilities span { display: flex; align-items: center; gap: 5px; }
 .movie-capabilities svg { width: 12px; color: #a7d65a; }
@@ -687,7 +687,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .producer-scene-card > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .producer-scene-card > header > span { display: grid; gap: 4px; }
 .producer-scene-card > header b { color: #dbe5de; font: 600 13px var(--serif); }
-.producer-scene-card > header small { color: #66766c; font: 7px var(--mono); }
+.producer-scene-card > header small { color: #87968d; font: 7px var(--mono); }
 .producer-scene-card > header div { display: flex; gap: 5px; }
 .producer-plan-desk button, .scene-assistant button { min-height: 33px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #3b493f; border-radius: 7px; color: #aab8af; background: #151d18; cursor: pointer; font: 750 8px var(--sans); }
 .producer-plan-desk button:disabled, .scene-assistant button:disabled { opacity: .42; cursor: default; }

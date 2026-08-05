@@ -8,17 +8,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
-use tokio::{process::Child, sync::Mutex};
+use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
 const SCHEMA_VERSION: u32 = 4;
@@ -585,7 +585,8 @@ impl From<&MovieProject> for MovieSummary {
 pub struct MovieStudio {
     root: PathBuf,
     http: Client,
-    comfy_child: Arc<Mutex<Option<Child>>>,
+    comfy_child: Arc<AsyncMutex<Option<Child>>>,
+    project_locks: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
 }
 
 impl MovieStudio {
@@ -600,7 +601,8 @@ impl MovieStudio {
                 .no_proxy()
                 .timeout(Duration::from_secs(3_600))
                 .build()?,
-            comfy_child: Arc::new(Mutex::new(None)),
+            comfy_child: Arc::new(AsyncMutex::new(None)),
+            project_locks: Arc::new(StdMutex::new(HashMap::new())),
         };
         studio.recover_interrupted()?;
         Ok(studio)
@@ -905,12 +907,25 @@ impl MovieStudio {
             .map_err(|error| if matches!(error, StudioError::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound) { StudioError::NotFound(id.into()) } else { error })
     }
 
-    pub fn save_producer_plan(
+    fn project_lock(&self, id: &str) -> Result<Arc<AsyncMutex<()>>, StudioError> {
+        validate_id(id)?;
+        let mut locks = self.project_locks.lock().map_err(|_| {
+            StudioError::Invalid("movie project lock registry is unavailable".into())
+        })?;
+        Ok(locks
+            .entry(id.to_owned())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone())
+    }
+
+    pub async fn save_producer_plan(
         &self,
         id: &str,
         mut plan: MoviePlan,
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
         let mut project = self.get(id)?;
         ensure_plan_is_unrendered(&project)?;
         prepare_producer_plan(&project, &mut plan)?;
@@ -936,11 +951,13 @@ impl MovieStudio {
         Ok(project)
     }
 
-    pub fn approve_producer_plan(
+    pub async fn approve_producer_plan(
         &self,
         id: &str,
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
         let mut project = self.get(id)?;
         ensure_plan_is_unrendered(&project)?;
         let plan = project
@@ -1010,7 +1027,9 @@ impl MovieStudio {
         Ok(())
     }
 
-    pub fn save_edits(&self, id: &str, edit: MovieEdit) -> Result<MovieProject, StudioError> {
+    pub async fn save_edits(&self, id: &str, edit: MovieEdit) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
         let mut project = self.get(id)?;
         for item in &edit.clips {
             if !project.clips.iter().any(|clip| clip.id == item.clip_id) {
@@ -1613,11 +1632,17 @@ impl MovieStudio {
         label: &str,
     ) -> Result<T, StudioError> {
         let mut last_error = String::new();
-        for _ in 0..2 {
+        let mut attempt_messages = messages.to_vec();
+        for attempt in 0..2 {
+            if attempt > 0 {
+                attempt_messages.push(json!({"role":"user","content":format!(
+                    "The previous response could not be parsed for the required schema: {last_error}. Correct that error and return only valid JSON matching the requested schema."
+                )}));
+            }
             let response = self
                 .complete(
                     connection,
-                    messages,
+                    &attempt_messages,
                     CompletionOptions {
                         response_format: Some(response_format.clone()),
                         max_tokens,
@@ -1683,6 +1708,7 @@ impl MovieStudio {
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
         let mut project = self.get(id)?;
+        ensure_producer_render_approval(&project)?;
         let comfy_root = project.settings.comfy_root.clone();
         self.ensure_comfy(&comfy_root, &mut project, app).await?;
         let plan = project
@@ -1756,7 +1782,10 @@ impl MovieStudio {
             suggestion,
             seed,
         } = request;
+        let lock = self.project_lock(&id)?;
+        let _guard = lock.lock().await;
         let mut project = self.get(&id)?;
+        ensure_producer_render_approval(&project)?;
         let mut plan = project
             .plan
             .clone()
@@ -2165,6 +2194,8 @@ impl MovieStudio {
     }
 
     pub async fn render_edit(&self, id: &str) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
         let mut project = self.get(id)?;
         let mut edits = project
             .edit
@@ -2286,6 +2317,17 @@ fn ensure_plan_is_unrendered(project: &MovieProject) -> Result<(), StudioError> 
         return Err(StudioError::Invalid(
             "the screenplay can only be replaced before H3 rendering; use versioned scene repair in the editor for rendered clips"
                 .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_producer_render_approval(project: &MovieProject) -> Result<(), StudioError> {
+    if project.status == "awaiting-review"
+        || (project.producer_review_required && project.producer_approved_at.trim().is_empty())
+    {
+        return Err(StudioError::Invalid(
+            "producer approval is required before starting an H3 render".into(),
         ));
     }
     Ok(())
@@ -3294,6 +3336,51 @@ mod tests {
         assert!(settings.validate(false).is_err());
     }
 
+    #[tokio::test]
+    async fn project_mutations_serialize_only_matching_project_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let first_id = uuid::Uuid::new_v4().to_string();
+        let second_id = uuid::Uuid::new_v4().to_string();
+        let first = studio.project_lock(&first_id).unwrap();
+        let same_project = studio.project_lock(&first_id).unwrap();
+        let other_project = studio.project_lock(&second_id).unwrap();
+        assert!(Arc::ptr_eq(&first, &same_project));
+        assert!(!Arc::ptr_eq(&first, &other_project));
+
+        let _guard = first.lock().await;
+        assert!(same_project.try_lock().is_err());
+        assert!(other_project.try_lock().is_ok());
+    }
+
+    #[test]
+    fn paused_productions_require_explicit_approval_before_rendering() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let mut project = studio
+            .create(
+                StartMovieRequest {
+                    prompt: "A guarded producer review".into(),
+                    settings: MovieSettings::default(),
+                    references: vec![],
+                    pause_after_plan: true,
+                },
+                false,
+            )
+            .unwrap();
+        project.status = "awaiting-review".into();
+        assert!(ensure_producer_render_approval(&project).is_err());
+
+        project.status = "complete".into();
+        assert!(ensure_producer_render_approval(&project).is_err());
+        project.producer_approved_at = Utc::now().to_rfc3339();
+        assert!(ensure_producer_render_approval(&project).is_ok());
+
+        project.producer_review_required = false;
+        project.producer_approved_at.clear();
+        assert!(ensure_producer_render_approval(&project).is_ok());
+    }
+
     #[test]
     fn movie_planner_has_no_research_tools_and_keeps_a_bounded_contract() {
         let director = director_prompt(&MovieSettings::default());
@@ -3712,6 +3799,18 @@ mod tests {
 
     #[tokio::test]
     async fn default_review_cut_preserves_native_clip_duration_and_audio() {
+        let ffmpeg_available = std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        let ffprobe_available = std::process::Command::new("ffprobe")
+            .arg("-version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !ffmpeg_available || !ffprobe_available {
+            eprintln!("skipping native review-cut regression: FFmpeg and FFprobe are required");
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let studio = MovieStudio::new(temp.path()).unwrap();
         let mut project = studio
