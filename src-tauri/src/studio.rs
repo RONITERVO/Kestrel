@@ -30,7 +30,7 @@ const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_REFERENCE_SECONDS: f64 = 15.1;
 const MIN_H3_PROMPT_WORDS: usize = 120;
 const MAX_H3_PROMPT_WORDS: usize = 450;
-const MAX_PLAN_ATTEMPTS: u32 = 5;
+const MAX_PLAN_ATTEMPTS: u32 = 8;
 
 pub fn media_response(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
     match read_media_response(&request) {
@@ -1131,20 +1131,17 @@ impl MovieStudio {
             json!({"role":"system","content":code_reviewer_prompt()}),
             json!({"role":"user","content":payload.to_string()}),
         ];
-        let response = self
-            .complete(
+        let mut review: MovieCodeReview = self
+            .complete_structured(
                 connection,
                 &messages,
-                CompletionOptions {
-                    response_format: Some(code_review_schema()),
-                    max_tokens: 8_192,
-                    settings,
-                    research,
-                },
+                code_review_schema(),
+                settings.max_output_tokens,
+                settings,
+                research,
+                "movie code review",
             )
             .await?;
-        let mut review: MovieCodeReview =
-            parse_structured_response(&response, "movie code review")?;
         if manifest.is_empty() {
             review
                 .issues
@@ -1170,20 +1167,17 @@ impl MovieStudio {
             json!({"role":"system","content":assessor_prompt()}),
             json!({"role":"user","content":payload.to_string()}),
         ];
-        let response = self
-            .complete(
+        let mut assessment: MovieAssessment = self
+            .complete_structured(
                 connection,
                 &messages,
-                CompletionOptions {
-                    response_format: Some(assessment_schema()),
-                    max_tokens: 8_192,
-                    settings,
-                    research,
-                },
+                assessment_schema(),
+                settings.max_output_tokens,
+                settings,
+                research,
+                "movie assessment",
             )
             .await?;
-        let mut assessment: MovieAssessment =
-            parse_structured_response(&response, "movie assessment")?;
         if manifest.is_empty() {
             let original_issue_count = assessment.blocking_issues.len();
             assessment
@@ -1231,19 +1225,51 @@ impl MovieStudio {
         connection: &ModelConnection,
         research: &ResearchSettings,
     ) -> Result<MoviePlan, StudioError> {
-        let response = self
-            .complete(
-                connection,
-                messages,
-                CompletionOptions {
-                    response_format: Some(movie_schema(settings.max_clips)),
-                    max_tokens: settings.max_output_tokens,
-                    settings,
-                    research,
-                },
-            )
-            .await?;
-        parse_structured_response(&response, "structured movie plan")
+        self.complete_structured(
+            connection,
+            messages,
+            movie_schema(settings.max_clips),
+            settings.max_output_tokens,
+            settings,
+            research,
+            "structured movie plan",
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_structured<T: for<'de> Deserialize<'de>>(
+        &self,
+        connection: &ModelConnection,
+        messages: &[Value],
+        response_format: Value,
+        max_tokens: u32,
+        settings: &MovieSettings,
+        research: &ResearchSettings,
+        label: &str,
+    ) -> Result<T, StudioError> {
+        let mut last_error = String::new();
+        for _ in 0..2 {
+            let response = self
+                .complete(
+                    connection,
+                    messages,
+                    CompletionOptions {
+                        response_format: Some(response_format.clone()),
+                        max_tokens,
+                        settings,
+                        research,
+                    },
+                )
+                .await?;
+            match parse_structured_response(&response, label) {
+                Ok(value) => return Ok(value),
+                Err(error) => last_error = error.to_string(),
+            }
+        }
+        Err(StudioError::Planning(format!(
+            "{label} remained invalid after one automatic retry: {last_error}"
+        )))
     }
 
     async fn complete(
@@ -1546,12 +1572,32 @@ impl MovieStudio {
                         .project_dir(&project.id)
                         .join("raw")
                         .join(format!("clip-{:03}.mp4", index + 1));
-                    tokio::fs::copy(&source, &target).await.map_err(|error| {
-                        StudioError::Render(format!(
-                            "could not preserve {}: {error}",
-                            source.display()
-                        ))
-                    })?;
+                    let native_audio = selected_references
+                        .iter()
+                        .find(|reference| reference.kind == "audio");
+                    let preserved_target = native_audio.map(|_| {
+                        self.project_dir(&project.id)
+                            .join("raw")
+                            .join(format!("clip-{:03}.h3-audio.mp4", index + 1))
+                    });
+                    let copy_target = preserved_target.as_ref().unwrap_or(&target);
+                    tokio::fs::copy(&source, copy_target)
+                        .await
+                        .map_err(|error| {
+                            StudioError::Render(format!(
+                                "could not preserve {}: {error}",
+                                source.display()
+                            ))
+                        })?;
+                    if let Some(reference) = native_audio {
+                        preserve_native_audio(
+                            copy_target,
+                            Path::new(&reference.path),
+                            &target,
+                            planned.duration_seconds,
+                        )
+                        .await?;
+                    }
                     return Ok(target.to_string_lossy().into_owned());
                 }
             }
@@ -1596,37 +1642,55 @@ impl MovieStudio {
 
     async fn assemble_default(&self, project: &MovieProject) -> Result<String, StudioError> {
         let folder = self.project_dir(&project.id);
-        let concat_path = folder.join("assembly.txt");
-        let mut concat = String::new();
-        for clip in &project.clips {
-            if clip.status == "complete" {
-                concat.push_str(&format!(
-                    "file '{}'\n",
-                    clip.path.replace('\\', "/").replace('\'', "'\\''")
-                ));
-            }
-        }
-        if concat.is_empty() {
+        let completed = project
+            .clips
+            .iter()
+            .filter(|clip| clip.status == "complete")
+            .collect::<Vec<_>>();
+        if completed.is_empty() {
             return Err(StudioError::Render(
                 "there are no completed clips to assemble".into(),
             ));
         }
-        fs::write(&concat_path, concat)?;
+        let mut command = tokio::process::Command::new("ffmpeg");
+        command.args(["-y", "-hide_banner", "-loglevel", "error"]);
+        let mut filters = Vec::with_capacity(completed.len() + 1);
+        for (index, clip) in completed.iter().enumerate() {
+            command.arg("-i").arg(&clip.path);
+            filters.push(format!(
+                "[{index}:v]trim=start=0:end={},setpts=PTS-STARTPTS[v{index}];[{index}:a]atrim=start=0:end={},asetpts=PTS-STARTPTS[a{index}]",
+                clip.duration_seconds, clip.duration_seconds
+            ));
+        }
+        let streams = (0..completed.len())
+            .map(|index| format!("[v{index}][a{index}]"))
+            .collect::<String>();
+        filters.push(format!(
+            "{streams}concat=n={}:v=1:a=1[v][a]",
+            completed.len()
+        ));
         let target = folder.join("exports").join("first-cut.mp4");
-        let output = tokio::process::Command::new("ffmpeg")
+        let output = command
+            .arg("-filter_complex")
+            .arg(filters.join(";"))
             .args([
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
+                "-map",
+                "[v]",
+                "-map",
+                "[a]",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-movflags",
+                "+faststart",
             ])
-            .arg(&concat_path)
-            .args(["-c", "copy", "-movflags", "+faststart"])
             .arg(&target)
             .output()
             .await?;
@@ -1776,7 +1840,7 @@ fn response_message(response: &Value) -> Result<Value, StudioError> {
 
 fn director_prompt(settings: &MovieSettings) -> String {
     format!(
-        "You are the autonomous writer-director-editor inside Kestrel Movie Studio. Turn the producer's request into a complete original MiniMax H3 plan and infer missing creative decisions without asking questions. Preserve story causality, identity, geography, screen direction, visual language, and sound across the cut.\n\nEvery clip prompt is the final renderer instruction, not a summary. Keep it between {MIN_H3_PROMPT_WORDS} and {MAX_H3_PROMPT_WORDS} words. Match the production specificity of official H3 examples: establish medium, genre, environment, lighting, palette, lens and texture; give a scene overview; cover the full duration with explicit timecoded shots or timed beats for a deliberate continuous take; specify framing, camera movement, subject blocking, physical action, transition, exact dialogue if any, ambience, effects, and score; finish with relevant exclusions such as no unwanted text, logos, subtitles, animation, or implausible motion. Do not add exclusions that conflict with the request. Prefer visible, achievable direction over abstract adjectives.\n\nProducer descriptions are planning instructions only. Select exact asset IDs in referenceIds wherever their stated job applies. An audio asset is native existing clip audio, not a symbolic voice-identity profile: assign it only to clips where that attached audio should condition the generated soundtrack. Never quote a producer description in a clip prompt. Never write H3 reference tags; Kestrel binds them. Use a picture reference on every clip where its referenced identity or visual subject must appear. Do not blanket-assign references to irrelevant clips. Chain a prior frame only when referenceIds is empty. There are no research tools; do not claim external verification or fabricate source credits. Return the required plan JSON without commentary. Renderer: 24fps, {}x{}, at most {} clips.",
+        "You are the autonomous writer-director-editor inside Kestrel Movie Studio. Turn the producer's request into a complete original MiniMax H3 plan and infer missing creative decisions without asking questions. Preserve story causality, identity, geography, screen direction, visual language, and sound across the cut.\n\nEvery clip prompt is the final renderer instruction, not a summary. Keep it between {MIN_H3_PROMPT_WORDS} and {MAX_H3_PROMPT_WORDS} words. Match the production specificity of official H3 examples: establish medium, genre, environment, lighting, palette, lens and texture; give a scene overview; cover the full duration with explicit timecoded shots or timed beats for a deliberate continuous take; specify framing, camera movement, subject blocking, physical action, transition, exact dialogue if any, ambience, effects, and score; finish with relevant exclusions such as no unwanted text, logos, subtitles, animation, or implausible motion. Every timed prompt must explicitly define picture, action, camera, and sound through the exact end of the clip; when the main action ends early, direct the remaining hold, settle, or reaction through that final timestamp. Do not add exclusions that conflict with the request. Prefer visible, achievable direction over abstract adjectives.\n\nProducer descriptions are planning instructions only. Select exact asset IDs in referenceIds wherever their stated job applies. An audio asset is native existing clip audio, not a symbolic voice-identity profile: assign it only to clips where that attached audio should condition the generated soundtrack. Never quote a producer description or put an asset ID in a clip prompt. Never write H3 reference tags; Kestrel binds and renumbers them. Use a picture reference on every clip where its referenced identity or visual subject must appear. Do not blanket-assign references to irrelevant clips. Chain a prior frame only when referenceIds is empty. There are no research tools; do not claim external verification or fabricate source credits. Return the required plan JSON without commentary. Renderer: 24fps, {}x{}, at most {} clips.",
         settings.width, settings.height, settings.max_clips
     )
 }
@@ -1844,17 +1908,17 @@ fn assessor_prompt() -> &'static str {
 fn review_issue_schema() -> Value {
     json!({"type":"object","additionalProperties":false,"properties":{
         "clipNumber":{"type":"integer","minimum":0},
-        "category":{"type":"string"},
-        "finding":{"type":"string"},
-        "requiredFix":{"type":"string"}
+        "category":{"type":"string","maxLength":80},
+        "finding":{"type":"string","maxLength":600},
+        "requiredFix":{"type":"string","maxLength":600}
     },"required":["clipNumber","category","finding","requiredFix"]})
 }
 
 fn code_review_schema() -> Value {
     json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_code_review","strict":true,"schema":{
         "type":"object","additionalProperties":false,"properties":{
-            "summary":{"type":"string"},
-            "issues":{"type":"array","items":review_issue_schema()}
+            "summary":{"type":"string","maxLength":1200},
+            "issues":{"type":"array","maxItems":24,"items":review_issue_schema()}
         },"required":["summary","issues"]
     }}})
 }
@@ -1864,8 +1928,8 @@ fn assessment_schema() -> Value {
         "type":"object","additionalProperties":false,"properties":{
             "approved":{"type":"boolean"},
             "score":{"type":"integer","minimum":0,"maximum":100},
-            "verdict":{"type":"string"},
-            "blockingIssues":{"type":"array","items":review_issue_schema()}
+            "verdict":{"type":"string","maxLength":1200},
+            "blockingIssues":{"type":"array","maxItems":24,"items":review_issue_schema()}
         },"required":["approved","score","verdict","blockingIssues"]
     }}})
 }
@@ -1885,6 +1949,20 @@ fn parse_structured_response<T: for<'de> Deserialize<'de>>(
 
 fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec<String> {
     let mut issues = Vec::new();
+    if !has_meaningful_prose(&plan.audience, 2) {
+        issues.push("Plan audience is missing or placeholder metadata.".into());
+    }
+    if plan.continuity_bible.is_empty()
+        || plan
+            .continuity_bible
+            .iter()
+            .any(|entry| !has_meaningful_prose(entry, 4))
+    {
+        issues.push(
+            "Continuity bible must contain meaningful identity, wardrobe, world, or staging facts rather than placeholders."
+                .into(),
+        );
+    }
     let allowed_references = references
         .iter()
         .map(|reference| reference.asset_id.as_str())
@@ -1940,9 +2018,27 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
                 index + 1
             ));
         }
+        for reference in references {
+            if clip.prompt.contains(&reference.asset_id) {
+                issues.push(format!(
+                    "Clip {} leaks an internal asset ID into renderer prose; keep the ID only in referenceIds.",
+                    index + 1
+                ));
+            }
+        }
         if clip.use_previous_frame && !clip.reference_ids.is_empty() {
             issues.push(format!(
                 "Clip {} requests both a prior frame and native references, which H3 cannot combine in one graph.",
+                index + 1
+            ));
+        }
+        if clip.use_previous_frame
+            && (index == 0
+                || !has_meaningful_prose(&clip.continuity_in, 3)
+                || !has_meaningful_prose(&plan.clips[index - 1].continuity_out, 3))
+        {
+            issues.push(format!(
+                "Clip {} chains the prior frame without meaningful matching continuityOut and continuityIn instructions.",
                 index + 1
             ));
         }
@@ -1954,6 +2050,22 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
                     reference_id
                 ));
             }
+        }
+        let native_audio_count = clip
+            .reference_ids
+            .iter()
+            .filter(|reference_id| {
+                references.iter().any(|reference| {
+                    reference.asset_id.as_str() == reference_id.as_str()
+                        && reference.kind == "audio"
+                })
+            })
+            .count();
+        if native_audio_count > 1 {
+            issues.push(format!(
+                "Clip {} selects multiple exact native-audio tracks; use one deterministic clip soundtrack.",
+                index + 1
+            ));
         }
     }
     let selected = plan
@@ -1970,6 +2082,60 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
         }
     }
     issues
+}
+
+fn has_meaningful_prose(value: &str, minimum_words: usize) -> bool {
+    value
+        .split_whitespace()
+        .filter(|word| word.chars().any(char::is_alphabetic))
+        .count()
+        >= minimum_words
+}
+
+async fn preserve_native_audio(
+    generated_video: &Path,
+    native_audio: &Path,
+    target: &Path,
+    duration_seconds: f32,
+) -> Result<(), StudioError> {
+    let duration = format!("{duration_seconds:.3}");
+    let output = tokio::process::Command::new("ffmpeg")
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
+        .arg(generated_video)
+        .arg("-i")
+        .arg(native_audio)
+        .args([
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-af",
+            "apad",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "32000",
+            "-ac",
+            "2",
+            "-t",
+            &duration,
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(target)
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(StudioError::Render(format!(
+            "could not preserve exact native clip audio: {}",
+            truncate(&String::from_utf8_lossy(&output.stderr), 1_000)
+        )));
+    }
+    Ok(())
 }
 
 fn has_timed_structure(lower_prompt: &str) -> bool {
@@ -2037,8 +2203,12 @@ fn movie_schema(max_clips: u32) -> Value {
     json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_plan","strict":true,"schema":{
         "type":"object","additionalProperties":false,
         "properties":{
-            "title":{"type":"string"},"logline":{"type":"string"},"audience":{"type":"string"},"creativeDirection":{"type":"string"},
-            "continuityBible":{"type":"array","items":{"type":"string"}},"sourceCredits":{"type":"array","items":{"type":"string"}},
+            "title":{"type":"string","minLength":1,"maxLength":160},
+            "logline":{"type":"string","minLength":20,"maxLength":600},
+            "audience":{"type":"string","minLength":3,"maxLength":300,"description":"Intended viewers and selling context in plain language, never a duration or number."},
+            "creativeDirection":{"type":"string","minLength":40,"maxLength":2400},
+            "continuityBible":{"type":"array","minItems":1,"maxItems":24,"description":"Reusable identity, wardrobe, prop, geography, screen-direction, lighting, and sound facts that must remain stable across clips; never IDs or placeholders.","items":{"type":"string","minLength":20,"maxLength":800}},
+            "sourceCredits":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":800}},
             "clips":{"type":"array","minItems":1,"maxItems":max_clips,"items":{"type":"object","additionalProperties":false,"properties":{
                 "title":{"type":"string"},"purpose":{"type":"string"},"durationSeconds":{"type":"number","minimum":5,"maximum":15},"prompt":{"type":"string"},
                 "continuityIn":{"type":"string"},"continuityOut":{"type":"string"},"transition":{"type":"string"},"usePreviousFrame":{"type":"boolean"},"sourceRefs":{"type":"array","items":{"type":"string"}},"referenceIds":{"type":"array","items":{"type":"string"}}
@@ -2626,6 +2796,14 @@ mod tests {
             schema.pointer("/json_schema/schema/properties/clips/maxItems"),
             Some(&json!(12))
         );
+        assert_eq!(
+            code_review_schema().pointer("/json_schema/schema/properties/issues/maxItems"),
+            Some(&json!(24))
+        );
+        assert_eq!(
+            assessment_schema().pointer("/json_schema/schema/properties/verdict/maxLength"),
+            Some(&json!(1200))
+        );
     }
 
     #[test]
@@ -2634,9 +2812,12 @@ mod tests {
         let mut plan = MoviePlan {
             title: "Test".into(),
             logline: "Test".into(),
-            audience: "Test".into(),
+            audience: "Film buyers".into(),
             creative_direction: "Test".into(),
-            continuity_bible: vec![],
+            continuity_bible: vec![
+                "The subject keeps the same wardrobe, direction, and lighting across the cut."
+                    .into(),
+            ],
             source_credits: vec![],
             quality_review: MovieQualityReview::default(),
             clips: vec![PlannedClip {
@@ -2659,6 +2840,56 @@ mod tests {
         assert!(issues.contains("120-450 words"));
         assert!(issues.contains("camera direction"));
         assert!(issues.contains("timed shot or beat structure"));
+    }
+
+    #[test]
+    fn native_prompt_gate_keeps_internal_asset_ids_out_of_renderer_prose() {
+        let asset_id = "42eac5e4f66d9e70153e66f6628a3ad23d9099fea5bee1c47dc7f86f0478f8ec";
+        let prompt = format!(
+            "Camera tracks the subject through timed beats with live-action film lighting and textured production design while the audio carries ambience, sound effects, and score from asset {asset_id}. "
+        )
+        .repeat(9);
+        let plan = MoviePlan {
+            title: "Test".into(),
+            logline: "Test".into(),
+            audience: "Film buyers".into(),
+            creative_direction: "Test".into(),
+            continuity_bible: vec![
+                "The archive keeps the same room, lighting, and camera axis throughout.".into(),
+            ],
+            source_credits: vec![],
+            quality_review: MovieQualityReview::default(),
+            clips: vec![PlannedClip {
+                id: String::new(),
+                title: "Shot".into(),
+                purpose: "Test".into(),
+                duration_seconds: 10.0,
+                prompt,
+                continuity_in: String::new(),
+                continuity_out: String::new(),
+                transition: "cut".into(),
+                use_previous_frame: false,
+                source_refs: vec![],
+                reference_ids: vec![asset_id.into()],
+            }],
+        };
+        let reference: MovieReference = serde_json::from_value(json!({
+            "assetId": asset_id,
+            "tag": "<Audio 1>",
+            "name": "archive.wav",
+            "kind": "audio",
+            "mimeType": "audio/wav",
+            "bytes": 1,
+            "durationSeconds": 10.0,
+            "width": 0,
+            "height": 0,
+            "hasAudio": true,
+            "path": "archive.wav",
+            "description": "flashback only"
+        }))
+        .unwrap();
+        let issues = prompt_quality_issues(&plan, &[reference]).join(" ");
+        assert!(issues.contains("internal asset ID"));
     }
 
     #[test]
@@ -2962,5 +3193,111 @@ mod tests {
         let streams = String::from_utf8_lossy(&probe.stdout);
         assert!(streams.contains("video"));
         assert!(streams.contains("audio"));
+    }
+
+    #[tokio::test]
+    async fn native_audio_mux_and_default_assembly_honor_planned_duration() {
+        let temp = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(temp.path()).unwrap();
+        let mut project = studio
+            .create(
+                StartMovieRequest {
+                    prompt: "Two deterministic test shots".into(),
+                    settings: MovieSettings::default(),
+                    references: vec![],
+                },
+                false,
+            )
+            .unwrap();
+        let raw = studio.project_dir(&project.id).join("raw");
+        let generated = raw.join("generated.mp4");
+        let second = raw.join("second.mp4");
+        for (path, color, frequency) in [(&generated, "red", "440"), (&second, "blue", "660")] {
+            let output = std::process::Command::new("ffmpeg")
+                .args([
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                ])
+                .arg(format!("color=c={color}:s=64x64:r=24:d=1.125"))
+                .args(["-f", "lavfi", "-i"])
+                .arg(format!(
+                    "sine=frequency={frequency}:sample_rate=32000:duration=1.125"
+                ))
+                .args([
+                    "-shortest",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                ])
+                .arg(path)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        let native = raw.join("native.wav");
+        let native_output = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=880:sample_rate=32000:duration=1",
+            ])
+            .arg(&native)
+            .output()
+            .unwrap();
+        assert!(native_output.status.success());
+        let first = raw.join("first.mp4");
+        preserve_native_audio(&generated, &native, &first, 1.0)
+            .await
+            .unwrap();
+        project.clips = [first, second]
+            .into_iter()
+            .enumerate()
+            .map(|(index, path)| RenderedClip {
+                id: format!("clip-{index}"),
+                index: index as u32,
+                title: format!("Clip {}", index + 1),
+                prompt: "test".into(),
+                duration_seconds: 1.0,
+                seed: index as u64,
+                status: "complete".into(),
+                path: path.to_string_lossy().into_owned(),
+                error: String::new(),
+            })
+            .collect();
+        let assembled = studio.assemble_default(&project).await.unwrap();
+        let probe = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1:nk=1",
+            ])
+            .arg(&assembled)
+            .output()
+            .unwrap();
+        assert!(probe.status.success());
+        let duration = String::from_utf8_lossy(&probe.stdout)
+            .trim()
+            .parse::<f64>()
+            .unwrap();
+        assert!(
+            (duration - 2.0).abs() < 0.05,
+            "assembled duration was {duration}"
+        );
     }
 }
