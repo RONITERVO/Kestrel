@@ -92,7 +92,6 @@ export interface AppSnapshot {
 }
 
 export interface MovieSettings {
-  researchMode: "auto" | "never" | "always";
   width: number;
   height: number;
   clipSeconds: number;
@@ -175,6 +174,7 @@ export interface MoviePlan {
   creativeDirection: string;
   continuityBible: string[];
   sourceCredits: string[];
+  qualityReview: { attempts: number; score: number; verdict: string };
   clips: PlannedClip[];
 }
 

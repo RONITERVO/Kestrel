@@ -317,12 +317,6 @@ fn spawn_movie(
         let result: Result<(), String> = async {
             if needs_plan {
                 managed.studio.release_comfy_memory().await;
-                let project = managed.studio.get(&id).map_err(|error| error.to_string())?;
-                if project.settings.research_mode != "never" {
-                    services::prepare_wikipedia()
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
                 let lease = managed
                     .runtime
                     .lease_research(&research)

@@ -1,5 +1,5 @@
 import {
-  Archive, AudioLines, Check, ChevronDown, CircleStop, Clapperboard, Clock3, Download,
+  AudioLines, Check, ChevronDown, CircleStop, Clapperboard, Clock3, Download,
   Film, FolderOpen, GripVertical, ImageIcon, Library, LoaderCircle, Paperclip, Play, Plus,
   RotateCcw, Save, Settings2, Sparkles, Video, Volume2, X,
 } from "lucide-react";
@@ -11,7 +11,6 @@ import {
 import type { ClipEdit, MovieProject, MovieSettings, MovieSummary, PendingMovieReference } from "./types";
 
 const defaultSettings: MovieSettings = {
-  researchMode: "auto",
   width: 1344,
   height: 768,
   clipSeconds: 5,
@@ -155,10 +154,10 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     <div className="movie-launch-mark"><Clapperboard /></div>
     <span className="eyebrow">Bonsai director · MiniMax H3 picture & sound</span>
     <h1>Describe the movie.<br />Kestrel runs the studio.</h1>
-    <p>One prompt becomes a researched screenplay, continuity bible, native-audio H3 scenes, and an editable first cut—entirely on this computer.</p>
+    <p>One prompt becomes a reviewed screenplay, continuity bible, native-audio H3 scenes, and an editable first cut—entirely on this computer.</p>
     <div className="movie-prompt-box">
       <textarea autoFocus value={prompt} onChange={(event) => onPrompt(event.target.value)} placeholder="A short educational film explaining why the northern lights happen for a curious ten-year-old…" />
-      <div><span><Archive size={14} /> Offline Wikipedia is available when facts matter</span><button disabled={busy || prompt.trim().length < 3 || !referencesReady(references)} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Make movie</button></div>
+      <div><span><Check size={14} /> Bonsai drafts, reviews, and repairs every H3 scene prompt</span><button disabled={busy || prompt.trim().length < 3 || !referencesReady(references)} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Make movie</button></div>
     </div>
     <section className="movie-reference-builder">
       <div className="movie-reference-heading"><div><span className="eyebrow">Producer references</span><strong>Show and tell H3 what must carry through</strong><small>Attach the actual media, then describe its job. Kestrel binds it natively per shot.</small></div><button disabled={busy} onClick={onAttach}><Paperclip /> Attach image, video, or audio</button></div>
@@ -168,12 +167,12 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
           <ReferencePreview reference={reference} />
           <div className="movie-reference-copy"><div className="movie-reference-meta"><span>{labels.join(" + ")}</span><strong>{reference.name}</strong><button aria-label={`Remove ${reference.name}`} onClick={() => onReferences(references.filter((item) => item.assetId !== reference.assetId))}><X /></button></div>
             <small>{reference.kind}{reference.durationSeconds > 0 ? ` · ${reference.durationSeconds.toFixed(1)}s` : ` · ${reference.width}×${reference.height}`}</small>
-            <label>What should this control?<textarea aria-label={`Describe ${reference.name}`} value={reference.description} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, description: event.target.value } : item))} placeholder={reference.kind === "image" ? "Character identity, costume, palette, composition, or style…" : reference.kind === "video" ? "Motion, camera move, pacing, continuation, or temporal structure…" : "Voice timbre, delivery, music style, beat, ambience, or sound texture…"} /></label>
-            {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" checked={reference.useEmbeddedAudio} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Use the video's audio as a separate native reference</label>{reference.useEmbeddedAudio && <label>What should its audio control?<input aria-label={`Describe audio from ${reference.name}`} value={reference.embeddedAudioDescription} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="Voice, rhythm, soundtrack continuity, or effects…" /></label>}</>}
+            <label>How should Bonsai place this?<textarea aria-label={`Describe ${reference.name}`} value={reference.description} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, description: event.target.value } : item))} placeholder={reference.kind === "image" ? "Character identity, costume, palette, composition, or style…" : reference.kind === "video" ? "Motion, camera move, pacing, continuation, or temporal structure…" : "Where this exact clip audio belongs: dialogue performance, music, rhythm, ambience, or effects…"} /></label>
+            {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" checked={reference.useEmbeddedAudio} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Use the video's existing audio as native clip audio</label>{reference.useEmbeddedAudio && <label>Where should this audio be used?<input aria-label={`Describe audio from ${reference.name}`} value={reference.embeddedAudioDescription} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="The scenes or beats where this exact audio belongs…" /></label>}</>}
           </div>
         </article>;
       })}</div>}
-      {!references.length && <div className="movie-reference-empty"><ImageIcon /><Video /><AudioLines /><span>Optional. Use references when identity, motion, camera, voice, music, or an exact visual language matters.</span></div>}
+      {!references.length && <div className="movie-reference-empty"><ImageIcon /><Video /><AudioLines /><span>Optional. Use references when identity, motion, camera, exact clip audio, or a visual language matters.</span></div>}
     </section>
     <div className="movie-presets">
       <button className={quality === "master" ? "active" : ""} onClick={() => onSettings({ ...settings, width: 1344, height: 768 })}><strong>Publish master</strong><span>1344 × 768 · highest H3 native canvas</span></button>
@@ -181,7 +180,6 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     </div>
     <button className="movie-advanced-toggle" onClick={() => onAdvanced(!advanced)}><Settings2 size={14} /> Advanced production controls <ChevronDown className={advanced ? "open" : ""} size={14} /></button>
     {advanced && <div className="movie-advanced">
-      <SelectField label="Research" value={settings.researchMode} onChange={(value) => onSettings({ ...settings, researchMode: value as MovieSettings["researchMode"] })} options={["auto", "never", "always"]} />
       <NumberField label="Clip seconds" value={settings.clipSeconds} min={5} max={15} step={1} onChange={(value) => onSettings({ ...settings, clipSeconds: value })} />
       <NumberField label="Maximum clips" value={settings.maxClips} min={1} max={advancedEnabled ? 96 : 24} step={1} onChange={(value) => onSettings({ ...settings, maxClips: value })} />
       <NumberField label="Sampling steps" value={settings.steps} min={1} max={advancedEnabled ? 100 : 40} step={1} onChange={(value) => onSettings({ ...settings, steps: value })} />
@@ -217,7 +215,7 @@ function MovieProjectView({ project, edits, busy, onEdit, onNew, onCancel, onRes
     </div>
     {project.finalPath && <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">Current cut</span><h2>Watch the movie</h2></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open master</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section>}
     {project.references.length > 0 && <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}</span></article>)}</div></section>}
-    {project.plan && <section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article>{project.sources.length > 0 && <article><span className="eyebrow">Opened archive evidence</span><ul>{project.sources.map((source) => <li key={source.id}>{source.id} · {source.title} ({source.snapshot})</li>)}</ul></article>}</section>}
+    {project.plan && <section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Bonsai acceptance</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "attempt" : "attempts"}. {project.plan.qualityReview.verdict}</p></article></section>}
     {project.clips.length > 0 && <section className="movie-timeline-section">
       <div className="movie-section-heading"><div><span className="eyebrow">Non-destructive timeline</span><h2>Scenes & sound</h2></div><div><button disabled={busy} onClick={onSave}><Save /> Save edit</button><button className="accent" disabled={busy || complete === 0 || project.status === "running"} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export new cut</button></div></div>
       <div className="movie-clip-grid">{project.clips.map((clip) => {

@@ -9,7 +9,8 @@ describe("Kestrel Movie Studio", () => {
   it("presents a one-prompt offline production path", async () => {
     render(<MovieStudio advancedEnabled onError={vi.fn()} />);
     expect(screen.getByText(/Describe the movie/i)).toBeInTheDocument();
-    expect(screen.getByText(/Offline Wikipedia is available/i)).toBeInTheDocument();
+    expect(screen.getByText(/drafts, reviews, and repairs/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Wikipedia/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Make movie/i })).toBeDisabled();
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "A tiny film about a lighthouse keeper" } });
     expect(screen.getByRole("button", { name: /Make movie/i })).toBeEnabled();
@@ -24,6 +25,7 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByLabelText("Thinking budget")).toHaveValue(4096);
     expect(screen.getByLabelText("ComfyUI root")).toHaveValue("D:\\AI\\ComfyUI");
     expect(screen.getByLabelText("Reference image fidelity")).toHaveValue("match");
+    expect(screen.queryByLabelText("Research")).not.toBeInTheDocument();
   });
 
   it("numbers native H3 labels by type and puts embedded video audio first", () => {

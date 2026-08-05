@@ -70,15 +70,6 @@ pub async fn prepare_with_root(bonsai_root: &str) -> Result<(), ServiceError> {
     Ok(())
 }
 
-/// Make the optional, fixed-loopback archive available without starting Bonsai. Movie planning
-/// uses this so RuntimeManager remains the sole owner of the model process and GPU lifecycle.
-pub async fn prepare_wikipedia() -> Result<(), ServiceError> {
-    if KiwixClient::new().health().await {
-        return Ok(());
-    }
-    run_script("offline Wikipedia", Path::new(WIKIPEDIA_SCRIPT)).await
-}
-
 pub async fn restart_bonsai(bonsai_root: &str) -> Result<(), ServiceError> {
     run_script(
         "Bonsai",
