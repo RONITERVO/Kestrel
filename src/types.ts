@@ -91,6 +91,115 @@ export interface AppSnapshot {
   control: ControlSnapshot;
 }
 
+export interface MovieSettings {
+  researchMode: "auto" | "never" | "always";
+  width: number;
+  height: number;
+  clipSeconds: number;
+  steps: number;
+  maxClips: number;
+  seed: number;
+  temperature: number;
+  topP: number;
+  topK: number;
+  thinkingBudget: number;
+  maxOutputTokens: number;
+  comfyRoot: string;
+}
+
+export interface PlannedClip {
+  id: string;
+  title: string;
+  purpose: string;
+  durationSeconds: number;
+  prompt: string;
+  continuityIn: string;
+  continuityOut: string;
+  transition: string;
+  usePreviousFrame: boolean;
+  sourceRefs: string[];
+}
+
+export interface MoviePlan {
+  title: string;
+  logline: string;
+  audience: string;
+  creativeDirection: string;
+  continuityBible: string[];
+  sourceCredits: string[];
+  clips: PlannedClip[];
+}
+
+export interface MovieSource {
+  id: string;
+  title: string;
+  reference: string;
+  snapshot: string;
+  excerpt: string;
+}
+
+export interface RenderedClip {
+  id: string;
+  index: number;
+  title: string;
+  prompt: string;
+  durationSeconds: number;
+  seed: number;
+  status: "queued" | "rendering" | "complete" | "failed" | string;
+  path: string;
+  error: string;
+}
+
+export interface ClipEdit {
+  clipId: string;
+  enabled: boolean;
+  order: number;
+  trimStart: number;
+  trimEnd: number;
+  audioGain: number;
+}
+
+export interface MovieEdit {
+  clips: ClipEdit[];
+  exportTitle: string;
+}
+
+export interface MovieProject {
+  schemaVersion: number;
+  id: string;
+  prompt: string;
+  title: string;
+  status: "running" | "complete" | "failed" | "cancelled" | "interrupted" | string;
+  phase: string;
+  detail: string;
+  createdAt: string;
+  updatedAt: string;
+  model: string;
+  renderer: string;
+  settings: MovieSettings;
+  plan?: MoviePlan;
+  sources: MovieSource[];
+  clips: RenderedClip[];
+  edit: MovieEdit;
+  finalPath: string;
+  error: string;
+}
+
+export interface MovieSummary {
+  id: string;
+  title: string;
+  status: string;
+  phase: string;
+  updatedAt: string;
+  clipCount: number;
+  finalPath: string;
+}
+
+export interface StartMovieRequest {
+  prompt: string;
+  settings: MovieSettings;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;

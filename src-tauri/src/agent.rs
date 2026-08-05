@@ -153,6 +153,7 @@ pub async fn run(
     }
     let tools = tool_schemas(access, !context_attachments.is_empty());
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(3_600))
         .build()
         .map_err(|error| error.to_string())?;

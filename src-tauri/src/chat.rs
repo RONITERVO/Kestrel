@@ -166,6 +166,7 @@ impl ChatStreamJob {
             "stream_options": {"include_usage": true}
         });
         let client = reqwest::Client::builder()
+            .no_proxy()
             .timeout(std::time::Duration::from_secs(3_600))
             .build()
             .map_err(|error| error.to_string())?;

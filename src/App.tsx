@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   BookOpen,
   Check,
+  Clapperboard,
   ChevronRight,
   CircleStop,
   Clock3,
@@ -52,6 +53,7 @@ import {
   saveResearchSettings,
 } from "./api";
 import { ControlPlane, DeveloperConsole } from "./ControlPlane";
+import { MovieStudio } from "./MovieStudio";
 import type {
   AppSnapshot,
   ProgressStage,
@@ -96,7 +98,7 @@ function App() {
   const [progress, setProgress] = useState<ResearchProgress | null>(null);
   const [activity, setActivity] = useState<ResearchProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"control" | "research" | "developer" | "system">("research");
+  const [view, setView] = useState<"control" | "research" | "studio" | "developer" | "system">("research");
 
   const refresh = useCallback(async () => {
     try {
@@ -210,6 +212,8 @@ function App() {
               onChanged={(control) => setSnapshot((current) => current ? { ...current, control } : current)}
               onError={(message) => setError(message)}
             />
+          ) : view === "studio" ? (
+            <MovieStudio advancedEnabled={snapshot.settings.advancedMode} onError={(message) => setError(message)} />
           ) : view === "developer" ? (
             <DeveloperConsole
               control={snapshot.control}
@@ -267,8 +271,8 @@ function AppHeader({
   onPrepare,
 }: {
   status: AppSnapshot["status"];
-  view: "control" | "research" | "developer" | "system";
-  onView: (view: "control" | "research" | "developer" | "system") => void;
+  view: "control" | "research" | "studio" | "developer" | "system";
+  onView: (view: "control" | "research" | "studio" | "developer" | "system") => void;
   onMenu: () => void;
   onNew: () => void;
   onPrepare: () => void;
@@ -279,11 +283,12 @@ function AppHeader({
       <div className="header-left">
         <button className="icon-button menu-button" aria-label="Toggle library" onClick={onMenu}><Menu /></button>
         <div className="brand-mark"><Feather size={19} /></div>
-        <div className="brand-copy"><strong>Kestrel</strong><span>{view === "control" ? "Control plane" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research"}</span></div>
+        <div className="brand-copy"><strong>Kestrel</strong><span>{view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research"}</span></div>
       </div>
       <nav className="view-switcher" aria-label="Kestrel sections">
         <button className={view === "control" ? "active" : ""} onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
         <button className={view === "research" ? "active" : ""} onClick={() => onView("research")}><Library size={14} /> Research</button>
+        <button className={view === "studio" ? "active" : ""} onClick={() => onView("studio")}><Clapperboard size={14} /> Studio</button>
         <button className={view === "developer" ? "active" : ""} onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
         <button className={view === "system" ? "active" : ""} onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
       </nav>

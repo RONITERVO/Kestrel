@@ -24,6 +24,10 @@ import type {
   RunResearchRequest,
   StartChatRequest,
   SystemSnapshot,
+  MovieEdit,
+  MovieProject,
+  MovieSummary,
+  StartMovieRequest,
 } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -78,6 +82,60 @@ export async function onProgress(
       callback(event.payload),
     );
   return () => undefined;
+}
+
+export async function listMovies(): Promise<MovieSummary[]> {
+  if (!isTauri()) return [];
+  return invoke<MovieSummary[]>("list_movies");
+}
+
+export async function getMovie(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie projects require the desktop application.");
+  return invoke<MovieProject>("get_movie", { id });
+}
+
+export async function startMovie(request: StartMovieRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
+  return invoke<MovieProject>("start_movie", { request });
+}
+
+export async function resumeMovie(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
+  return invoke<MovieProject>("resume_movie", { id });
+}
+
+export async function cancelMovie(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
+  return invoke<MovieProject>("cancel_movie", { id });
+}
+
+export async function saveMovieEdits(id: string, edit: MovieEdit): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie editing requires the desktop application.");
+  return invoke<MovieProject>("save_movie_edits", { id, edit });
+}
+
+export async function renderMovieEdit(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie editing requires the desktop application.");
+  return invoke<MovieProject>("render_movie_edit", { id });
+}
+
+export async function revealMovie(id: string): Promise<void> {
+  if (isTauri()) await invoke("reveal_movie", { id });
+}
+
+export async function onMovieProject(callback: (project: MovieProject) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieProject>("movie-project", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export function movieMediaUrl(path: string): string {
+  if (!path || !isTauri()) return "";
+  const normalized = path.replaceAll("\\", "/");
+  const marker = "/movies/";
+  const offset = normalized.toLowerCase().lastIndexOf(marker);
+  if (offset < 0) return "";
+  const relative = normalized.slice(offset + marker.length);
+  return `http://kestrel-media.localhost/${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 export async function onRuntimeProgress(

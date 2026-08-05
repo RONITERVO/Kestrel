@@ -30,6 +30,7 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `profile.rs`: bounded portable setup import/export; never restore developer paths or Full Access.
 - `config.rs`: recoverable settings and explicit Bonsai runtime application.
 - `services.rs`: installed Bonsai/Kiwix scripts and live GPU telemetry.
+- `studio.rs`: durable Bonsai movie direction, bounded archive tools, direct ComfyUI H3 graphs, recovery, media, and FFmpeg edits.
 - `developer.rs`: optional Codex maintainer plus fixed offline diagnostics.
 
 Prefer small typed modules, fixed command argument arrays, bounded reads, loopback-only URLs, recoverable file replacement, and actionable errors. Never directly execute model text: parse tool JSON, require absolute paths, resolve it through the selected access policy, reject wildcards, use argument arrays without a shell, and persist the result.

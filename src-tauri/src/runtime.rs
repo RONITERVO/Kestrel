@@ -186,6 +186,7 @@ impl RuntimeManager {
             process: Mutex::new(None),
             gate: Arc::new(Semaphore::new(1)),
             http: Client::builder()
+                .no_proxy()
                 .timeout(Duration::from_secs(3_600))
                 .build()
                 .expect("local runtime HTTP client"),

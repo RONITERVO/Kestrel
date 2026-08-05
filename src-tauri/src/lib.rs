@@ -14,6 +14,7 @@ mod profile;
 mod runtime;
 mod services;
 mod store;
+mod studio;
 mod workspace;
 
 use attachments::{AttachmentStore, ContextAttachment};
@@ -37,6 +38,7 @@ use std::{
     },
 };
 use store::ResearchStore;
+use studio::{MovieEdit, MovieProject, MovieStudio, MovieSummary, StartMovieRequest};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -60,6 +62,8 @@ struct AppState {
     work_active: AtomicBool,
     jobs: Mutex<HashMap<String, CancellationToken>>,
     interactive_jobs: Mutex<HashMap<String, CancellationToken>>,
+    studio: MovieStudio,
+    movie_jobs: Mutex<HashMap<String, CancellationToken>>,
 }
 
 struct ResearchGuard<'a> {
@@ -173,6 +177,198 @@ fn cancel_research(job_id: String, state: State<'_, AppState>) -> Result<(), Str
         cancel.cancel();
     }
     Ok(())
+}
+
+#[tauri::command]
+fn list_movies(state: State<'_, AppState>) -> Result<Vec<MovieSummary>, String> {
+    state.studio.list().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_movie(id: String, state: State<'_, AppState>) -> Result<MovieProject, String> {
+    state.studio.get(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn start_movie(
+    request: StartMovieRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| {
+            "Chat, research, a computer task, or another movie production is already active."
+                .to_string()
+        })?;
+    let research = state.research_settings.load().map_err(|error| {
+        state.work_active.store(false, Ordering::Release);
+        error.to_string()
+    })?;
+    let project = state
+        .studio
+        .create(request, research.advanced_mode)
+        .map_err(|error| {
+            state.work_active.store(false, Ordering::Release);
+            error.to_string()
+        })?;
+    let cancel = CancellationToken::new();
+    state
+        .movie_jobs
+        .lock()
+        .map_err(|_| {
+            state.work_active.store(false, Ordering::Release);
+            "movie job registry is unavailable".to_string()
+        })?
+        .insert(project.id.clone(), cancel.clone());
+    spawn_movie(app, project.id.clone(), research, cancel, true);
+    Ok(project)
+}
+
+#[tauri::command]
+fn resume_movie(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    ensure_workspace_idle(&state)?;
+    let project = state.studio.get(&id).map_err(|error| error.to_string())?;
+    if project.plan.is_none() {
+        return Err("This movie stopped before its plan was committed. Start a new production from its saved prompt.".into());
+    }
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI job is already active.".to_string())?;
+    let project = state
+        .studio
+        .begin_resume(&id, Some(&app))
+        .map_err(|error| error.to_string())?;
+    let research = state.research_settings.load().map_err(|error| {
+        state.work_active.store(false, Ordering::Release);
+        error.to_string()
+    })?;
+    let cancel = CancellationToken::new();
+    state
+        .movie_jobs
+        .lock()
+        .map_err(|_| {
+            state.work_active.store(false, Ordering::Release);
+            "movie job registry is unavailable".to_string()
+        })?
+        .insert(id.clone(), cancel.clone());
+    spawn_movie(app, id, research, cancel, false);
+    Ok(project)
+}
+
+fn spawn_movie(
+    app: AppHandle,
+    id: String,
+    research: ResearchSettings,
+    cancel: CancellationToken,
+    needs_plan: bool,
+) {
+    tauri::async_runtime::spawn(async move {
+        let managed = app.state::<AppState>();
+        let _guard = WorkGuard(&managed.work_active);
+        let result: Result<(), String> = async {
+            if needs_plan {
+                managed.studio.release_comfy_memory().await;
+                let project = managed.studio.get(&id).map_err(|error| error.to_string())?;
+                if project.settings.research_mode != "never" {
+                    services::prepare_wikipedia()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                let lease = managed
+                    .runtime
+                    .lease_research(&research)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                managed
+                    .studio
+                    .plan(&id, &lease.connection, &research, &cancel, Some(&app))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                drop(lease);
+            }
+            managed
+                .runtime
+                .stop_managed()
+                .await
+                .map_err(|error| error.to_string())?;
+            services::stop_bonsai(&research.bonsai_root)
+                .await
+                .map_err(|error| error.to_string())?;
+            managed
+                .studio
+                .render(&id, &cancel, Some(&app))
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            if cancel.is_cancelled() {
+                let _ = managed.studio.stop(&id, Some(&app));
+            } else {
+                managed.studio.fail(&id, error, Some(&app));
+            }
+        }
+        if let Ok(mut jobs) = managed.movie_jobs.lock() {
+            jobs.remove(&id);
+        };
+    });
+}
+
+#[tauri::command]
+fn cancel_movie(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    if let Some(cancel) = state
+        .movie_jobs
+        .lock()
+        .map_err(|_| "movie job registry is unavailable".to_string())?
+        .get(&id)
+    {
+        cancel.cancel();
+    }
+    state
+        .studio
+        .stop(&id, Some(&app))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_movie_edits(
+    id: String,
+    edit: MovieEdit,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    state
+        .studio
+        .save_edits(&id, edit)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn render_movie_edit(id: String, state: State<'_, AppState>) -> Result<MovieProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .render_edit(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reveal_movie(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let project = state.studio.get(&id).map_err(|error| error.to_string())?;
+    let path = state.studio.project_dir(&project.id);
+    open_with_explorer(&path)
 }
 
 #[tauri::command]
@@ -1119,6 +1315,9 @@ fn open_with_explorer(path: &std::path::Path) -> Result<(), String> {
 
 pub fn run() {
     let application = tauri::Builder::default()
+        .register_uri_scheme_protocol("kestrel-media", |_context, request| {
+            studio::media_response(request)
+        })
         .setup(|app| {
             let store = ResearchStore::open_default().map_err(|error| error.to_string())?;
             let research_settings = SettingsStore::new(store.root());
@@ -1149,6 +1348,7 @@ pub fn run() {
             let developer = DeveloperAssistant::new(store.root());
             let workspace = WorkspaceStore::new(store.root())?;
             let attachments = AttachmentStore::new(&store.root().join("workspace"))?;
+            let studio = MovieStudio::new(store.root()).map_err(|error| error.to_string())?;
             app.manage(AppState {
                 store,
                 harness,
@@ -1165,6 +1365,8 @@ pub fn run() {
                 work_active: AtomicBool::new(false),
                 jobs: Mutex::new(HashMap::new()),
                 interactive_jobs: Mutex::new(HashMap::new()),
+                studio,
+                movie_jobs: Mutex::new(HashMap::new()),
             });
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -1203,6 +1405,14 @@ pub fn run() {
             get_report,
             run_research,
             cancel_research,
+            list_movies,
+            get_movie,
+            start_movie,
+            resume_movie,
+            cancel_movie,
+            save_movie_edits,
+            render_movie_edit,
+            reveal_movie,
             prepare_services,
             open_standalone_report,
             reveal_library,
