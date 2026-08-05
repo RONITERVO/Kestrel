@@ -21,7 +21,7 @@ use thiserror::Error;
 use tokio::{process::Child, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 const DEFAULT_COMFY_ROOT: &str = r"D:\AI\ComfyUI";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -176,6 +176,50 @@ pub struct StartMovieRequest {
     pub settings: MovieSettings,
     #[serde(default)]
     pub references: Vec<ProducerReferenceRequest>,
+    #[serde(default)]
+    pub pause_after_plan: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoviePlanFeedbackRequest {
+    pub id: String,
+    pub feedback: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieClipAssistRequest {
+    pub id: String,
+    pub clip_id: String,
+    pub feedback: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieClipSuggestion {
+    pub clip_id: String,
+    pub summary: String,
+    pub checklist: Vec<String>,
+    pub clip: PlannedClip,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieClipRenderRequest {
+    pub id: String,
+    pub suggestion: MovieClipSuggestion,
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProducerFeedbackRecord {
+    pub created_at: String,
+    pub scope: String,
+    #[serde(default)]
+    pub clip_id: String,
+    pub feedback: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -430,6 +474,20 @@ pub struct RenderedClip {
     pub path: String,
     #[serde(default)]
     pub error: String,
+    #[serde(default)]
+    pub versions: Vec<ClipVersion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipVersion {
+    pub id: String,
+    pub created_at: String,
+    pub title: String,
+    pub prompt: String,
+    pub duration_seconds: f32,
+    pub seed: u64,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -489,6 +547,12 @@ pub struct MovieProject {
     pub final_path: String,
     #[serde(default)]
     pub error: String,
+    #[serde(default)]
+    pub producer_review_required: bool,
+    #[serde(default)]
+    pub producer_approved_at: String,
+    #[serde(default)]
+    pub producer_feedback: Vec<ProducerFeedbackRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -605,6 +669,7 @@ impl MovieStudio {
             prompt,
             settings,
             references,
+            pause_after_plan,
         } = request;
         let meaningful_prompt = prompt.trim();
         if meaningful_prompt.chars().count() < 3 || prompt.len() > 65_536 {
@@ -649,6 +714,9 @@ impl MovieStudio {
             },
             final_path: String::new(),
             error: String::new(),
+            producer_review_required: pause_after_plan,
+            producer_approved_at: String::new(),
+            producer_feedback: Vec::new(),
         };
         write_json_atomic(
             &folder.join("request.json"),
@@ -837,6 +905,111 @@ impl MovieStudio {
             .map_err(|error| if matches!(error, StudioError::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound) { StudioError::NotFound(id.into()) } else { error })
     }
 
+    pub fn save_producer_plan(
+        &self,
+        id: &str,
+        mut plan: MoviePlan,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let mut project = self.get(id)?;
+        ensure_plan_is_unrendered(&project)?;
+        prepare_producer_plan(&project, &mut plan)?;
+        plan.quality_review = MovieQualityReview {
+            attempts: 0,
+            score: 0,
+            verdict:
+                "Producer-edited draft. Run Bonsai revision or approve explicitly before rendering."
+                    .into(),
+        };
+        project.producer_feedback.push(ProducerFeedbackRecord {
+            created_at: Utc::now().to_rfc3339(),
+            scope: "manual-plan".into(),
+            clip_id: String::new(),
+            feedback: "Producer saved structured screenplay and scene changes.".into(),
+        });
+        self.replace_unrendered_plan(
+            &mut project,
+            plan,
+            "Structured producer changes are saved. No H3 clip has started.",
+            app,
+        )?;
+        Ok(project)
+    }
+
+    pub fn approve_producer_plan(
+        &self,
+        id: &str,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let mut project = self.get(id)?;
+        ensure_plan_is_unrendered(&project)?;
+        let plan = project
+            .plan
+            .as_ref()
+            .ok_or_else(|| StudioError::Invalid("project has no saved movie plan".into()))?;
+        let issues = prompt_quality_issues(plan, &project.references);
+        if !issues.is_empty() {
+            return Err(StudioError::Invalid(format!(
+                "producer plan is not render-ready: {}",
+                issues.join(" ")
+            )));
+        }
+        project.status = "running".into();
+        project.phase = "producer-approved".into();
+        project.detail = "Producer approved the structured plan. H3 rendering may begin.".into();
+        project.producer_approved_at = Utc::now().to_rfc3339();
+        self.persist_emit(&mut project, app)?;
+        Ok(project)
+    }
+
+    fn replace_unrendered_plan(
+        &self,
+        project: &mut MovieProject,
+        plan: MoviePlan,
+        detail: &str,
+        app: Option<&AppHandle>,
+    ) -> Result<(), StudioError> {
+        project.title.clone_from(&plan.title);
+        project.edit.export_title.clone_from(&plan.title);
+        project.clips = plan
+            .clips
+            .iter()
+            .enumerate()
+            .map(|(index, clip)| RenderedClip {
+                id: clip.id.clone(),
+                index: index as u32,
+                title: clip.title.clone(),
+                prompt: clip.prompt.clone(),
+                duration_seconds: clip.duration_seconds,
+                seed: derive_seed(project.settings.seed, index as u64),
+                status: "queued".into(),
+                path: String::new(),
+                error: String::new(),
+                versions: Vec::new(),
+            })
+            .collect();
+        project.edit.clips = project
+            .clips
+            .iter()
+            .map(|clip| ClipEdit {
+                clip_id: clip.id.clone(),
+                enabled: true,
+                order: clip.index,
+                trim_start: 0.0,
+                trim_end: 0.0,
+                audio_gain: 1.0,
+            })
+            .collect();
+        project.plan = Some(plan.clone());
+        project.status = "awaiting-review".into();
+        project.phase = "awaiting-producer".into();
+        project.detail = detail.into();
+        project.producer_approved_at.clear();
+        self.persist_emit(project, app)?;
+        write_json_atomic(&self.project_dir(&project.id).join("plan.json"), &plan)?;
+        Ok(())
+    }
+
     pub fn save_edits(&self, id: &str, edit: MovieEdit) -> Result<MovieProject, StudioError> {
         let mut project = self.get(id)?;
         for item in &edit.clips {
@@ -975,6 +1148,7 @@ impl MovieStudio {
                 status: "queued".into(),
                 path: String::new(),
                 error: String::new(),
+                versions: Vec::new(),
             })
             .collect();
         project.edit.clips = project
@@ -990,11 +1164,20 @@ impl MovieStudio {
             })
             .collect();
         project.plan = Some(plan.clone());
-        project.phase = "plan-ready".into();
-        project.detail = format!(
-            "The production plan is ready with {} H3 clips.",
-            project.clips.len()
-        );
+        if project.producer_review_required {
+            project.status = "awaiting-review".into();
+            project.phase = "awaiting-producer".into();
+            project.detail = format!(
+                "Bonsai's {}-scene plan is paused for structured producer review. No H3 clip has started.",
+                project.clips.len()
+            );
+        } else {
+            project.phase = "plan-ready".into();
+            project.detail = format!(
+                "The production plan is ready with {} H3 clips.",
+                project.clips.len()
+            );
+        }
         self.persist_emit(&mut project, app)?;
         let folder = self.project_dir(id);
         write_json_atomic(&folder.join("plan.json"), &plan)?;
@@ -1018,10 +1201,31 @@ impl MovieStudio {
             "Bonsai is drafting the screenplay and production-grade H3 prompts.".into();
         self.persist_emit(project, app)?;
         let manifest = reference_manifest(&project.references);
-        let mut plan = self
+        let plan = self
             .write_plan(prompt, &manifest, settings, connection, research)
             .await?;
 
+        let plan = self
+            .review_candidate(
+                prompt, &manifest, plan, settings, connection, research, cancel, project, app,
+            )
+            .await?;
+        Ok((plan, Vec::new()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn review_candidate(
+        &self,
+        prompt: &str,
+        manifest: &str,
+        mut plan: MoviePlan,
+        settings: &MovieSettings,
+        connection: &ModelConnection,
+        research: &ResearchSettings,
+        cancel: &CancellationToken,
+        project: &mut MovieProject,
+        app: Option<&AppHandle>,
+    ) -> Result<MoviePlan, StudioError> {
         for attempt in 1..=MAX_PLAN_ATTEMPTS {
             check_cancel(cancel)?;
             let native_issues = prompt_quality_issues(&plan, &project.references);
@@ -1033,7 +1237,7 @@ impl MovieStudio {
             let code_review = self
                 .code_review_plan(
                     prompt,
-                    &manifest,
+                    manifest,
                     &plan,
                     &native_issues,
                     settings,
@@ -1044,7 +1248,7 @@ impl MovieStudio {
             let assessment = self
                 .assess_plan(
                     prompt,
-                    &manifest,
+                    manifest,
                     &plan,
                     &native_issues,
                     &code_review,
@@ -1063,7 +1267,7 @@ impl MovieStudio {
                     score: assessment.score,
                     verdict: assessment.verdict,
                 };
-                return Ok((plan, Vec::new()));
+                return Ok(plan);
             }
             if attempt == MAX_PLAN_ATTEMPTS {
                 return Err(StudioError::Planning(format!(
@@ -1081,7 +1285,7 @@ impl MovieStudio {
             plan = self
                 .revise_plan(
                     prompt,
-                    &manifest,
+                    manifest,
                     &plan,
                     &native_issues,
                     &code_review,
@@ -1093,6 +1297,166 @@ impl MovieStudio {
                 .await?;
         }
         unreachable!("the bounded movie review loop always accepts or returns an error")
+    }
+
+    pub async fn revise_with_producer_feedback(
+        &self,
+        id: &str,
+        feedback: &str,
+        connection: &ModelConnection,
+        research: &ResearchSettings,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let feedback = feedback.trim();
+        if feedback.chars().count() < 3 || feedback.chars().count() > 16_000 {
+            return Err(StudioError::Invalid(
+                "producer feedback must contain 3 to 16,000 characters".into(),
+            ));
+        }
+        let mut project = self.get(id)?;
+        ensure_plan_is_unrendered(&project)?;
+        let current = project
+            .plan
+            .clone()
+            .ok_or_else(|| StudioError::Invalid("project has no saved movie plan".into()))?;
+        project.status = "running".into();
+        project.phase = "producer-revision".into();
+        project.detail = "Bonsai is revising the structured plan from producer feedback.".into();
+        self.persist_emit(&mut project, app)?;
+        let manifest = reference_manifest(&project.references);
+        let candidate = self
+            .rewrite_for_producer_feedback(
+                &project.prompt,
+                &manifest,
+                &current,
+                feedback,
+                &project.settings,
+                connection,
+                research,
+            )
+            .await?;
+        let settings = project.settings.clone();
+        let prompt = project.prompt.clone();
+        let reviewed = self
+            .review_candidate(
+                &prompt,
+                &manifest,
+                candidate,
+                &settings,
+                connection,
+                research,
+                cancel,
+                &mut project,
+                app,
+            )
+            .await?;
+        let mut reviewed = reviewed;
+        prepare_producer_plan(&project, &mut reviewed)?;
+        project.producer_feedback.push(ProducerFeedbackRecord {
+            created_at: Utc::now().to_rfc3339(),
+            scope: "full-plan".into(),
+            clip_id: String::new(),
+            feedback: feedback.into(),
+        });
+        self.replace_unrendered_plan(
+            &mut project,
+            reviewed,
+            "Bonsai's revised plan passed review and is paused for producer approval.",
+            app,
+        )?;
+        Ok(project)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn rewrite_for_producer_feedback(
+        &self,
+        prompt: &str,
+        manifest: &str,
+        current: &MoviePlan,
+        feedback: &str,
+        settings: &MovieSettings,
+        connection: &ModelConnection,
+        research: &ResearchSettings,
+    ) -> Result<MoviePlan, StudioError> {
+        let mut messages = vec![
+            json!({"role":"system","content":director_prompt(settings)}),
+            json!({"role":"user","content":prompt}),
+        ];
+        if !manifest.is_empty() {
+            messages.push(json!({"role":"user","content":manifest}));
+        }
+        messages.push(json!({"role":"user","content":format!(
+            "The human producer reviewed the structured screenplay and scenes. Rewrite the complete plan around their feedback while preserving unaffected strengths and every valid native-reference assignment. Human feedback:\n{feedback}\n\nCurrent plan:\n{}\nReturn only replacement JSON.",
+            serde_json::to_string(current)?
+        )}));
+        self.complete_plan(&messages, settings, connection, research)
+            .await
+    }
+
+    pub async fn assist_clip(
+        &self,
+        id: &str,
+        clip_id: &str,
+        feedback: &str,
+        connection: &ModelConnection,
+        research: &ResearchSettings,
+    ) -> Result<MovieClipSuggestion, StudioError> {
+        let feedback = feedback.trim();
+        if feedback.chars().count() < 3 || feedback.chars().count() > 8_000 {
+            return Err(StudioError::Invalid(
+                "scene feedback must contain 3 to 8,000 characters".into(),
+            ));
+        }
+        let project = self.get(id)?;
+        let plan = project
+            .plan
+            .as_ref()
+            .ok_or_else(|| StudioError::Invalid("project has no saved movie plan".into()))?;
+        let index = plan
+            .clips
+            .iter()
+            .position(|clip| clip.id == clip_id)
+            .ok_or_else(|| StudioError::Invalid("unknown movie scene".into()))?;
+        let start = index.saturating_sub(1);
+        let end = (index + 2).min(plan.clips.len());
+        let payload = json!({
+            "producerRequest": project.prompt,
+            "producerFeedback": feedback,
+            "referenceManifest": reference_manifest(&project.references),
+            "creativeDirection": plan.creative_direction,
+            "continuityBible": plan.continuity_bible,
+            "neighboringScenes": &plan.clips[start..end],
+            "sceneToRepair": &plan.clips[index],
+        });
+        let messages = vec![
+            json!({"role":"system","content":clip_assistant_prompt()}),
+            json!({"role":"user","content":payload.to_string()}),
+        ];
+        let mut suggestion: MovieClipSuggestion = self
+            .complete_structured(
+                connection,
+                &messages,
+                clip_suggestion_schema(),
+                project.settings.max_output_tokens,
+                &project.settings,
+                research,
+                "movie scene suggestion",
+            )
+            .await?;
+        suggestion.clip_id = clip_id.into();
+        suggestion.clip.id = clip_id.into();
+        let mut candidate = plan.clone();
+        candidate.clips[index] = suggestion.clip.clone();
+        prepare_producer_plan(&project, &mut candidate)?;
+        let issues = prompt_quality_issues(&candidate, &project.references);
+        if !issues.is_empty() {
+            return Err(StudioError::Planning(format!(
+                "Bonsai's scene suggestion was not render-ready: {}",
+                issues.join(" ")
+            )));
+        }
+        Ok(suggestion)
     }
 
     async fn write_plan(
@@ -1347,7 +1711,7 @@ impl MovieStudio {
             self.persist_emit(&mut project, app)?;
             let seed = project.clips[index].seed;
             match self
-                .render_clip(&project, planned, index, seed, cancel)
+                .render_clip(&project, planned, index, seed, cancel, None)
                 .await
             {
                 Ok(path) => {
@@ -1368,14 +1732,143 @@ impl MovieStudio {
             }
         }
         project.phase = "assembling".into();
-        project.detail = "Assembling immutable H3 masters into the first publishable cut.".into();
+        project.detail =
+            "Joining the untouched H3 masters into a review cut without trimming or replacing audio."
+                .into();
         self.persist_emit(&mut project, app)?;
         let final_path = self.assemble_default(&project).await?;
         project.final_path = final_path;
         project.status = "complete".into();
         project.phase = "complete".into();
-        project.detail = "The first cut is ready. Every source clip remains available for non-destructive editing.".into();
+        project.detail = "The untouched H3 review cut is ready. Producer edits are opt-in and every source master remains preserved.".into();
         self.persist_emit(&mut project, app)?;
+        Ok(project)
+    }
+
+    pub async fn render_clip_version(
+        &self,
+        request: MovieClipRenderRequest,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let MovieClipRenderRequest {
+            id,
+            suggestion,
+            seed,
+        } = request;
+        let mut project = self.get(&id)?;
+        let mut plan = project
+            .plan
+            .clone()
+            .ok_or_else(|| StudioError::Invalid("project has no saved movie plan".into()))?;
+        let index = plan
+            .clips
+            .iter()
+            .position(|clip| clip.id == suggestion.clip_id)
+            .ok_or_else(|| StudioError::Invalid("unknown movie scene".into()))?;
+        if suggestion.clip.id != suggestion.clip_id {
+            return Err(StudioError::Invalid(
+                "scene suggestion does not match its target scene".into(),
+            ));
+        }
+        let current = project
+            .clips
+            .get(index)
+            .ok_or_else(|| StudioError::Invalid("rendered scene record is missing".into()))?;
+        if current.status != "complete" || !Path::new(&current.path).is_file() {
+            return Err(StudioError::Invalid(
+                "render a scene version only after its original H3 master is complete".into(),
+            ));
+        }
+        plan.clips[index] = suggestion.clip.clone();
+        prepare_producer_plan(&project, &mut plan)?;
+        let issues = prompt_quality_issues(&plan, &project.references);
+        if !issues.is_empty() {
+            return Err(StudioError::Invalid(format!(
+                "scene version is not render-ready: {}",
+                issues.join(" ")
+            )));
+        }
+        let version_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+        let previous_status = project.status.clone();
+        project.status = "running".into();
+        project.phase = "rendering-scene-version".into();
+        project.detail = format!(
+            "Producer requested a new version of scene {}. The current master remains untouched.",
+            index + 1
+        );
+        project.clips[index].status = "rendering-version".into();
+        self.persist_emit(&mut project, app)?;
+        let comfy_root = project.settings.comfy_root.clone();
+        self.ensure_comfy(&comfy_root, &mut project, app).await?;
+        let result = self
+            .render_clip(
+                &project,
+                &plan.clips[index],
+                index,
+                seed,
+                cancel,
+                Some(&version_id),
+            )
+            .await;
+        let path = match result {
+            Ok(path) => path,
+            Err(error) => {
+                project.status = previous_status;
+                project.phase = "scene-version-failed".into();
+                project.detail =
+                    "The new scene version failed; the active master is unchanged.".into();
+                project.clips[index].status = "complete".into();
+                project.clips[index].error = error.to_string();
+                self.persist_emit(&mut project, app)?;
+                return Err(error);
+            }
+        };
+        let clip = &mut project.clips[index];
+        if clip
+            .versions
+            .iter()
+            .all(|version| version.path != clip.path)
+        {
+            clip.versions.push(ClipVersion {
+                id: "original".into(),
+                created_at: project.created_at.clone(),
+                title: clip.title.clone(),
+                prompt: clip.prompt.clone(),
+                duration_seconds: clip.duration_seconds,
+                seed: clip.seed,
+                path: clip.path.clone(),
+            });
+        }
+        clip.versions.push(ClipVersion {
+            id: version_id,
+            created_at: Utc::now().to_rfc3339(),
+            title: suggestion.clip.title.clone(),
+            prompt: suggestion.clip.prompt.clone(),
+            duration_seconds: suggestion.clip.duration_seconds,
+            seed,
+            path: path.clone(),
+        });
+        clip.title.clone_from(&suggestion.clip.title);
+        clip.prompt.clone_from(&suggestion.clip.prompt);
+        clip.duration_seconds = suggestion.clip.duration_seconds;
+        clip.seed = seed;
+        clip.path = path;
+        clip.status = "complete".into();
+        clip.error.clear();
+        project.plan = Some(plan.clone());
+        project.producer_feedback.push(ProducerFeedbackRecord {
+            created_at: Utc::now().to_rfc3339(),
+            scope: "scene-version".into(),
+            clip_id: suggestion.clip_id,
+            feedback: suggestion.summary,
+        });
+        self.extract_last_frame(&project, index).await?;
+        project.status = previous_status;
+        project.phase = "complete".into();
+        project.detail = "The producer's new scene version is active. The existing review cut is unchanged until Export new cut is chosen.".into();
+        self.persist_emit(&mut project, app)?;
+        write_json_atomic(&self.project_dir(&project.id).join("plan.json"), &plan)?;
         Ok(project)
     }
 
@@ -1444,8 +1937,14 @@ impl MovieStudio {
         index: usize,
         seed: u64,
         cancel: &CancellationToken,
+        variant: Option<&str>,
     ) -> Result<String, StudioError> {
-        let prefix = format!("kestrel_movies/{}/shot_{:03}", project.id, index + 1);
+        let variant_suffix = variant.map(|value| format!("-{value}")).unwrap_or_default();
+        let prefix = format!(
+            "kestrel_movies/{}/shot_{:03}{variant_suffix}",
+            project.id,
+            index + 1
+        );
         let selected_ids = planned.reference_ids.iter().collect::<HashSet<_>>();
         let selected_references = project
             .references
@@ -1571,33 +2070,13 @@ impl MovieStudio {
                     let target = self
                         .project_dir(&project.id)
                         .join("raw")
-                        .join(format!("clip-{:03}.mp4", index + 1));
-                    let native_audio = selected_references
-                        .iter()
-                        .find(|reference| reference.kind == "audio");
-                    let preserved_target = native_audio.map(|_| {
-                        self.project_dir(&project.id)
-                            .join("raw")
-                            .join(format!("clip-{:03}.h3-audio.mp4", index + 1))
-                    });
-                    let copy_target = preserved_target.as_ref().unwrap_or(&target);
-                    tokio::fs::copy(&source, copy_target)
-                        .await
-                        .map_err(|error| {
-                            StudioError::Render(format!(
-                                "could not preserve {}: {error}",
-                                source.display()
-                            ))
-                        })?;
-                    if let Some(reference) = native_audio {
-                        preserve_native_audio(
-                            copy_target,
-                            Path::new(&reference.path),
-                            &target,
-                            planned.duration_seconds,
-                        )
-                        .await?;
-                    }
+                        .join(format!("clip-{:03}{variant_suffix}.mp4", index + 1));
+                    tokio::fs::copy(&source, &target).await.map_err(|error| {
+                        StudioError::Render(format!(
+                            "could not preserve {}: {error}",
+                            source.display()
+                        ))
+                    })?;
                     return Ok(target.to_string_lossy().into_owned());
                 }
             }
@@ -1642,55 +2121,37 @@ impl MovieStudio {
 
     async fn assemble_default(&self, project: &MovieProject) -> Result<String, StudioError> {
         let folder = self.project_dir(&project.id);
-        let completed = project
-            .clips
-            .iter()
-            .filter(|clip| clip.status == "complete")
-            .collect::<Vec<_>>();
-        if completed.is_empty() {
+        let concat_path = folder.join("assembly.txt");
+        let mut concat = String::new();
+        for clip in &project.clips {
+            if clip.status == "complete" {
+                concat.push_str(&format!(
+                    "file '{}'\n",
+                    clip.path.replace('\\', "/").replace('\'', "'\\''")
+                ));
+            }
+        }
+        if concat.is_empty() {
             return Err(StudioError::Render(
                 "there are no completed clips to assemble".into(),
             ));
         }
-        let mut command = tokio::process::Command::new("ffmpeg");
-        command.args(["-y", "-hide_banner", "-loglevel", "error"]);
-        let mut filters = Vec::with_capacity(completed.len() + 1);
-        for (index, clip) in completed.iter().enumerate() {
-            command.arg("-i").arg(&clip.path);
-            filters.push(format!(
-                "[{index}:v]trim=start=0:end={},setpts=PTS-STARTPTS[v{index}];[{index}:a]atrim=start=0:end={},asetpts=PTS-STARTPTS[a{index}]",
-                clip.duration_seconds, clip.duration_seconds
-            ));
-        }
-        let streams = (0..completed.len())
-            .map(|index| format!("[v{index}][a{index}]"))
-            .collect::<String>();
-        filters.push(format!(
-            "{streams}concat=n={}:v=1:a=1[v][a]",
-            completed.len()
-        ));
+        fs::write(&concat_path, concat)?;
         let target = folder.join("exports").join("first-cut.mp4");
-        let output = command
-            .arg("-filter_complex")
-            .arg(filters.join(";"))
+        let output = tokio::process::Command::new("ffmpeg")
             .args([
-                "-map",
-                "[v]",
-                "-map",
-                "[a]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "18",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-movflags",
-                "+faststart",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
             ])
+            .arg(&concat_path)
+            .args(["-c", "copy", "-movflags", "+faststart"])
             .arg(&target)
             .output()
             .await?;
@@ -1818,6 +2279,75 @@ impl MovieStudio {
     }
 }
 
+fn ensure_plan_is_unrendered(project: &MovieProject) -> Result<(), StudioError> {
+    if project.clips.iter().any(|clip| {
+        clip.status == "rendering" || clip.status == "complete" || !clip.path.is_empty()
+    }) {
+        return Err(StudioError::Invalid(
+            "the screenplay can only be replaced before H3 rendering; use versioned scene repair in the editor for rendered clips"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_producer_plan(project: &MovieProject, plan: &mut MoviePlan) -> Result<(), StudioError> {
+    if plan.title.trim().is_empty() || plan.clips.is_empty() {
+        return Err(StudioError::Invalid(
+            "the structured plan needs a title and at least one scene".into(),
+        ));
+    }
+    if plan.clips.len() > project.settings.max_clips as usize {
+        return Err(StudioError::Invalid(format!(
+            "the plan has {} scenes but this production allows at most {}",
+            plan.clips.len(),
+            project.settings.max_clips
+        )));
+    }
+    let allowed_references = project
+        .references
+        .iter()
+        .map(|reference| reference.asset_id.as_str())
+        .collect::<HashSet<_>>();
+    for (index, clip) in plan.clips.iter_mut().enumerate() {
+        clip.id = format!("clip-{:03}", index + 1);
+        if !clip.duration_seconds.is_finite() || !(5.0..=15.0).contains(&clip.duration_seconds) {
+            return Err(StudioError::Invalid(format!(
+                "scene {} duration must be between 5 and 15 seconds",
+                index + 1
+            )));
+        }
+        if clip.title.trim().is_empty() || clip.prompt.len() > 64 * 1024 {
+            return Err(StudioError::Invalid(format!(
+                "scene {} needs a title and a reasonably sized renderer prompt",
+                index + 1
+            )));
+        }
+        let mut seen = HashSet::new();
+        for reference_id in &clip.reference_ids {
+            if !allowed_references.contains(reference_id.as_str()) {
+                return Err(StudioError::Invalid(format!(
+                    "scene {} selects an unknown producer reference",
+                    index + 1
+                )));
+            }
+            if !seen.insert(reference_id) {
+                return Err(StudioError::Invalid(format!(
+                    "scene {} selects the same producer reference twice",
+                    index + 1
+                )));
+            }
+        }
+        if clip.use_previous_frame && !clip.reference_ids.is_empty() {
+            return Err(StudioError::Invalid(format!(
+                "scene {} cannot combine a previous frame with native H3 references",
+                index + 1
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn check_cancel(cancel: &CancellationToken) -> Result<(), StudioError> {
     if cancel.is_cancelled() {
         Err(StudioError::Cancelled)
@@ -1903,6 +2433,33 @@ fn code_reviewer_prompt() -> &'static str {
 
 fn assessor_prompt() -> &'static str {
     "Act as the independent release authority after a CodeRabbit-style review. Decide whether this complete H3 plan can render unattended into credible selling material. Verify producer intent, narrative/editing rhythm, identity and world continuity, allocation of supplied native references, shot-by-shot feasibility, exact dialogue boundaries, and production-level visual/camera/audio detail in every clip. A reference-free request is valid: never request, invent, or require an asset ID, URL, image, video, or audio absent from the manifest. Native audio is existing clip audio, never merely a voice-identity hint. Every native gate finding blocks approval. Independently verify code-review comments: preserve material unresolved defects as blockingIssues, but explicitly overrule incorrect, subjective, already-resolved, or non-material nitpicks. You—not Code Review—make the final release decision. Approve only at score 90 or higher. Do not reward verbosity without visible, timed, achievable direction. Return concise blocking findings with clipNumber 0 for plan-wide issues."
+}
+
+fn clip_assistant_prompt() -> &'static str {
+    "You are Bonsai at an advanced producer's scene desk. Propose one organized replacement scene; never mutate files or claim that the existing H3 master changed. Obey the producer's requested fix, preserve useful neighboring continuity, and keep native reference IDs only in referenceIds. The replacement prompt must be a complete 120-450 word MiniMax H3 renderer instruction with production medium, environment, lighting/texture, timed coverage through the exact clip endpoint, camera, blocking/action, sound, transition, and relevant exclusions. Return a concise producer summary, a practical verification checklist, and the complete structured replacement clip."
+}
+
+fn clip_suggestion_schema() -> Value {
+    json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_scene_suggestion","strict":true,"schema":{
+        "type":"object","additionalProperties":false,"properties":{
+            "clipId":{"type":"string","maxLength":80},
+            "summary":{"type":"string","minLength":10,"maxLength":1200},
+            "checklist":{"type":"array","maxItems":12,"items":{"type":"string","minLength":3,"maxLength":400}},
+            "clip":{"type":"object","additionalProperties":false,"properties":{
+                "id":{"type":"string","maxLength":80},
+                "title":{"type":"string","minLength":1,"maxLength":160},
+                "purpose":{"type":"string","minLength":1,"maxLength":600},
+                "durationSeconds":{"type":"number","minimum":5,"maximum":15},
+                "prompt":{"type":"string"},
+                "continuityIn":{"type":"string","maxLength":800},
+                "continuityOut":{"type":"string","maxLength":800},
+                "transition":{"type":"string","maxLength":300},
+                "usePreviousFrame":{"type":"boolean"},
+                "sourceRefs":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":800}},
+                "referenceIds":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":128}}
+            },"required":["id","title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}
+        },"required":["clipId","summary","checklist","clip"]
+    }}})
 }
 
 fn review_issue_schema() -> Value {
@@ -2090,52 +2647,6 @@ fn has_meaningful_prose(value: &str, minimum_words: usize) -> bool {
         .filter(|word| word.chars().any(char::is_alphabetic))
         .count()
         >= minimum_words
-}
-
-async fn preserve_native_audio(
-    generated_video: &Path,
-    native_audio: &Path,
-    target: &Path,
-    duration_seconds: f32,
-) -> Result<(), StudioError> {
-    let duration = format!("{duration_seconds:.3}");
-    let output = tokio::process::Command::new("ffmpeg")
-        .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
-        .arg(generated_video)
-        .arg("-i")
-        .arg(native_audio)
-        .args([
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "copy",
-            "-af",
-            "apad",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-ar",
-            "32000",
-            "-ac",
-            "2",
-            "-t",
-            &duration,
-            "-movflags",
-            "+faststart",
-        ])
-        .arg(target)
-        .output()
-        .await?;
-    if !output.status.success() {
-        return Err(StudioError::Render(format!(
-            "could not preserve exact native clip audio: {}",
-            truncate(&String::from_utf8_lossy(&output.stderr), 1_000)
-        )));
-    }
-    Ok(())
 }
 
 fn has_timed_structure(lower_prompt: &str) -> bool {
@@ -2921,6 +3432,7 @@ mod tests {
                     prompt: prompt.into(),
                     settings: MovieSettings::default(),
                     references: vec![],
+                    pause_after_plan: false,
                 },
                 false,
             )
@@ -2976,6 +3488,7 @@ mod tests {
                             ..MovieSettings::default()
                         },
                         references: vec![],
+                        pause_after_plan: false,
                     },
                     false,
                 )
@@ -3024,6 +3537,7 @@ mod tests {
                 prompt: "Create one five-second cinematic nature shot of a dew-covered fern unfolding at sunrise, with coherent birdsong and a gentle breeze. No research is needed.".into(),
                 settings: MovieSettings { width: 864, height: 480, max_clips: 1, ..MovieSettings::default() },
                 references: vec![],
+                pause_after_plan: false,
             }, false).map_err(|error| error.to_string())?;
             let lease = runtime.lease_research(&research).await.map_err(|error| error.to_string())?;
             eprintln!("live movie: directing with Bonsai");
@@ -3139,6 +3653,7 @@ mod tests {
                                 embedded_audio_description: String::new(),
                             },
                         ],
+                        pause_after_plan: false,
                     },
                     false,
                 )
@@ -3196,7 +3711,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_audio_mux_and_default_assembly_honor_planned_duration() {
+    async fn default_review_cut_preserves_native_clip_duration_and_audio() {
         let temp = tempfile::tempdir().unwrap();
         let studio = MovieStudio::new(temp.path()).unwrap();
         let mut project = studio
@@ -3205,6 +3720,7 @@ mod tests {
                     prompt: "Two deterministic test shots".into(),
                     settings: MovieSettings::default(),
                     references: vec![],
+                    pause_after_plan: false,
                 },
                 false,
             )
@@ -3242,27 +3758,7 @@ mod tests {
                 .unwrap();
             assert!(output.status.success());
         }
-        let native = raw.join("native.wav");
-        let native_output = std::process::Command::new("ffmpeg")
-            .args([
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "sine=frequency=880:sample_rate=32000:duration=1",
-            ])
-            .arg(&native)
-            .output()
-            .unwrap();
-        assert!(native_output.status.success());
-        let first = raw.join("first.mp4");
-        preserve_native_audio(&generated, &native, &first, 1.0)
-            .await
-            .unwrap();
-        project.clips = [first, second]
+        project.clips = [generated, second]
             .into_iter()
             .enumerate()
             .map(|(index, path)| RenderedClip {
@@ -3275,6 +3771,7 @@ mod tests {
                 status: "complete".into(),
                 path: path.to_string_lossy().into_owned(),
                 error: String::new(),
+                versions: Vec::new(),
             })
             .collect();
         let assembled = studio.assemble_default(&project).await.unwrap();
@@ -3296,8 +3793,23 @@ mod tests {
             .parse::<f64>()
             .unwrap();
         assert!(
-            (duration - 2.0).abs() < 0.05,
+            (duration - 2.25).abs() < 0.08,
             "assembled duration was {duration}"
         );
+        let streams = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(&assembled)
+            .output()
+            .unwrap();
+        let streams = String::from_utf8_lossy(&streams.stdout);
+        assert!(streams.contains("video"));
+        assert!(streams.contains("audio"));
     }
 }

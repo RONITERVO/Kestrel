@@ -196,6 +196,37 @@ export interface RenderedClip {
   status: "queued" | "rendering" | "complete" | "failed" | string;
   path: string;
   error: string;
+  versions: ClipVersion[];
+}
+
+export interface ClipVersion {
+  id: string;
+  createdAt: string;
+  title: string;
+  prompt: string;
+  durationSeconds: number;
+  seed: number;
+  path: string;
+}
+
+export interface ProducerFeedbackRecord {
+  createdAt: string;
+  scope: string;
+  clipId: string;
+  feedback: string;
+}
+
+export interface MovieClipSuggestion {
+  clipId: string;
+  summary: string;
+  checklist: string[];
+  clip: PlannedClip;
+}
+
+export interface MovieClipRenderRequest {
+  id: string;
+  suggestion: MovieClipSuggestion;
+  seed: number;
 }
 
 export interface ClipEdit {
@@ -232,6 +263,9 @@ export interface MovieProject {
   edit: MovieEdit;
   finalPath: string;
   error: string;
+  producerReviewRequired: boolean;
+  producerApprovedAt: string;
+  producerFeedback: ProducerFeedbackRecord[];
 }
 
 export interface MovieSummary {
@@ -248,6 +282,7 @@ export interface StartMovieRequest {
   prompt: string;
   settings: MovieSettings;
   references: ProducerReferenceRequest[];
+  pauseAfterPlan: boolean;
 }
 
 export interface ModelInfo {

@@ -39,7 +39,9 @@ use std::{
 };
 use store::ResearchStore;
 use studio::{
-    MovieEdit, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, StartMovieRequest,
+    MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieEdit, MoviePlan,
+    MoviePlanFeedbackRequest, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
+    StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -276,6 +278,12 @@ fn resume_movie(
 ) -> Result<MovieProject, String> {
     ensure_workspace_idle(&state)?;
     let project = state.studio.get(&id).map_err(|error| error.to_string())?;
+    if project.status == "awaiting-review" {
+        return Err(
+            "This production is paused for human review. Approve the structured plan to begin H3 rendering."
+                .into(),
+        );
+    }
     if project.plan.is_none() {
         return Err("This movie stopped before its plan was committed. Start a new production from its saved prompt.".into());
     }
@@ -322,12 +330,23 @@ fn spawn_movie(
                     .lease_research(&research)
                     .await
                     .map_err(|error| error.to_string())?;
-                managed
+                let planned = managed
                     .studio
                     .plan(&id, &lease.connection, &research, &cancel, Some(&app))
                     .await
                     .map_err(|error| error.to_string())?;
                 drop(lease);
+                if planned.status == "awaiting-review" {
+                    managed
+                        .runtime
+                        .stop_managed()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    services::stop_bonsai(&research.bonsai_root)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    return Ok(());
+                }
             }
             managed
                 .runtime
@@ -388,6 +407,167 @@ fn save_movie_edits(
         .studio
         .save_edits(&id, edit)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_movie_plan(
+    id: String,
+    plan: MoviePlan,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    ensure_workspace_idle(&state)?;
+    state
+        .studio
+        .save_producer_plan(&id, plan, Some(&app))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn revise_movie_plan(
+    request: MoviePlanFeedbackRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let _guard = claim_workspace(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    state.studio.release_comfy_memory().await;
+    let cancel = CancellationToken::new();
+    state
+        .movie_jobs
+        .lock()
+        .map_err(|_| "movie job registry is unavailable".to_string())?
+        .insert(request.id.clone(), cancel.clone());
+    let result: Result<MovieProject, String> = async {
+        let lease = state
+            .runtime
+            .lease_research(&research)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .studio
+            .revise_with_producer_feedback(
+                &request.id,
+                &request.feedback,
+                &lease.connection,
+                &research,
+                &cancel,
+                Some(&app),
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    let _ = state.runtime.stop_managed().await;
+    let _ = services::stop_bonsai(&research.bonsai_root).await;
+    if let Ok(mut jobs) = state.movie_jobs.lock() {
+        jobs.remove(&request.id);
+    }
+    result
+}
+
+#[tauri::command]
+fn approve_movie_plan(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    ensure_workspace_idle(&state)?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI job is already active.".to_string())?;
+    let project = state
+        .studio
+        .approve_producer_plan(&id, Some(&app))
+        .map_err(|error| {
+            state.work_active.store(false, Ordering::Release);
+            error.to_string()
+        })?;
+    let research = state.research_settings.load().map_err(|error| {
+        state.work_active.store(false, Ordering::Release);
+        error.to_string()
+    })?;
+    let cancel = CancellationToken::new();
+    state
+        .movie_jobs
+        .lock()
+        .map_err(|_| {
+            state.work_active.store(false, Ordering::Release);
+            "movie job registry is unavailable".to_string()
+        })?
+        .insert(id.clone(), cancel.clone());
+    spawn_movie(app, id, research, cancel, false);
+    Ok(project)
+}
+
+#[tauri::command]
+async fn ask_bonsai_movie_clip(
+    request: MovieClipAssistRequest,
+    state: State<'_, AppState>,
+) -> Result<MovieClipSuggestion, String> {
+    let _guard = claim_workspace(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    state.studio.release_comfy_memory().await;
+    let result: Result<MovieClipSuggestion, String> = async {
+        let lease = state
+            .runtime
+            .lease_research(&research)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .studio
+            .assist_clip(
+                &request.id,
+                &request.clip_id,
+                &request.feedback,
+                &lease.connection,
+                &research,
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    let _ = state.runtime.stop_managed().await;
+    let _ = services::stop_bonsai(&research.bonsai_root).await;
+    result
+}
+
+#[tauri::command]
+async fn render_movie_clip_version(
+    request: MovieClipRenderRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let _guard = claim_workspace(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let _ = state.runtime.stop_managed().await;
+    let _ = services::stop_bonsai(&research.bonsai_root).await;
+    let cancel = CancellationToken::new();
+    state
+        .movie_jobs
+        .lock()
+        .map_err(|_| "movie job registry is unavailable".to_string())?
+        .insert(request.id.clone(), cancel.clone());
+    let id = request.id.clone();
+    let result = state
+        .studio
+        .render_clip_version(request, &cancel, Some(&app))
+        .await
+        .map_err(|error| error.to_string());
+    if let Ok(mut jobs) = state.movie_jobs.lock() {
+        jobs.remove(&id);
+    }
+    result
 }
 
 #[tauri::command]
@@ -1447,6 +1627,11 @@ pub fn run() {
             start_movie,
             resume_movie,
             cancel_movie,
+            save_movie_plan,
+            revise_movie_plan,
+            approve_movie_plan,
+            ask_bonsai_movie_clip,
+            render_movie_clip_version,
             save_movie_edits,
             render_movie_edit,
             reveal_movie,

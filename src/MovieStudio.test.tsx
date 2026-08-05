@@ -25,6 +25,11 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByLabelText("Thinking budget")).toHaveValue(4096);
     expect(screen.getByLabelText("ComfyUI root")).toHaveValue("D:\\AI\\ComfyUI");
     expect(screen.getByLabelText("Reference image fidelity")).toHaveValue("match");
+    const checkpoint = screen.getByLabelText(/Pause after Bonsai plan/i);
+    expect(checkpoint).not.toBeChecked();
+    fireEvent.click(checkpoint);
+    expect(checkpoint).toBeChecked();
+    expect(screen.getByText(/before any H3 clip is rendered/i)).toBeInTheDocument();
     expect(screen.queryByLabelText("Research")).not.toBeInTheDocument();
   });
 

@@ -24,7 +24,10 @@ import type {
   RunResearchRequest,
   StartChatRequest,
   SystemSnapshot,
+  MovieClipRenderRequest,
+  MovieClipSuggestion,
   MovieEdit,
+  MoviePlan,
   MovieProject,
   MovieReferenceImport,
   MovieSummary,
@@ -113,6 +116,31 @@ export async function resumeMovie(id: string): Promise<MovieProject> {
 export async function cancelMovie(id: string): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Movie production requires the desktop application.");
   return invoke<MovieProject>("cancel_movie", { id });
+}
+
+export async function saveMoviePlan(id: string, plan: MoviePlan): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Producer plan editing requires the desktop application.");
+  return invoke<MovieProject>("save_movie_plan", { id, plan });
+}
+
+export async function reviseMoviePlan(id: string, feedback: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Bonsai plan revision requires the desktop application.");
+  return invoke<MovieProject>("revise_movie_plan", { request: { id, feedback } });
+}
+
+export async function approveMoviePlan(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Producer approval requires the desktop application.");
+  return invoke<MovieProject>("approve_movie_plan", { id });
+}
+
+export async function askBonsaiMovieClip(id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
+  if (!isTauri()) throw new Error("Bonsai scene assistance requires the desktop application.");
+  return invoke<MovieClipSuggestion>("ask_bonsai_movie_clip", { request: { id, clipId, feedback } });
+}
+
+export async function renderMovieClipVersion(request: MovieClipRenderRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Scene version rendering requires the desktop application.");
+  return invoke<MovieProject>("render_movie_clip_version", { request });
 }
 
 export async function saveMovieEdits(id: string, edit: MovieEdit): Promise<MovieProject> {
