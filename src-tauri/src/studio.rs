@@ -21,6 +21,10 @@ use thiserror::Error;
 use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
+mod movie_agent;
+
+use movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult};
+
 const SCHEMA_VERSION: u32 = 4;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 const DEFAULT_COMFY_ROOT: &str = r"D:\AI\ComfyUI";
@@ -30,7 +34,8 @@ const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_REFERENCE_SECONDS: f64 = 15.1;
 const MIN_H3_PROMPT_WORDS: usize = 120;
 const MAX_H3_PROMPT_WORDS: usize = 450;
-const MAX_PLAN_ATTEMPTS: u32 = 8;
+const MAX_MOVIE_AGENT_STEPS: u32 = 96;
+const MOVIE_THINKING_BUDGET: u32 = 32_768;
 
 pub fn media_response(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
     match read_media_response(&request) {
@@ -355,7 +360,7 @@ fn default_top_k() -> u32 {
     20
 }
 fn default_thinking() -> u32 {
-    4_096
+    MOVIE_THINKING_BUDGET
 }
 fn default_output() -> u32 {
     32_768
@@ -390,7 +395,10 @@ impl MovieSettings {
         self.temperature = self.temperature.clamp(0.0, 2.0);
         self.top_p = self.top_p.clamp(0.05, 1.0);
         self.top_k = self.top_k.clamp(1, 200);
-        self.thinking_budget = self.thinking_budget.clamp(0, 32_768);
+        // Bonsai's movie-agent checkpoint is trained for its full reasoning mode.
+        // Keep the serialized field for project/profile compatibility, but never
+        // permit a movie request (including an old saved one) to disable it.
+        self.thinking_budget = MOVIE_THINKING_BUDGET;
         self.max_output_tokens = self.max_output_tokens.clamp(1_024, 32_768);
         let root = PathBuf::from(&self.comfy_root);
         if !root.is_absolute() {
@@ -1218,27 +1226,24 @@ impl MovieStudio {
         check_cancel(cancel)?;
         project.phase = "writing".into();
         project.detail =
-            "Bonsai is drafting the screenplay and production-grade H3 prompts.".into();
+            "Bonsai is working in its durable movie codebase and running native H3 checks.".into();
         self.persist_emit(project, app)?;
         let manifest = reference_manifest(&project.references);
         let plan = self
-            .write_plan(prompt, &manifest, settings, connection, research)
-            .await?;
-
-        let plan = self
-            .review_candidate(
-                prompt, &manifest, plan, settings, connection, research, cancel, project, app,
+            .run_movie_agent(
+                prompt, &manifest, None, None, settings, connection, research, cancel, project, app,
             )
             .await?;
         Ok((plan, Vec::new()))
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn review_candidate(
+    async fn run_movie_agent(
         &self,
         prompt: &str,
         manifest: &str,
-        mut plan: MoviePlan,
+        seed: Option<&MoviePlan>,
+        producer_feedback: Option<&str>,
         settings: &MovieSettings,
         connection: &ModelConnection,
         research: &ResearchSettings,
@@ -1246,77 +1251,140 @@ impl MovieStudio {
         project: &mut MovieProject,
         app: Option<&AppHandle>,
     ) -> Result<MoviePlan, StudioError> {
-        for attempt in 1..=MAX_PLAN_ATTEMPTS {
+        let workspace_root = self.project_dir(&project.id).join("agent-workspace");
+        let transcript_path = workspace_root.join("agent-transcript.json");
+        let mut workspace = MovieAgentWorkspace::open(
+            workspace_root,
+            prompt,
+            manifest,
+            settings,
+            &project.references,
+            seed,
+            producer_feedback,
+        )?;
+        let tools = MovieAgentWorkspace::tools();
+        let mut messages = vec![
+            json!({"role":"system","content":movie_agent_prompt()}),
+            json!({"role":"user","content":"Open the movie workspace, read its contract and producer brief, then build, lint, code-review, and submit the complete movie. Work autonomously until the workspace accepts submit."}),
+        ];
+        persist_movie_agent_transcript(&transcript_path, 0, &messages)?;
+        for step in 1..=MAX_MOVIE_AGENT_STEPS {
             check_cancel(cancel)?;
-            let native_issues = prompt_quality_issues(&plan, &project.references);
-            project.phase = "reviewing".into();
+            project.phase = "agent-workspace".into();
             project.detail = format!(
-                "Bonsai Code Review and Assess are checking plan attempt {attempt} of {MAX_PLAN_ATTEMPTS}."
+                "Bonsai is editing and checking the durable movie codebase (agent step {step})."
             );
             self.persist_emit(project, app)?;
-            let code_review = self
-                .code_review_plan(
-                    prompt,
-                    manifest,
-                    &plan,
-                    &native_issues,
-                    settings,
-                    connection,
-                    research,
-                )
-                .await?;
-            let assessment = self
-                .assess_plan(
-                    prompt,
-                    manifest,
-                    &plan,
-                    &native_issues,
-                    &code_review,
-                    settings,
-                    connection,
-                    research,
-                )
-                .await?;
-            let accepted = native_issues.is_empty()
-                && assessment.blocking_issues.is_empty()
-                && assessment.approved
-                && assessment.score >= 90;
-            if accepted {
-                plan.quality_review = MovieQualityReview {
-                    attempts: attempt,
-                    score: assessment.score,
-                    verdict: assessment.verdict,
+            let request = self.complete_agent(connection, &messages, &tools, settings, research);
+            let response = tokio::select! {
+                result = request => result?,
+                _ = cancel.cancelled() => return Err(StudioError::Cancelled),
+            };
+            let message = response_message(&response)?;
+            let tool_calls = message
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut history_message = message;
+            if let Some(object) = history_message.as_object_mut() {
+                object.remove("reasoning");
+                object.remove("reasoning_content");
+            }
+            messages.push(history_message);
+            persist_movie_agent_transcript(&transcript_path, step, &messages)?;
+            if tool_calls.is_empty() {
+                messages.push(json!({"role":"user","content":"Do not stop with prose. Continue through the movie_workspace tool until check passes twice and submit succeeds."}));
+                persist_movie_agent_transcript(&transcript_path, step, &messages)?;
+                continue;
+            }
+            for call in tool_calls {
+                check_cancel(cancel)?;
+                let call_id = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("movie-tool");
+                let name = call
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let result = if name != "movie_workspace" {
+                    WorkspaceToolResult {
+                        message: format!("ERROR: unknown tool {name}"),
+                        submitted: None,
+                    }
+                } else {
+                    let arguments = call.pointer("/function/arguments").ok_or_else(|| {
+                        StudioError::Planning("movie workspace call had no arguments".into())
+                    })?;
+                    let parsed = if let Some(text) = arguments.as_str() {
+                        serde_json::from_str::<WorkspaceToolRequest>(text)
+                    } else {
+                        serde_json::from_value::<WorkspaceToolRequest>(arguments.clone())
+                    };
+                    match parsed {
+                        Ok(request) => workspace.execute(request),
+                        Err(error) => WorkspaceToolResult {
+                            message: format!("ERROR: invalid movie_workspace arguments: {error}"),
+                            submitted: None,
+                        },
+                    }
                 };
-                return Ok(plan);
+                let submitted = result.submitted;
+                messages.push(json!({
+                    "role":"tool",
+                    "tool_call_id":call_id,
+                    "content":result.message,
+                }));
+                persist_movie_agent_transcript(&transcript_path, step, &messages)?;
+                if let Some(plan) = submitted {
+                    project.phase = "agent-submitted".into();
+                    project.detail = format!(
+                        "Bonsai submitted a checked {}-scene movie plan from its durable workspace.",
+                        plan.clips.len()
+                    );
+                    self.persist_emit(project, app)?;
+                    return Ok(plan);
+                }
             }
-            if attempt == MAX_PLAN_ATTEMPTS {
-                return Err(StudioError::Planning(format!(
-                    "Bonsai did not clear the H3 prompt acceptance gate after {attempt} attempts: {}",
-                    review_failure_summary(&native_issues, &code_review, &assessment)
-                )));
-            }
-            check_cancel(cancel)?;
-            project.phase = "rewriting".into();
-            project.detail = format!(
-                "Bonsai is repairing every rejected scene prompt (attempt {}).",
-                attempt + 1
-            );
-            self.persist_emit(project, app)?;
-            plan = self
-                .revise_plan(
-                    prompt,
-                    manifest,
-                    &plan,
-                    &native_issues,
-                    &code_review,
-                    &assessment,
-                    settings,
-                    connection,
-                    research,
-                )
-                .await?;
         }
-        unreachable!("the bounded movie review loop always accepts or returns an error")
+        Err(StudioError::Planning(format!(
+            "Bonsai reached the {MAX_MOVIE_AGENT_STEPS}-step movie workspace limit without a clean submit; its files remain durable for retry"
+        )))
+    }
+
+    async fn complete_agent(
+        &self,
+        connection: &ModelConnection,
+        messages: &[Value],
+        tools: &Value,
+        settings: &MovieSettings,
+        research: &ResearchSettings,
+    ) -> Result<Value, StudioError> {
+        let body = movie_agent_request(
+            &connection.model_id,
+            messages,
+            tools,
+            settings,
+            research.max_output_tokens,
+        );
+        let response = authorized(
+            self.http
+                .post(format!("{}/chat/completions", connection.endpoint)),
+            connection,
+        )
+        .json(&body)
+        .send()
+        .await?;
+        let status = response.status();
+        let text = response.text().await?;
+        if !status.is_success() {
+            return Err(StudioError::Planning(format!(
+                "movie agent HTTP {status}: {}",
+                truncate(&text, 500)
+            )));
+        }
+        serde_json::from_str(&text).map_err(StudioError::from)
     }
 
     pub async fn revise_with_producer_feedback(
@@ -1345,24 +1413,14 @@ impl MovieStudio {
         project.detail = "Bonsai is revising the structured plan from producer feedback.".into();
         self.persist_emit(&mut project, app)?;
         let manifest = reference_manifest(&project.references);
-        let candidate = self
-            .rewrite_for_producer_feedback(
-                &project.prompt,
-                &manifest,
-                &current,
-                feedback,
-                &project.settings,
-                connection,
-                research,
-            )
-            .await?;
         let settings = project.settings.clone();
         let prompt = project.prompt.clone();
         let reviewed = self
-            .review_candidate(
+            .run_movie_agent(
                 &prompt,
                 &manifest,
-                candidate,
+                Some(&current),
+                Some(feedback),
                 &settings,
                 connection,
                 research,
@@ -1386,32 +1444,6 @@ impl MovieStudio {
             app,
         )?;
         Ok(project)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn rewrite_for_producer_feedback(
-        &self,
-        prompt: &str,
-        manifest: &str,
-        current: &MoviePlan,
-        feedback: &str,
-        settings: &MovieSettings,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
-    ) -> Result<MoviePlan, StudioError> {
-        let mut messages = vec![
-            json!({"role":"system","content":director_prompt(settings)}),
-            json!({"role":"user","content":prompt}),
-        ];
-        if !manifest.is_empty() {
-            messages.push(json!({"role":"user","content":manifest}));
-        }
-        messages.push(json!({"role":"user","content":format!(
-            "The human producer reviewed the structured screenplay and scenes. Rewrite the complete plan around their feedback while preserving unaffected strengths and every valid native-reference assignment. Human feedback:\n{feedback}\n\nCurrent plan:\n{}\nReturn only replacement JSON.",
-            serde_json::to_string(current)?
-        )}));
-        self.complete_plan(&messages, settings, connection, research)
-            .await
     }
 
     pub async fn assist_clip(
@@ -1454,11 +1486,12 @@ impl MovieStudio {
             json!({"role":"user","content":payload.to_string()}),
         ];
         let mut suggestion: MovieClipSuggestion = self
-            .complete_structured(
+            .complete_tool_submission(
                 connection,
                 &messages,
+                "submit_scene_suggestion",
+                "Submit the organized replacement scene only after checking the producer feedback and neighboring continuity.",
                 clip_suggestion_schema(),
-                project.settings.max_output_tokens,
                 &project.settings,
                 research,
                 "movie scene suggestion",
@@ -1479,230 +1512,75 @@ impl MovieStudio {
         Ok(suggestion)
     }
 
-    async fn write_plan(
-        &self,
-        prompt: &str,
-        manifest: &str,
-        settings: &MovieSettings,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
-    ) -> Result<MoviePlan, StudioError> {
-        let mut messages = vec![
-            json!({"role":"system","content":director_prompt(settings)}),
-            json!({"role":"user","content":prompt}),
-        ];
-        if !manifest.is_empty() {
-            messages.push(json!({"role":"user","content":manifest}));
-        }
-        messages.push(json!({"role":"user","content":"Write the complete movie plan now. Return only the required JSON."}));
-        self.complete_plan(&messages, settings, connection, research)
-            .await
-    }
-
     #[allow(clippy::too_many_arguments)]
-    async fn code_review_plan(
-        &self,
-        prompt: &str,
-        manifest: &str,
-        plan: &MoviePlan,
-        native_issues: &[String],
-        settings: &MovieSettings,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
-    ) -> Result<MovieCodeReview, StudioError> {
-        let payload = json!({"producerRequest":prompt,"referenceManifest":manifest,"nativeGateIssues":native_issues,"candidatePlan":plan});
-        let messages = vec![
-            json!({"role":"system","content":code_reviewer_prompt()}),
-            json!({"role":"user","content":payload.to_string()}),
-        ];
-        let mut review: MovieCodeReview = self
-            .complete_structured(
-                connection,
-                &messages,
-                code_review_schema(),
-                settings.max_output_tokens,
-                settings,
-                research,
-                "movie code review",
-            )
-            .await?;
-        if manifest.is_empty() {
-            review
-                .issues
-                .retain(|issue| !demands_unavailable_reference(issue));
-        }
-        Ok(review)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn assess_plan(
-        &self,
-        prompt: &str,
-        manifest: &str,
-        plan: &MoviePlan,
-        native_issues: &[String],
-        code_review: &MovieCodeReview,
-        settings: &MovieSettings,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
-    ) -> Result<MovieAssessment, StudioError> {
-        let payload = json!({"producerRequest":prompt,"referenceManifest":manifest,"nativeGateIssues":native_issues,"candidatePlan":plan,"codeReview":code_review});
-        let messages = vec![
-            json!({"role":"system","content":assessor_prompt()}),
-            json!({"role":"user","content":payload.to_string()}),
-        ];
-        let mut assessment: MovieAssessment = self
-            .complete_structured(
-                connection,
-                &messages,
-                assessment_schema(),
-                settings.max_output_tokens,
-                settings,
-                research,
-                "movie assessment",
-            )
-            .await?;
-        if manifest.is_empty() {
-            let original_issue_count = assessment.blocking_issues.len();
-            assessment
-                .blocking_issues
-                .retain(|issue| !demands_unavailable_reference(issue));
-            if original_issue_count > assessment.blocking_issues.len()
-                && assessment.blocking_issues.is_empty()
-            {
-                assessment.approved = assessment.score >= 90;
-            }
-        }
-        Ok(assessment)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn revise_plan(
-        &self,
-        prompt: &str,
-        manifest: &str,
-        plan: &MoviePlan,
-        native_issues: &[String],
-        code_review: &MovieCodeReview,
-        assessment: &MovieAssessment,
-        settings: &MovieSettings,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
-    ) -> Result<MoviePlan, StudioError> {
-        let repair = json!({"nativeGateIssues":native_issues,"codeReview":code_review,"assessment":assessment,"candidatePlan":plan});
-        let mut messages = vec![
-            json!({"role":"system","content":director_prompt(settings)}),
-            json!({"role":"user","content":prompt}),
-        ];
-        if !manifest.is_empty() {
-            messages.push(json!({"role":"user","content":manifest}));
-        }
-        messages.push(json!({"role":"user","content":format!(
-            "Rewrite the complete plan, repairing every blocking finding below. Preserve what already works. Apply the H3 mode constraint with the smallest possible scene-boundary, duration, or action change; do not broadly rewrite unaffected scenes.\n\n{}\n\nReturn only replacement JSON.\n{repair}",
-            reference_continuity_repair_brief()
-        )}));
-        self.complete_plan(&messages, settings, connection, research)
-            .await
-    }
-
-    async fn complete_plan(
-        &self,
-        messages: &[Value],
-        settings: &MovieSettings,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
-    ) -> Result<MoviePlan, StudioError> {
-        self.complete_structured(
-            connection,
-            messages,
-            movie_schema(settings.max_clips),
-            settings.max_output_tokens,
-            settings,
-            research,
-            "structured movie plan",
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn complete_structured<T: for<'de> Deserialize<'de>>(
+    async fn complete_tool_submission<T: for<'de> Deserialize<'de>>(
         &self,
         connection: &ModelConnection,
-        messages: &[Value],
+        initial_messages: &[Value],
+        tool_name: &str,
+        tool_description: &str,
         response_format: Value,
-        max_tokens: u32,
         settings: &MovieSettings,
         research: &ResearchSettings,
         label: &str,
     ) -> Result<T, StudioError> {
+        let schema = response_format
+            .pointer("/json_schema/schema")
+            .cloned()
+            .unwrap_or(response_format);
+        let tools = json!([{
+            "type":"function",
+            "function":{
+                "name":tool_name,
+                "description":tool_description,
+                "parameters":schema,
+            }
+        }]);
+        let mut messages = initial_messages.to_vec();
         let mut last_error = String::new();
-        let mut attempt_messages = messages.to_vec();
-        for attempt in 0..2 {
-            if attempt > 0 {
-                attempt_messages.push(json!({"role":"user","content":format!(
-                    "The previous response could not be parsed for the required schema: {last_error}. Correct that error and return only valid JSON matching the requested schema."
-                )}));
-            }
+        for _ in 0..3 {
             let response = self
-                .complete(
-                    connection,
-                    &attempt_messages,
-                    CompletionOptions {
-                        response_format: Some(response_format.clone()),
-                        max_tokens,
-                        settings,
-                        research,
-                    },
-                )
+                .complete_agent(connection, &messages, &tools, settings, research)
                 .await?;
-            match parse_structured_response(&response, label) {
-                Ok(value) => return Ok(value),
-                Err(error) => last_error = error.to_string(),
+            let message = response_message(&response)?;
+            let tool_call = message
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .and_then(|calls| {
+                    calls.iter().find(|call| {
+                        call.pointer("/function/name").and_then(Value::as_str) == Some(tool_name)
+                    })
+                });
+            if let Some(call) = tool_call {
+                let arguments = call
+                    .pointer("/function/arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let parsed = if let Some(text) = arguments.as_str() {
+                    serde_json::from_str::<T>(text)
+                } else {
+                    serde_json::from_value::<T>(arguments)
+                };
+                match parsed {
+                    Ok(value) => return Ok(value),
+                    Err(error) => last_error = error.to_string(),
+                }
+            } else {
+                last_error = format!("Bonsai did not call {tool_name}");
             }
+            let mut history_message = message;
+            if let Some(object) = history_message.as_object_mut() {
+                object.remove("reasoning");
+                object.remove("reasoning_content");
+            }
+            messages.push(history_message);
+            messages.push(json!({"role":"user","content":format!(
+                "The {label} submission failed validation: {last_error}. Correct it and call {tool_name}; do not answer in prose."
+            )}));
         }
         Err(StudioError::Planning(format!(
-            "{label} remained invalid after one automatic retry: {last_error}"
+            "{label} remained invalid after two tool retries: {last_error}"
         )))
-    }
-
-    async fn complete(
-        &self,
-        connection: &ModelConnection,
-        messages: &[Value],
-        options: CompletionOptions<'_>,
-    ) -> Result<Value, StudioError> {
-        let CompletionOptions {
-            response_format,
-            max_tokens,
-            settings,
-            research,
-        } = options;
-        let mut body = json!({
-            "model": connection.model_id, "messages": messages, "stream": false,
-            "temperature": settings.temperature, "top_p": settings.top_p, "top_k": settings.top_k,
-            "max_tokens": max_tokens.min(research.max_output_tokens),
-            "thinking_budget_tokens": settings.thinking_budget,
-        });
-        if let Some(format) = response_format {
-            body["response_format"] = format;
-        }
-        let response = authorized(
-            self.http
-                .post(format!("{}/chat/completions", connection.endpoint)),
-            connection,
-        )
-        .json(&body)
-        .send()
-        .await?;
-        let status = response.status();
-        let text = response.text().await?;
-        if !status.is_success() {
-            return Err(StudioError::Planning(format!(
-                "HTTP {status}: {}",
-                truncate(&text, 500)
-            )));
-        }
-        serde_json::from_str(&text).map_err(StudioError::from)
     }
 
     pub async fn render(
@@ -2314,6 +2192,40 @@ impl MovieStudio {
     }
 }
 
+fn sanitize_chat_messages(messages: &[Value]) -> Vec<Value> {
+    messages
+        .iter()
+        .cloned()
+        .map(|mut message| {
+            if let Some(content) = message.get_mut("content") {
+                if let Some(text) = content.as_str() {
+                    *content = Value::String(
+                        text.replace("```", "''' ")
+                            .replace("<think>", "[reasoning omitted]")
+                            .replace("</think>", "[end reasoning]"),
+                    );
+                }
+            }
+            message
+        })
+        .collect()
+}
+
+fn persist_movie_agent_transcript(
+    path: &Path,
+    step: u32,
+    messages: &[Value],
+) -> Result<(), StudioError> {
+    write_json_atomic(
+        path,
+        &json!({
+            "updatedAt": Utc::now().to_rfc3339(),
+            "step": step,
+            "messages": messages,
+        }),
+    )
+}
+
 fn ensure_plan_is_unrendered(project: &MovieProject) -> Result<(), StudioError> {
     if project.clips.iter().any(|clip| {
         clip.status == "rendering" || clip.status == "complete" || !clip.path.is_empty()
@@ -2414,13 +2326,19 @@ fn response_message(response: &Value) -> Result<Value, StudioError> {
         })
 }
 
+#[allow(dead_code)]
 fn director_prompt(settings: &MovieSettings) -> String {
     format!(
-        "You are the autonomous writer-director-editor inside Kestrel Movie Studio. Turn the producer's request into a complete original MiniMax H3 plan and infer missing creative decisions without asking questions. Preserve story causality, identity, geography, screen direction, visual language, and sound across the cut.\n\nEvery clip prompt is the final renderer instruction, not a summary. Keep it between {MIN_H3_PROMPT_WORDS} and {MAX_H3_PROMPT_WORDS} words. Match the production specificity of official H3 examples: establish medium, genre, environment, lighting, palette, lens and texture; give a scene overview; cover the full duration with explicit timecoded shots or timed beats for a deliberate continuous take; specify framing, camera movement, subject blocking, physical action, transition, exact dialogue if any, ambience, effects, and score; finish with relevant exclusions such as no unwanted text, logos, subtitles, animation, or implausible motion. Every timed prompt must explicitly define picture, action, camera, and sound through the exact end of the clip; when the main action ends early, direct the remaining hold, settle, or reaction through that final timestamp. Do not add exclusions that conflict with the request. Prefer visible, achievable direction over abstract adjectives.\n\nProducer descriptions are planning instructions only. Select exact asset IDs in referenceIds wherever their stated job applies. An audio asset is native existing clip audio, not a symbolic voice-identity profile: assign it only to clips where that attached audio should condition the generated soundtrack. Never quote a producer description or put an asset ID in a clip prompt. Never write H3 reference tags; Kestrel binds and renumbers them. H3 reference conditioning and exact prior-frame continuation are mutually exclusive per clip. Use references for a reference-locked shot, or usePreviousFrame with an empty referenceIds list for a seamless continuation whose prior frame already carries the subject's appearance. Never request both. Do not blanket-assign references to irrelevant clips. There are no research tools; do not claim external verification or fabricate source credits. Return the required plan JSON without commentary. Renderer: 24fps, {}x{}, at most {} clips.",
+        "You are the autonomous writer-director-editor inside Kestrel Movie Studio. Turn the producer's request into a complete original MiniMax H3 plan and infer missing creative decisions without asking questions. Preserve story causality, identity, geography, screen direction, visual language, and sound across the cut.\n\nEvery clip prompt is the final renderer instruction, not a summary. Keep it between {MIN_H3_PROMPT_WORDS} and {MAX_H3_PROMPT_WORDS} words. Match excellent H3 examples: establish medium, genre, environment, lighting, palette, lens and texture; give a scene overview; cover the full duration with explicit timecoded shots or timed beats for a deliberate continuous take; specify framing, camera movement, subject blocking, action, transition, exact dialogue if any, ambience, effects, and score; finish with relevant exclusions. Every timed prompt must explicitly define picture, action, camera, and sound through the exact end of the clip; when the main action ends early, direct the remaining hold, settle, or reaction through that final timestamp. Prefer visible, achievable direction over abstract adjectives. Across multi-scene films, consider motivated cuts, subject-free inserts or establishers, and useful exact prior-frame handoffs.\n\nProducer descriptions are planning instructions only. Select exact asset IDs in referenceIds wherever their stated job applies. Only referenceIds attaches producer media to H3; sourceRefs contains textual source-credit IDs, never producer asset IDs. An audio asset is native existing clip audio, not a symbolic voice-identity profile: assign it only where that attached audio should condition the generated soundtrack. Never quote a producer description or put an asset ID in a clip prompt. Never write H3 reference tags; Kestrel binds and renumbers them. H3 reference conditioning and exact prior-frame continuation are mutually exclusive per clip. Use references for a reference-locked shot, or usePreviousFrame with empty referenceIds for a seamless continuation whose prior frame already carries the subject's appearance. Never request both. Do not blanket-assign references. There are no research tools; do not claim external verification or fabricate source credits. Return the required plan JSON without commentary. Renderer: 24fps, {}x{}, at most {} clips.",
         settings.width, settings.height, settings.max_clips
     )
 }
 
+fn movie_agent_prompt() -> &'static str {
+    "You are Bonsai operating as the autonomous coding agent you were trained to be. The movie is a small durable codebase, not one giant chat response. Use only the movie_workspace tool. Read its README.md, BRIEF.md, and REFERENCES.md; create or patch typed project files; treat check output like compiler/test diagnostics; inspect the whole result like a demanding code and film reviewer; and continue until submit succeeds. Preserve unaffected files when repairing a finding. Never ask the producer to resolve choices you can make, never emit a replacement plan in chat, and never claim completion before the tool accepts submit. You have no shell, network, arbitrary filesystem, or render authority."
+}
+
+#[allow(dead_code)]
 fn reference_continuity_repair_brief() -> &'static str {
     "MiniMax H3 has two mutually exclusive native conditioning modes per clip. ref2va applies referenceIds (character or product pictures, reference video, or existing audio) but cannot accept the preceding clip's exact last frame. fl2va accepts that last frame as frame zero when usePreviousFrame is true, but then referenceIds must be empty. Combining them is not an approximation: one conditioning path would be absent. A character can visibly jump in face, wardrobe, pose, lighting, camera position, or screen direction; a product can change shape; or required reference audio can disappear. Example: establish a referenced actor in a ref2va clip, end on the pose needed for the handoff, then continue with a reference-free fl2va clip because the carried frame already contains the actor. If reference audio is needed at the boundary, keep it in a reference-locked clip and move the seamless handoff before or after it. Repair conflicts with the smallest viable change: choose a motivated cut, move the boundary, slightly extend or shorten a neighboring 5-15 second clip, or split/rebalance the action without changing the story, approximate total runtime, or unaffected scenes. Never solve the conflict by silently dropping a reference or disabling requested continuation."
 }
@@ -2430,7 +2348,7 @@ fn reference_manifest(references: &[MovieReference]) -> String {
         return String::new();
     }
     let mut manifest = String::from(
-        "Producer-reference manifest. Descriptions below guide planning and asset placement only; they are never sent verbatim to H3. Put exact asset IDs in referenceIds only where the native media should condition that clip. Audio means the attached existing clip audio, not an abstract voice profile. Do not claim to have inspected media beyond these descriptions.\n",
+        "Producer-reference manifest. Descriptions below guide planning and asset placement only; they are never sent verbatim to H3. Put exact asset IDs in referenceIds only where the native media should condition that clip. Audio references condition H3's generated sound or voice; they are not editorial tracks, need not match output duration, and must never be trimmed, padded, looped, crossfaded, replaced, or extended with silence. Do not claim to have inspected media beyond these descriptions.\n",
     );
     for reference in references {
         let reference_type = if reference.kind == "audio" {
@@ -2454,6 +2372,7 @@ fn reference_manifest(references: &[MovieReference]) -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct ReviewIssue {
     clip_number: u32,
     category: String,
@@ -2463,6 +2382,7 @@ struct ReviewIssue {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct MovieCodeReview {
     summary: String,
     issues: Vec<ReviewIssue>,
@@ -2470,6 +2390,7 @@ struct MovieCodeReview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct MovieAssessment {
     approved: bool,
     score: u32,
@@ -2477,15 +2398,17 @@ struct MovieAssessment {
     blocking_issues: Vec<ReviewIssue>,
 }
 
+#[allow(dead_code)]
 fn code_reviewer_prompt() -> String {
     format!(
-        "Act as a strict CodeRabbit-style production reviewer for a MiniMax H3 movie plan. Report only defects that would materially reduce the rendered film: story contradictions, broken continuity or screen direction, infeasible action, weak placement of a supplied reference, supplied native audio assigned where its existing clip sound does not belong, a supplied identity reference omitted where its subject appears, vague renderer prose, incomplete timed coverage, unclear camera/blocking, or underspecified sound. A producer may legitimately provide no references: never request, invent, or require an asset ID, URL, image, video, or audio absent from the manifest; judge reference-free continuity from the continuity bible and self-contained prompts. Treat each clip prompt as shippable production code and compare its specificity with excellent official H3 examples. The native gate findings are blocking. Use clipNumber 0 for plan-wide issues. Give concrete repair instructions, not rewrites or praise. Return an empty issues array only when the plan is genuinely ready.\n\nReference/continuation audit: {}",
+        "Act as a strict CodeRabbit-style production reviewer for a MiniMax H3 movie plan. Report only defects that would materially reduce the rendered film: story contradictions, broken continuity or screen direction, infeasible action, weak placement of a supplied reference, supplied native audio assigned where its sound does not belong, an identity reference omitted where its subject appears, vague renderer prose, incomplete timed coverage, unclear camera/blocking, or underspecified sound. A producer may provide no references: never request or invent media absent from the manifest. Audit producer media only in referenceIds; sourceRefs contains textual source-credit IDs only. An audio reference conditions H3's generated sound or voice, not editorial playback. Its source duration need not match the output clip: never demand trimming, padding, looping, crossfading, replacement, or added silence. Treat every prompt as shippable production code matching excellent official H3 examples. Native gate findings are blocking. Use clipNumber 0 for plan-wide issues. Give concrete fixes, not rewrites or praise. Return no issues only when genuinely ready.\n\nReference/continuation audit: {}",
         reference_continuity_repair_brief()
     )
 }
 
+#[allow(dead_code)]
 fn assessor_prompt() -> &'static str {
-    "Act as the independent release authority after a CodeRabbit-style review. Decide whether this complete H3 plan can render unattended into credible selling material. Verify producer intent, narrative/editing rhythm, identity and world continuity, allocation of supplied native references, shot-by-shot feasibility, exact dialogue boundaries, and production-level visual/camera/audio detail in every clip. A reference-free request is valid: never request, invent, or require an asset ID, URL, image, video, or audio absent from the manifest. Native audio is existing clip audio, never merely a voice-identity hint. Every native gate finding blocks approval. Independently verify code-review comments: preserve material unresolved defects as blockingIssues, but explicitly overrule incorrect, subjective, already-resolved, or non-material nitpicks. You—not Code Review—make the final release decision. Approve only at score 90 or higher. Do not reward verbosity without visible, timed, achievable direction. Return concise blocking findings with clipNumber 0 for plan-wide issues."
+    "Act as the independent release authority after a CodeRabbit-style review. Decide whether this complete H3 plan can render unattended into credible selling material. Verify producer intent, narrative/editing rhythm, identity and world continuity, supplied native references, shot feasibility, dialogue boundaries, and production-level visual/camera/audio detail. A reference-free request is valid: never request or invent media absent from the manifest. Producer assets attach only through referenceIds; sourceRefs contains textual source-credit IDs only. An audio reference conditions H3's generated sound or voice, not editorial playback; source and output durations need not match. Explicitly overrule demands to trim, pad, loop, crossfade, replace, or extend it with silence, or to put media in sourceRefs. Every native gate finding blocks approval. Independently verify review comments and overrule incorrect, subjective, resolved, or immaterial nitpicks. You—not Code Review—make the final release decision. Approve only at score 90 or higher. Do not reward verbosity without visible, timed, achievable direction. Return concise blocking findings with clipNumber 0 for plan-wide issues."
 }
 
 fn clip_assistant_prompt() -> &'static str {
@@ -2508,13 +2431,14 @@ fn clip_suggestion_schema() -> Value {
                 "continuityOut":{"type":"string","maxLength":800},
                 "transition":{"type":"string","maxLength":300},
                 "usePreviousFrame":{"type":"boolean"},
-                "sourceRefs":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":800}},
-                "referenceIds":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":128}}
+                "sourceRefs":{"type":"array","description":"Textual source-credit IDs only; never producer image, video, or audio asset IDs.","maxItems":24,"items":{"type":"string","maxLength":800}},
+                "referenceIds":{"type":"array","description":"Producer image, video, and audio asset IDs attached natively to this H3 clip.","maxItems":12,"items":{"type":"string","maxLength":128}}
             },"required":["id","title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}
         },"required":["clipId","summary","checklist","clip"]
     }}})
 }
 
+#[allow(dead_code)]
 fn review_issue_schema() -> Value {
     json!({"type":"object","additionalProperties":false,"properties":{
         "clipNumber":{"type":"integer","minimum":0},
@@ -2524,6 +2448,7 @@ fn review_issue_schema() -> Value {
     },"required":["clipNumber","category","finding","requiredFix"]})
 }
 
+#[allow(dead_code)]
 fn code_review_schema() -> Value {
     json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_code_review","strict":true,"schema":{
         "type":"object","additionalProperties":false,"properties":{
@@ -2533,6 +2458,7 @@ fn code_review_schema() -> Value {
     }}})
 }
 
+#[allow(dead_code)]
 fn assessment_schema() -> Value {
     json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_assessment","strict":true,"schema":{
         "type":"object","additionalProperties":false,"properties":{
@@ -2542,19 +2468,6 @@ fn assessment_schema() -> Value {
             "blockingIssues":{"type":"array","maxItems":24,"items":review_issue_schema()}
         },"required":["approved","score","verdict","blockingIssues"]
     }}})
-}
-
-fn parse_structured_response<T: for<'de> Deserialize<'de>>(
-    response: &Value,
-    label: &str,
-) -> Result<T, StudioError> {
-    let message = response_message(response)?;
-    let content = message
-        .get("content")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    serde_json::from_str(content)
-        .map_err(|error| StudioError::Planning(format!("invalid {label}: {error}")))
 }
 
 fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec<String> {
@@ -2603,6 +2516,13 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
         ),
     ];
     for (index, clip) in plan.clips.iter().enumerate() {
+        if !clip.duration_seconds.is_finite() || !(5.0..=15.0).contains(&clip.duration_seconds) {
+            issues.push(format!(
+                "Clip {} duration is {:.1}s; native H3 clips must be 5-15 seconds. Rebalance the scene list without relying on Kestrel to clamp or trim generated masters.",
+                index + 1,
+                clip.duration_seconds
+            ));
+        }
         let words = clip.prompt.split_whitespace().count();
         if !(MIN_H3_PROMPT_WORDS..=MAX_H3_PROMPT_WORDS).contains(&words) {
             issues.push(format!(
@@ -2621,6 +2541,21 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
                 "Clip {} prompt lacks timed shot or beat structure.",
                 index + 1
             ));
+        }
+        if let Some(maximum_timecode) = maximum_timecode_seconds(&lower) {
+            if maximum_timecode > clip.duration_seconds + 0.25 {
+                issues.push(format!(
+                    "Clip {} prompt directs action through {maximum_timecode:.2}s, beyond its {:.2}s H3 duration. Rewrite timed beats to end exactly at the native clip boundary.",
+                    index + 1,
+                    clip.duration_seconds
+                ));
+            } else if maximum_timecode < clip.duration_seconds - 0.75 {
+                issues.push(format!(
+                    "Clip {} prompt stops timed coverage at {maximum_timecode:.2}s before its {:.2}s H3 duration. Direct the final hold, settle, reaction, picture, camera, and sound through the exact endpoint.",
+                    index + 1,
+                    clip.duration_seconds
+                ));
+            }
         }
         if contains_reference_tag(&clip.prompt) {
             issues.push(format!(
@@ -2694,12 +2629,168 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
     issues
 }
 
+fn producer_intent_issues(
+    prompt: &str,
+    plan: &MoviePlan,
+    references: &[MovieReference],
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    let planned_seconds = plan
+        .clips
+        .iter()
+        .map(|clip| clip.duration_seconds.clamp(5.0, 15.0))
+        .sum::<f32>();
+    if let Some((minimum, maximum)) = requested_duration_range(prompt) {
+        if !(minimum..=maximum).contains(&planned_seconds) {
+            issues.push(format!(
+                "Producer requested {:.0}-{:.0} seconds, but the plan totals {planned_seconds:.1} seconds. Add, remove, split, or rebalance 5-15 second scenes to stay inside the requested runtime without padding or trimming generated masters.",
+                minimum, maximum
+            ));
+        }
+    }
+    for reference in references.iter().filter(|reference| {
+        reference.kind == "audio"
+            && reference.description.to_ascii_lowercase().contains("only")
+            && ["flashback", "memory", "past"]
+                .iter()
+                .any(|marker| reference.description.to_ascii_lowercase().contains(marker))
+    }) {
+        let assigned = plan
+            .clips
+            .iter()
+            .filter(|clip| clip.reference_ids.contains(&reference.asset_id))
+            .collect::<Vec<_>>();
+        if assigned.len() != 1 {
+            issues.push(format!(
+                "Producer limited audio reference {} to one flashback/memory scene, but it is assigned to {} scenes.",
+                reference.asset_id,
+                assigned.len()
+            ));
+        } else {
+            let scene = format!(
+                "{} {} {}",
+                assigned[0].title, assigned[0].purpose, assigned[0].prompt
+            )
+            .to_ascii_lowercase();
+            if !["flashback", "memory", "past"]
+                .iter()
+                .any(|marker| scene.contains(marker))
+            {
+                issues.push(format!(
+                    "Producer limited audio reference {} to a flashback/memory scene, but its assigned scene is not explicitly a flashback, memory, or past-time scene.",
+                    reference.asset_id
+                ));
+            }
+        }
+    }
+    issues
+}
+
+fn requested_duration_range(prompt: &str) -> Option<(f32, f32)> {
+    let normalized = prompt.to_ascii_lowercase().replace(['-', '–', '—'], " to ");
+    let tokens = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '.')
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    for window in tokens.windows(4) {
+        let (Ok(first), Ok(second)) = (window[0].parse::<f32>(), window[2].parse::<f32>()) else {
+            continue;
+        };
+        if window[1] == "to" && window[3].starts_with("minute") {
+            return Some((first.min(second) * 60.0, first.max(second) * 60.0));
+        }
+    }
+    for window in tokens.windows(2) {
+        if let Ok(minutes) = window[0].parse::<f32>() {
+            if window[1].starts_with("minute") {
+                return Some((minutes * 54.0, minutes * 66.0));
+            }
+        }
+    }
+    None
+}
+
 fn has_meaningful_prose(value: &str, minimum_words: usize) -> bool {
     value
         .split_whitespace()
         .filter(|word| word.chars().any(char::is_alphabetic))
         .count()
         >= minimum_words
+}
+
+fn maximum_timecode_seconds(prompt: &str) -> Option<f32> {
+    let characters = prompt.chars().collect::<Vec<_>>();
+    let mut maximum: Option<f32> = None;
+    let mut index = 0;
+    while index < characters.len() {
+        if !characters[index].is_ascii_digit() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < characters.len()
+            && (characters[index].is_ascii_digit()
+                || characters[index] == '.'
+                || characters[index] == ':')
+        {
+            index += 1;
+        }
+        let token = characters[start..index].iter().collect::<String>();
+        let seconds = if let Some((minutes, seconds)) = token.split_once(':') {
+            match (minutes.parse::<f32>(), seconds.parse::<f32>()) {
+                (Ok(minutes), Ok(seconds))
+                    if minutes == 0.0
+                        || characters[..start]
+                            .iter()
+                            .rev()
+                            .find(|character| !character.is_whitespace())
+                            .is_some_and(|character| ['[', '(', '-'].contains(character)) =>
+                {
+                    Some(minutes * 60.0 + seconds)
+                }
+                _ => None,
+            }
+        } else if characters
+            .get(index)
+            .is_some_and(|character| *character == 's')
+            && seconds_token_is_timing_context(&characters, start, index + 1)
+        {
+            token.parse::<f32>().ok()
+        } else {
+            None
+        };
+        if let Some(seconds) = seconds {
+            maximum = Some(maximum.map_or(seconds, |current| current.max(seconds)));
+        }
+    }
+    maximum
+}
+
+fn seconds_token_is_timing_context(characters: &[char], start: usize, end: usize) -> bool {
+    let previous = characters[..start]
+        .iter()
+        .rev()
+        .find(|character| !character.is_whitespace())
+        .copied();
+    let next = characters[end..]
+        .iter()
+        .find(|character| !character.is_whitespace())
+        .copied();
+    if previous.is_some_and(|character| ['[', '-', '\u{2013}', '\u{2014}'].contains(&character))
+        || next.is_some_and(|character| [']', '-', '\u{2013}', '\u{2014}'].contains(&character))
+    {
+        return true;
+    }
+    let context_start = start.saturating_sub(24);
+    let prefix = characters[context_start..start]
+        .iter()
+        .collect::<String>()
+        .to_ascii_lowercase();
+    [
+        "through", "until", "from", " to ", " at ", "beat", "shot", "hold",
+    ]
+    .iter()
+    .any(|marker| prefix.contains(marker))
 }
 
 fn has_timed_structure(lower_prompt: &str) -> bool {
@@ -2723,6 +2814,7 @@ fn has_timed_structure(lower_prompt: &str) -> bool {
     .any(|marker| lower_prompt.contains(marker))
 }
 
+#[allow(dead_code)]
 fn review_failure_summary(
     native_issues: &[String],
     code_review: &MovieCodeReview,
@@ -2746,6 +2838,7 @@ fn review_failure_summary(
         .collect()
 }
 
+#[allow(dead_code)]
 fn demands_unavailable_reference(issue: &ReviewIssue) -> bool {
     let text = format!("{} {}", issue.finding, issue.required_fix).to_ascii_lowercase();
     [
@@ -2763,6 +2856,24 @@ fn demands_unavailable_reference(issue: &ReviewIssue) -> bool {
     .any(|marker| text.contains(marker))
 }
 
+#[allow(dead_code)]
+fn misreads_audio_reference_as_editorial_track(issue: &ReviewIssue) -> bool {
+    let text = format!("{} {}", issue.finding, issue.required_fix).to_ascii_lowercase();
+    text.contains("audio")
+        && [
+            "crossfade",
+            "pad with silence",
+            "audio void",
+            "duration mismatch",
+            "source duration",
+            "trim the audio",
+            "loop the audio",
+        ]
+        .iter()
+        .any(|marker| text.contains(marker))
+}
+
+#[allow(dead_code)]
 fn movie_schema(max_clips: u32) -> Value {
     json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_plan","strict":true,"schema":{
         "type":"object","additionalProperties":false,
@@ -2775,17 +2886,32 @@ fn movie_schema(max_clips: u32) -> Value {
             "sourceCredits":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":800}},
             "clips":{"type":"array","minItems":1,"maxItems":max_clips,"items":{"type":"object","additionalProperties":false,"properties":{
                 "title":{"type":"string"},"purpose":{"type":"string"},"durationSeconds":{"type":"number","minimum":5,"maximum":15},"prompt":{"type":"string"},
-                "continuityIn":{"type":"string"},"continuityOut":{"type":"string"},"transition":{"type":"string"},"usePreviousFrame":{"type":"boolean"},"sourceRefs":{"type":"array","items":{"type":"string"}},"referenceIds":{"type":"array","items":{"type":"string"}}
+                "continuityIn":{"type":"string"},"continuityOut":{"type":"string"},"transition":{"type":"string"},"usePreviousFrame":{"type":"boolean"},"sourceRefs":{"type":"array","description":"Textual source-credit IDs only; never producer image, video, or audio asset IDs.","items":{"type":"string"}},"referenceIds":{"type":"array","description":"Producer image, video, and audio asset IDs attached natively to this H3 clip.","items":{"type":"string"}}
             },"required":["title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}}
         },"required":["title","logline","audience","creativeDirection","continuityBible","sourceCredits","clips"]
     }}})
 }
 
-struct CompletionOptions<'a> {
-    response_format: Option<Value>,
-    max_tokens: u32,
-    settings: &'a MovieSettings,
-    research: &'a ResearchSettings,
+fn movie_agent_request(
+    model_id: &str,
+    messages: &[Value],
+    tools: &Value,
+    settings: &MovieSettings,
+    runtime_max_output_tokens: u32,
+) -> Value {
+    json!({
+        "model": model_id,
+        "messages": sanitize_chat_messages(messages),
+        "tools": tools,
+        "tool_choice": "required",
+        "parallel_tool_calls": false,
+        "stream": false,
+        "temperature": settings.temperature,
+        "top_p": settings.top_p,
+        "top_k": settings.top_k,
+        "max_tokens": settings.max_output_tokens.min(runtime_max_output_tokens),
+        "thinking_budget_tokens": MOVIE_THINKING_BUDGET,
+    })
 }
 
 struct H3GraphRequest<'a> {
@@ -3347,6 +3473,21 @@ mod tests {
         assert!(settings.validate(false).is_err());
     }
 
+    #[test]
+    fn movie_thinking_is_always_maximum() {
+        let settings = MovieSettings {
+            thinking_budget: 0,
+            ..MovieSettings::default()
+        }
+        .validate(true)
+        .unwrap();
+        assert_eq!(settings.thinking_budget, MOVIE_THINKING_BUDGET);
+        assert_eq!(
+            MovieSettings::default().thinking_budget,
+            MOVIE_THINKING_BUDGET
+        );
+    }
+
     #[tokio::test]
     async fn project_mutations_serialize_only_matching_project_ids() {
         let root = tempfile::tempdir().unwrap();
@@ -3394,33 +3535,116 @@ mod tests {
 
     #[test]
     fn movie_planner_has_no_research_tools_and_keeps_a_bounded_contract() {
-        let director = director_prompt(&MovieSettings::default());
-        assert!(!director.contains("archive"));
-        assert!(!director.contains("Wikipedia"));
-        assert!(director.split_whitespace().count() < 350);
-        assert!(director.contains("mutually exclusive"));
-        let repair = reference_continuity_repair_brief();
-        assert!(repair.contains("ref2va"));
-        assert!(repair.contains("fl2va"));
-        assert!(repair.contains("smallest viable change"));
-        assert!(repair.contains("reference audio can disappear"));
-        let reviewer = code_reviewer_prompt();
-        assert!(reviewer.contains("never request, invent, or require"));
-        assert!(reviewer.contains("Reference/continuation audit"));
-        assert!(assessor_prompt().contains("reference-free request is valid"));
-        let schema = movie_schema(12);
+        let prompt = movie_agent_prompt();
+        assert!(!prompt.contains("Wikipedia"));
+        assert!(prompt.split_whitespace().count() < 120);
+        assert!(prompt.contains("coding agent"));
+        assert!(prompt.contains("movie_workspace"));
+        let tools = MovieAgentWorkspace::tools();
+        assert_eq!(tools.as_array().unwrap().len(), 1);
+        let request = movie_agent_request(
+            "bonsai",
+            &[json!({"role":"user","content":"open the workspace"})],
+            &tools,
+            &MovieSettings::default(),
+            32_768,
+        );
+        assert_eq!(request["thinking_budget_tokens"], MOVIE_THINKING_BUDGET);
+        assert_eq!(request["max_tokens"], 32_768);
+        assert_eq!(request["tool_choice"], "required");
+        assert_eq!(request["parallel_tool_calls"], false);
+        assert!(request.get("response_format").is_none());
+        let safe_messages = sanitize_chat_messages(&[json!({
+            "role":"user",
+            "content":"review says ```json <think>draft</think>"
+        })]);
+        let safe_content = safe_messages[0]["content"].as_str().unwrap();
+        assert!(!safe_content.contains("```"));
+        assert!(!safe_content.contains("<think>"));
+        assert!(!safe_content.contains("</think>"));
+    }
+
+    #[test]
+    fn native_gate_enforces_explicit_runtime_and_flashback_only_audio() {
+        let audio_id = "audio-memory".to_string();
+        let reference = MovieReference {
+            asset_id: audio_id.clone(),
+            tag: "<Audio 1>".into(),
+            audio_tag: String::new(),
+            name: "memory.wav".into(),
+            kind: "audio".into(),
+            mime_type: "audio/wav".into(),
+            bytes: 1,
+            duration_seconds: 10.0,
+            width: 0,
+            height: 0,
+            has_audio: true,
+            path: "memory.wav".into(),
+            description: "Use this exact recording only in the flashback scene.".into(),
+            use_embedded_audio: false,
+            embedded_audio_description: String::new(),
+        };
+        let base_clip = PlannedClip {
+            id: String::new(),
+            title: "Scene".into(),
+            purpose: "Story progress".into(),
+            duration_seconds: 15.0,
+            prompt: "Camera and sound cover timed beats in a live-action scene.".into(),
+            continuity_in: String::new(),
+            continuity_out: String::new(),
+            transition: "cut".into(),
+            use_previous_frame: false,
+            source_refs: vec![],
+            reference_ids: vec![],
+        };
+        let mut plan = MoviePlan {
+            title: "Test".into(),
+            logline: "A memory shapes a present-day encounter.".into(),
+            audience: "Film buyers".into(),
+            creative_direction: "Live-action memory film".into(),
+            continuity_bible: vec!["The same world continues across the cut.".into()],
+            source_credits: vec![],
+            quality_review: MovieQualityReview::default(),
+            clips: vec![base_clip.clone()],
+        };
+        plan.clips[0].reference_ids = vec![audio_id.clone()];
+        plan.clips[0].title = "Present-day encounter".into();
+        plan.clips[0].purpose = "The vlogger watches the animal now".into();
+        let issues = producer_intent_issues(
+            "Make the finished film about 2 to 3 minutes.",
+            &plan,
+            std::slice::from_ref(&reference),
+        )
+        .join(" ");
+        assert!(issues.contains("120-180 seconds"));
+        assert!(issues.contains("not explicitly a flashback"));
         assert_eq!(
-            schema.pointer("/json_schema/schema/properties/clips/maxItems"),
-            Some(&json!(12))
+            maximum_timecode_seconds("[00:00-00:05] action [00:05-00:20] hold"),
+            Some(20.0)
         );
         assert_eq!(
-            code_review_schema().pointer("/json_schema/schema/properties/issues/maxItems"),
-            Some(&json!(24))
+            maximum_timecode_seconds("[0s-1.5s] action [1.5s-5s] hold"),
+            Some(5.0)
         );
         assert_eq!(
-            assessment_schema().pointer("/json_schema/schema/properties/verdict/maxLength"),
-            Some(&json!(1200))
+            maximum_timecode_seconds("A courier (20s, focused) under a key light at 10:30."),
+            None
         );
+        assert_eq!(
+            maximum_timecode_seconds("[0s-20s] overlong action"),
+            Some(20.0)
+        );
+
+        plan.clips = (0..8).map(|_| base_clip.clone()).collect();
+        plan.clips[2].title = "Childhood flashback".into();
+        plan.clips[2].purpose = "A memory from the past".into();
+        plan.clips[2].reference_ids = vec![audio_id];
+        assert!(producer_intent_issues(
+            "Make the finished film about 2-3 minutes.",
+            &plan,
+            &[reference],
+        )
+        .is_empty());
     }
 
     #[test]
@@ -3533,24 +3757,6 @@ mod tests {
     }
 
     #[test]
-    fn reference_free_movies_ignore_reviewers_that_invent_asset_requirements() {
-        let issue = ReviewIssue {
-            clip_number: 0,
-            category: "continuity".into(),
-            finding: "No visual reference IDs or URLs were provided.".into(),
-            required_fix: "Attach a reference image for the courier.".into(),
-        };
-        assert!(demands_unavailable_reference(&issue));
-        let real_issue = ReviewIssue {
-            clip_number: 1,
-            category: "camera".into(),
-            finding: "The camera move has no direction.".into(),
-            required_fix: "Specify the dolly direction.".into(),
-        };
-        assert!(!demands_unavailable_reference(&real_issue));
-    }
-
-    #[test]
     fn project_preserves_the_users_prompt_verbatim() {
         let root = tempfile::tempdir().unwrap();
         let studio = MovieStudio::new(root.path()).unwrap();
@@ -3638,7 +3844,7 @@ mod tests {
         let plan = project.plan.as_ref().unwrap();
         assert_eq!(plan.clips.len(), 2);
         assert!(plan.quality_review.score >= 90);
-        assert!((1..=MAX_PLAN_ATTEMPTS).contains(&plan.quality_review.attempts));
+        assert!(plan.quality_review.attempts >= 2);
         eprintln!(
             "Accepted at {}/100 after {} attempt(s): {}",
             plan.quality_review.score, plan.quality_review.attempts, plan.quality_review.verdict
@@ -3792,10 +3998,16 @@ mod tests {
                 .await
                 .map_err(|error| error.to_string())?;
             eprintln!("live reference movie: directing with Bonsai and producer manifest");
-            let planned = studio
+            let planned = match studio
                 .plan(&project.id, &lease.connection, &research, &cancel, None)
                 .await
-                .map_err(|error| error.to_string())?;
+            {
+                Ok(planned) => planned,
+                Err(error) => {
+                    studio.fail(&project.id, &error, None);
+                    return Err(error.to_string());
+                }
+            };
             let plan = planned.plan.as_ref().ok_or("Bonsai committed no plan")?;
             assert_eq!(plan.clips.len(), 1);
             assert_eq!(plan.clips[0].reference_ids.len(), 2);
@@ -3837,6 +4049,273 @@ mod tests {
         let streams = String::from_utf8_lossy(&probe.stdout);
         assert!(streams.contains("video"));
         assert!(streams.contains("audio"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KESTREL_ACCEPTANCE_LIBRARY, KESTREL_ACCEPTANCE_PICTURE, KESTREL_ACCEPTANCE_AUDIO, installed Bonsai, MiniMax H3, ComfyUI, FFmpeg, and about two hours"]
+    async fn live_long_africa_vlogger_reference_movie() {
+        let library = std::env::var_os("KESTREL_ACCEPTANCE_LIBRARY")
+            .map(PathBuf::from)
+            .expect("KESTREL_ACCEPTANCE_LIBRARY must point to the durable Kestrel library");
+        let picture = std::env::var_os("KESTREL_ACCEPTANCE_PICTURE")
+            .map(PathBuf::from)
+            .expect("KESTREL_ACCEPTANCE_PICTURE must point to the vlogger image");
+        let audio = std::env::var_os("KESTREL_ACCEPTANCE_AUDIO")
+            .map(PathBuf::from)
+            .expect("KESTREL_ACCEPTANCE_AUDIO must point to the flashback recording");
+        assert!(picture.is_file(), "missing picture: {}", picture.display());
+        assert!(audio.is_file(), "missing audio: {}", audio.display());
+
+        let studio = MovieStudio::new(&library).unwrap();
+        let picture_asset = studio.import_reference_path(&picture).unwrap();
+        let audio_asset = studio.import_reference_path(&audio).unwrap();
+        let picture_id = picture_asset.id.clone();
+        let audio_id = audio_asset.id.clone();
+        let research = ResearchSettings::default();
+        let runtime = Arc::new(RuntimeManager::new());
+        let cancel = CancellationToken::new();
+        let producer_prompt = "An African vlogger lowers his camera in a glowing, misty jungle, completely amazed by a beautiful wild animal. The audio is for the flashback scene and the reference image is the vlogger. Make the finished film about 2 to 3 minutes.";
+
+        let result: Result<(MovieProject, MoviePlan), String> = async {
+            eprintln!("AFRICA ACCEPTANCE: releasing ComfyUI memory before Bonsai planning");
+            studio.release_comfy_memory().await;
+            let project = studio
+                .create(
+                    StartMovieRequest {
+                        prompt: producer_prompt.into(),
+                        settings: MovieSettings {
+                            width: 864,
+                            height: 480,
+                            clip_seconds: 10.0,
+                            steps: 20,
+                            max_clips: 18,
+                            seed: 20_260_806,
+                            ..MovieSettings::default()
+                        },
+                        references: vec![
+                            ProducerReferenceRequest {
+                                asset_id: picture_id.clone(),
+                                description: "This is the vlogger's identity reference. Whenever he appears, preserve his face, short natural hair, trimmed beard, olive field overshirt, rust T-shirt, canvas backpack straps, and compact vlogging camera.".into(),
+                                use_embedded_audio: false,
+                                embedded_audio_description: String::new(),
+                            },
+                            ProducerReferenceRequest {
+                                asset_id: audio_id.clone(),
+                                description: "This exact 11.49-second spoken memory recording belongs only in the film's flashback scene. Do not assign it to a present-day scene or to any other clip.".into(),
+                                use_embedded_audio: false,
+                                embedded_audio_description: String::new(),
+                            },
+                        ],
+                        pause_after_plan: false,
+                    },
+                    true,
+                )
+                .map_err(|error| error.to_string())?;
+            eprintln!(
+                "AFRICA ACCEPTANCE PROJECT: {}\nAFRICA ACCEPTANCE PATH: {}",
+                project.id,
+                studio.project_dir(&project.id).display()
+            );
+            let lease = runtime
+                .lease_research(&research)
+                .await
+                .map_err(|error| error.to_string())?;
+            eprintln!("AFRICA ACCEPTANCE: Bonsai is writing and reviewing the unattended plan");
+            let planned = match studio
+                .plan(&project.id, &lease.connection, &research, &cancel, None)
+                .await
+            {
+                Ok(planned) => planned,
+                Err(error) => {
+                    studio.fail(&project.id, &error, None);
+                    return Err(error.to_string());
+                }
+            };
+            let plan = planned
+                .plan
+                .clone()
+                .ok_or("Bonsai committed no movie plan")?;
+            let planned_seconds = plan
+                .clips
+                .iter()
+                .map(|clip| clip.duration_seconds)
+                .sum::<f32>();
+            let picture_clips = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| clip.reference_ids.contains(&picture_id))
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
+            let audio_clips = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| clip.reference_ids.contains(&audio_id))
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
+            let continuations = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| clip.use_previous_frame)
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
+            eprintln!(
+                "AFRICA ACCEPTANCE PLAN: {} clips, {:.1}s planned, quality {}/100 after {} attempt(s)\nPicture clips: {:?}\nAudio clips: {:?}\nPrevious-frame continuations: {:?}",
+                plan.clips.len(),
+                planned_seconds,
+                plan.quality_review.score,
+                plan.quality_review.attempts,
+                picture_clips,
+                audio_clips,
+                continuations
+            );
+            for (index, clip) in plan.clips.iter().enumerate() {
+                eprintln!(
+                    "\n===== SCENE {}: {} ({:.1}s) =====\nPurpose: {}\nTransition: {}\nPrevious frame: {}\nReferences: {:?}\nContinuity in: {}\nContinuity out: {}\n{}",
+                    index + 1,
+                    clip.title,
+                    clip.duration_seconds,
+                    clip.purpose,
+                    clip.transition,
+                    clip.use_previous_frame,
+                    clip.reference_ids,
+                    clip.continuity_in,
+                    clip.continuity_out,
+                    clip.prompt
+                );
+            }
+            let audio_scene_is_flashback = audio_clips.len() == 1 && {
+                let clip = &plan.clips[audio_clips[0] - 1];
+                let scene = format!("{} {} {}", clip.title, clip.purpose, clip.prompt)
+                    .to_ascii_lowercase();
+                ["flashback", "memory", "past"]
+                    .iter()
+                    .any(|marker| scene.contains(marker))
+            };
+            let preflight_issues = [
+                (!(120.0..=180.0).contains(&planned_seconds)).then(|| {
+                    format!("planned runtime is {planned_seconds:.1}s, not 120-180s")
+                }),
+                (audio_clips.len() != 1)
+                    .then(|| format!("audio reference is assigned to {} scenes", audio_clips.len())),
+                (!audio_scene_is_flashback)
+                    .then(|| "audio-reference scene is not an explicit flashback".to_string()),
+                continuations
+                    .is_empty()
+                    .then(|| "plan contains no exact previous-frame continuation".to_string()),
+                (picture_clips.len() == plan.clips.len()).then(|| {
+                    "every scene uses the vlogger identity image; no character-free scene exists"
+                        .to_string()
+                }),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            write_json_atomic(
+                &studio.project_dir(&project.id).join("acceptance-summary.json"),
+                &json!({
+                    "producerPrompt": producer_prompt,
+                    "plannedSeconds": planned_seconds,
+                    "clipCount": plan.clips.len(),
+                    "qualityScore": plan.quality_review.score,
+                    "qualityAttempts": plan.quality_review.attempts,
+                    "pictureClips": picture_clips,
+                    "audioClips": audio_clips,
+                    "previousFrameContinuations": continuations,
+                    "planningGateIssues": prompt_quality_issues(&plan, &planned.references),
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            if !preflight_issues.is_empty() {
+                return Err(format!(
+                    "acceptance plan must not render: {}",
+                    preflight_issues.join("; ")
+                ));
+            }
+            drop(lease);
+            runtime
+                .stop_managed()
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::services::stop_bonsai(&research.bonsai_root)
+                .await
+                .map_err(|error| error.to_string())?;
+            eprintln!("AFRICA ACCEPTANCE: planning complete; MiniMax H3 rendering begins");
+            let rendered = studio
+                .render(&project.id, &cancel, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok((rendered, plan))
+        }
+        .await;
+        let _ = runtime.stop_managed().await;
+        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let (project, plan) = result.unwrap();
+        let planned_seconds = plan
+            .clips
+            .iter()
+            .map(|clip| clip.duration_seconds)
+            .sum::<f32>();
+        let audio_clips = plan
+            .clips
+            .iter()
+            .filter(|clip| clip.reference_ids.contains(&audio_id))
+            .collect::<Vec<_>>();
+        assert_eq!(project.status, "complete");
+        assert!(Path::new(&project.final_path).is_file());
+        assert!(prompt_quality_issues(&plan, &project.references).is_empty());
+        assert!(
+            (120.0..=180.0).contains(&planned_seconds),
+            "Bonsai planned {planned_seconds:.1}s instead of about 2-3 minutes"
+        );
+        assert_eq!(
+            audio_clips.len(),
+            1,
+            "flashback audio must belong to exactly one scene"
+        );
+        let audio_scene = format!(
+            "{} {} {}",
+            audio_clips[0].title, audio_clips[0].purpose, audio_clips[0].prompt
+        )
+        .to_ascii_lowercase();
+        assert!(
+            audio_scene.contains("flashback")
+                || audio_scene.contains("memory")
+                || audio_scene.contains("past"),
+            "the sole audio-reference scene is not identified as a flashback"
+        );
+        assert!(
+            plan.clips.iter().any(|clip| clip.use_previous_frame),
+            "Bonsai planned no continuous previous-frame handoff"
+        );
+        assert!(
+            plan.clips.iter().any(|clip| !clip.use_previous_frame),
+            "Bonsai planned no independent or non-continuous scene"
+        );
+        let probe = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1:nk=1",
+            ])
+            .arg(&project.final_path)
+            .output()
+            .unwrap();
+        assert!(probe.status.success());
+        let rendered_seconds = String::from_utf8_lossy(&probe.stdout)
+            .trim()
+            .parse::<f64>()
+            .unwrap();
+        eprintln!(
+            "AFRICA ACCEPTANCE COMPLETE: {:.2}s review cut\n{}",
+            rendered_seconds, project.final_path
+        );
+        assert!((115.0..=195.0).contains(&rendered_seconds));
     }
 
     #[tokio::test]

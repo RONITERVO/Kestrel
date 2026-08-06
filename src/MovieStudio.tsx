@@ -24,7 +24,7 @@ const defaultSettings: MovieSettings = {
   temperature: 0.7,
   topP: 0.95,
   topK: 20,
-  thinkingBudget: 4096,
+  thinkingBudget: 32768,
   maxOutputTokens: 32768,
   comfyRoot: "D:\\AI\\ComfyUI",
   refImageSize: "match",
@@ -201,13 +201,13 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       <NumberField label="Temperature" value={settings.temperature} min={0} max={2} step={0.05} onChange={(value) => onSettings({ ...settings, temperature: value })} />
       <NumberField label="Top P" value={settings.topP} min={0.05} max={1} step={0.01} onChange={(value) => onSettings({ ...settings, topP: value })} />
       <NumberField label="Top K" value={settings.topK} min={1} max={200} step={1} onChange={(value) => onSettings({ ...settings, topK: value })} />
-      <NumberField label="Thinking budget" value={settings.thinkingBudget} min={0} max={32768} step={256} onChange={(value) => onSettings({ ...settings, thinkingBudget: value })} />
+      <label>Thinking mode<input value="Maximum · 32,768" disabled aria-label="Thinking mode is fixed at maximum" /></label>
       <NumberField label="Output budget" value={settings.maxOutputTokens} min={1024} max={32768} step={1024} onChange={(value) => onSettings({ ...settings, maxOutputTokens: value })} />
       <SelectField label="Reference image fidelity" value={settings.refImageSize} onChange={(value) => onSettings({ ...settings, refImageSize: value as MovieSettings["refImageSize"] })} options={["match", "max"]} />
       <label className="wide">ComfyUI root<input value={settings.comfyRoot} onChange={(event) => onSettings({ ...settings, comfyRoot: event.target.value })} /></label>
       {advancedEnabled && <label className="wide producer-pause-toggle"><span><input type="checkbox" checked={pauseAfterPlan} onChange={(event) => onPauseAfterPlan(event.target.checked)} /> Pause after Bonsai plan</span><small>Review, organize, and send feedback on the structured script before any H3 clip is rendered.</small></label>}
     </div>}
-    <div className="movie-capabilities"><span><Check />98,304 context</span><span><Check />32,768 output</span><span><Check />Untouched H3 audio</span><span><Check />Crash-safe masters</span></div>
+    <div className="movie-capabilities"><span><Check />98,304 context</span><span><Check />32,768 max thinking</span><span><Check />32,768 output</span><span><Check />Untouched H3 audio</span><span><Check />Crash-safe masters</span></div>
   </div>;
 }
 

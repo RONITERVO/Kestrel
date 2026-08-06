@@ -19,10 +19,13 @@ describe("Kestrel Movie Studio", () => {
   it("keeps full-context and expert production controls discoverable", () => {
     render(<MovieStudio advancedEnabled onError={vi.fn()} />);
     expect(screen.getByText("98,304 context")).toBeInTheDocument();
+    expect(screen.getByText("32,768 max thinking")).toBeInTheDocument();
     expect(screen.getByText("32,768 output")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Advanced production controls/i }));
     expect(screen.getByLabelText("Maximum clips")).toHaveAttribute("max", "96");
-    expect(screen.getByLabelText("Thinking budget")).toHaveValue(4096);
+    expect(screen.getByLabelText("Thinking mode is fixed at maximum")).toHaveValue(
+      "Maximum · 32,768",
+    );
     expect(screen.getByLabelText("ComfyUI root")).toHaveValue("D:\\AI\\ComfyUI");
     expect(screen.getByLabelText("Reference image fidelity")).toHaveValue("match");
     const checkpoint = screen.getByLabelText(/Pause after Bonsai plan/i);
