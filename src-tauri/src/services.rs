@@ -26,6 +26,7 @@ pub enum ServiceError {
 
 pub async fn status() -> ServiceStatus {
     let client = Client::builder()
+        .no_proxy()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .expect("HTTP client");
@@ -50,7 +51,12 @@ pub async fn status() -> ServiceStatus {
 }
 
 pub async fn prepare_with_root(bonsai_root: &str) -> Result<(), ServiceError> {
-    let current = status().await;
+    let current = tokio::time::timeout(std::time::Duration::from_secs(15), status())
+        .await
+        .map_err(|_| ServiceError::StartFailed {
+            name: "local service check".into(),
+            details: "Bonsai/Wikipedia status did not finish within 15 seconds".into(),
+        })?;
     if current.wikipedia != "ready" {
         run_script("offline Wikipedia", Path::new(WIKIPEDIA_SCRIPT)).await?;
     }

@@ -43,6 +43,7 @@ impl KiwixClient {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
+                .no_proxy()
                 .timeout(std::time::Duration::from_secs(35))
                 .build()
                 .expect("HTTP client"),

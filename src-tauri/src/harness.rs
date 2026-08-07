@@ -80,6 +80,7 @@ impl ResearchHarness {
             store,
             kiwix: KiwixClient::new(),
             http: Client::builder()
+                .no_proxy()
                 .timeout(std::time::Duration::from_secs(3_600))
                 .build()
                 .expect("local HTTP client"),

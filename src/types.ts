@@ -91,6 +91,200 @@ export interface AppSnapshot {
   control: ControlSnapshot;
 }
 
+export interface MovieSettings {
+  width: number;
+  height: number;
+  clipSeconds: number;
+  steps: number;
+  maxClips: number;
+  seed: number;
+  temperature: number;
+  topP: number;
+  topK: number;
+  thinkingBudget: number;
+  maxOutputTokens: number;
+  comfyRoot: string;
+  refImageSize: "match" | "max";
+}
+
+export interface MovieReferenceAsset {
+  id: string;
+  name: string;
+  kind: "image" | "video" | "audio";
+  mimeType: string;
+  bytes: number;
+  durationSeconds: number;
+  width: number;
+  height: number;
+  hasAudio: boolean;
+  path: string;
+  createdAt: string;
+}
+
+export interface ProducerReferenceRequest {
+  assetId: string;
+  description: string;
+  useEmbeddedAudio: boolean;
+  embeddedAudioDescription: string;
+}
+
+export interface PendingMovieReference extends MovieReferenceAsset, ProducerReferenceRequest {}
+
+export interface MovieReferenceImport {
+  references: MovieReferenceAsset[];
+  failures: string[];
+}
+
+export interface MovieReference {
+  assetId: string;
+  tag: string;
+  audioTag: string;
+  name: string;
+  kind: "image" | "video" | "audio";
+  mimeType: string;
+  bytes: number;
+  durationSeconds: number;
+  width: number;
+  height: number;
+  hasAudio: boolean;
+  path: string;
+  description: string;
+  useEmbeddedAudio: boolean;
+  embeddedAudioDescription: string;
+}
+
+export interface PlannedClip {
+  id: string;
+  title: string;
+  purpose: string;
+  durationSeconds: number;
+  prompt: string;
+  continuityIn: string;
+  continuityOut: string;
+  transition: string;
+  usePreviousFrame: boolean;
+  sourceRefs: string[];
+  referenceIds: string[];
+}
+
+export interface MoviePlan {
+  title: string;
+  logline: string;
+  audience: string;
+  creativeDirection: string;
+  continuityBible: string[];
+  sourceCredits: string[];
+  qualityReview: { attempts: number; score: number; verdict: string };
+  clips: PlannedClip[];
+}
+
+export interface MovieSource {
+  id: string;
+  title: string;
+  reference: string;
+  snapshot: string;
+  excerpt: string;
+}
+
+export interface RenderedClip {
+  id: string;
+  index: number;
+  title: string;
+  prompt: string;
+  durationSeconds: number;
+  seed: number;
+  status: "queued" | "rendering" | "complete" | "failed" | string;
+  path: string;
+  error: string;
+  versions: ClipVersion[];
+}
+
+export interface ClipVersion {
+  id: string;
+  createdAt: string;
+  title: string;
+  prompt: string;
+  durationSeconds: number;
+  seed: number;
+  path: string;
+}
+
+export interface ProducerFeedbackRecord {
+  createdAt: string;
+  scope: string;
+  clipId: string;
+  feedback: string;
+}
+
+export interface MovieClipSuggestion {
+  clipId: string;
+  summary: string;
+  checklist: string[];
+  clip: PlannedClip;
+}
+
+export interface MovieClipRenderRequest {
+  id: string;
+  suggestion: MovieClipSuggestion;
+  seed: number;
+}
+
+export interface ClipEdit {
+  clipId: string;
+  enabled: boolean;
+  order: number;
+  trimStart: number;
+  trimEnd: number;
+  audioGain: number;
+}
+
+export interface MovieEdit {
+  clips: ClipEdit[];
+  exportTitle: string;
+}
+
+export interface MovieProject {
+  schemaVersion: number;
+  id: string;
+  prompt: string;
+  title: string;
+  status: "running" | "complete" | "failed" | "cancelled" | "interrupted" | string;
+  phase: string;
+  detail: string;
+  createdAt: string;
+  updatedAt: string;
+  model: string;
+  renderer: string;
+  settings: MovieSettings;
+  references: MovieReference[];
+  plan?: MoviePlan;
+  sources: MovieSource[];
+  clips: RenderedClip[];
+  edit: MovieEdit;
+  finalPath: string;
+  error: string;
+  producerReviewRequired: boolean;
+  producerApprovedAt: string;
+  producerFeedback: ProducerFeedbackRecord[];
+}
+
+export interface MovieSummary {
+  id: string;
+  title: string;
+  status: string;
+  phase: string;
+  updatedAt: string;
+  clipCount: number;
+  finalPath: string;
+}
+
+export interface StartMovieRequest {
+  prompt: string;
+  settings: MovieSettings;
+  references: ProducerReferenceRequest[];
+  pauseAfterPlan: boolean;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;

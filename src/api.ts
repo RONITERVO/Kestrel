@@ -24,6 +24,14 @@ import type {
   RunResearchRequest,
   StartChatRequest,
   SystemSnapshot,
+  MovieClipRenderRequest,
+  MovieClipSuggestion,
+  MovieEdit,
+  MoviePlan,
+  MovieProject,
+  MovieReferenceImport,
+  MovieSummary,
+  StartMovieRequest,
 } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -78,6 +86,90 @@ export async function onProgress(
       callback(event.payload),
     );
   return () => undefined;
+}
+
+export async function listMovies(): Promise<MovieSummary[]> {
+  if (!isTauri()) return [];
+  return invoke<MovieSummary[]>("list_movies");
+}
+
+export async function getMovie(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie projects require the desktop application.");
+  return invoke<MovieProject>("get_movie", { id });
+}
+
+export async function pickMovieReferenceFiles(): Promise<MovieReferenceImport> {
+  if (!isTauri()) return { references: [], failures: [] };
+  return invoke<MovieReferenceImport>("pick_movie_reference_files");
+}
+
+export async function startMovie(request: StartMovieRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
+  return invoke<MovieProject>("start_movie", { request });
+}
+
+export async function resumeMovie(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
+  return invoke<MovieProject>("resume_movie", { id });
+}
+
+export async function cancelMovie(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
+  return invoke<MovieProject>("cancel_movie", { id });
+}
+
+export async function saveMoviePlan(id: string, plan: MoviePlan): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Producer plan editing requires the desktop application.");
+  return invoke<MovieProject>("save_movie_plan", { id, plan });
+}
+
+export async function reviseMoviePlan(id: string, feedback: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Bonsai plan revision requires the desktop application.");
+  return invoke<MovieProject>("revise_movie_plan", { request: { id, feedback } });
+}
+
+export async function approveMoviePlan(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Producer approval requires the desktop application.");
+  return invoke<MovieProject>("approve_movie_plan", { id });
+}
+
+export async function askBonsaiMovieClip(id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
+  if (!isTauri()) throw new Error("Bonsai scene assistance requires the desktop application.");
+  return invoke<MovieClipSuggestion>("ask_bonsai_movie_clip", { request: { id, clipId, feedback } });
+}
+
+export async function renderMovieClipVersion(request: MovieClipRenderRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Scene version rendering requires the desktop application.");
+  return invoke<MovieProject>("render_movie_clip_version", { request });
+}
+
+export async function saveMovieEdits(id: string, edit: MovieEdit): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie editing requires the desktop application.");
+  return invoke<MovieProject>("save_movie_edits", { id, edit });
+}
+
+export async function renderMovieEdit(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie editing requires the desktop application.");
+  return invoke<MovieProject>("render_movie_edit", { id });
+}
+
+export async function revealMovie(id: string): Promise<void> {
+  if (isTauri()) await invoke("reveal_movie", { id });
+}
+
+export async function onMovieProject(callback: (project: MovieProject) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieProject>("movie-project", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export function movieMediaUrl(path: string): string {
+  if (!path || !isTauri()) return "";
+  const normalized = path.replaceAll("\\", "/");
+  const marker = "/movies/";
+  const offset = normalized.toLowerCase().lastIndexOf(marker);
+  if (offset < 0) return "";
+  const relative = normalized.slice(offset + marker.length);
+  return `http://kestrel-media.localhost/${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 export async function onRuntimeProgress(
