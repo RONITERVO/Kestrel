@@ -2632,15 +2632,7 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
                 clip.duration_seconds
             ));
         }
-        if directs_speech
-            && has_quoted_spoken_line(&clip.prompt)
-            && !has_dialogue_boundary_direction(&organized_direction)
-        {
-            issues.push(format!(
-                "Clip {} provides quoted speech but no delivery boundary. H3 can repeat or ad-lib even correct words. Direct the quoted line(s) exactly once and forbid repeated or additional words while preserving intentional nonverbal sound.",
-                index + 1
-            ));
-        }
+
         let claims_prior_visual = [
             "previous frame",
             "prior frame",
@@ -3322,19 +3314,6 @@ fn has_quoted_spoken_line(prompt: &str) -> bool {
         })
 }
 
-fn has_dialogue_boundary_direction(direction: &str) -> bool {
-    [
-        "exactly once",
-        "do not repeat",
-        "no repeated words",
-        "no additional words",
-        "no other speech",
-        "no ad-lib",
-        "no adlib",
-    ]
-    .iter()
-    .any(|marker| direction.contains(marker))
-}
 
 fn distinctive_prompt_similarity(left: &str, right: &str) -> f32 {
     const BOILERPLATE: &[&str] = &[
@@ -4849,15 +4828,6 @@ mod tests {
         assert!(!prompt_quality_issues(&unquoted_speech, &[])
             .join(" ")
             .contains("speech or narration without exact quoted words"));
-        assert!(prompt_quality_issues(&unquoted_speech, &[])
-            .join(" ")
-            .contains("quoted speech but no delivery boundary"));
-        unquoted_speech.clips[0]
-            .prompt
-            .push_str(" Deliver the quoted line exactly once with no additional words.");
-        assert!(!prompt_quality_issues(&unquoted_speech, &[])
-            .join(" ")
-            .contains("quoted speech but no delivery boundary"));
         let mut ambiguous_murmur = plan.clone();
         ambiguous_murmur.clips[0]
             .prompt
