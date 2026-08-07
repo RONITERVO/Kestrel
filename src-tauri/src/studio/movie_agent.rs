@@ -5,11 +5,13 @@ use super::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
 
 const MAX_WORKSPACE_FILE_BYTES: usize = 96 * 1024;
+const MAX_READ_MANY_BYTES: usize = 256 * 1024;
 const MAX_TOOL_FILES: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,11 +185,21 @@ impl MovieAgentWorkspace {
                 }
                 let mut output = String::new();
                 for file in request.files {
-                    output.push_str(&format!(
+                    let section = format!(
                         "\n===== {} =====\n{}\n",
                         file.path,
                         self.read_file(&file.path)?
-                    ));
+                    );
+                    if output
+                        .len()
+                        .checked_add(section.len())
+                        .is_none_or(|size| size > MAX_READ_MANY_BYTES)
+                    {
+                        return Err(StudioError::Invalid(
+                            "read_many response exceeds the 256 KiB aggregate limit".into(),
+                        ));
+                    }
+                    output.push_str(&section);
                 }
                 Ok(self.result(output, None))
             }
@@ -207,12 +219,12 @@ impl MovieAgentWorkspace {
                 for file in &request.files {
                     validate_write(&file.path, &file.content)?;
                 }
+                self.changed()?;
                 let mut paths = Vec::with_capacity(request.files.len());
                 for file in request.files {
                     self.write_validated_file(&file.path, &file.content)?;
                     paths.push(file.path);
                 }
-                self.changed()?;
                 Ok(self.result(format!("WROTE {}", paths.join(", ")), None))
             }
             "delete" => {
@@ -223,10 +235,10 @@ impl MovieAgentWorkspace {
                     ));
                 }
                 let target = self.root.join(&path);
+                self.changed()?;
                 if target.is_file() {
                     fs::remove_file(target)?;
                 }
-                self.changed()?;
                 Ok(self.result(format!("DELETED {path}"), None))
             }
             "check" => {
@@ -340,8 +352,8 @@ impl MovieAgentWorkspace {
 
     fn write_file(&mut self, path: &str, content: &str) -> Result<(), StudioError> {
         validate_write(path, content)?;
-        self.write_validated_file(path, content)?;
-        self.changed()
+        self.changed()?;
+        self.write_validated_file(path, content)
     }
 
     fn write_validated_file(&self, path: &str, content: &str) -> Result<(), StudioError> {
@@ -445,16 +457,13 @@ impl MovieAgentWorkspace {
     }
 
     fn resolve_reference_ids(&self, clip: &mut PlannedClip) {
+        let workspace_ids = workspace_reference_ids(&self.references);
         for id in &mut clip.reference_ids {
-            if let Some(reference) =
-                self.references
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, reference)| {
-                        (workspace_reference_id(reference, index) == *id).then_some(reference)
-                    })
+            if let Some(index) = workspace_ids
+                .iter()
+                .position(|workspace_id| workspace_id == id)
             {
-                *id = reference.asset_id.clone();
+                *id = self.references[index].asset_id.clone();
             }
         }
     }
@@ -468,6 +477,7 @@ impl MovieAgentWorkspace {
             continuity_bible: plan.continuity_bible.clone(),
             source_credits: plan.source_credits.clone(),
         };
+        self.changed()?;
         write_text_atomic(
             &self.root.join("movie.json"),
             &serde_json::to_string_pretty(&metadata)?,
@@ -484,7 +494,7 @@ impl MovieAgentWorkspace {
                 &serde_json::to_string_pretty(clip)?,
             )?;
         }
-        self.changed()
+        Ok(())
     }
 
     fn persist_state(&self) -> Result<(), StudioError> {
@@ -511,7 +521,8 @@ fn workspace_reference_manifest(references: &[MovieReference]) -> String {
     let mut output = String::from(
         "# Producer references\n\nUse only the short Reference ID in scene referenceIds. Kestrel resolves it to the immutable asset internally. Descriptions guide placement and are never renderer prose.\n",
     );
-    for (index, reference) in references.iter().enumerate() {
+    let workspace_ids = workspace_reference_ids(references);
+    for (reference, workspace_id) in references.iter().zip(workspace_ids) {
         let reference_type = if reference.kind == "audio" {
             "native clip audio"
         } else {
@@ -519,9 +530,7 @@ fn workspace_reference_manifest(references: &[MovieReference]) -> String {
         };
         output.push_str(&format!(
             "\nReference ID: {}\nType: {}\nProducer description: {}\n",
-            workspace_reference_id(reference, index),
-            reference_type,
-            reference.description
+            workspace_id, reference_type, reference.description
         ));
         if reference.use_embedded_audio {
             output.push_str(&format!(
@@ -533,7 +542,7 @@ fn workspace_reference_manifest(references: &[MovieReference]) -> String {
     output
 }
 
-fn workspace_reference_id(reference: &MovieReference, index: usize) -> String {
+fn normalized_workspace_reference_id(reference: &MovieReference, index: usize) -> String {
     let mut id = String::new();
     let mut separator = false;
     for character in reference.tag.chars().flat_map(char::to_lowercase) {
@@ -552,6 +561,24 @@ fn workspace_reference_id(reference: &MovieReference, index: usize) -> String {
     } else {
         id
     }
+}
+
+fn workspace_reference_ids(references: &[MovieReference]) -> Vec<String> {
+    let mut used = HashSet::new();
+    references
+        .iter()
+        .enumerate()
+        .map(|(index, reference)| {
+            let base = normalized_workspace_reference_id(reference, index);
+            let mut candidate = base.clone();
+            let mut suffix = 2_u32;
+            while !used.insert(candidate.clone()) {
+                candidate = format!("{base}-{suffix}");
+                suffix = suffix.saturating_add(1);
+            }
+            candidate
+        })
+        .collect()
 }
 
 fn validate_write(path: &str, content: &str) -> Result<(), StudioError> {
@@ -849,6 +876,107 @@ mod tests {
             .unwrap();
         let (plan, _) = workspace.compile_and_check().unwrap();
         assert_eq!(plan.clips[0].reference_ids, vec![asset_id]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_reference_ids_are_normalized_and_collision_safe() {
+        let reference = |tag: &str, asset_id: &str| MovieReference {
+            asset_id: asset_id.into(),
+            tag: tag.into(),
+            audio_tag: String::new(),
+            name: "reference.png".into(),
+            kind: "image".into(),
+            mime_type: "image/png".into(),
+            bytes: 1,
+            duration_seconds: 0.0,
+            width: 1,
+            height: 1,
+            has_audio: false,
+            path: "reference.png".into(),
+            description: "Identity reference".into(),
+            use_embedded_audio: false,
+            embedded_audio_description: String::new(),
+        };
+        let references = vec![
+            reference("Picture 10", "first"),
+            reference("picture-10", "second"),
+            reference("picture 10-2", "third"),
+            reference("!!!", "fourth"),
+        ];
+        assert_eq!(
+            workspace_reference_ids(&references),
+            vec![
+                "picture-10",
+                "picture-10-2",
+                "picture-10-2-2",
+                "reference-4"
+            ]
+        );
+        let root = temp_workspace();
+        let workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a reference test",
+            "",
+            &MovieSettings::default(),
+            &references,
+            None,
+            None,
+        )
+        .unwrap();
+        let manifest = workspace.read_file("REFERENCES.md").unwrap();
+        assert!(manifest.contains("Reference ID: picture-10-2"));
+        let mut clip = PlannedClip {
+            id: String::new(),
+            title: "Reference test".into(),
+            purpose: "Verify collision-safe binding".into(),
+            duration_seconds: 5.0,
+            prompt: "Placeholder".into(),
+            continuity_in: String::new(),
+            continuity_out: String::new(),
+            transition: "cut".into(),
+            use_previous_frame: false,
+            source_refs: vec![],
+            reference_ids: vec!["picture-10-2".into()],
+        };
+        workspace.resolve_reference_ids(&mut clip);
+        assert_eq!(clip.reference_ids, vec!["second"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_many_rejects_oversized_aggregate_responses() {
+        let root = temp_workspace();
+        let mut workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a test film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let content = "x".repeat(90 * 1024);
+        for index in 1..=3 {
+            fs::write(
+                root.join("scenes").join(format!("{index:03}.json")),
+                &content,
+            )
+            .unwrap();
+        }
+        let result = workspace.execute(WorkspaceToolRequest {
+            action: "read_many".into(),
+            path: String::new(),
+            content: String::new(),
+            files: (1..=3)
+                .map(|index| WorkspaceFileWrite {
+                    path: format!("scenes/{index:03}.json"),
+                    content: String::new(),
+                })
+                .collect(),
+        });
+        assert!(result.message.contains("aggregate limit"));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -35,7 +35,9 @@ const MAX_REFERENCE_SECONDS: f64 = 15.1;
 const MIN_H3_PROMPT_WORDS: usize = 120;
 const MAX_H3_PROMPT_WORDS: usize = 450;
 const MOVIE_AGENT_SESSION_STEPS: u32 = 96;
+const MAX_MOVIE_AGENT_SESSIONS: u32 = 8;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
+const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub fn media_response(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
     match read_media_response(&request) {
@@ -1114,6 +1116,8 @@ impl MovieStudio {
         cancel: &CancellationToken,
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
         let mut project = self.get(id)?;
         let user_prompt = project.prompt.clone();
         let movie_settings = project.settings.clone();
@@ -1267,6 +1271,11 @@ impl MovieStudio {
         let mut absolute_step = 0_u32;
         'agent_sessions: loop {
             check_cancel(cancel)?;
+            if session > MAX_MOVIE_AGENT_SESSIONS {
+                return Err(StudioError::Planning(format!(
+                    "Bonsai did not submit a valid movie after {MAX_MOVIE_AGENT_SESSIONS} context sessions; the durable workspace is intact for a later retry"
+                )));
+            }
             if session > 1 && transcript_path.is_file() {
                 fs::copy(
                     &transcript_path,
@@ -1316,6 +1325,7 @@ impl MovieStudio {
                         );
                         self.persist_emit(project, app)?;
                         session = session.saturating_add(1);
+                        cancellable_agent_restart_delay(cancel).await?;
                         continue 'agent_sessions;
                     }
                 };
@@ -1342,6 +1352,7 @@ impl MovieStudio {
                         );
                         self.persist_emit(project, app)?;
                         session = session.saturating_add(1);
+                        cancellable_agent_restart_delay(cancel).await?;
                         continue 'agent_sessions;
                     }
                     continue;
@@ -1363,20 +1374,29 @@ impl MovieStudio {
                             submitted: None,
                         }
                     } else {
-                        let arguments = call.pointer("/function/arguments").ok_or_else(|| {
-                            StudioError::Planning("movie workspace call had no arguments".into())
-                        })?;
-                        let parsed = if let Some(text) = arguments.as_str() {
-                            serde_json::from_str::<WorkspaceToolRequest>(text)
-                        } else {
-                            serde_json::from_value::<WorkspaceToolRequest>(arguments.clone())
-                        };
-                        match parsed {
-                            Ok(request) => workspace.execute(request),
-                            Err(error) => WorkspaceToolResult {
-                                message: format!(
-                                    "ERROR: invalid movie_workspace arguments: {error}"
-                                ),
+                        match call.pointer("/function/arguments") {
+                            Some(arguments) => {
+                                let parsed = if let Some(text) = arguments.as_str() {
+                                    serde_json::from_str::<WorkspaceToolRequest>(text)
+                                } else {
+                                    serde_json::from_value::<WorkspaceToolRequest>(
+                                        arguments.clone(),
+                                    )
+                                };
+                                match parsed {
+                                    Ok(request) => workspace.execute(request),
+                                    Err(error) => WorkspaceToolResult {
+                                        message: format!(
+                                            "ERROR: invalid movie_workspace arguments: {error}"
+                                        ),
+                                        submitted: None,
+                                    },
+                                }
+                            }
+                            None => WorkspaceToolResult {
+                                message:
+                                    "ERROR: invalid movie_workspace arguments: missing arguments"
+                                        .into(),
                                 submitted: None,
                             },
                         }
@@ -1452,6 +1472,8 @@ impl MovieStudio {
                 "producer feedback must contain 3 to 16,000 characters".into(),
             ));
         }
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
         let mut project = self.get(id)?;
         ensure_plan_is_unrendered(&project)?;
         let current = project
@@ -1629,7 +1651,7 @@ impl MovieStudio {
             )}));
         }
         Err(StudioError::Planning(format!(
-            "{label} remained invalid after two tool retries: {last_error}"
+            "{label} remained invalid after three attempts: {last_error}"
         )))
     }
 
@@ -1649,13 +1671,13 @@ impl MovieStudio {
             .ok_or_else(|| StudioError::Invalid("project has no saved plan".into()))?;
         for (index, planned) in plan.clips.iter().enumerate() {
             check_cancel(cancel)?;
-            if project
-                .clips
-                .get(index)
-                .is_some_and(|clip| clip.status == "complete" && Path::new(&clip.path).is_file())
-            {
+            let rendered_clip = project.clips.get(index).ok_or_else(|| {
+                StudioError::Invalid(format!("rendered scene record {} is missing", index + 1))
+            })?;
+            if rendered_clip.status == "complete" && Path::new(&rendered_clip.path).is_file() {
                 continue;
             }
+            let seed = rendered_clip.seed;
             project.phase = "rendering".into();
             project.detail = format!(
                 "Rendering clip {} of {} — {}",
@@ -1663,17 +1685,25 @@ impl MovieStudio {
                 plan.clips.len(),
                 planned.title
             );
-            if let Some(clip) = project.clips.get_mut(index) {
-                clip.status = "rendering".into();
-            }
+            project
+                .clips
+                .get_mut(index)
+                .ok_or_else(|| {
+                    StudioError::Invalid(format!("rendered scene record {} is missing", index + 1))
+                })?
+                .status = "rendering".into();
             self.persist_emit(&mut project, app)?;
-            let seed = project.clips[index].seed;
             match self
                 .render_clip(&project, planned, index, seed, cancel, None)
                 .await
             {
                 Ok(path) => {
-                    let clip = &mut project.clips[index];
+                    let clip = project.clips.get_mut(index).ok_or_else(|| {
+                        StudioError::Invalid(format!(
+                            "rendered scene record {} is missing",
+                            index + 1
+                        ))
+                    })?;
                     clip.status = "complete".into();
                     clip.path = path;
                     clip.error.clear();
@@ -1681,7 +1711,12 @@ impl MovieStudio {
                     self.persist_emit(&mut project, app)?;
                 }
                 Err(error) => {
-                    let clip = &mut project.clips[index];
+                    let clip = project.clips.get_mut(index).ok_or_else(|| {
+                        StudioError::Invalid(format!(
+                            "rendered scene record {} is missing",
+                            index + 1
+                        ))
+                    })?;
                     clip.status = "failed".into();
                     clip.error = error.to_string();
                     self.persist_emit(&mut project, app)?;
@@ -1995,6 +2030,7 @@ impl MovieStudio {
             .ok_or_else(|| {
                 StudioError::Render(format!("ComfyUI returned no prompt id: {value}"))
             })?;
+        let deadline = tokio::time::Instant::now() + COMFY_RENDER_TIMEOUT;
         loop {
             if cancel.is_cancelled() {
                 let _ = self
@@ -2003,6 +2039,11 @@ impl MovieStudio {
                     .send()
                     .await;
                 return Err(StudioError::Cancelled);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(StudioError::Render(format!(
+                    "ComfyUI did not finish prompt {prompt_id} within 24 hours. The project and completed masters are safe; verify the ComfyUI queue before resuming."
+                )));
             }
             let history: Value = self
                 .http
@@ -2364,6 +2405,13 @@ fn check_cancel(cancel: &CancellationToken) -> Result<(), StudioError> {
     }
 }
 
+async fn cancellable_agent_restart_delay(cancel: &CancellationToken) -> Result<(), StudioError> {
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(2)) => Ok(()),
+        _ = cancel.cancelled() => Err(StudioError::Cancelled),
+    }
+}
+
 fn response_message(response: &Value) -> Result<Value, StudioError> {
     response
         .pointer("/choices/0/message")
@@ -2376,21 +2424,8 @@ fn response_message(response: &Value) -> Result<Value, StudioError> {
         })
 }
 
-#[allow(dead_code)]
-fn director_prompt(settings: &MovieSettings) -> String {
-    format!(
-        "You are the autonomous writer-director-editor inside Kestrel Movie Studio. Turn the producer's request into a complete original MiniMax H3 plan and infer missing creative decisions without asking questions. Preserve story causality, identity, geography, screen direction, visual language, and sound across the cut.\n\nEvery clip prompt is the final renderer instruction, not a summary. Keep it between {MIN_H3_PROMPT_WORDS} and {MAX_H3_PROMPT_WORDS} words. Match excellent H3 examples: establish medium, genre, environment, lighting, palette, lens and texture; give a scene overview; cover the full duration with explicit timecoded shots or timed beats for a deliberate continuous take; specify framing, camera movement, subject blocking, action, transition, exact dialogue if any, ambience, effects, and score; finish with relevant exclusions. Every timed prompt must explicitly define picture, action, camera, and sound through the exact end of the clip; when the main action ends early, direct the remaining hold, settle, or reaction through that final timestamp. Prefer visible, achievable direction over abstract adjectives. Across multi-scene films, consider motivated cuts, subject-free inserts or establishers, and useful exact prior-frame handoffs.\n\nProducer descriptions are planning instructions only. Select exact asset IDs in referenceIds wherever their stated job applies. Only referenceIds attaches producer media to H3; sourceRefs contains textual source-credit IDs, never producer asset IDs. An audio asset conditions H3's generated soundtrack or voice; assign it only where that sound belongs. If it is described as speech or a voice, explicitly assign its voice/timbre and write the exact feasible dialogue in quotation marks so H3 does not invent the words. Never quote a producer description or put an asset ID in a clip prompt. Never write H3 reference tags; Kestrel binds and renumbers them. H3 reference conditioning and exact prior-frame continuation are mutually exclusive per clip. Use references for a reference-locked shot, or usePreviousFrame with empty referenceIds for a seamless continuation whose prior frame already carries the subject's appearance. Never request both. Age changes do not waive identity conditioning for an independently cut appearance of the same character. Do not blanket-assign references. There are no research tools; do not claim external verification or fabricate source credits. Do not invent defining anatomy, cultural details, or real-world facts: if uncertain, choose a familiar concrete alternative that serves the brief or avoid unsupported specificity. Return the required plan JSON without commentary. Renderer: 24fps, {}x{}, at most {} clips.",
-        settings.width, settings.height, settings.max_clips
-    )
-}
-
 fn movie_agent_prompt() -> &'static str {
     "You are Bonsai operating as the autonomous coding agent you were trained to be. The movie is a small durable codebase, not one giant chat response. Use only the movie_workspace tool. Read its README.md, BRIEF.md, and REFERENCES.md; create or patch typed project files; treat check output like compiler/test diagnostics; inspect the whole result like a demanding code and film reviewer; and continue until submit succeeds. Preserve unaffected files when repairing a finding. Never ask the producer to resolve choices you can make, never emit a replacement plan in chat, and never claim completion before the tool accepts submit. You have no shell, network, arbitrary filesystem, or render authority."
-}
-
-#[allow(dead_code)]
-fn reference_continuity_repair_brief() -> &'static str {
-    "MiniMax H3 has two mutually exclusive native conditioning modes per clip. ref2va applies referenceIds (character or product pictures, reference video, or existing audio) but cannot accept the preceding clip's exact last frame. fl2va accepts that last frame as frame zero when usePreviousFrame is true, but then referenceIds must be empty. Combining them is not an approximation: one conditioning path would be absent. A character can visibly jump in face, wardrobe, pose, lighting, camera position, or screen direction; a product can change shape; or required reference audio can disappear. Example: establish a referenced actor in a ref2va clip, end on the pose needed for the handoff, then continue with a reference-free fl2va clip because the carried frame already contains the actor. If reference audio is needed at the boundary, keep it in a reference-locked clip and move the seamless handoff before or after it. Repair conflicts with the smallest viable change: choose a motivated cut, move the boundary, slightly extend or shorten a neighboring 5-15 second clip, or split/rebalance the action without changing the story, approximate total runtime, or unaffected scenes. Never solve the conflict by silently dropping a reference or disabling requested continuation."
 }
 
 fn reference_manifest(references: &[MovieReference]) -> String {
@@ -2446,19 +2481,6 @@ struct MovieAssessment {
     score: u32,
     verdict: String,
     blocking_issues: Vec<ReviewIssue>,
-}
-
-#[allow(dead_code)]
-fn code_reviewer_prompt() -> String {
-    format!(
-        "Act as a strict CodeRabbit-style production reviewer for a MiniMax H3 movie plan. Report only defects that would materially reduce the rendered film: story contradictions, broken continuity or screen direction, runtime padding through repeated action/emotion/framing, infeasible action, false defining anatomy or other unsupported real-world detail, speech or narration without exact quoted words, weak placement of a supplied reference, supplied native audio assigned where its sound does not belong, an identity reference omitted where its subject appears, vague renderer prose, incomplete timed coverage, unclear camera/blocking, or underspecified sound. A producer may provide no references: never request or invent media absent from the manifest. Audit producer media only in referenceIds; sourceRefs contains textual source-credit IDs only. An audio reference conditions H3's generated sound or voice, not editorial playback. Its source duration need not match the output clip: never demand trimming, padding, looping, crossfading, replacement, or added silence. Treat every prompt as shippable production code matching excellent official H3 examples. Native gate findings are blocking. Use clipNumber 0 for plan-wide issues. Give concrete fixes, not rewrites or praise. Return no issues only when genuinely ready.\n\nReference/continuation audit: {}",
-        reference_continuity_repair_brief()
-    )
-}
-
-#[allow(dead_code)]
-fn assessor_prompt() -> &'static str {
-    "Act as the independent release authority after a CodeRabbit-style review. Decide whether this complete H3 plan can render unattended into credible selling material. Verify producer intent, narrative/editing rhythm, identity and world continuity, plausible defining anatomy and real-world details, supplied native references, shot feasibility, dialogue boundaries, and production-level visual/camera/audio detail. A reference-free request is valid: never request or invent media absent from the manifest. Producer assets attach only through referenceIds; sourceRefs contains textual source-credit IDs only. An audio reference conditions H3's generated sound or voice, not editorial playback; source and output durations need not match. Explicitly overrule demands to trim, pad, loop, crossfade, replace, or extend it with silence, or to put media in sourceRefs. Every native gate finding blocks approval. Independently verify review comments and overrule incorrect, subjective, resolved, or immaterial nitpicks. You—not Code Review—make the final release decision. Approve only at score 90 or higher. Do not reward verbosity without visible, timed, achievable direction. Return concise blocking findings with clipNumber 0 for plan-wide issues."
 }
 
 fn clip_assistant_prompt() -> &'static str {
@@ -2807,6 +2829,11 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
             ));
         }
     }
+    let distinctive_tokens = plan
+        .clips
+        .iter()
+        .map(|clip| distinctive_prompt_tokens(&clip.prompt))
+        .collect::<Vec<_>>();
     for first in 0..plan.clips.len() {
         for second in first + 1..plan.clips.len() {
             let left = &plan.clips[first];
@@ -2824,7 +2851,10 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
                 ));
                 continue;
             }
-            let similarity = distinctive_prompt_similarity(&left.prompt, &right.prompt);
+            let similarity = distinctive_prompt_similarity(
+                &distinctive_tokens[first],
+                &distinctive_tokens[second],
+            );
             if similarity >= 0.60 {
                 issues.push(format!(
                     "Clips {} and {} repeat near-duplicate renderer direction ({:.0}% distinctive-token overlap). Do not pad runtime by replaying the same action, emotion, framing, and sound under different titles; replace one with editorially distinct story coverage while preserving native duration and the intended total runtime.",
@@ -3079,84 +3109,102 @@ fn identity_reference_subject(description: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn identity_subject_aliases(plan: &MoviePlan, subject: &str) -> Vec<String> {
-    let mut aliases = vec![subject.to_owned()];
+fn legacy_alias(fact: &str, subject: &str) -> Option<String> {
     let prefix = format!("{subject}:");
-    for fact in &plan.continuity_bible {
-        let lower = fact.to_ascii_lowercase();
-        let legacy_alias = lower.trim().strip_prefix(&prefix).and_then(|details| {
+    fact.trim()
+        .strip_prefix(&prefix)
+        .and_then(|details| {
             details
                 .split(|character: char| !character.is_alphanumeric())
                 .find(|token| !token.is_empty())
-        });
-        let fields = lower
-            .split(';')
-            .filter_map(|field| field.split_once(':'))
-            .map(|(key, value)| (key.trim(), value.trim()))
-            .collect::<Vec<_>>();
-        let structured_alias = fields
-            .iter()
-            .any(|(key, value)| *key == "subject" && *value == subject)
-            .then(|| {
-                fields
-                    .iter()
-                    .find(|(key, _)| *key == "name")
-                    .and_then(|(_, value)| {
-                        value
-                            .split(|character: char| !character.is_alphanumeric())
-                            .find(|token| !token.is_empty())
-                    })
-            })
-            .flatten();
-        let role_leading_alias = lower
-            .trim()
-            .strip_prefix(subject)
-            .filter(|details| details.starts_with(char::is_whitespace))
-            .and_then(|details| {
-                let heading = details.split(':').next()?.trim();
-                (!heading.contains(char::is_whitespace)
-                    && !matches!(
-                        heading,
-                        "" | "appearance" | "description" | "equipment" | "identity" | "wardrobe"
-                    ))
-                .then_some(heading)
-            });
-        let role_leading_prose_alias = lower
-            .trim()
-            .strip_prefix(subject)
-            .filter(|details| details.starts_with(char::is_whitespace))
-            .and_then(|details| {
-                details
-                    .split(|character: char| !character.is_alphanumeric())
-                    .find(|token| !token.is_empty())
-            })
-            .filter(|alias| {
-                !matches!(
-                    *alias,
-                    "appearance" | "description" | "equipment" | "identity" | "wardrobe"
-                )
-            });
-        let prose_alias = lower.find(subject).and_then(|subject_index| {
-            let before_subject = &lower[..subject_index];
-            let introduction = before_subject.split(',').next()?.trim();
-            let alias = introduction
+        })
+        .map(str::to_owned)
+}
+
+fn structured_alias(fact: &str, subject: &str) -> Option<String> {
+    let fields = fact
+        .split(';')
+        .filter_map(|field| field.split_once(':'))
+        .map(|(key, value)| (key.trim(), value.trim()))
+        .collect::<Vec<_>>();
+    fields
+        .iter()
+        .any(|(key, value)| *key == "subject" && *value == subject)
+        .then(|| {
+            fields
+                .iter()
+                .find(|(key, _)| *key == "name")
+                .and_then(|(_, value)| {
+                    value
+                        .split(|character: char| !character.is_alphanumeric())
+                        .find(|token| !token.is_empty())
+                })
+        })
+        .flatten()
+        .map(str::to_owned)
+}
+
+fn role_leading_alias(fact: &str, subject: &str) -> Option<String> {
+    fact.trim()
+        .strip_prefix(subject)
+        .filter(|details| details.starts_with(char::is_whitespace))
+        .and_then(|details| {
+            let heading = details.split(':').next()?.trim();
+            (!heading.contains(char::is_whitespace)
+                && !matches!(
+                    heading,
+                    "" | "appearance" | "description" | "equipment" | "identity" | "wardrobe"
+                ))
+            .then(|| heading.to_owned())
+        })
+}
+
+fn role_leading_prose_alias(fact: &str, subject: &str) -> Option<String> {
+    fact.trim()
+        .strip_prefix(subject)
+        .filter(|details| details.starts_with(char::is_whitespace))
+        .and_then(|details| {
+            details
                 .split(|character: char| !character.is_alphanumeric())
-                .find(|token| !token.is_empty())?;
-            (!matches!(
-                alias,
-                "a" | "an" | "the" | "this" | "same" | "present" | "recurring"
-            ) && before_subject.contains(','))
-            .then_some(alias)
-        });
-        for alias in legacy_alias
+                .find(|token| !token.is_empty())
+        })
+        .filter(|alias| {
+            !matches!(
+                *alias,
+                "appearance" | "description" | "equipment" | "identity" | "wardrobe"
+            )
+        })
+        .map(str::to_owned)
+}
+
+fn prose_alias(fact: &str, subject: &str) -> Option<String> {
+    fact.find(subject).and_then(|subject_index| {
+        let before_subject = &fact[..subject_index];
+        let introduction = before_subject.split(',').next()?.trim();
+        let alias = introduction
+            .split(|character: char| !character.is_alphanumeric())
+            .find(|token| !token.is_empty())?;
+        (!matches!(
+            alias,
+            "a" | "an" | "the" | "this" | "same" | "present" | "recurring"
+        ) && before_subject.contains(','))
+        .then(|| alias.to_owned())
+    })
+}
+
+fn identity_subject_aliases(plan: &MoviePlan, subject: &str) -> Vec<String> {
+    let mut aliases = vec![subject.to_owned()];
+    for fact in &plan.continuity_bible {
+        let lower = fact.to_ascii_lowercase();
+        for alias in legacy_alias(&lower, subject)
             .into_iter()
-            .chain(structured_alias)
-            .chain(role_leading_alias)
-            .chain(role_leading_prose_alias)
-            .chain(prose_alias)
+            .chain(structured_alias(&lower, subject))
+            .chain(role_leading_alias(&lower, subject))
+            .chain(role_leading_prose_alias(&lower, subject))
+            .chain(prose_alias(&lower, subject))
         {
-            if !aliases.iter().any(|known| known == alias) {
-                aliases.push(alias.to_owned());
+            if !aliases.iter().any(|known| known == &alias) {
+                aliases.push(alias);
             }
         }
     }
@@ -3264,17 +3312,19 @@ fn clip_is_independent_subject_free(clip: &PlannedClip, subjects: &[String]) -> 
         "protagonist-free",
         "animal-only",
         "environment-only",
-        "without the vlogger",
-        "vlogger is absent",
-        "vlogger remains off-screen",
-        "vlogger remains offscreen",
     ]
     .iter()
     .any(|marker| description.contains(marker))
         || subjects.iter().any(|subject| {
-            [format!("no {subject}"), format!("without {subject}")]
-                .iter()
-                .any(|marker| description.contains(marker))
+            [
+                format!("no {subject}"),
+                format!("without {subject}"),
+                format!("{subject} is absent"),
+                format!("{subject} remains off-screen"),
+                format!("{subject} remains offscreen"),
+            ]
+            .iter()
+            .any(|marker| description.contains(marker))
         });
     explicitly_absent || !subjects.iter().any(|subject| description.contains(subject))
 }
@@ -3314,8 +3364,7 @@ fn has_quoted_spoken_line(prompt: &str) -> bool {
         })
 }
 
-
-fn distinctive_prompt_similarity(left: &str, right: &str) -> f32 {
+fn distinctive_prompt_tokens(prompt: &str) -> HashSet<String> {
     const BOILERPLATE: &[&str] = &[
         "about",
         "after",
@@ -3342,21 +3391,20 @@ fn distinctive_prompt_similarity(left: &str, right: &str) -> f32 {
         "while",
         "with",
     ];
-    let tokens = |prompt: &str| {
-        prompt
-            .to_ascii_lowercase()
-            .split(|character: char| !character.is_ascii_alphanumeric())
-            .filter(|token| token.len() >= 4 && !BOILERPLATE.contains(token))
-            .map(str::to_owned)
-            .collect::<HashSet<_>>()
-    };
-    let left = tokens(left);
-    let right = tokens(right);
-    let union = left.union(&right).count();
+    prompt
+        .to_ascii_lowercase()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| token.len() >= 4 && !BOILERPLATE.contains(token))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn distinctive_prompt_similarity(left: &HashSet<String>, right: &HashSet<String>) -> f32 {
+    let union = left.union(right).count();
     if union == 0 {
         return 0.0;
     }
-    left.intersection(&right).count() as f32 / union as f32
+    left.intersection(right).count() as f32 / union as f32
 }
 
 fn requested_duration_range(prompt: &str) -> Option<(f32, f32)> {
@@ -3484,17 +3532,10 @@ fn has_timed_structure(lower_prompt: &str) -> bool {
         "beat 1",
         "beat one",
         "timed beat",
-        "[0",
-        "0:",
-        "0s",
-        "0 s",
-        "0-",
-        "0–",
-        "0—",
-        "0 to",
     ]
     .iter()
     .any(|marker| lower_prompt.contains(marker))
+        || maximum_timecode_seconds(lower_prompt).is_some()
 }
 
 #[allow(dead_code)]
@@ -4251,11 +4292,9 @@ mod tests {
         assert!(!safe_content.contains("</think>"));
     }
 
-    #[test]
-    fn native_gate_enforces_explicit_runtime_and_flashback_only_audio() {
-        let audio_id = "audio-memory".to_string();
-        let reference = MovieReference {
-            asset_id: audio_id.clone(),
+    fn memory_audio_reference() -> MovieReference {
+        MovieReference {
+            asset_id: "audio-memory".into(),
             tag: "<Audio 1>".into(),
             audio_tag: String::new(),
             name: "memory.wav".into(),
@@ -4270,8 +4309,11 @@ mod tests {
             description: "Use this exact recording only in the flashback scene.".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
-        };
-        let base_clip = PlannedClip {
+        }
+    }
+
+    fn memory_clip() -> PlannedClip {
+        PlannedClip {
             id: String::new(),
             title: "Scene".into(),
             purpose: "Story progress".into(),
@@ -4283,8 +4325,11 @@ mod tests {
             use_previous_frame: false,
             source_refs: vec![],
             reference_ids: vec![],
-        };
-        let mut plan = MoviePlan {
+        }
+    }
+
+    fn memory_plan(clips: Vec<PlannedClip>) -> MoviePlan {
+        MoviePlan {
             title: "Test".into(),
             logline: "A memory shapes a present-day encounter.".into(),
             audience: "Film buyers".into(),
@@ -4292,19 +4337,37 @@ mod tests {
             continuity_bible: vec!["The same world continues across the cut.".into()],
             source_credits: vec![],
             quality_review: MovieQualityReview::default(),
-            clips: vec![base_clip.clone()],
-        };
-        plan.clips[0].reference_ids = vec![audio_id.clone()];
-        plan.clips[0].title = "Present-day encounter".into();
-        plan.clips[0].purpose = "The vlogger watches the animal now".into();
+            clips,
+        }
+    }
+
+    #[test]
+    fn runtime_gate_enforces_requested_duration() {
+        let plan = memory_plan(vec![memory_clip()]);
+        let issues =
+            producer_intent_issues("Make the finished film about 2 to 3 minutes.", &plan, &[])
+                .join(" ");
+        assert!(issues.contains("120-180 seconds"));
+    }
+
+    #[test]
+    fn flashback_audio_gate_rejects_present_day_placement() {
+        let reference = memory_audio_reference();
+        let mut clip = memory_clip();
+        clip.reference_ids = vec![reference.asset_id.clone()];
+        clip.title = "Present-day encounter".into();
+        clip.purpose = "The vlogger watches the animal now".into();
         let issues = producer_intent_issues(
             "Make the finished film about 2 to 3 minutes.",
-            &plan,
+            &memory_plan(vec![clip]),
             std::slice::from_ref(&reference),
         )
         .join(" ");
-        assert!(issues.contains("120-180 seconds"));
         assert!(issues.contains("not explicitly a flashback"));
+    }
+
+    #[test]
+    fn timecode_parser_accepts_explicit_ranges_and_rejects_prose_numbers() {
         assert_eq!(
             maximum_timecode_seconds("[00:00-00:05] action [00:05-00:20] hold"),
             Some(20.0)
@@ -4327,25 +4390,48 @@ mod tests {
             maximum_timecode_seconds("0:00-0:08: action. 0:08-0:10: final hold."),
             Some(10.0)
         );
-        assert!(has_timed_structure(
-            "0:00-0:03 wide; 0:03-0:06 medium; 0:06-0:12 hold"
-        ));
         assert_eq!(
             maximum_timecode_seconds("[0s-20s] overlong action"),
             Some(20.0)
         );
+    }
 
-        plan.clips = (0..8).map(|_| base_clip.clone()).collect();
+    #[test]
+    fn timed_structure_requires_real_timing_or_named_structure() {
+        assert!(has_timed_structure(
+            "0:00-0:03 wide; 0:03-0:06 medium; 0:06-0:12 hold"
+        ));
+        assert!(has_timed_structure("shot 1 establishes the forest"));
+        assert!(!has_timed_structure(
+            "At 0 to no cost, the courier wears 20s styling"
+        ));
+    }
+
+    fn valid_long_form_memory_plan(reference: &MovieReference) -> MoviePlan {
+        let mut plan = memory_plan((0..8).map(|_| memory_clip()).collect());
         plan.clips[2].title = "Childhood flashback".into();
         plan.clips[2].purpose = "A memory from the past".into();
-        plan.clips[2].reference_ids = vec![audio_id];
-        let long_form_issues = producer_intent_issues(
+        plan.clips[2].reference_ids = vec![reference.asset_id.clone()];
+        plan
+    }
+
+    #[test]
+    fn long_form_gate_requires_exact_previous_frame_continuation() {
+        let reference = memory_audio_reference();
+        let plan = valid_long_form_memory_plan(&reference);
+        let issues = producer_intent_issues(
             "Make the finished film about 2-3 minutes.",
             &plan,
             std::slice::from_ref(&reference),
         )
         .join(" ");
-        assert!(long_form_issues.contains("no exact previous-frame continuation"));
+        assert!(issues.contains("no exact previous-frame continuation"));
+    }
+
+    #[test]
+    fn continuity_gate_requires_shared_handoff_anchors() {
+        let reference = memory_audio_reference();
+        let mut plan = valid_long_form_memory_plan(&reference);
         plan.clips[1].use_previous_frame = true;
         plan.clips[0].continuity_out =
             "The camera holds on the same subject and handoff pose.".into();
@@ -4366,21 +4452,22 @@ mod tests {
         assert!(prompt_quality_issues(&plan, &[])
             .join(" ")
             .contains("do not share at least two concrete handoff anchors"));
-        plan.clips[1].continuity_in =
-            "Continue the same subject, pose, light, and screen direction.".into();
-        plan.clips[0].transition = "end of film".into();
-        let final_clip = plan.clips.len() - 1;
-        plan.clips[final_clip].transition = "cut to next scene".into();
-        let transition_issues = prompt_quality_issues(&plan, &[]).join(" ");
-        assert!(transition_issues.contains("declares a terminal"));
-        assert!(transition_issues.contains("but no later scene exists"));
     }
 
     #[test]
-    fn native_gate_requires_identity_conditioning_on_independent_appearances() {
-        let identity_id = "vlogger-picture".to_string();
-        let reference = MovieReference {
-            asset_id: identity_id.clone(),
+    fn transition_gate_rejects_early_terminal_and_nonterminal_ending() {
+        let mut plan = memory_plan((0..8).map(|_| memory_clip()).collect());
+        plan.clips[0].transition = "end of film".into();
+        let final_clip = plan.clips.len() - 1;
+        plan.clips[final_clip].transition = "cut to next scene".into();
+        let issues = prompt_quality_issues(&plan, &[]).join(" ");
+        assert!(issues.contains("declares a terminal"));
+        assert!(issues.contains("but no later scene exists"));
+    }
+
+    fn identity_reference() -> MovieReference {
+        MovieReference {
+            asset_id: "vlogger-picture".into(),
             tag: "<Picture 1>".into(),
             audio_tag: String::new(),
             name: "vlogger.png".into(),
@@ -4395,8 +4482,11 @@ mod tests {
             description: "This is the vlogger's identity reference. Whenever he appears, preserve his face and wardrobe.".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
-        };
-        let clip = |title: &str, purpose: &str| PlannedClip {
+        }
+    }
+
+    fn identity_clip(title: &str, purpose: &str) -> PlannedClip {
+        PlannedClip {
             id: String::new(),
             title: title.into(),
             purpose: purpose.into(),
@@ -4408,8 +4498,11 @@ mod tests {
             use_previous_frame: false,
             source_refs: vec![],
             reference_ids: vec![],
-        };
-        let mut plan = MoviePlan {
+        }
+    }
+
+    fn identity_plan() -> MoviePlan {
+        MoviePlan {
             title: "Test".into(),
             logline: "A vlogger explores a forest.".into(),
             audience: "Film buyers".into(),
@@ -4420,23 +4513,32 @@ mod tests {
             source_credits: vec![],
             quality_review: MovieQualityReview::default(),
             clips: vec![
-                clip("Vlogger arrives", "Show the vlogger entering the forest"),
-                clip("Vlogger reacts", "Close-up of the vlogger's face"),
-                clip(
+                identity_clip("Vlogger arrives", "Show the vlogger entering the forest"),
+                identity_clip("Vlogger reacts", "Close-up of the vlogger's face"),
+                identity_clip(
                     "Animal insert",
                     "Vlogger POV; the vlogger remains off-screen",
                 ),
             ],
-        };
-        plan.clips[0].reference_ids = vec![identity_id.clone()];
-        let issues =
-            producer_intent_issues("Make a short film", &plan, std::slice::from_ref(&reference));
+        }
+    }
+
+    #[test]
+    fn identity_subject_extraction_finds_reference_role() {
+        let reference = identity_reference();
         assert_eq!(
             identity_reference_subject(&reference.description).as_deref(),
             Some("vlogger")
         );
-        let aliases = identity_subject_aliases(&plan, "vlogger");
-        assert_eq!(aliases, vec!["vlogger", "kwame"]);
+    }
+
+    #[test]
+    fn identity_alias_parser_supports_all_continuity_fact_forms() {
+        let mut plan = identity_plan();
+        assert_eq!(
+            identity_subject_aliases(&plan, "vlogger"),
+            vec!["vlogger", "kwame"]
+        );
         plan.continuity_bible = vec![
             "description: The recurring presenter; name: Amina; subject: Vlogger; wardrobe: field jacket"
                 .into(),
@@ -4445,108 +4547,72 @@ mod tests {
             identity_subject_aliases(&plan, "vlogger"),
             vec!["vlogger", "amina"]
         );
-        plan.continuity_bible =
-            vec!["Vlogger: Kwame, with the same face and wardrobe throughout.".into()];
-        assert_eq!(
-            identity_subject_aliases(
-                &MoviePlan {
-                    continuity_bible: vec![
-                        "Tariq, a 34-year-old Somali vlogger with short natural hair, appears throughout."
-                            .into(),
-                    ],
-                    ..plan.clone()
-                },
-                "vlogger"
+        for (fact, expected) in [
+            (
+                "Tariq, a 34-year-old Somali vlogger with short natural hair, appears throughout.",
+                "tariq",
             ),
-            vec!["vlogger", "tariq"]
-        );
-        assert_eq!(
-            identity_subject_aliases(
-                &MoviePlan {
-                    continuity_bible: vec![
-                        "Vlogger Kofi: Black male, short natural hair, olive field overshirt."
-                            .into(),
-                        "Vlogger equipment: compact camera and stabilizer.".into(),
-                    ],
-                    ..plan.clone()
-                },
-                "vlogger"
+            (
+                "Vlogger Kofi: Black male, short natural hair, olive field overshirt.",
+                "kofi",
             ),
-            vec!["vlogger", "kofi"]
-        );
-        assert_eq!(
-            identity_subject_aliases(
-                &MoviePlan {
-                    continuity_bible: vec![
-                        "Vlogger Kwame Osei (29) is a Black male with short natural hair and a trimmed beard."
-                            .into(),
-                    ],
-                    ..plan.clone()
-                },
-                "vlogger"
+            (
+                "Vlogger Kwame Osei (29) is a Black male with short natural hair and a trimmed beard.",
+                "kwame",
             ),
-            vec!["vlogger", "kwame"]
-        );
+        ] {
+            plan.continuity_bible = vec![fact.into()];
+            assert_eq!(
+                identity_subject_aliases(&plan, "vlogger"),
+                vec!["vlogger", expected]
+            );
+        }
+        plan.continuity_bible = vec!["Vlogger equipment: compact camera and stabilizer.".into()];
+        assert_eq!(identity_subject_aliases(&plan, "vlogger"), vec!["vlogger"]);
+    }
+
+    #[test]
+    fn identity_visibility_gate_handles_aliases_and_subject_free_scenes() {
+        let plan = identity_plan();
+        let aliases = identity_subject_aliases(&plan, "vlogger");
         assert!(clip_visibly_names_subject(
-            &clip("Kwame reacts", "Close-up of Kwame in the present day"),
+            &identity_clip("Kwame reacts", "Close-up of Kwame in the present day"),
             &aliases
         ));
         assert!(clip_visibly_names_subject(
-            &clip("Childhood Kwame", "Young Kwame remembers the jungle"),
+            &identity_clip("Childhood Kwame", "Young Kwame remembers the jungle"),
             &aliases
         ));
         assert!(clip_visibly_names_subject(
-            &clip(
+            &identity_clip(
                 "Vlogger raises camera",
                 "The vlogger is visible before a POV transition"
             ),
             &aliases
         ));
-        let absent_clip = clip(
+        let absent_clip = identity_clip(
             "Jungle atmosphere",
             "Environment-only coverage with no vlogger",
         );
         assert!(!clip_visibly_names_subject(&absent_clip, &aliases));
         assert!(clip_is_independent_subject_free(&absent_clip, &aliases));
-        let mut age_variant_plan = plan.clone();
-        age_variant_plan.clips = vec![clip(
-            "Childhood Kwame",
-            "Young Kwame remembers his first jungle encounter",
-        )];
-        assert!(producer_intent_issues(
-            "Make a short film",
-            &age_variant_plan,
-            std::slice::from_ref(&reference)
-        )
-        .join(" ")
-        .contains("scene(s) 1"));
-        age_variant_plan.clips[0].reference_ids = vec![identity_id.clone()];
-        assert!(producer_intent_issues(
-            "Make a short film",
-            &age_variant_plan,
-            std::slice::from_ref(&reference)
-        )
-        .join(" ")
-        .contains("cannot guarantee this age transformation"));
-        age_variant_plan.clips[0].prompt =
-            "A 10-year-old child with the same trimmed beard walks through the jungle.".into();
-        assert!(
-            prompt_quality_issues(&age_variant_plan, std::slice::from_ref(&reference))
-                .join(" ")
-                .contains("child while retaining adult facial hair")
+        let named_absent = identity_clip(
+            "Animal insert",
+            "Kwame remains off-screen while the animal crosses frame",
         );
-        let mut child_reference = reference.clone();
-        child_reference.description = "This is the vlogger's identity reference for the child version. Whenever he appears, preserve his face and wardrobe.".into();
-        age_variant_plan.clips[0].prompt = "A child walks through the jungle.".into();
-        assert!(producer_intent_issues(
-            "Make a short film",
-            &age_variant_plan,
-            std::slice::from_ref(&child_reference)
-        )
-        .is_empty());
-        assert!(issues.join(" ").contains("scene(s) 2"));
-        assert!(!issues.join(" ").contains("scene(s) 3"));
+        assert!(clip_is_independent_subject_free(&named_absent, &aliases));
+    }
 
+    #[test]
+    fn identity_gate_requires_reference_on_independent_appearances() {
+        let reference = identity_reference();
+        let mut plan = identity_plan();
+        plan.clips[0].reference_ids = vec![reference.asset_id.clone()];
+        let issues =
+            producer_intent_issues("Make a short film", &plan, std::slice::from_ref(&reference))
+                .join(" ");
+        assert!(issues.contains("scene(s) 2"));
+        assert!(!issues.contains("scene(s) 3"));
         plan.clips[1].use_previous_frame = true;
         assert!(producer_intent_issues(
             "Make a short film",
@@ -4554,12 +4620,57 @@ mod tests {
             std::slice::from_ref(&reference)
         )
         .is_empty());
+    }
 
-        plan.clips[2].reference_ids = vec!["vlogger-picture".into()];
-        let issues = producer_intent_issues("Make a short film", &plan, &[reference]);
-        assert!(issues
-            .join(" ")
-            .contains("scene(s) 3 do not visibly feature"));
+    #[test]
+    fn identity_age_gate_rejects_unsupported_transformations_and_adult_traits() {
+        let reference = identity_reference();
+        let mut plan = identity_plan();
+        plan.clips = vec![identity_clip(
+            "Childhood Kwame",
+            "Young Kwame remembers his first jungle encounter",
+        )];
+        assert!(producer_intent_issues(
+            "Make a short film",
+            &plan,
+            std::slice::from_ref(&reference)
+        )
+        .join(" ")
+        .contains("scene(s) 1"));
+        plan.clips[0].reference_ids = vec![reference.asset_id.clone()];
+        assert!(producer_intent_issues(
+            "Make a short film",
+            &plan,
+            std::slice::from_ref(&reference)
+        )
+        .join(" ")
+        .contains("cannot guarantee this age transformation"));
+        plan.clips[0].prompt =
+            "A 10-year-old child with the same trimmed beard walks through the jungle.".into();
+        assert!(
+            prompt_quality_issues(&plan, std::slice::from_ref(&reference))
+                .join(" ")
+                .contains("child while retaining adult facial hair")
+        );
+        let mut child_reference = reference;
+        child_reference.description = "This is the vlogger's identity reference for the child version. Whenever he appears, preserve his face and wardrobe.".into();
+        plan.clips[0].prompt = "A child walks through the jungle.".into();
+        assert!(producer_intent_issues(
+            "Make a short film",
+            &plan,
+            std::slice::from_ref(&child_reference)
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn identity_gate_rejects_reference_on_subject_free_scene() {
+        let reference = identity_reference();
+        let mut plan = identity_plan();
+        plan.clips[0].reference_ids = vec![reference.asset_id.clone()];
+        plan.clips[2].reference_ids = vec![reference.asset_id.clone()];
+        let issues = producer_intent_issues("Make a short film", &plan, &[reference]).join(" ");
+        assert!(issues.contains("scene(s) 3 do not visibly feature"));
     }
 
     #[test]
