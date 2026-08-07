@@ -13,6 +13,7 @@ mod models;
 mod profile;
 mod runtime;
 mod services;
+mod setup;
 mod store;
 mod studio;
 mod workspace;
@@ -68,6 +69,7 @@ struct AppState {
     interactive_jobs: Mutex<HashMap<String, CancellationToken>>,
     studio: MovieStudio,
     movie_jobs: Mutex<HashMap<String, CancellationToken>>,
+    setup_job: Mutex<Option<CancellationToken>>,
 }
 
 struct ResearchGuard<'a> {
@@ -585,18 +587,217 @@ fn reveal_movie(id: String, state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn prepare_services(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+async fn prepare_services(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
     let _guard = claim_workspace(&state)?;
     let settings = state
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
-    services::prepare_with_root(&settings.bonsai_root)
+    services::prepare(&settings)
         .await
         .map_err(|error| error.to_string())?;
-    let _ = state.runtime.attach_external_if_ready(&settings).await;
+    if state
+        .runtime
+        .attach_external_if_ready(&settings)
+        .await
+        .is_none()
+    {
+        let control = state
+            .control_settings
+            .load()
+            .map_err(|error| error.to_string())?;
+        let model = runtime_bonsai_model(&state).await?;
+        state
+            .runtime
+            .start_model(&model, &control, Some(&app))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     identify_attached_bonsai(&state).await;
     snapshot(&state).await
+}
+
+async fn runtime_bonsai_model(state: &AppState) -> Result<ModelInfo, String> {
+    state
+        .models
+        .read()
+        .await
+        .iter()
+        .find(|model| {
+            format!("{} {}", model.name, model.path)
+                .to_lowercase()
+                .contains("bonsai")
+        })
+        .cloned()
+        .ok_or_else(|| "Bonsai is not installed or has not been scanned. Open Setup and install or locate the assistant first.".into())
+}
+
+#[tauri::command]
+async fn get_setup_snapshot(state: State<'_, AppState>) -> Result<setup::SetupSnapshot, String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let gpu = services::gpu_snapshot().await;
+    Ok(setup::snapshot(&research, &control, gpu.as_ref()))
+}
+
+#[tauri::command]
+async fn open_comfy_ui(state: State<'_, AppState>) -> Result<(), String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    services::start_comfy(&settings.comfy_root)
+        .await
+        .map_err(|error| error.to_string())?;
+    std::process::Command::new("explorer.exe")
+        .arg("http://127.0.0.1:8188/")
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| {
+            format!("ComfyUI is ready, but its web interface could not be opened: {error}")
+        })
+}
+
+#[tauri::command]
+async fn save_setup_locations(
+    locations: setup::SetupLocations,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    ensure_workspace_idle(&state)?;
+    let mut research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let mut control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    setup::apply_locations(&mut research, &mut control, locations)
+        .map_err(|error| error.to_string())?;
+    let comfy_root = std::path::Path::new(&research.comfy_root);
+    if comfy_root.join("main.py").is_file()
+        && !comfy_root.join("Start-ComfyUI-MiniMax-H3.ps1").is_file()
+    {
+        setup::ensure_comfy_launcher(comfy_root).map_err(|error| error.to_string())?;
+    }
+    state
+        .research_settings
+        .save(&research)
+        .map_err(|error| error.to_string())?;
+    state
+        .control_settings
+        .save(&control)
+        .map_err(|error| error.to_string())?;
+    apply_media_paths(&research);
+    refresh_engine_candidates(&state, &control, &research).await;
+    snapshot(&state).await
+}
+
+#[tauri::command]
+async fn pick_setup_folder() -> Result<String, String> {
+    Ok(rfd::AsyncFileDialog::new()
+        .set_title("Choose where Kestrel should keep its AI components")
+        .pick_folder()
+        .await
+        .map(|folder| folder.path().to_string_lossy().into_owned())
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+async fn pick_setup_file(kind: String) -> Result<String, String> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose an existing Kestrel component");
+    dialog = match kind.as_str() {
+        "zim" => dialog.add_filter("Kiwix archive", &["zim"]),
+        "engine" | "ffmpeg" | "ffprobe" => dialog.add_filter("Windows program", &["exe"]),
+        _ => dialog,
+    };
+    Ok(dialog
+        .pick_file()
+        .await
+        .map(|file| file.path().to_string_lossy().into_owned())
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+async fn install_setup_component(
+    request: setup::SetupInstallRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    ensure_workspace_idle(&state)?;
+    let mut research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let cancel = CancellationToken::new();
+    {
+        let mut active = state
+            .setup_job
+            .lock()
+            .map_err(|_| "setup job registry is unavailable".to_string())?;
+        if active.is_some() {
+            return Err("Another setup download is already active.".into());
+        }
+        *active = Some(cancel.clone());
+    }
+    let result = setup::install_component(&app, &mut research, &request, cancel).await;
+    if let Ok(mut active) = state.setup_job.lock() {
+        *active = None;
+    }
+    result.map_err(|error| error.to_string())?;
+    state
+        .research_settings
+        .save(&research)
+        .map_err(|error| error.to_string())?;
+    apply_media_paths(&research);
+    let mut control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    if request.component == "assistant" {
+        control.engine_path = std::path::Path::new(&research.bonsai_root)
+            .join("runtime")
+            .join("llama-server.exe")
+            .to_string_lossy()
+            .into_owned();
+        state
+            .control_settings
+            .save(&control)
+            .map_err(|error| error.to_string())?;
+        let roots = default_roots(&control.extra_model_roots, &research.bonsai_root);
+        let found = tokio::task::spawn_blocking(move || model::scan(&roots))
+            .await
+            .map_err(|error| format!("model scan failed after setup: {error}"))?;
+        state
+            .model_catalog
+            .save(&found)
+            .map_err(|error| error.to_string())?;
+        *state.models.write().await = found;
+    }
+    refresh_engine_candidates(&state, &control, &research).await;
+    snapshot(&state).await
+}
+
+#[tauri::command]
+fn cancel_setup_install(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .setup_job
+        .lock()
+        .map_err(|_| "setup job registry is unavailable".to_string())?
+        .as_ref()
+    {
+        cancel.cancel();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -605,7 +806,11 @@ async fn get_system_snapshot(state: State<'_, AppState>) -> Result<SystemSnapsho
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
-    Ok(services::system_snapshot(settings).await)
+    let mut value = services::system_snapshot(settings).await;
+    if state.runtime.snapshot().await.phase == "ready" {
+        value.status.bonsai = "ready".into();
+    }
+    Ok(value)
 }
 
 #[tauri::command]
@@ -753,6 +958,7 @@ async fn save_control_settings(
 #[tauri::command]
 async fn apply_model_runtime(
     settings: ResearchSettings,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SystemSnapshot, String> {
     let _guard = claim_workspace(&state)?;
@@ -781,12 +987,26 @@ async fn apply_model_runtime(
         .await
         .map_err(|error| error.to_string())?;
     config::apply_bonsai_runtime(&settings).map_err(|error| error.to_string())?;
-    services::restart_bonsai(&settings.bonsai_root)
-        .await
-        .map_err(|error| error.to_string())?;
-    let _ = state.runtime.attach_external_if_ready(&settings).await;
+    let script = std::path::Path::new(&settings.bonsai_root).join("Start-BonsaiServer.ps1");
+    if script.is_file() {
+        services::restart_bonsai(&settings.bonsai_root)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = state.runtime.attach_external_if_ready(&settings).await;
+    } else {
+        let model = runtime_bonsai_model(&state).await?;
+        state
+            .runtime
+            .start_model(&model, &control, Some(&app))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     identify_attached_bonsai(&state).await;
-    Ok(services::system_snapshot(settings).await)
+    let mut value = services::system_snapshot(settings).await;
+    if state.runtime.snapshot().await.phase == "ready" {
+        value.status.bonsai = "ready".into();
+    }
+    Ok(value)
 }
 
 #[tauri::command]
@@ -1424,7 +1644,6 @@ fn reveal_library(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 async fn snapshot(state: &AppState) -> Result<AppSnapshot, String> {
-    let status = services::status().await;
     let reports = state
         .store
         .list(100_000)
@@ -1433,12 +1652,19 @@ async fn snapshot(state: &AppState) -> Result<AppSnapshot, String> {
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
+    let mut status = services::status(&settings).await;
+    if state.runtime.snapshot().await.phase == "ready" {
+        status.bonsai = "ready".into();
+    }
+    let control = control_snapshot(state, false).await?;
+    let setup = setup::snapshot(&settings, &control.settings, control.gpu.as_ref());
     Ok(AppSnapshot {
         status,
         reports,
         library_root: state.store.root().to_string_lossy().into_owned(),
         settings,
-        control: control_snapshot(state, false).await?,
+        control,
+        setup,
     })
 }
 
@@ -1526,6 +1752,19 @@ fn open_with_explorer(path: &std::path::Path) -> Result<(), String> {
         .map_err(|error| format!("could not open {}: {error}", path.display()))
 }
 
+fn apply_media_paths(settings: &ResearchSettings) {
+    if std::path::Path::new(&settings.ffmpeg_path).is_file() {
+        std::env::set_var("KESTREL_FFMPEG_PATH", &settings.ffmpeg_path);
+    } else {
+        std::env::remove_var("KESTREL_FFMPEG_PATH");
+    }
+    if std::path::Path::new(&settings.ffprobe_path).is_file() {
+        std::env::set_var("KESTREL_FFPROBE_PATH", &settings.ffprobe_path);
+    } else {
+        std::env::remove_var("KESTREL_FFPROBE_PATH");
+    }
+}
+
 pub fn run() {
     let application = tauri::Builder::default()
         .register_uri_scheme_protocol("kestrel-media", |_context, request| {
@@ -1538,6 +1777,7 @@ pub fn run() {
             let research = research_settings
                 .load()
                 .map_err(|error| error.to_string())?;
+            apply_media_paths(&research);
             let mut control = control_settings.load().map_err(|error| error.to_string())?;
             let mut engine_candidates =
                 runtime::detect_engines(&control.engine_path, &research.bonsai_root);
@@ -1580,6 +1820,7 @@ pub fn run() {
                 interactive_jobs: Mutex::new(HashMap::new()),
                 studio,
                 movie_jobs: Mutex::new(HashMap::new()),
+                setup_job: Mutex::new(None),
             });
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -1633,6 +1874,13 @@ pub fn run() {
             render_movie_edit,
             reveal_movie,
             prepare_services,
+            get_setup_snapshot,
+            open_comfy_ui,
+            save_setup_locations,
+            pick_setup_folder,
+            pick_setup_file,
+            install_setup_component,
+            cancel_setup_install,
             open_standalone_report,
             reveal_library,
             get_system_snapshot,

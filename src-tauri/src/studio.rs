@@ -27,7 +27,6 @@ use movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult
 
 const SCHEMA_VERSION: u32 = 4;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
-const DEFAULT_COMFY_ROOT: &str = r"D:\AI\ComfyUI";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
@@ -38,6 +37,18 @@ const MOVIE_AGENT_SESSION_STEPS: u32 = 96;
 const MAX_MOVIE_AGENT_SESSIONS: u32 = 8;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn media_program(name: &str) -> PathBuf {
+    let key = if name == "ffprobe" {
+        "KESTREL_FFPROBE_PATH"
+    } else {
+        "KESTREL_FFMPEG_PATH"
+    };
+    std::env::var_os(key)
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(name))
+}
 
 pub fn media_response(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
     match read_media_response(&request) {
@@ -368,7 +379,7 @@ fn default_output() -> u32 {
     32_768
 }
 fn default_comfy_root() -> String {
-    DEFAULT_COMFY_ROOT.into()
+    ResearchSettings::default().comfy_root
 }
 fn default_ref_image_size() -> String {
     "match".into()
@@ -2097,7 +2108,7 @@ impl MovieStudio {
         let stills = self.project_dir(&project.id).join("stills");
         fs::create_dir_all(&stills)?;
         let target = stills.join(format!("clip-{:03}-last.png", index + 1));
-        let output = tokio::process::Command::new("ffmpeg")
+        let output = tokio::process::Command::new(media_program("ffmpeg"))
             .args([
                 "-y",
                 "-hide_banner",
@@ -2140,7 +2151,7 @@ impl MovieStudio {
         }
         fs::write(&concat_path, concat)?;
         let target = folder.join("exports").join("first-cut.mp4");
-        let output = tokio::process::Command::new("ffmpeg")
+        let output = tokio::process::Command::new(media_program("ffmpeg"))
             .args([
                 "-y",
                 "-hide_banner",
@@ -2183,7 +2194,7 @@ impl MovieStudio {
                 "enable at least one clip before exporting".into(),
             ));
         }
-        let mut command = tokio::process::Command::new("ffmpeg");
+        let mut command = tokio::process::Command::new(media_program("ffmpeg"));
         command.args(["-y", "-hide_banner", "-loglevel", "error"]);
         let mut filters = Vec::new();
         for (index, edit) in edits.iter().enumerate() {
@@ -3875,7 +3886,7 @@ fn classify_reference(path: &Path) -> Result<(String, String, u64), StudioError>
 }
 
 fn probe_reference(path: &Path, kind: &str) -> Result<ReferenceProbe, StudioError> {
-    let output = std::process::Command::new("ffprobe")
+    let output = std::process::Command::new(media_program("ffprobe"))
         .args([
             "-v",
             "error",
@@ -5145,7 +5156,7 @@ mod tests {
         let project = result.unwrap();
         assert_eq!(project.status, "complete");
         assert!(Path::new(&project.final_path).is_file());
-        let probe = std::process::Command::new("ffprobe")
+        let probe = std::process::Command::new(media_program("ffprobe"))
             .args([
                 "-v",
                 "error",
@@ -5168,7 +5179,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let picture = root.path().join("producer-sunrise.png");
         let audio = root.path().join("producer-tone.wav");
-        let picture_output = std::process::Command::new("ffmpeg")
+        let picture_output = std::process::Command::new(media_program("ffmpeg"))
             .args([
                 "-y",
                 "-hide_banner",
@@ -5189,7 +5200,7 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&picture_output.stderr)
         );
-        let audio_output = std::process::Command::new("ffmpeg")
+        let audio_output = std::process::Command::new(media_program("ffmpeg"))
             .args([
                 "-y",
                 "-hide_banner",
@@ -5290,7 +5301,7 @@ mod tests {
         assert!(Path::new(&project.references[0].path).is_file());
         assert!(Path::new(&project.references[1].path).is_file());
         assert!(Path::new(&project.final_path).is_file());
-        let probe = std::process::Command::new("ffprobe")
+        let probe = std::process::Command::new(media_program("ffprobe"))
             .args([
                 "-v",
                 "error",
@@ -5563,7 +5574,7 @@ mod tests {
             plan.clips.iter().any(|clip| !clip.use_previous_frame),
             "Bonsai planned no independent or non-continuous scene"
         );
-        let probe = std::process::Command::new("ffprobe")
+        let probe = std::process::Command::new(media_program("ffprobe"))
             .args([
                 "-v",
                 "error",
@@ -5589,11 +5600,11 @@ mod tests {
 
     #[tokio::test]
     async fn default_review_cut_preserves_native_clip_duration_and_audio() {
-        let ffmpeg_available = std::process::Command::new("ffmpeg")
+        let ffmpeg_available = std::process::Command::new(media_program("ffmpeg"))
             .arg("-version")
             .output()
             .is_ok_and(|output| output.status.success());
-        let ffprobe_available = std::process::Command::new("ffprobe")
+        let ffprobe_available = std::process::Command::new(media_program("ffprobe"))
             .arg("-version")
             .output()
             .is_ok_and(|output| output.status.success());
@@ -5618,7 +5629,7 @@ mod tests {
         let generated = raw.join("generated.mp4");
         let second = raw.join("second.mp4");
         for (path, color, frequency) in [(&generated, "red", "440"), (&second, "blue", "660")] {
-            let output = std::process::Command::new("ffmpeg")
+            let output = std::process::Command::new(media_program("ffmpeg"))
                 .args([
                     "-y",
                     "-hide_banner",
@@ -5664,7 +5675,7 @@ mod tests {
             })
             .collect();
         let assembled = studio.assemble_default(&project).await.unwrap();
-        let probe = std::process::Command::new("ffprobe")
+        let probe = std::process::Command::new(media_program("ffprobe"))
             .args([
                 "-v",
                 "error",
@@ -5685,7 +5696,7 @@ mod tests {
             (duration - 2.25).abs() < 0.08,
             "assembled duration was {duration}"
         );
-        let streams = std::process::Command::new("ffprobe")
+        let streams = std::process::Command::new(media_program("ffprobe"))
             .args([
                 "-v",
                 "error",

@@ -21,6 +21,7 @@ pub struct AppSnapshot {
     pub library_root: String,
     pub settings: ResearchSettings,
     pub control: ControlSnapshot,
+    pub setup: crate::setup::SetupSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -42,9 +43,9 @@ pub struct ControlSettings {
 
 impl Default for ControlSettings {
     fn default() -> Self {
-        let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+        let project_root = directories::UserDirs::new()
+            .and_then(|dirs| dirs.document_dir().map(std::path::Path::to_path_buf))
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
             .to_string_lossy()
             .into_owned();
         let mut workspace_roots = Vec::new();
@@ -58,7 +59,11 @@ impl Default for ControlSettings {
         }
         Self {
             advanced_mode: false,
-            engine_path: r"D:\LocalAI\Bonsai27B\runtime\llama-server.exe".into(),
+            engine_path: default_bonsai_root()
+                .join("runtime")
+                .join("llama-server.exe")
+                .to_string_lossy()
+                .into_owned(),
             extra_model_roots: Vec::new(),
             selected_model_id: None,
             context_window: 32_768,
@@ -311,6 +316,14 @@ pub struct DeveloperRepairReport {
 pub struct ResearchSettings {
     pub advanced_mode: bool,
     pub bonsai_root: String,
+    pub install_root: String,
+    pub wikipedia_zim_path: String,
+    pub kiwix_server_path: String,
+    pub wikipedia_book: String,
+    pub wikipedia_snapshot: String,
+    pub comfy_root: String,
+    pub ffmpeg_path: String,
+    pub ffprobe_path: String,
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub research_lanes: u32,
@@ -323,9 +336,57 @@ pub struct ResearchSettings {
 
 impl Default for ResearchSettings {
     fn default() -> Self {
+        let install_root = default_install_root();
+        let bonsai_root = default_bonsai_root();
+        let legacy_zim =
+            std::path::PathBuf::from(r"D:\OfflineInternet\wikipedia_en_all_maxi_2024-01.zim");
+        let wikipedia_zim = if legacy_zim.is_file() {
+            legacy_zim
+        } else {
+            install_root
+                .join("Wikipedia")
+                .join("wikipedia_en_all_mini_2026-06.zim")
+        };
+        let legacy_kiwix = std::path::PathBuf::from(
+            r"D:\LocalAI\OfflineWikipedia\tools\kiwix-tools-3.8.1\kiwix-serve.exe",
+        );
+        let kiwix_server = if legacy_kiwix.is_file() {
+            legacy_kiwix
+        } else {
+            install_root
+                .join("Wikipedia")
+                .join("tools")
+                .join("kiwix-serve.exe")
+        };
+        let legacy_comfy = std::path::PathBuf::from(r"D:\AI\ComfyUI");
+        let comfy_root = if legacy_comfy.join("main.py").is_file() {
+            legacy_comfy
+        } else {
+            install_root
+                .join("ComfyUI_windows_portable")
+                .join("ComfyUI")
+        };
+        let wikipedia_book = wikipedia_zim
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("wikipedia_en_all_mini_2026-06")
+            .to_string();
+        let wikipedia_snapshot = wikipedia_book
+            .rsplit_once('_')
+            .map(|(_, value)| value)
+            .unwrap_or("2026-06")
+            .to_string();
         Self {
             advanced_mode: false,
-            bonsai_root: r"D:\LocalAI\Bonsai27B".into(),
+            bonsai_root: bonsai_root.to_string_lossy().into_owned(),
+            install_root: install_root.to_string_lossy().into_owned(),
+            wikipedia_zim_path: wikipedia_zim.to_string_lossy().into_owned(),
+            kiwix_server_path: kiwix_server.to_string_lossy().into_owned(),
+            wikipedia_book,
+            wikipedia_snapshot,
+            comfy_root: comfy_root.to_string_lossy().into_owned(),
+            ffmpeg_path: String::new(),
+            ffprobe_path: String::new(),
             context_window: 98_304,
             max_output_tokens: 32_768,
             research_lanes: 6,
@@ -335,6 +396,21 @@ impl Default for ResearchSettings {
             thinking_budget: 4_096,
             max_source_chars: 20_000,
         }
+    }
+}
+
+fn default_install_root() -> std::path::PathBuf {
+    directories::UserDirs::new()
+        .map(|dirs| dirs.home_dir().join("Kestrel AI"))
+        .unwrap_or_else(|| std::path::PathBuf::from("Kestrel AI"))
+}
+
+fn default_bonsai_root() -> std::path::PathBuf {
+    let legacy = std::path::PathBuf::from(r"D:\LocalAI\Bonsai27B");
+    if legacy.join("runtime").join("llama-server.exe").is_file() {
+        legacy
+    } else {
+        default_install_root().join("Bonsai")
     }
 }
 

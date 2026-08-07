@@ -99,6 +99,12 @@ pub fn export(
     ));
     let mut portable_research = research.clone();
     portable_research.bonsai_root = portable_path(&portable_research.bonsai_root);
+    portable_research.install_root = portable_path(&portable_research.install_root);
+    portable_research.wikipedia_zim_path = portable_path(&portable_research.wikipedia_zim_path);
+    portable_research.kiwix_server_path = portable_path(&portable_research.kiwix_server_path);
+    portable_research.comfy_root = portable_path(&portable_research.comfy_root);
+    portable_research.ffmpeg_path = portable_path(&portable_research.ffmpeg_path);
+    portable_research.ffprobe_path = portable_path(&portable_research.ffprobe_path);
     let pinned_model = control
         .selected_model_id
         .as_deref()
@@ -184,6 +190,28 @@ pub fn import(
     } else {
         current_research.bonsai_root.clone()
     };
+    research
+        .install_root
+        .clone_from(&current_research.install_root);
+    research
+        .wikipedia_zim_path
+        .clone_from(&current_research.wikipedia_zim_path);
+    research
+        .kiwix_server_path
+        .clone_from(&current_research.kiwix_server_path);
+    research
+        .wikipedia_book
+        .clone_from(&current_research.wikipedia_book);
+    research
+        .wikipedia_snapshot
+        .clone_from(&current_research.wikipedia_snapshot);
+    research.comfy_root.clone_from(&current_research.comfy_root);
+    research
+        .ffmpeg_path
+        .clone_from(&current_research.ffmpeg_path);
+    research
+        .ffprobe_path
+        .clone_from(&current_research.ffprobe_path);
 
     let mut control = control_store
         .load()

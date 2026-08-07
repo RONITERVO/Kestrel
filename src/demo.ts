@@ -105,6 +105,14 @@ export const demoSnapshot: AppSnapshot = {
   settings: {
     advancedMode: false,
     bonsaiRoot: "D:\\LocalAI\\Bonsai27B",
+    installRoot: "D:\\LocalAI",
+    wikipediaZimPath: "D:\\OfflineInternet\\wikipedia_en_all_maxi_2024-01.zim",
+    kiwixServerPath: "D:\\LocalAI\\OfflineWikipedia\\tools\\kiwix-tools-3.8.1\\kiwix-serve.exe",
+    wikipediaBook: "wikipedia_en_all_maxi_2024-01",
+    wikipediaSnapshot: "2024-01",
+    comfyRoot: "D:\\AI\\ComfyUI",
+    ffmpegPath: "",
+    ffprobePath: "",
     contextWindow: 98_304,
     maxOutputTokens: 32_768,
     researchLanes: 6,
@@ -113,6 +121,19 @@ export const demoSnapshot: AppSnapshot = {
     toolTurns: 24,
     thinkingBudget: 4_096,
     maxSourceChars: 20_000,
+  },
+  setup: {
+    ready: true,
+    installRoot: "D:\\LocalAI",
+    availableBytes: 356_000_000_000,
+    gpuName: "NVIDIA GeForce RTX 5070",
+    gpuMemoryBytes: 12_227 * 1024 * 1024,
+    components: [
+      { id: "assistant", label: "Bonsai assistant", status: "ready", detail: "Ready for private local work.", path: "D:\\LocalAI\\Bonsai27B", downloadBytes: 8447588320, optional: false },
+      { id: "wikipedia", label: "Offline Wikipedia", status: "ready", detail: "Ready for private research.", path: "D:\\OfflineInternet\\wikipedia_en_all_maxi_2024-01.zim", downloadBytes: 12550000000, optional: false },
+      { id: "media", label: "Movie finishing tools", status: "ready", detail: "Ready for movie assembly.", path: "D:\\LocalAI\\MediaTools", downloadBytes: 80000000, optional: true },
+      { id: "studio", label: "MiniMax H3 Movie Studio", status: "ready", detail: "Ready for high-quality movies.", path: "D:\\AI\\ComfyUI", downloadBytes: 65550000000, optional: true },
+    ],
   },
   control: {
     settings: {
