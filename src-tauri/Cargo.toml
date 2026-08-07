@@ -1,6 +1,6 @@
 [package]
 name = "kestrel-local"
-version = "0.12.0"
+version = "0.13.0"
 description = "Local model control, durable offline research, and agent-directed H3 movie production"
 authors = ["Kestrel contributors"]
 edition = "2021"
@@ -19,6 +19,7 @@ directories = "6"
 html-escape = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 futures-util = "0.3"
+fs2 = "0.4"
 rusqlite = { version = "0.32", features = ["bundled-full"] }
 scraper = "0.22"
 serde = { version = "1", features = ["derive"] }
@@ -33,7 +34,7 @@ quick-xml = "0.38"
 rfd = { version = "0.17", default-features = false }
 tauri = { version = "2.8", default-features = false, features = ["wry"] }
 thiserror = "2"
-tokio = { version = "1", features = ["time", "process", "macros", "sync", "io-util"] }
+tokio = { version = "1", features = ["time", "process", "macros", "sync", "io-util", "fs"] }
 tokio-util = "0.7"
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }

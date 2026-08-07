@@ -4,8 +4,8 @@ use serde::Serialize;
 use thiserror::Error;
 use url::Url;
 
+#[cfg(test)]
 pub const BOOK: &str = "wikipedia_en_all_maxi_2024-01";
-pub const SNAPSHOT: &str = "2024-01-12";
 
 #[derive(Debug, Error)]
 pub enum KiwixError {
@@ -37,10 +37,11 @@ pub struct Article {
 pub struct KiwixClient {
     client: Client,
     base: Url,
+    book: String,
 }
 
 impl KiwixClient {
-    pub fn new() -> Self {
+    pub fn new(book: impl Into<String>) -> Self {
         Self {
             client: Client::builder()
                 .no_proxy()
@@ -48,12 +49,19 @@ impl KiwixClient {
                 .build()
                 .expect("HTTP client"),
             base: Url::parse("http://127.0.0.1:8085/").expect("fixed loopback URL"),
+            book: book.into(),
         }
     }
 
     pub async fn health(&self) -> bool {
+        let mut url = self.base.clone();
+        if let Ok(mut segments) = url.path_segments_mut() {
+            segments.push("content").push(&self.book).push("");
+        } else {
+            return false;
+        }
         self.client
-            .get(self.base.clone())
+            .get(url)
             .send()
             .await
             .map(|response| response.status().is_success())
@@ -66,7 +74,7 @@ impl KiwixClient {
             .join("search")
             .map_err(|_| KiwixError::UnsafePath)?;
         url.query_pairs_mut()
-            .append_pair("content", BOOK)
+            .append_pair("content", &self.book)
             .append_pair("pattern", query)
             .append_pair("pageLength", &limit.max(1).to_string());
         let html = self
@@ -77,7 +85,7 @@ impl KiwixClient {
             .error_for_status()?
             .text()
             .await?;
-        Ok(parse_search_html(&html, limit))
+        Ok(parse_search_html(&html, limit, &self.book))
     }
 
     pub async fn read(
@@ -86,7 +94,7 @@ impl KiwixClient {
         section: Option<&str>,
         max_chars: usize,
     ) -> Result<Article, KiwixError> {
-        let reference = normalize_reference(reference)?;
+        let reference = normalize_reference(reference, &self.book)?;
         let url = self
             .base
             .join(reference.trim_start_matches('/'))
@@ -122,7 +130,7 @@ impl KiwixClient {
     }
 }
 
-fn normalize_reference(input: &str) -> Result<String, KiwixError> {
+fn normalize_reference(input: &str, book: &str) -> Result<String, KiwixError> {
     let trimmed = input.trim();
     let path = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         let parsed = Url::parse(trimmed).map_err(|_| KiwixError::UnsafePath)?;
@@ -150,16 +158,16 @@ fn normalize_reference(input: &str) -> Result<String, KiwixError> {
     }
     // Kiwix only serves the configured local archive. Canonicalizing its book segment
     // tolerates a small-model copy typo without broadening the loopback/path boundary.
-    Ok(format!("/content/{BOOK}/{}", segments[3..].join("/")))
+    Ok(format!("/content/{book}/{}", segments[3..].join("/")))
 }
 
-fn parse_search_html(input: &str, limit: usize) -> Vec<SearchResult> {
+fn parse_search_html(input: &str, limit: usize, book: &str) -> Vec<SearchResult> {
     let document = Html::parse_document(input);
     let anchor_selector = Selector::parse("a[href]").unwrap();
     let mut results = Vec::new();
     for anchor in document.select(&anchor_selector) {
         let reference = anchor.value().attr("href").unwrap_or_default();
-        if !reference.starts_with(&format!("/content/{BOOK}/"))
+        if !reference.starts_with(&format!("/content/{book}/"))
             || results
                 .iter()
                 .any(|item: &SearchResult| item.reference == reference)
@@ -280,7 +288,7 @@ mod tests {
         let html = format!(
             r#"<ul><li><a href="/content/{BOOK}/A/Ada_Lovelace">Ada Lovelace</a><cite>English mathematician</cite></li><li><a href="https://example.com">Remote</a></li></ul>"#
         );
-        let results = parse_search_html(&html, 8);
+        let results = parse_search_html(&html, 8, BOOK);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Ada Lovelace");
     }
@@ -297,19 +305,22 @@ mod tests {
     #[test]
     fn canonicalizes_only_safe_local_kiwix_references() {
         assert_eq!(
-            normalize_reference("/content/wikipedia_en_all_maxi_2024-001/A/Antikythera_mechanism")
-                .unwrap(),
+            normalize_reference(
+                "/content/wikipedia_en_all_maxi_2024-001/A/Antikythera_mechanism",
+                BOOK
+            )
+            .unwrap(),
             format!("/content/{BOOK}/A/Antikythera_mechanism")
         );
-        assert!(normalize_reference("https://example.com/content/book/A/Test").is_err());
-        assert!(normalize_reference("/content/book/A/../secret").is_err());
-        assert!(normalize_reference("/search?pattern=test").is_err());
+        assert!(normalize_reference("https://example.com/content/book/A/Test", BOOK).is_err());
+        assert!(normalize_reference("/content/book/A/../secret", BOOK).is_err());
+        assert!(normalize_reference("/search?pattern=test", BOOK).is_err());
     }
 
     #[tokio::test]
     #[ignore = "requires the user's local Kiwix archive on 127.0.0.1:8085"]
     async fn live_archive_search_and_read() {
-        let client = KiwixClient::new();
+        let client = KiwixClient::new(BOOK);
         let results = client.search("Antikythera mechanism", 4).await.unwrap();
         let source = results
             .iter()

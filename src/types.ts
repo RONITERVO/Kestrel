@@ -89,6 +89,52 @@ export interface AppSnapshot {
   libraryRoot: string;
   settings: ResearchSettings;
   control: ControlSnapshot;
+  setup: SetupSnapshot;
+}
+
+export interface SetupComponent {
+  id: "assistant" | "wikipedia" | "media" | "studio" | string;
+  label: string;
+  status: "ready" | "partial" | "missing" | string;
+  detail: string;
+  path: string;
+  downloadBytes: number;
+  optional: boolean;
+}
+
+export interface SetupSnapshot {
+  ready: boolean;
+  installRoot: string;
+  availableBytes: number;
+  gpuName?: string;
+  gpuMemoryBytes: number;
+  components: SetupComponent[];
+}
+
+export interface SetupLocations {
+  installRoot: string;
+  bonsaiRoot: string;
+  enginePath: string;
+  wikipediaZimPath: string;
+  kiwixServerPath: string;
+  comfyRoot: string;
+  ffmpegPath: string;
+  ffprobePath: string;
+}
+
+export interface SetupInstallRequest {
+  component: string;
+  installRoot: string;
+  wikipediaEdition: "compact" | "complete";
+}
+
+export interface SetupProgress {
+  component: string;
+  stage: string;
+  detail: string;
+  downloadedBytes: number;
+  totalBytes: number;
+  bytesPerSecond: number;
 }
 
 export interface MovieSettings {
@@ -503,6 +549,14 @@ export interface OperationProgress {
 export interface ResearchSettings {
   advancedMode: boolean;
   bonsaiRoot: string;
+  installRoot: string;
+  wikipediaZimPath: string;
+  kiwixServerPath: string;
+  wikipediaBook: string;
+  wikipediaSnapshot: string;
+  comfyRoot: string;
+  ffmpegPath: string;
+  ffprobePath: string;
   contextWindow: number;
   maxOutputTokens: number;
   researchLanes: number;

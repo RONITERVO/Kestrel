@@ -30,12 +30,12 @@ const defaultSettings: MovieSettings = {
   refImageSize: "match",
 };
 
-export function MovieStudio({ advancedEnabled, onError }: { advancedEnabled: boolean; onError: (message: string) => void }) {
+export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { initialComfyRoot?: string; advancedEnabled: boolean; onError: (message: string) => void }) {
   const [movies, setMovies] = useState<MovieSummary[]>([]);
   const [project, setProject] = useState<MovieProject | null>(null);
   const [creating, setCreating] = useState(true);
   const [prompt, setPrompt] = useState("");
-  const [settings, setSettings] = useState(defaultSettings);
+  const [settings, setSettings] = useState(() => ({ ...defaultSettings, comfyRoot: initialComfyRoot || defaultSettings.comfyRoot }));
   const [advanced, setAdvanced] = useState(false);
   const [pauseAfterPlan, setPauseAfterPlan] = useState(false);
   const [busy, setBusy] = useState(false);

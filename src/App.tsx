@@ -54,6 +54,7 @@ import {
 } from "./api";
 import { ControlPlane, DeveloperConsole } from "./ControlPlane";
 import { MovieStudio } from "./MovieStudio";
+import { SetupConsole } from "./Setup";
 import type {
   AppSnapshot,
   ProgressStage,
@@ -98,12 +99,13 @@ function App() {
   const [progress, setProgress] = useState<ResearchProgress | null>(null);
   const [activity, setActivity] = useState<ResearchProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"control" | "research" | "studio" | "developer" | "system">("research");
+  const [view, setView] = useState<"setup" | "control" | "research" | "studio" | "developer" | "system">("research");
 
   const refresh = useCallback(async () => {
     try {
       const next = await bootstrap();
       setSnapshot(next);
+      if (!next.setup.ready) setView("setup");
       setError(null);
       if (!selectedId && next.reports[0]) setSelectedId(next.reports[0].id);
     } catch (cause) {
@@ -206,14 +208,16 @@ function App() {
         />}
         <main className="main-stage">
           {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
-          {view === "control" ? (
+          {view === "setup" ? (
+            <SetupConsole snapshot={snapshot} onChanged={setSnapshot} onError={(message) => setError(message)} />
+          ) : view === "control" ? (
             <ControlPlane
               control={snapshot.control}
               onChanged={(control) => setSnapshot((current) => current ? { ...current, control } : current)}
               onError={(message) => setError(message)}
             />
           ) : view === "studio" ? (
-            <MovieStudio advancedEnabled={snapshot.control.settings.advancedMode || snapshot.settings.advancedMode} onError={(message) => setError(message)} />
+            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode || snapshot.settings.advancedMode} onError={(message) => setError(message)} />
           ) : view === "developer" ? (
             <DeveloperConsole
               control={snapshot.control}
@@ -271,8 +275,8 @@ function AppHeader({
   onPrepare,
 }: {
   status: AppSnapshot["status"];
-  view: "control" | "research" | "studio" | "developer" | "system";
-  onView: (view: "control" | "research" | "studio" | "developer" | "system") => void;
+  view: "setup" | "control" | "research" | "studio" | "developer" | "system";
+  onView: (view: "setup" | "control" | "research" | "studio" | "developer" | "system") => void;
   onMenu: () => void;
   onNew: () => void;
   onPrepare: () => void;
@@ -283,9 +287,10 @@ function AppHeader({
       <div className="header-left">
         <button className="icon-button menu-button" aria-label="Toggle library" onClick={onMenu}><Menu /></button>
         <div className="brand-mark"><Feather size={19} /></div>
-        <div className="brand-copy"><strong>Kestrel</strong><span>{view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research"}</span></div>
+        <div className="brand-copy"><strong>Kestrel</strong><span>{view === "setup" ? "Setup" : view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research"}</span></div>
       </div>
       <nav className="view-switcher" aria-label="Kestrel sections">
+        <button className={view === "setup" ? "active" : ""} onClick={() => onView("setup")}><Download size={14} /> Setup</button>
         <button className={view === "control" ? "active" : ""} onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
         <button className={view === "research" ? "active" : ""} onClick={() => onView("research")}><Library size={14} /> Research</button>
         <button className={view === "studio" ? "active" : ""} onClick={() => onView("studio")}><Clapperboard size={14} /> Studio</button>

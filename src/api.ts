@@ -24,6 +24,10 @@ import type {
   RunResearchRequest,
   StartChatRequest,
   SystemSnapshot,
+  SetupInstallRequest,
+  SetupLocations,
+  SetupProgress,
+  SetupSnapshot,
   MovieClipRenderRequest,
   MovieClipSuggestion,
   MovieEdit,
@@ -68,6 +72,44 @@ export async function cancelResearch(jobId: string): Promise<void> {
 export async function prepareServices(): Promise<AppSnapshot> {
   if (!isTauri()) return demoSnapshot;
   return invoke<AppSnapshot>("prepare_services");
+}
+
+export async function getSetupSnapshot(): Promise<SetupSnapshot> {
+  if (!isTauri()) return demoSnapshot.setup;
+  return invoke<SetupSnapshot>("get_setup_snapshot");
+}
+
+export async function openComfyUi(): Promise<void> {
+  if (isTauri()) await invoke("open_comfy_ui");
+}
+
+export async function saveSetupLocations(locations: SetupLocations): Promise<AppSnapshot> {
+  if (!isTauri()) return demoSnapshot;
+  return invoke<AppSnapshot>("save_setup_locations", { locations });
+}
+
+export async function pickSetupFolder(): Promise<string> {
+  if (!isTauri()) return "";
+  return invoke<string>("pick_setup_folder");
+}
+
+export async function pickSetupFile(kind: string): Promise<string> {
+  if (!isTauri()) return "";
+  return invoke<string>("pick_setup_file", { kind });
+}
+
+export async function installSetupComponent(request: SetupInstallRequest): Promise<AppSnapshot> {
+  if (!isTauri()) return demoSnapshot;
+  return invoke<AppSnapshot>("install_setup_component", { request });
+}
+
+export async function cancelSetupInstall(): Promise<void> {
+  if (isTauri()) await invoke("cancel_setup_install");
+}
+
+export async function onSetupProgress(callback: (progress: SetupProgress) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<SetupProgress>("setup-progress", (event) => callback(event.payload));
+  return () => undefined;
 }
 
 export async function openStandalone(id: string): Promise<void> {

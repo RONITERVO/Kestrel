@@ -1,4 +1,4 @@
-use crate::kiwix::{KiwixClient, SNAPSHOT};
+use crate::kiwix::KiwixClient;
 use crate::models::{
     Finding, ResearchDraft, ResearchProgress, ResearchReport, ResearchSection, ResearchSettings,
     RunResearchRequest, Source, Term, TimelineItem,
@@ -24,6 +24,7 @@ struct CompletionOptions {
 use uuid::Uuid;
 
 const MODEL_LABEL: &str = "Ternary Bonsai 27B Q2_0";
+#[cfg(test)]
 const ARCHIVE_LABEL: &str = "English Wikipedia · 12 January 2024";
 const HARNESS_VERSION: &str = "bonsai-wikipedia-v2";
 
@@ -70,7 +71,6 @@ pub enum ResearchError {
 #[derive(Clone)]
 pub struct ResearchHarness {
     store: ResearchStore,
-    kiwix: KiwixClient,
     http: Client,
 }
 
@@ -78,7 +78,6 @@ impl ResearchHarness {
     pub fn new(store: ResearchStore) -> Self {
         Self {
             store,
-            kiwix: KiwixClient::new(),
             http: Client::builder()
                 .no_proxy()
                 .timeout(std::time::Duration::from_secs(3_600))
@@ -142,10 +141,10 @@ impl ResearchHarness {
         )?;
         self.ensure_not_cancelled(&cancel)?;
 
-        let status = crate::services::status().await;
-        if status.bonsai != "ready" || status.wikipedia != "ready" {
+        let status = crate::services::status(&settings).await;
+        if status.wikipedia != "ready" {
             return Err(ResearchError::Model(
-                "use “Prepare services” so Bonsai and offline Wikipedia are both ready".into(),
+                "offline Wikipedia is not ready; use Setup to install or locate it, then choose Prepare services".into(),
             ));
         }
 
@@ -223,7 +222,7 @@ impl ResearchHarness {
                 2,
             )?;
             let planning_messages = vec![
-                json!({"role":"system","content":format!("You are the planning pass for Kestrel's single-context offline researcher. Design complementary Wikipedia research lanes for breadth without duplicating work. Each lane needs a short name, a focused Wikipedia search query, and a one-sentence purpose. Cover mechanisms, chronology, competing interpretations, limitations, and useful context when relevant. Return strict JSON only. The archive ends {SNAPSHOT}.")}),
+                json!({"role":"system","content":format!("You are the planning pass for Kestrel's single-context offline researcher. Design complementary Wikipedia research lanes for breadth without duplicating work. Each lane needs a short name, a focused Wikipedia search query, and a one-sentence purpose. Cover mechanisms, chronology, competing interpretations, limitations, and useful context when relevant. Return strict JSON only. The archive snapshot is {}.", settings.wikipedia_snapshot)}),
                 json!({"role":"user","content":format!("Question: {query}\nCreate exactly {} distinct research lanes.", settings.research_lanes)}),
             ];
             let response = tokio::select! {
@@ -250,7 +249,7 @@ impl ResearchHarness {
                 ),
                 2,
             )?;
-            self.presearch_lanes(&plan.lanes, settings.results_per_lane, &cancel)
+            self.presearch_lanes(&plan.lanes, settings.results_per_lane, &settings, &cancel)
                 .await?
         } else {
             "No preplanned lanes; use the tools adaptively.".into()
@@ -328,7 +327,7 @@ impl ResearchHarness {
                             .and_then(Value::as_u64)
                             .unwrap_or(8)
                             .clamp(1, 12) as usize;
-                        let result = self.search_all(search_query, limit).await.unwrap_or_else(|error| {
+                        let result = self.search_all(search_query, limit, &settings).await.unwrap_or_else(|error| {
                             json!({"error": error.to_string(), "recovery": "Try a shorter or differently phrased query."})
                         });
                         emit(
@@ -369,7 +368,13 @@ impl ResearchHarness {
                             requested_chars.min(40_000)
                         } as usize;
                         let (text, title) = self
-                            .read_source_for_tool(reference, section, max_chars, &mut evidence)
+                            .read_source_for_tool(
+                                reference,
+                                section,
+                                max_chars,
+                                &settings,
+                                &mut evidence,
+                            )
                             .await;
                         emit(
                             app,
@@ -508,6 +513,7 @@ impl ResearchHarness {
         &self,
         lanes: &[ResearchLane],
         results_per_lane: u32,
+        settings: &ResearchSettings,
         cancel: &CancellationToken,
     ) -> Result<String, ResearchError> {
         let mut tasks = tokio::task::JoinSet::new();
@@ -516,9 +522,10 @@ impl ResearchHarness {
             let name = lane.name.clone();
             let purpose = lane.purpose.clone();
             let query = lane.query.clone();
+            let settings = settings.clone();
             tasks.spawn(async move {
                 let results = harness
-                    .search_all(&query, results_per_lane as usize)
+                    .search_all(&query, results_per_lane as usize, &settings)
                     .await?;
                 Ok::<_, ResearchError>((name, purpose, query, results))
             });
@@ -540,15 +547,20 @@ impl ResearchHarness {
         Ok(serde_json::to_string(&memory).unwrap_or_default())
     }
 
-    async fn search_all(&self, query: &str, limit: usize) -> Result<Value, ResearchError> {
+    async fn search_all(
+        &self,
+        query: &str,
+        limit: usize,
+        settings: &ResearchSettings,
+    ) -> Result<Value, ResearchError> {
         let research = self.store.search(query, 4)?.into_iter().map(|item| json!({
             "kind":"research", "sourceRef":format!("research:{}", item.id), "title":item.title, "snippet":item.dek, "edition":item.edition
         })).collect::<Vec<_>>();
-        let wikipedia = self.kiwix.search(query, limit).await?.into_iter().map(|item| json!({
-            "kind":"wikipedia", "sourceRef":item.reference, "title":item.title, "snippet":item.snippet, "snapshot":SNAPSHOT
+        let wikipedia = KiwixClient::new(settings.wikipedia_book.clone()).search(query, limit).await?.into_iter().map(|item| json!({
+            "kind":"wikipedia", "sourceRef":item.reference, "title":item.title, "snippet":item.snippet, "snapshot":settings.wikipedia_snapshot
         })).collect::<Vec<_>>();
         Ok(
-            json!({"query":query,"research":research,"wikipedia":wikipedia,"archiveCutoff":SNAPSHOT}),
+            json!({"query":query,"research":research,"wikipedia":wikipedia,"archiveCutoff":settings.wikipedia_snapshot}),
         )
     }
 
@@ -557,6 +569,7 @@ impl ResearchHarness {
         reference: &str,
         section: Option<&str>,
         max_chars: usize,
+        settings: &ResearchSettings,
         evidence: &mut Vec<Source>,
     ) -> Result<(String, String), ResearchError> {
         if let Some(id) = reference.strip_prefix("research:") {
@@ -583,7 +596,9 @@ impl ResearchHarness {
                 report.title,
             ));
         }
-        let article = self.kiwix.read(reference, section, max_chars).await?;
+        let article = KiwixClient::new(settings.wikipedia_book.clone())
+            .read(reference, section, max_chars)
+            .await?;
         let existing = evidence
             .iter()
             .find(|source| {
@@ -599,12 +614,12 @@ impl ResearchHarness {
                 kind: "wikipedia".into(),
                 title: article.title.clone(),
                 section: article.section.clone(),
-                snapshot: Some(SNAPSHOT.into()),
+                snapshot: Some(settings.wikipedia_snapshot.clone()),
                 reference: article.reference.clone(),
                 excerpt: truncate(&article.text, 900),
             });
         }
-        Ok((format!("Evidence ID: {evidence_id}\nTitle: {}\nSnapshot: {SNAPSHOT}\nSection: {}\nSource ref: {}\n\n{}", article.title, article.section.as_deref().unwrap_or("Full article"), article.reference, article.text), article.title))
+        Ok((format!("Evidence ID: {evidence_id}\nTitle: {}\nSnapshot: {}\nSection: {}\nSource ref: {}\n\n{}", article.title, settings.wikipedia_snapshot, article.section.as_deref().unwrap_or("Full article"), article.reference, article.text), article.title))
     }
 
     async fn read_source_for_tool(
@@ -612,9 +627,10 @@ impl ResearchHarness {
         reference: &str,
         section: Option<&str>,
         max_chars: usize,
+        settings: &ResearchSettings,
         evidence: &mut Vec<Source>,
     ) -> (String, String) {
-        self.read_source(reference, section, max_chars, evidence)
+        self.read_source(reference, section, max_chars, settings, evidence)
             .await
             .unwrap_or_else(|error| {
                 (
@@ -1120,7 +1136,7 @@ fn normalize_report(draft: ResearchDraft, context: ReportContext<'_>) -> Researc
         parent_id,
         improvement,
         model: MODEL_LABEL.into(),
-        archive_snapshot: ARCHIVE_LABEL.into(),
+        archive_snapshot: format!("English Wikipedia · {}", settings.wikipedia_snapshot),
         findings,
         sections,
         timeline,
@@ -1354,7 +1370,7 @@ mod tests {
             created_at: now.clone(), updated_at: now, edition: 1, parent_id: None, improvement: "Established a short first note.".into(), model: "Bonsai".into(), archive_snapshot: ARCHIVE_LABEL.into(),
             findings: vec![Finding { title: "Saros dial".into(), explanation: "A repeating eclipse cycle was represented mechanically.".into(), citations: vec!["S1".into()] }],
             sections: vec![], timeline: vec![], terms: vec![], open_questions: vec!["How were eclipse characteristics encoded?".into()],
-            sources: vec![Source { id: "S1".into(), kind: "wikipedia".into(), title: "Antikythera mechanism".into(), section: None, snapshot: Some(SNAPSHOT.into()), reference: format!("/content/{}/A/Antikythera_mechanism", crate::kiwix::BOOK), excerpt: "Earlier evidence.".into() }],
+            sources: vec![Source { id: "S1".into(), kind: "wikipedia".into(), title: "Antikythera mechanism".into(), section: None, snapshot: Some("2024-01-12".into()), reference: format!("/content/{}/A/Antikythera_mechanism", crate::kiwix::BOOK), excerpt: "Earlier evidence.".into() }],
             html_path: String::new(), word_count: 50, reading_minutes: 1,
             research_profile: "standard".into(), context_window: 0, output_budget: 0, research_lanes: 1,
         };
