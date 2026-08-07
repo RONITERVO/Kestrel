@@ -499,7 +499,7 @@ fn workspace_readme(settings: &MovieSettings) -> String {
         settings.max_clips, settings.width, settings.height
     );
     readme.push_str(
-        "\nExact-frame handoff invariant: continuityOut and the next continuityIn must repeat at least two concrete visible anchors (subject/object, pose/action, geography, or time state). Keep numbered scenes in truthful editorial order across present-day and flashback boundaries; sharing only a character name is not continuity. Only the actual last scene may declare the end, and it cannot promise a next scene. Do not ask a generic identity picture to guarantee an invented child/younger transformation; without a matching age reference, keep the character at the supplied age or make that memory POV, off-screen, or subject-free.\n",
+        "\nExact-frame handoff invariant: continuityOut and the next continuityIn must repeat at least two concrete visible anchors (subject/object, pose/action, geography, or time state). Keep numbered scenes in truthful editorial order across present-day and flashback boundaries; sharing only a character name is not continuity. Only the actual last scene may declare the end, and it cannot promise a next scene. Do not ask a generic identity picture to guarantee an invented child/younger transformation; without a matching age reference, keep the character at the supplied age or make that memory POV, off-screen, or subject-free. For quoted speech, direct each intended line exactly once and forbid repeated, additional, or ad-libbed words.\n",
     );
     readme
 }
