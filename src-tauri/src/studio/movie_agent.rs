@@ -60,6 +60,8 @@ struct WorkspaceState {
     revision: u64,
     last_checked_revision: Option<u64>,
     clean_check_passes: u32,
+    #[serde(default)]
+    mutations_since_check: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,7 +146,7 @@ impl MovieAgentWorkspace {
             "type": "function",
             "function": {
                 "name": "movie_workspace",
-                "description": "Work on the durable, project-local movie codebase. It cannot access the OS, shell, network, renderer, or files outside this movie workspace. Read the contract, edit only movie.json and scenes/NNN.json, run checks, then submit.",
+                "description": "Work on the durable, project-local movie codebase. It cannot access the OS, shell, network, renderer, or files outside this movie workspace. Read the contract, edit only movie.json and scenes/NNN.json, run check immediately after a complete draft, repair only reported issues, then submit.",
                 "parameters": {
                     "type": "object",
                     "additionalProperties": false,
@@ -219,6 +221,7 @@ impl MovieAgentWorkspace {
                 for file in &request.files {
                     validate_write(&file.path, &file.content)?;
                 }
+                self.ensure_mutation_allowed()?;
                 self.changed()?;
                 let mut paths = Vec::with_capacity(request.files.len());
                 for file in request.files {
@@ -235,6 +238,7 @@ impl MovieAgentWorkspace {
                     ));
                 }
                 let target = self.root.join(&path);
+                self.ensure_mutation_allowed()?;
                 self.changed()?;
                 if target.is_file() {
                     fs::remove_file(target)?;
@@ -243,6 +247,7 @@ impl MovieAgentWorkspace {
             }
             "check" => {
                 let (plan, issues) = self.compile_and_check()?;
+                self.state.mutations_since_check = 0;
                 if issues.is_empty() {
                     self.state.last_checked_revision = Some(self.state.revision);
                     self.state.clean_check_passes = self.state.clean_check_passes.saturating_add(1);
@@ -352,8 +357,20 @@ impl MovieAgentWorkspace {
 
     fn write_file(&mut self, path: &str, content: &str) -> Result<(), StudioError> {
         validate_write(path, content)?;
+        self.ensure_mutation_allowed()?;
         self.changed()?;
         self.write_validated_file(path, content)
+    }
+
+    fn ensure_mutation_allowed(&self) -> Result<(), StudioError> {
+        let limit = self.max_clips.saturating_add(1) as u64;
+        if self.state.mutations_since_check >= limit {
+            return Err(StudioError::Invalid(format!(
+                "CHECK REQUIRED: {} unchecked workspace mutations reached the full-draft limit. Run check now; then repair only reported files before checking again.",
+                self.state.mutations_since_check
+            )));
+        }
+        Ok(())
     }
 
     fn write_validated_file(&self, path: &str, content: &str) -> Result<(), StudioError> {
@@ -364,6 +381,7 @@ impl MovieAgentWorkspace {
 
     fn changed(&mut self) -> Result<(), StudioError> {
         self.state.revision = self.state.revision.saturating_add(1);
+        self.state.mutations_since_check = self.state.mutations_since_check.saturating_add(1);
         self.state.last_checked_revision = None;
         self.state.clean_check_passes = 0;
         self.persist_state()
@@ -505,7 +523,7 @@ impl MovieAgentWorkspace {
 
 fn workspace_readme(settings: &MovieSettings) -> String {
     let mut readme = format!(
-        "# Kestrel movie workspace\n\nThis is a durable, sandboxed movie codebase. Read BRIEF.md and REFERENCES.md. Build one canonical movie.json plus ordered scenes/NNN.json files. You may batch-write the first draft, then inspect and patch individual files. Do not ask the producer questions; infer tasteful choices. Run `check`, perform the requested full code-review pass, run `check` again, and `submit`. Never stop at prose.\n\n## movie.json\n\nA JSON object with exactly: title, logline, audience, creativeDirection (strings), continuityBible, and sourceCredits (arrays of descriptive strings or structured objects; objects are normalized to readable plan facts). Resolve unspecified story-critical subjects, creatures, objects, locations, wardrobe, and visual motifs into concrete repeatable production facts in the continuityBible; do not leave a recurring subject generic. There are no research tools: never invent defining anatomy, cultural details, or other real-world facts. When uncertain, choose a familiar concrete alternative that still serves the brief or avoid unsupported specificity. Leave sourceCredits empty unless BRIEF.md or REFERENCES.md explicitly supplies an attribution; never invent publications, organizations, research, licenses, or provenance.\n\n## scenes/NNN.json\n\nUse exactly three digits in every scene filename: scenes/001.json, scenes/002.json, and so on. Each ordered JSON object has: title, purpose, durationSeconds (5-15), prompt, continuityIn, continuityOut, transition, usePreviousFrame, sourceRefs (textual source-credit IDs only), referenceIds (short exact IDs from REFERENCES.md such as picture-1 or audio-1). Kestrel resolves those stable workspace IDs to immutable asset hashes; never copy hashes or H3 tags into scene files. The app assigns clip IDs. Maximum scenes: {}. Native output is 24fps at {}x{}.\n\nEvery prompt must be 120-450 words and be a final H3 renderer instruction, not a synopsis: medium/genre/environment, lighting/palette/lens/texture, scene overview, complete timecoded picture/action/camera/sound through the exact native endpoint, dialogue when relevant, transitions, and relevant exclusions. Whenever anyone speaks or narrates, write the exact short words in quotation marks and make them fit the scene duration; otherwise explicitly direct no dialogue. Preserve causality, identity, geography, screen direction, visual language, and sound. Long-form narrative work needs a mixed edit grammar: motivated independent cuts, useful subject-free scenes/inserts, flashbacks when story calls for them, and at least one exact previous-frame continuation across a genuinely continuous boundary. Do not pad runtime with scenes that merely repeat the same action, emotion, framing, and sound under a new title.\n\nReference conditioning and previous-frame continuation are mutually exclusive per scene. A referenced ref2va scene may attach referenceIds but cannot receive the prior last frame. A continuation fl2va scene may usePreviousFrame=true only with empty referenceIds. Establish a referenced subject first, end on the handoff pose, then continue reference-free; place required reference audio in a reference-locked scene. Age changes do not waive identity: an independently cut younger or older version of a referenced character still needs that identity reference, while a truly adjacent age-consistent shot may carry it through usePreviousFrame. Never solve conflicts by silently dropping requested media. References are H3 conditioning, not editorial tracks; never trim, pad, loop, replace, or add silence. When a supplied audio reference represents speech or a voice, include the literal role sentence `Use the supplied voice reference as the speaker's voice identity and vocal timbre.` and write the exact short dialogue in quotation marks so H3 is not forced to invent words; keep the dialogue feasible within the native scene duration.\n",
+        "# Kestrel movie workspace\n\nThis is a durable, sandboxed movie codebase. Read BRIEF.md and REFERENCES.md. Build one canonical movie.json plus ordered scenes/NNN.json files. You may batch-write the first draft, then run `check` immediately; the workspace requires a check after one full draft's worth of unchecked mutations. Patch only reported weaknesses, perform the requested full code-review pass, run `check` again, and `submit`. Do not ask the producer questions; infer tasteful choices. Never stop at prose.\n\n## movie.json\n\nA JSON object with exactly: title, logline, audience, creativeDirection (strings), continuityBible, and sourceCredits (arrays of descriptive strings or structured objects; objects are normalized to readable plan facts). Resolve unspecified story-critical subjects, creatures, objects, locations, wardrobe, and visual motifs into concrete repeatable production facts in the continuityBible; do not leave a recurring subject generic. There are no research tools: never invent defining anatomy, cultural details, or other real-world facts. When uncertain, choose a familiar concrete alternative that still serves the brief or avoid unsupported specificity. Leave sourceCredits empty unless BRIEF.md or REFERENCES.md explicitly supplies an attribution; never invent publications, organizations, research, licenses, or provenance.\n\n## scenes/NNN.json\n\nUse exactly three digits in every scene filename: scenes/001.json, scenes/002.json, and so on. Each ordered JSON object has: title, purpose, durationSeconds (5-15), prompt, continuityIn, continuityOut, transition, usePreviousFrame, sourceRefs (textual source-credit IDs only), referenceIds (short exact IDs from REFERENCES.md such as picture-1 or audio-1). Kestrel resolves those stable workspace IDs to immutable asset hashes; never copy hashes or H3 tags into scene files. The app assigns clip IDs. Maximum scenes: {}. Native output is 24fps at {}x{}.\n\nEvery prompt must be 120-450 words and be a final H3 renderer instruction, not a synopsis: medium/genre/environment, lighting/palette/lens/texture, scene overview, complete timecoded picture/action/camera/sound through the exact native endpoint, dialogue when relevant, transitions, and relevant exclusions. Whenever anyone speaks or narrates, write the exact short words in quotation marks and make them fit the scene duration; otherwise explicitly direct no dialogue. Preserve causality, identity, geography, screen direction, visual language, and sound. Long-form narrative work needs a mixed edit grammar: motivated independent cuts, useful subject-free scenes/inserts, flashbacks when story calls for them, and at least one exact previous-frame continuation across a genuinely continuous boundary. Do not pad runtime with scenes that merely repeat the same action, emotion, framing, and sound under a new title.\n\nReference conditioning and previous-frame continuation are mutually exclusive per scene. A referenced ref2va scene may attach referenceIds but cannot receive the prior last frame. A continuation fl2va scene may usePreviousFrame=true only with empty referenceIds. Establish a referenced subject first, end on the handoff pose, then continue reference-free; place required reference audio in a reference-locked scene. Age changes do not waive identity: an independently cut younger or older version of a referenced character still needs that identity reference, while a truly adjacent age-consistent shot may carry it through usePreviousFrame. Never solve conflicts by silently dropping requested media. References are H3 conditioning, not editorial tracks; never trim, pad, loop, replace, or add silence. When a supplied audio reference represents speech or a voice, include the literal role sentence `Use the supplied voice reference as the speaker's voice identity and vocal timbre.` and write the exact short dialogue in quotation marks so H3 is not forced to invent words; keep the dialogue feasible within the native scene duration.\n",
         settings.max_clips, settings.width, settings.height
     );
     readme.push_str(
@@ -1027,6 +1045,71 @@ mod tests {
         assert!(issues
             .join(" ")
             .contains("expected scenes/002.json at position 2, found scenes/003.json"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_requires_check_after_a_full_draft_mutation_budget() {
+        let root = temp_workspace();
+        let settings = MovieSettings {
+            max_clips: 1,
+            ..MovieSettings::default()
+        };
+        let mut workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a test film",
+            "",
+            &settings,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let metadata = json!({
+            "title":"Test",
+            "logline":"A subject enters a forest and finds a signal.",
+            "audience":"Film buyers",
+            "creativeDirection":"Live-action photography with tactile natural detail.",
+            "continuityBible":["The subject keeps the same wardrobe throughout."],
+            "sourceCredits":[]
+        })
+        .to_string();
+        let scene = json!({
+            "title":"Forest shot",
+            "purpose":"Show the forest",
+            "durationSeconds":10,
+            "prompt":"A deliberately incomplete test prompt.",
+            "continuityIn":"Independent cut",
+            "continuityOut":"The subject stops",
+            "transition":"Hard cut",
+            "usePreviousFrame":false,
+            "sourceRefs":[],
+            "referenceIds":[]
+        })
+        .to_string();
+        workspace.write_file("movie.json", &metadata).unwrap();
+        workspace.write_file("scenes/001.json", &scene).unwrap();
+        let blocked = workspace.execute(WorkspaceToolRequest {
+            action: "write".into(),
+            path: "scenes/001.json".into(),
+            content: scene.clone(),
+            files: Vec::new(),
+        });
+        assert!(blocked.message.contains("CHECK REQUIRED"));
+        assert_eq!(workspace.state.revision, 2);
+
+        let checked = workspace
+            .try_execute(WorkspaceToolRequest {
+                action: "check".into(),
+                path: String::new(),
+                content: String::new(),
+                files: Vec::new(),
+            })
+            .unwrap();
+        assert!(checked.message.contains("CHECK FAIL"));
+        assert_eq!(workspace.state.mutations_since_check, 0);
+        workspace.write_file("scenes/001.json", &scene).unwrap();
+        assert_eq!(workspace.state.revision, 3);
         fs::remove_dir_all(root).unwrap();
     }
 

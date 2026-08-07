@@ -286,9 +286,7 @@ fn resume_movie(
                 .into(),
         );
     }
-    if project.plan.is_none() {
-        return Err("This movie stopped before its plan was committed. Start a new production from its saved prompt.".into());
-    }
+    let needs_plan = project.plan.is_none();
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -310,7 +308,7 @@ fn resume_movie(
             "movie job registry is unavailable".to_string()
         })?
         .insert(id.clone(), cancel.clone());
-    spawn_movie(app, id, research, cancel, false);
+    spawn_movie(app, id, research, cancel, needs_plan);
     Ok(project)
 }
 
