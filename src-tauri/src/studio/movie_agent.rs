@@ -10,7 +10,7 @@ use std::{
 };
 
 const MAX_WORKSPACE_FILE_BYTES: usize = 96 * 1024;
-const MAX_TOOL_FILES: usize = 96;
+const MAX_TOOL_FILES: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,10 +19,37 @@ struct MovieMetadata {
     logline: String,
     audience: String,
     creative_direction: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_workspace_text_list")]
     continuity_bible: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_workspace_text_list")]
     source_credits: Vec<String>,
+}
+
+fn deserialize_workspace_text_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|value| match value {
+            Value::String(text) => Ok(text),
+            Value::Object(fields) => Ok(fields
+                .into_iter()
+                .map(|(key, value)| {
+                    let value = match value {
+                        Value::String(text) => text,
+                        other => other.to_string(),
+                    };
+                    format!("{key}: {value}")
+                })
+                .collect::<Vec<_>>()
+                .join("; ")),
+            other => Err(serde::de::Error::custom(format!(
+                "expected a descriptive string or object, got {other}"
+            ))),
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -65,10 +92,14 @@ pub(super) struct MovieAgentWorkspace {
 }
 
 impl MovieAgentWorkspace {
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub(super) fn open(
         root: PathBuf,
         prompt: &str,
-        manifest: &str,
+        _manifest: &str,
         settings: &MovieSettings,
         references: &[MovieReference],
         seed: Option<&MoviePlan>,
@@ -84,11 +115,7 @@ impl MovieAgentWorkspace {
         write_text_atomic(&root.join("BRIEF.md"), &brief)?;
         write_text_atomic(
             &root.join("REFERENCES.md"),
-            if manifest.is_empty() {
-                "# Producer references\n\nNo producer media is attached.\n"
-            } else {
-                manifest
-            },
+            &workspace_reference_manifest(references),
         )?;
 
         let state_path = root.join("state.json");
@@ -123,7 +150,7 @@ impl MovieAgentWorkspace {
                         "action": {"type":"string","enum":["list","read","read_many","write","write_batch","delete","check","submit"]},
                         "path": {"type":"string","description":"Workspace-relative path for read, write, or delete."},
                         "content": {"type":"string","description":"Complete JSON file content for write."},
-                        "files": {"type":"array","maxItems":96,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]},"description":"Paths to read for read_many (content ignored), or complete files for write_batch."}
+                        "files": {"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]},"description":"Up to eight paths for read_many (content ignored), or up to eight complete files for write_batch. Use multiple small batches for a long movie."}
                     },
                     "required": ["action"]
                 }
@@ -151,7 +178,7 @@ impl MovieAgentWorkspace {
             "read_many" => {
                 if request.files.is_empty() || request.files.len() > MAX_TOOL_FILES {
                     return Err(StudioError::Invalid(
-                        "read_many needs 1 to 96 workspace paths".into(),
+                        "read_many needs 1 to 8 workspace paths".into(),
                     ));
                 }
                 let mut output = String::new();
@@ -169,10 +196,11 @@ impl MovieAgentWorkspace {
                 Ok(self.result(format!("WROTE {}", request.path), None))
             }
             "write_batch" => {
-                if request.files.is_empty() || request.files.len() > self.max_clips + 1 {
+                let batch_limit = (self.max_clips + 1).min(MAX_TOOL_FILES);
+                if request.files.is_empty() || request.files.len() > batch_limit {
                     return Err(StudioError::Invalid(format!(
                         "write_batch needs 1 to {} movie files",
-                        self.max_clips + 1
+                        batch_limit
                     )));
                 }
                 // Validate the entire batch before changing durable state.
@@ -318,11 +346,7 @@ impl MovieAgentWorkspace {
 
     fn write_validated_file(&self, path: &str, content: &str) -> Result<(), StudioError> {
         let normalized = writable_path(path)?;
-        let canonical = if normalized == "movie.json" {
-            serde_json::to_string_pretty(&serde_json::from_str::<MovieMetadata>(content)?)?
-        } else {
-            serde_json::to_string_pretty(&serde_json::from_str::<PlannedClip>(content)?)?
-        };
+        let canonical = canonical_workspace_content(&normalized, content)?;
         write_text_atomic(&self.root.join(normalized), &canonical)
     }
 
@@ -345,8 +369,24 @@ impl MovieAgentWorkspace {
             .filter(|path| path.is_file())
             .collect::<Vec<_>>();
         scene_paths.sort();
-        let mut clips = Vec::with_capacity(scene_paths.len());
         let mut parse_issues = Vec::new();
+        if let Some((index, path)) = scene_paths.iter().enumerate().find(|(index, path)| {
+            let expected = format!("{:03}.json", index + 1);
+            path.file_name().and_then(|name| name.to_str()) != Some(expected.as_str())
+        }) {
+            let expected = format!("scenes/{:03}.json", index + 1);
+            let found = format!(
+                "scenes/{}",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("?")
+            );
+            parse_issues.push(format!(
+                "Scene filenames must be one contiguous sequence so Clip diagnostics map to exact files: expected {expected} at position {}, found {found}. Write the missing/renumbered file and delete stale sparse files before checking again.",
+                index + 1
+            ));
+        }
+        let mut clips = Vec::with_capacity(scene_paths.len());
         for path in scene_paths {
             let relative = format!(
                 "scenes/{}",
@@ -365,6 +405,7 @@ impl MovieAgentWorkspace {
                 }) {
                 Ok(mut clip) => {
                     clip.id = format!("clip-{:03}", clips.len() + 1);
+                    self.resolve_reference_ids(&mut clip);
                     clips.push(clip);
                 }
                 Err(error) => parse_issues.push(format!("{relative} is invalid: {error}")),
@@ -403,6 +444,21 @@ impl MovieAgentWorkspace {
         Ok((plan, issues))
     }
 
+    fn resolve_reference_ids(&self, clip: &mut PlannedClip) {
+        for id in &mut clip.reference_ids {
+            if let Some(reference) =
+                self.references
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, reference)| {
+                        (workspace_reference_id(reference, index) == *id).then_some(reference)
+                    })
+            {
+                *id = reference.asset_id.clone();
+            }
+        }
+    }
+
     fn replace_with_plan(&mut self, plan: &MoviePlan) -> Result<(), StudioError> {
         let metadata = MovieMetadata {
             title: plan.title.clone(),
@@ -438,10 +494,64 @@ impl MovieAgentWorkspace {
 }
 
 fn workspace_readme(settings: &MovieSettings) -> String {
-    format!(
-        "# Kestrel movie workspace\n\nThis is a durable, sandboxed movie codebase. Read BRIEF.md and REFERENCES.md. Build one canonical movie.json plus ordered scenes/NNN.json files. You may batch-write the first draft, then inspect and patch individual files. Do not ask the producer questions; infer tasteful choices. Run `check`, perform the requested full code-review pass, run `check` again, and `submit`. Never stop at prose.\n\n## movie.json\n\nA JSON object with exactly: title, logline, audience, creativeDirection, continuityBible (array), sourceCredits (array).\n\n## scenes/NNN.json\n\nEach ordered JSON object has: title, purpose, durationSeconds (5-15), prompt, continuityIn, continuityOut, transition, usePreviousFrame, sourceRefs (textual source-credit IDs only), referenceIds (exact IDs from REFERENCES.md only). The app assigns clip IDs. Maximum scenes: {}. Native output is 24fps at {}x{}.\n\nEvery prompt must be 120-450 words and be a final H3 renderer instruction, not a synopsis: medium/genre/environment, lighting/palette/lens/texture, scene overview, complete timecoded picture/action/camera/sound through the exact native endpoint, dialogue when relevant, transitions, and relevant exclusions. Preserve causality, identity, geography, screen direction, visual language, and sound. Include motivated cuts, useful subject-free scenes/inserts, flashbacks when story calls for them, and exact previous-frame continuations where useful.\n\nReference conditioning and previous-frame continuation are mutually exclusive per scene. A referenced ref2va scene may attach referenceIds but cannot receive the prior last frame. A continuation fl2va scene may usePreviousFrame=true only with empty referenceIds. Establish a referenced subject first, end on the handoff pose, then continue reference-free; place required reference audio in a reference-locked scene. Never solve conflicts by silently dropping requested media. References are H3 conditioning, not editorial tracks; never trim, pad, loop, replace, or add silence.\n",
+    let mut readme = format!(
+        "# Kestrel movie workspace\n\nThis is a durable, sandboxed movie codebase. Read BRIEF.md and REFERENCES.md. Build one canonical movie.json plus ordered scenes/NNN.json files. You may batch-write the first draft, then inspect and patch individual files. Do not ask the producer questions; infer tasteful choices. Run `check`, perform the requested full code-review pass, run `check` again, and `submit`. Never stop at prose.\n\n## movie.json\n\nA JSON object with exactly: title, logline, audience, creativeDirection (strings), continuityBible, and sourceCredits (arrays of descriptive strings or structured objects; objects are normalized to readable plan facts). Resolve unspecified story-critical subjects, creatures, objects, locations, wardrobe, and visual motifs into concrete repeatable production facts in the continuityBible; do not leave a recurring subject generic. There are no research tools: never invent defining anatomy, cultural details, or other real-world facts. When uncertain, choose a familiar concrete alternative that still serves the brief or avoid unsupported specificity. Leave sourceCredits empty unless BRIEF.md or REFERENCES.md explicitly supplies an attribution; never invent publications, organizations, research, licenses, or provenance.\n\n## scenes/NNN.json\n\nUse exactly three digits in every scene filename: scenes/001.json, scenes/002.json, and so on. Each ordered JSON object has: title, purpose, durationSeconds (5-15), prompt, continuityIn, continuityOut, transition, usePreviousFrame, sourceRefs (textual source-credit IDs only), referenceIds (short exact IDs from REFERENCES.md such as picture-1 or audio-1). Kestrel resolves those stable workspace IDs to immutable asset hashes; never copy hashes or H3 tags into scene files. The app assigns clip IDs. Maximum scenes: {}. Native output is 24fps at {}x{}.\n\nEvery prompt must be 120-450 words and be a final H3 renderer instruction, not a synopsis: medium/genre/environment, lighting/palette/lens/texture, scene overview, complete timecoded picture/action/camera/sound through the exact native endpoint, dialogue when relevant, transitions, and relevant exclusions. Whenever anyone speaks or narrates, write the exact short words in quotation marks and make them fit the scene duration; otherwise explicitly direct no dialogue. Preserve causality, identity, geography, screen direction, visual language, and sound. Long-form narrative work needs a mixed edit grammar: motivated independent cuts, useful subject-free scenes/inserts, flashbacks when story calls for them, and at least one exact previous-frame continuation across a genuinely continuous boundary. Do not pad runtime with scenes that merely repeat the same action, emotion, framing, and sound under a new title.\n\nReference conditioning and previous-frame continuation are mutually exclusive per scene. A referenced ref2va scene may attach referenceIds but cannot receive the prior last frame. A continuation fl2va scene may usePreviousFrame=true only with empty referenceIds. Establish a referenced subject first, end on the handoff pose, then continue reference-free; place required reference audio in a reference-locked scene. Age changes do not waive identity: an independently cut younger or older version of a referenced character still needs that identity reference, while a truly adjacent age-consistent shot may carry it through usePreviousFrame. Never solve conflicts by silently dropping requested media. References are H3 conditioning, not editorial tracks; never trim, pad, loop, replace, or add silence. When a supplied audio reference represents speech or a voice, include the literal role sentence `Use the supplied voice reference as the speaker's voice identity and vocal timbre.` and write the exact short dialogue in quotation marks so H3 is not forced to invent words; keep the dialogue feasible within the native scene duration.\n",
         settings.max_clips, settings.width, settings.height
-    )
+    );
+    readme.push_str(
+        "\nExact-frame handoff invariant: continuityOut and the next continuityIn must repeat at least two concrete visible anchors (subject/object, pose/action, geography, or time state). Keep numbered scenes in truthful editorial order across present-day and flashback boundaries; sharing only a character name is not continuity. Only the actual last scene may declare the end, and it cannot promise a next scene. Do not ask a generic identity picture to guarantee an invented child/younger transformation; without a matching age reference, keep the character at the supplied age or make that memory POV, off-screen, or subject-free.\n",
+    );
+    readme
+}
+
+fn workspace_reference_manifest(references: &[MovieReference]) -> String {
+    if references.is_empty() {
+        return "# Producer references\n\nNo producer media is attached.\n".into();
+    }
+    let mut output = String::from(
+        "# Producer references\n\nUse only the short Reference ID in scene referenceIds. Kestrel resolves it to the immutable asset internally. Descriptions guide placement and are never renderer prose.\n",
+    );
+    for (index, reference) in references.iter().enumerate() {
+        let reference_type = if reference.kind == "audio" {
+            "native clip audio"
+        } else {
+            reference.kind.as_str()
+        };
+        output.push_str(&format!(
+            "\nReference ID: {}\nType: {}\nProducer description: {}\n",
+            workspace_reference_id(reference, index),
+            reference_type,
+            reference.description
+        ));
+        if reference.use_embedded_audio {
+            output.push_str(&format!(
+                "Existing embedded clip audio placement: {}\n",
+                reference.embedded_audio_description
+            ));
+        }
+    }
+    output
+}
+
+fn workspace_reference_id(reference: &MovieReference, index: usize) -> String {
+    let mut id = String::new();
+    let mut separator = false;
+    for character in reference.tag.chars().flat_map(char::to_lowercase) {
+        if character.is_alphanumeric() {
+            if separator && !id.is_empty() {
+                id.push('-');
+            }
+            id.push(character);
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    if id.is_empty() {
+        format!("reference-{}", index + 1)
+    } else {
+        id
+    }
 }
 
 fn validate_write(path: &str, content: &str) -> Result<(), StudioError> {
@@ -451,12 +561,28 @@ fn validate_write(path: &str, content: &str) -> Result<(), StudioError> {
             "{normalized} exceeds the 96 KiB workspace-file limit"
         )));
     }
-    if normalized == "movie.json" {
-        serde_json::from_str::<MovieMetadata>(content)?;
-    } else {
-        serde_json::from_str::<PlannedClip>(content)?;
-    }
+    canonical_workspace_content(&normalized, content)?;
     Ok(())
+}
+
+fn canonical_workspace_content(path: &str, content: &str) -> Result<String, StudioError> {
+    if path == "movie.json" {
+        serde_json::from_str::<MovieMetadata>(content)
+            .and_then(|value| serde_json::to_string_pretty(&value))
+            .map_err(|error| {
+                StudioError::Invalid(format!(
+                    "movie.json schema error: {error}. Expected title, logline, audience, and creativeDirection as strings, plus continuityBible and sourceCredits as arrays. Array entries may be descriptive strings or structured objects."
+                ))
+            })
+    } else {
+        serde_json::from_str::<PlannedClip>(content)
+            .and_then(|value| serde_json::to_string_pretty(&value))
+            .map_err(|error| {
+                StudioError::Invalid(format!(
+                    "{path} schema error: {error}. Expected title, purpose, prompt, continuityIn, continuityOut, and transition as strings; durationSeconds as a number from 5 to 15; usePreviousFrame as a boolean; and sourceRefs and referenceIds as string arrays."
+                ))
+            })
+    }
 }
 
 fn readable_path(path: &str) -> Result<String, StudioError> {
@@ -597,6 +723,182 @@ mod tests {
             .read_file("BRIEF.md")
             .unwrap()
             .contains("Keep the opening"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_normalizes_structured_metadata_facts() {
+        let root = temp_workspace();
+        let mut workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a test film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        workspace
+            .write_file(
+                "movie.json",
+                &json!({
+                    "title":"Jungle Awakening",
+                    "logline":"A vlogger encounters a rare deer in a misty forest.",
+                    "audience":"Film buyers",
+                    "creativeDirection":"Naturalistic live-action photography.",
+                    "continuityBible":[{
+                        "subject":"Golden deer",
+                        "appearance":"golden-brown coat and white facial markings"
+                    }],
+                    "sourceCredits":[{
+                        "referenceId":"reference-001",
+                        "use":"vlogger identity"
+                    }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+        let metadata: MovieMetadata =
+            serde_json::from_str(&workspace.read_file("movie.json").unwrap()).unwrap();
+        assert_eq!(metadata.continuity_bible.len(), 1);
+        assert!(metadata.continuity_bible[0].contains("subject: Golden deer"));
+        assert!(metadata.continuity_bible[0].contains("appearance: golden-brown coat"));
+        assert!(metadata.source_credits[0].contains("referenceId: reference-001"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_reports_file_specific_schema_errors() {
+        let error = canonical_workspace_content(
+            "movie.json",
+            r#"{"title":"Test","logline":"Test","audience":"Test","creativeDirection":{},"continuityBible":[],"sourceCredits":[]}"#,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("movie.json schema error"));
+        assert!(message.contains("creativeDirection as strings"));
+    }
+
+    #[test]
+    fn workspace_resolves_short_reference_ids_to_asset_hashes() {
+        let root = temp_workspace();
+        let asset_id = "ad240595fc48dd73529176a4f6df1a68a0896ac7e3ce358e94699a0538f4c3d3";
+        let reference = MovieReference {
+            asset_id: asset_id.into(),
+            tag: "<Picture 1>".into(),
+            audio_tag: String::new(),
+            name: "vlogger.png".into(),
+            kind: "image".into(),
+            mime_type: "image/png".into(),
+            bytes: 1,
+            duration_seconds: 0.0,
+            width: 1024,
+            height: 1024,
+            has_audio: false,
+            path: "vlogger.png".into(),
+            description: "This is the vlogger's identity reference.".into(),
+            use_embedded_audio: false,
+            embedded_audio_description: String::new(),
+        };
+        let mut workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a test film",
+            "unused canonical manifest",
+            &MovieSettings::default(),
+            std::slice::from_ref(&reference),
+            None,
+            None,
+        )
+        .unwrap();
+        let references = workspace.read_file("REFERENCES.md").unwrap();
+        assert!(references.contains("Reference ID: picture-1"));
+        assert!(!references.contains(asset_id));
+        workspace
+            .write_file(
+                "movie.json",
+                &json!({
+                    "title":"Test",
+                    "logline":"A vlogger enters a forest.",
+                    "audience":"Film buyers",
+                    "creativeDirection":"Live-action photography",
+                    "continuityBible":["The vlogger keeps the same face."],
+                    "sourceCredits":[]
+                })
+                .to_string(),
+            )
+            .unwrap();
+        workspace
+            .write_file(
+                "scenes/001.json",
+                &json!({
+                    "title":"Vlogger enters",
+                    "purpose":"Show the vlogger entering",
+                    "durationSeconds":10,
+                    "prompt":"A deliberately incomplete test prompt.",
+                    "continuityIn":"Independent opening",
+                    "continuityOut":"The vlogger stops",
+                    "transition":"Hard cut",
+                    "usePreviousFrame":false,
+                    "sourceRefs":[],
+                    "referenceIds":["picture-1"]
+                })
+                .to_string(),
+            )
+            .unwrap();
+        let (plan, _) = workspace.compile_and_check().unwrap();
+        assert_eq!(plan.clips[0].reference_ids, vec![asset_id]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_rejects_sparse_scene_filenames() {
+        let root = temp_workspace();
+        let mut workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a test film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        workspace
+            .write_file(
+                "movie.json",
+                &json!({
+                    "title":"Test",
+                    "logline":"A subject enters a forest.",
+                    "audience":"Film buyers",
+                    "creativeDirection":"Live-action photography",
+                    "continuityBible":["The subject keeps the same wardrobe throughout."],
+                    "sourceCredits":[]
+                })
+                .to_string(),
+            )
+            .unwrap();
+        let scene = json!({
+            "title":"Forest shot",
+            "purpose":"Show the forest",
+            "durationSeconds":10,
+            "prompt":"A deliberately incomplete test prompt.",
+            "continuityIn":"Independent cut",
+            "continuityOut":"The subject stops",
+            "transition":"Hard cut",
+            "usePreviousFrame":false,
+            "sourceRefs":[],
+            "referenceIds":[]
+        })
+        .to_string();
+        workspace.write_file("scenes/001.json", &scene).unwrap();
+        workspace.write_file("scenes/003.json", &scene).unwrap();
+
+        let (_, issues) = workspace.compile_and_check().unwrap();
+        assert!(issues
+            .join(" ")
+            .contains("expected scenes/002.json at position 2, found scenes/003.json"));
         fs::remove_dir_all(root).unwrap();
     }
 

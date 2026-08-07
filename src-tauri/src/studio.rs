@@ -34,7 +34,7 @@ const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_REFERENCE_SECONDS: f64 = 15.1;
 const MIN_H3_PROMPT_WORDS: usize = 120;
 const MAX_H3_PROMPT_WORDS: usize = 450;
-const MAX_MOVIE_AGENT_STEPS: u32 = 96;
+const MOVIE_AGENT_SESSION_STEPS: u32 = 96;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
 
 pub fn media_response(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
@@ -1263,94 +1263,144 @@ impl MovieStudio {
             producer_feedback,
         )?;
         let tools = MovieAgentWorkspace::tools();
-        let mut messages = vec![
-            json!({"role":"system","content":movie_agent_prompt()}),
-            json!({"role":"user","content":"Open the movie workspace, read its contract and producer brief, then build, lint, code-review, and submit the complete movie. Work autonomously until the workspace accepts submit."}),
-        ];
-        persist_movie_agent_transcript(&transcript_path, 0, &messages)?;
-        for step in 1..=MAX_MOVIE_AGENT_STEPS {
+        let mut session = 1_u32;
+        let mut absolute_step = 0_u32;
+        'agent_sessions: loop {
             check_cancel(cancel)?;
-            project.phase = "agent-workspace".into();
-            project.detail = format!(
-                "Bonsai is editing and checking the durable movie codebase (agent step {step})."
-            );
-            self.persist_emit(project, app)?;
-            let request = self.complete_agent(connection, &messages, &tools, settings, research);
-            let response = tokio::select! {
-                result = request => result?,
-                _ = cancel.cancelled() => return Err(StudioError::Cancelled),
+            if session > 1 && transcript_path.is_file() {
+                fs::copy(
+                    &transcript_path,
+                    workspace
+                        .root()
+                        .join(format!("agent-transcript-session-{:03}.json", session - 1)),
+                )?;
+            }
+            let instruction = if session == 1 {
+                "Open the movie workspace, read its contract and producer brief, then build, lint, code-review, and submit the complete movie. Work autonomously until the workspace accepts submit."
+            } else {
+                "Resume the existing durable movie workspace after a context checkpoint. List and inspect its current files, run check first to obtain current diagnostics, then repair only affected files, perform the full review, run the required clean checks, and submit. Do not restart or replace sound work already present."
             };
-            let message = response_message(&response)?;
-            let tool_calls = message
-                .get("tool_calls")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let mut history_message = message;
-            if let Some(object) = history_message.as_object_mut() {
-                object.remove("reasoning");
-                object.remove("reasoning_content");
-            }
-            messages.push(history_message);
-            persist_movie_agent_transcript(&transcript_path, step, &messages)?;
-            if tool_calls.is_empty() {
-                messages.push(json!({"role":"user","content":"Do not stop with prose. Continue through the movie_workspace tool until check passes twice and submit succeeds."}));
-                persist_movie_agent_transcript(&transcript_path, step, &messages)?;
-                continue;
-            }
-            for call in tool_calls {
+            let mut messages = vec![
+                json!({"role":"system","content":movie_agent_prompt()}),
+                json!({"role":"user","content":instruction}),
+            ];
+            persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
+            let mut no_tool_streak = 0_u32;
+
+            for _ in 0..MOVIE_AGENT_SESSION_STEPS {
                 check_cancel(cancel)?;
-                let call_id = call
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("movie-tool");
-                let name = call
-                    .pointer("/function/name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let result = if name != "movie_workspace" {
-                    WorkspaceToolResult {
-                        message: format!("ERROR: unknown tool {name}"),
-                        submitted: None,
-                    }
-                } else {
-                    let arguments = call.pointer("/function/arguments").ok_or_else(|| {
-                        StudioError::Planning("movie workspace call had no arguments".into())
-                    })?;
-                    let parsed = if let Some(text) = arguments.as_str() {
-                        serde_json::from_str::<WorkspaceToolRequest>(text)
-                    } else {
-                        serde_json::from_value::<WorkspaceToolRequest>(arguments.clone())
-                    };
-                    match parsed {
-                        Ok(request) => workspace.execute(request),
-                        Err(error) => WorkspaceToolResult {
-                            message: format!("ERROR: invalid movie_workspace arguments: {error}"),
-                            submitted: None,
-                        },
+                absolute_step = absolute_step.saturating_add(1);
+                project.phase = "agent-workspace".into();
+                project.detail = format!(
+                    "Bonsai is editing and checking the durable movie codebase (agent step {absolute_step}, context session {session})."
+                );
+                self.persist_emit(project, app)?;
+                let request =
+                    self.complete_agent(connection, &messages, &tools, settings, research);
+                let response_result = tokio::select! {
+                    result = request => result,
+                    _ = cancel.cancelled() => return Err(StudioError::Cancelled),
+                };
+                let response = match response_result {
+                    Ok(response) => response,
+                    Err(error) => {
+                        messages.push(json!({
+                            "role":"user",
+                            "content":format!(
+                                "Kestrel context checkpoint: the previous model response could not be accepted ({error}). The durable workspace files are intact. On resume, run check and use small individual writes or batches of at most eight files."
+                            )
+                        }));
+                        persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
+                        project.detail = format!(
+                            "Bonsai response failed safely at agent step {absolute_step}; Kestrel is checkpointing and resuming in a fresh context."
+                        );
+                        self.persist_emit(project, app)?;
+                        session = session.saturating_add(1);
+                        continue 'agent_sessions;
                     }
                 };
-                let submitted = result.submitted;
-                messages.push(json!({
-                    "role":"tool",
-                    "tool_call_id":call_id,
-                    "content":result.message,
-                }));
-                persist_movie_agent_transcript(&transcript_path, step, &messages)?;
-                if let Some(plan) = submitted {
-                    project.phase = "agent-submitted".into();
-                    project.detail = format!(
-                        "Bonsai submitted a checked {}-scene movie plan from its durable workspace.",
-                        plan.clips.len()
-                    );
-                    self.persist_emit(project, app)?;
-                    return Ok(plan);
+                let message = response_message(&response)?;
+                let tool_calls = message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut history_message = message;
+                if let Some(object) = history_message.as_object_mut() {
+                    object.remove("reasoning");
+                    object.remove("reasoning_content");
+                }
+                messages.push(history_message);
+                persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
+                if tool_calls.is_empty() {
+                    no_tool_streak = no_tool_streak.saturating_add(1);
+                    messages.push(json!({"role":"user","content":"Do not stop with prose. Continue through the movie_workspace tool until check passes twice and submit succeeds."}));
+                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
+                    if no_tool_streak >= 3 {
+                        project.detail = format!(
+                            "Bonsai stopped using its workspace for three turns at agent step {absolute_step}; Kestrel is checkpointing and resuming in a fresh context."
+                        );
+                        self.persist_emit(project, app)?;
+                        session = session.saturating_add(1);
+                        continue 'agent_sessions;
+                    }
+                    continue;
+                }
+                no_tool_streak = 0;
+                for call in tool_calls {
+                    check_cancel(cancel)?;
+                    let call_id = call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("movie-tool");
+                    let name = call
+                        .pointer("/function/name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let result = if name != "movie_workspace" {
+                        WorkspaceToolResult {
+                            message: format!("ERROR: unknown tool {name}"),
+                            submitted: None,
+                        }
+                    } else {
+                        let arguments = call.pointer("/function/arguments").ok_or_else(|| {
+                            StudioError::Planning("movie workspace call had no arguments".into())
+                        })?;
+                        let parsed = if let Some(text) = arguments.as_str() {
+                            serde_json::from_str::<WorkspaceToolRequest>(text)
+                        } else {
+                            serde_json::from_value::<WorkspaceToolRequest>(arguments.clone())
+                        };
+                        match parsed {
+                            Ok(request) => workspace.execute(request),
+                            Err(error) => WorkspaceToolResult {
+                                message: format!(
+                                    "ERROR: invalid movie_workspace arguments: {error}"
+                                ),
+                                submitted: None,
+                            },
+                        }
+                    };
+                    let submitted = result.submitted;
+                    messages.push(json!({
+                        "role":"tool",
+                        "tool_call_id":call_id,
+                        "content":result.message,
+                    }));
+                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
+                    if let Some(plan) = submitted {
+                        project.phase = "agent-submitted".into();
+                        project.detail = format!(
+                            "Bonsai submitted a checked {}-scene movie plan from its durable workspace.",
+                            plan.clips.len()
+                        );
+                        self.persist_emit(project, app)?;
+                        return Ok(plan);
+                    }
                 }
             }
+            session = session.saturating_add(1);
         }
-        Err(StudioError::Planning(format!(
-            "Bonsai reached the {MAX_MOVIE_AGENT_STEPS}-step movie workspace limit without a clean submit; its files remain durable for retry"
-        )))
     }
 
     async fn complete_agent(
@@ -2329,7 +2379,7 @@ fn response_message(response: &Value) -> Result<Value, StudioError> {
 #[allow(dead_code)]
 fn director_prompt(settings: &MovieSettings) -> String {
     format!(
-        "You are the autonomous writer-director-editor inside Kestrel Movie Studio. Turn the producer's request into a complete original MiniMax H3 plan and infer missing creative decisions without asking questions. Preserve story causality, identity, geography, screen direction, visual language, and sound across the cut.\n\nEvery clip prompt is the final renderer instruction, not a summary. Keep it between {MIN_H3_PROMPT_WORDS} and {MAX_H3_PROMPT_WORDS} words. Match excellent H3 examples: establish medium, genre, environment, lighting, palette, lens and texture; give a scene overview; cover the full duration with explicit timecoded shots or timed beats for a deliberate continuous take; specify framing, camera movement, subject blocking, action, transition, exact dialogue if any, ambience, effects, and score; finish with relevant exclusions. Every timed prompt must explicitly define picture, action, camera, and sound through the exact end of the clip; when the main action ends early, direct the remaining hold, settle, or reaction through that final timestamp. Prefer visible, achievable direction over abstract adjectives. Across multi-scene films, consider motivated cuts, subject-free inserts or establishers, and useful exact prior-frame handoffs.\n\nProducer descriptions are planning instructions only. Select exact asset IDs in referenceIds wherever their stated job applies. Only referenceIds attaches producer media to H3; sourceRefs contains textual source-credit IDs, never producer asset IDs. An audio asset is native existing clip audio, not a symbolic voice-identity profile: assign it only where that attached audio should condition the generated soundtrack. Never quote a producer description or put an asset ID in a clip prompt. Never write H3 reference tags; Kestrel binds and renumbers them. H3 reference conditioning and exact prior-frame continuation are mutually exclusive per clip. Use references for a reference-locked shot, or usePreviousFrame with empty referenceIds for a seamless continuation whose prior frame already carries the subject's appearance. Never request both. Do not blanket-assign references. There are no research tools; do not claim external verification or fabricate source credits. Return the required plan JSON without commentary. Renderer: 24fps, {}x{}, at most {} clips.",
+        "You are the autonomous writer-director-editor inside Kestrel Movie Studio. Turn the producer's request into a complete original MiniMax H3 plan and infer missing creative decisions without asking questions. Preserve story causality, identity, geography, screen direction, visual language, and sound across the cut.\n\nEvery clip prompt is the final renderer instruction, not a summary. Keep it between {MIN_H3_PROMPT_WORDS} and {MAX_H3_PROMPT_WORDS} words. Match excellent H3 examples: establish medium, genre, environment, lighting, palette, lens and texture; give a scene overview; cover the full duration with explicit timecoded shots or timed beats for a deliberate continuous take; specify framing, camera movement, subject blocking, action, transition, exact dialogue if any, ambience, effects, and score; finish with relevant exclusions. Every timed prompt must explicitly define picture, action, camera, and sound through the exact end of the clip; when the main action ends early, direct the remaining hold, settle, or reaction through that final timestamp. Prefer visible, achievable direction over abstract adjectives. Across multi-scene films, consider motivated cuts, subject-free inserts or establishers, and useful exact prior-frame handoffs.\n\nProducer descriptions are planning instructions only. Select exact asset IDs in referenceIds wherever their stated job applies. Only referenceIds attaches producer media to H3; sourceRefs contains textual source-credit IDs, never producer asset IDs. An audio asset conditions H3's generated soundtrack or voice; assign it only where that sound belongs. If it is described as speech or a voice, explicitly assign its voice/timbre and write the exact feasible dialogue in quotation marks so H3 does not invent the words. Never quote a producer description or put an asset ID in a clip prompt. Never write H3 reference tags; Kestrel binds and renumbers them. H3 reference conditioning and exact prior-frame continuation are mutually exclusive per clip. Use references for a reference-locked shot, or usePreviousFrame with empty referenceIds for a seamless continuation whose prior frame already carries the subject's appearance. Never request both. Age changes do not waive identity conditioning for an independently cut appearance of the same character. Do not blanket-assign references. There are no research tools; do not claim external verification or fabricate source credits. Do not invent defining anatomy, cultural details, or real-world facts: if uncertain, choose a familiar concrete alternative that serves the brief or avoid unsupported specificity. Return the required plan JSON without commentary. Renderer: 24fps, {}x{}, at most {} clips.",
         settings.width, settings.height, settings.max_clips
     )
 }
@@ -2401,14 +2451,14 @@ struct MovieAssessment {
 #[allow(dead_code)]
 fn code_reviewer_prompt() -> String {
     format!(
-        "Act as a strict CodeRabbit-style production reviewer for a MiniMax H3 movie plan. Report only defects that would materially reduce the rendered film: story contradictions, broken continuity or screen direction, infeasible action, weak placement of a supplied reference, supplied native audio assigned where its sound does not belong, an identity reference omitted where its subject appears, vague renderer prose, incomplete timed coverage, unclear camera/blocking, or underspecified sound. A producer may provide no references: never request or invent media absent from the manifest. Audit producer media only in referenceIds; sourceRefs contains textual source-credit IDs only. An audio reference conditions H3's generated sound or voice, not editorial playback. Its source duration need not match the output clip: never demand trimming, padding, looping, crossfading, replacement, or added silence. Treat every prompt as shippable production code matching excellent official H3 examples. Native gate findings are blocking. Use clipNumber 0 for plan-wide issues. Give concrete fixes, not rewrites or praise. Return no issues only when genuinely ready.\n\nReference/continuation audit: {}",
+        "Act as a strict CodeRabbit-style production reviewer for a MiniMax H3 movie plan. Report only defects that would materially reduce the rendered film: story contradictions, broken continuity or screen direction, runtime padding through repeated action/emotion/framing, infeasible action, false defining anatomy or other unsupported real-world detail, speech or narration without exact quoted words, weak placement of a supplied reference, supplied native audio assigned where its sound does not belong, an identity reference omitted where its subject appears, vague renderer prose, incomplete timed coverage, unclear camera/blocking, or underspecified sound. A producer may provide no references: never request or invent media absent from the manifest. Audit producer media only in referenceIds; sourceRefs contains textual source-credit IDs only. An audio reference conditions H3's generated sound or voice, not editorial playback. Its source duration need not match the output clip: never demand trimming, padding, looping, crossfading, replacement, or added silence. Treat every prompt as shippable production code matching excellent official H3 examples. Native gate findings are blocking. Use clipNumber 0 for plan-wide issues. Give concrete fixes, not rewrites or praise. Return no issues only when genuinely ready.\n\nReference/continuation audit: {}",
         reference_continuity_repair_brief()
     )
 }
 
 #[allow(dead_code)]
 fn assessor_prompt() -> &'static str {
-    "Act as the independent release authority after a CodeRabbit-style review. Decide whether this complete H3 plan can render unattended into credible selling material. Verify producer intent, narrative/editing rhythm, identity and world continuity, supplied native references, shot feasibility, dialogue boundaries, and production-level visual/camera/audio detail. A reference-free request is valid: never request or invent media absent from the manifest. Producer assets attach only through referenceIds; sourceRefs contains textual source-credit IDs only. An audio reference conditions H3's generated sound or voice, not editorial playback; source and output durations need not match. Explicitly overrule demands to trim, pad, loop, crossfade, replace, or extend it with silence, or to put media in sourceRefs. Every native gate finding blocks approval. Independently verify review comments and overrule incorrect, subjective, resolved, or immaterial nitpicks. You—not Code Review—make the final release decision. Approve only at score 90 or higher. Do not reward verbosity without visible, timed, achievable direction. Return concise blocking findings with clipNumber 0 for plan-wide issues."
+    "Act as the independent release authority after a CodeRabbit-style review. Decide whether this complete H3 plan can render unattended into credible selling material. Verify producer intent, narrative/editing rhythm, identity and world continuity, plausible defining anatomy and real-world details, supplied native references, shot feasibility, dialogue boundaries, and production-level visual/camera/audio detail. A reference-free request is valid: never request or invent media absent from the manifest. Producer assets attach only through referenceIds; sourceRefs contains textual source-credit IDs only. An audio reference conditions H3's generated sound or voice, not editorial playback; source and output durations need not match. Explicitly overrule demands to trim, pad, loop, crossfade, replace, or extend it with silence, or to put media in sourceRefs. Every native gate finding blocks approval. Independently verify review comments and overrule incorrect, subjective, resolved, or immaterial nitpicks. You—not Code Review—make the final release decision. Approve only at score 90 or higher. Do not reward verbosity without visible, timed, achievable direction. Return concise blocking findings with clipNumber 0 for plan-wide issues."
 }
 
 fn clip_assistant_prompt() -> &'static str {
@@ -2531,6 +2581,86 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
             ));
         }
         let lower = clip.prompt.to_ascii_lowercase();
+        let organized_direction =
+            format!("{} {} {}", clip.title, clip.purpose, clip.prompt).to_ascii_lowercase();
+        let directs_speech = [
+            "dialogue",
+            "narrat",
+            "spoken",
+            "speaks",
+            "speak ",
+            "speaking",
+            " says",
+            "saying",
+            "introduces himself",
+            "introduces herself",
+            "murmur",
+            "mumble",
+            "mutters",
+            "utter",
+            "whisper",
+            "voice-over",
+            "voiceover",
+        ]
+        .iter()
+        .any(|marker| organized_direction.contains(marker));
+        let explicitly_silent = [
+            "no dialogue",
+            "without dialogue",
+            "does not speak",
+            "remains silent",
+            "silent reaction",
+        ]
+        .iter()
+        .any(|marker| organized_direction.contains(marker));
+        let explicitly_nonverbal = [
+            "nonverbal",
+            "non-verbal",
+            "wordless",
+            "no words",
+            "without words",
+        ]
+        .iter()
+        .any(|marker| organized_direction.contains(marker));
+        if directs_speech
+            && !(explicitly_silent && explicitly_nonverbal)
+            && !has_quoted_spoken_line(&clip.prompt)
+        {
+            issues.push(format!(
+                "Clip {} directs speech or narration without exact quoted words. H3 will otherwise invent language and can produce fluent-sounding nonsense. Write short dialogue in quotation marks that comfortably fits the {:.1}s native duration, or explicitly direct a silent/no-dialogue performance.",
+                index + 1,
+                clip.duration_seconds
+            ));
+        }
+        let claims_prior_visual = [
+            "previous frame",
+            "prior frame",
+            "previous shot",
+            "prior shot",
+            "previous scene",
+            "prior scene",
+        ]
+        .iter()
+        .any(|claim| organized_direction.contains(claim));
+        let claims_continuation = ["continuation", "continuous", "continues", "continue"]
+            .iter()
+            .any(|claim| organized_direction.contains(claim));
+        if !clip.use_previous_frame
+            && (claims_prior_visual && claims_continuation
+                || [
+                    "exact previous-frame continuation",
+                    "exact prior-frame continuation",
+                    "previous-frame continuation",
+                    "prior-frame continuation",
+                ]
+                .iter()
+                .any(|claim| organized_direction.contains(claim)))
+        {
+            issues.push(format!(
+                "Clip {} claims an exact prior-frame continuation, but usePreviousFrame is false, so H3 will not receive that frame. Either enable a reference-free previous-frame handoff from a genuinely matching preceding endpoint, or rewrite the scene as an honest independently conditioned cut.",
+                index + 1
+            ));
+        }
         for (label, alternatives) in markers {
             if !alternatives.iter().any(|marker| lower.contains(marker)) {
                 issues.push(format!("Clip {} prompt lacks {label}.", index + 1));
@@ -2570,6 +2700,19 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
                     index + 1
                 ));
             }
+            let workspace_id = reference
+                .tag
+                .trim_matches(['<', '>'])
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join("-")
+                .to_ascii_lowercase();
+            if !workspace_id.is_empty() && organized_direction.contains(&workspace_id) {
+                issues.push(format!(
+                    "Clip {} leaks workspace reference ID {workspace_id} into organized renderer direction. Keep producer media IDs only in referenceIds on the exact scene where H3 should receive that media; remove the ID from title, purpose, and prompt.",
+                    index + 1
+                ));
+            }
         }
         if clip.use_previous_frame && !clip.reference_ids.is_empty() {
             issues.push(format!(
@@ -2584,6 +2727,56 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
         {
             issues.push(format!(
                 "Clip {} chains the prior frame without meaningful matching continuityOut and continuityIn instructions.",
+                index + 1
+            ));
+        }
+        if clip.use_previous_frame
+            && index > 0
+            && !continuity_handoff_matches(
+                &plan.clips[index - 1].continuity_out,
+                &clip.continuity_in,
+            )
+        {
+            issues.push(format!(
+                "Clip {} chains the prior frame, but clip {} continuityOut and clip {} continuityIn do not share at least two concrete handoff anchors. An exact carried frame must preserve the same visible subject/object, pose or action, geography, and time state; do not chain a flashback walk into a present-day close-up merely because both scenes name the same character. Rewrite the adjacent endpoints to describe the truthful matching frame, or make clip {} an independent reference-locked cut.",
+                index + 1,
+                index,
+                index + 1,
+                index + 1
+            ));
+        }
+        let transition = clip.transition.to_ascii_lowercase();
+        let is_last = index + 1 == plan.clips.len();
+        if !is_last
+            && ["end of film", "end film", "film ends", "end credits"]
+                .iter()
+                .any(|marker| transition.contains(marker))
+        {
+            issues.push(format!(
+                "Clip {} declares a terminal '{}' transition, but scene {} follows it. Keep numbered scene files in truthful editorial order: move the ending to the actual last scene or rewrite this as the intended intermediate transition.",
+                index + 1,
+                clip.transition,
+                index + 2
+            ));
+        }
+        if is_last
+            && ["next scene", "next shot", "next clip"]
+                .iter()
+                .any(|marker| transition.contains(marker))
+        {
+            issues.push(format!(
+                "Final clip {} declares '{}', but no later scene exists. Give the actual last scene a truthful terminal transition or reorder the files so the promised next scene follows.",
+                index + 1,
+                clip.transition
+            ));
+        }
+        if describes_child_age(clip)
+            && ["beard", "moustache", "mustache", "stubble"]
+                .iter()
+                .any(|marker| organized_direction.contains(marker))
+        {
+            issues.push(format!(
+                "Clip {} describes a child while retaining adult facial hair. Remove the contradictory anatomy and wardrobe inheritance, or minimally reorganize the memory around an age-consistent subject.",
                 index + 1
             ));
         }
@@ -2613,6 +2806,34 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
             ));
         }
     }
+    for first in 0..plan.clips.len() {
+        for second in first + 1..plan.clips.len() {
+            let left = &plan.clips[first];
+            let right = &plan.clips[second];
+            let same_organized_scene = left.title.trim().eq_ignore_ascii_case(right.title.trim())
+                && left
+                    .purpose
+                    .trim()
+                    .eq_ignore_ascii_case(right.purpose.trim());
+            if same_organized_scene {
+                issues.push(format!(
+                    "Clips {} and {} duplicate the same organized title and purpose. An unattended movie must not replay an accidental copy: rewrite one as editorially distinct coverage with its own action, framing, timed beats, sound, and story purpose while preserving the requested total runtime.",
+                    first + 1,
+                    second + 1
+                ));
+                continue;
+            }
+            let similarity = distinctive_prompt_similarity(&left.prompt, &right.prompt);
+            if similarity >= 0.60 {
+                issues.push(format!(
+                    "Clips {} and {} repeat near-duplicate renderer direction ({:.0}% distinctive-token overlap). Do not pad runtime by replaying the same action, emotion, framing, and sound under different titles; replace one with editorially distinct story coverage while preserving native duration and the intended total runtime.",
+                    first + 1,
+                    second + 1,
+                    similarity * 100.0
+                ));
+            }
+        }
+    }
     let selected = plan
         .clips
         .iter()
@@ -2635,16 +2856,128 @@ fn producer_intent_issues(
     references: &[MovieReference],
 ) -> Vec<String> {
     let mut issues = Vec::new();
+    let supplied_attribution = std::iter::once(prompt)
+        .chain(
+            references
+                .iter()
+                .map(|reference| reference.description.as_str()),
+        )
+        .any(|text| {
+            let lower = text.to_ascii_lowercase();
+            [
+                "credit:",
+                "credits:",
+                "source:",
+                "sources:",
+                "courtesy of",
+                "licensed from",
+                "http://",
+                "https://",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker))
+        });
+    if !plan.source_credits.is_empty() && !supplied_attribution {
+        issues.push(
+            "The plan invents source credits even though the producer supplied no attribution. Leave sourceCredits empty; an offline movie agent must never fabricate publications, organizations, research, licenses, or provenance."
+                .into(),
+        );
+    }
     let planned_seconds = plan
         .clips
         .iter()
         .map(|clip| clip.duration_seconds.clamp(5.0, 15.0))
         .sum::<f32>();
-    if let Some((minimum, maximum)) = requested_duration_range(prompt) {
+    let requested_range = requested_duration_range(prompt);
+    if let Some((minimum, maximum)) = requested_range {
         if !(minimum..=maximum).contains(&planned_seconds) {
             issues.push(format!(
                 "Producer requested {:.0}-{:.0} seconds, but the plan totals {planned_seconds:.1} seconds. Add, remove, split, or rebalance 5-15 second scenes to stay inside the requested runtime without padding or trimming generated masters.",
                 minimum, maximum
+            ));
+        }
+    }
+    if requested_range.is_some_and(|(_, maximum)| maximum >= 60.0) && plan.clips.len() >= 4 {
+        if !plan.clips.iter().any(|clip| clip.use_previous_frame) {
+            issues.push(
+                "Long-form narrative plan has no exact previous-frame continuation. Create at least one semantically continuous adjacent scene pair while preserving independent cuts elsewhere. Choose a boundary where subject, action, geography, camera position, lighting, and screen direction genuinely continue; keep the first scene reference-locked when identity media is needed, end it on the handoff pose, then make the next scene usePreviousFrame=true with empty referenceIds. Do not chain into an unrelated establisher, insert, flashback, time jump, or different subject merely to satisfy this check."
+                    .into(),
+            );
+        }
+        if !plan.clips.iter().any(|clip| !clip.use_previous_frame) {
+            issues.push(
+                "Long-form narrative plan chains every scene. Preserve at least one independent motivated cut for a change of subject, place, time, scale, or editorial emphasis."
+                    .into(),
+            );
+        }
+    }
+    for reference in references.iter().filter(|reference| {
+        matches!(reference.kind.as_str(), "image" | "video")
+            && reference
+                .description
+                .to_ascii_lowercase()
+                .contains("identity reference")
+    }) {
+        let Some(subject) = identity_reference_subject(&reference.description) else {
+            continue;
+        };
+        let subject_aliases = identity_subject_aliases(plan, &subject);
+        if requested_range.is_some_and(|(_, maximum)| maximum >= 60.0)
+            && !plan.clips.iter().any(|clip| {
+                !clip.use_previous_frame
+                    && !clip.reference_ids.contains(&reference.asset_id)
+                    && clip_is_independent_subject_free(clip, &subject_aliases)
+            })
+        {
+            issues.push(format!(
+                "Long-form film has no independently cut subject-free coverage for the referenced {subject}. Add one purposeful animal-only, environment-only, object insert, or establishing scene where the {subject} is explicitly absent; do not infer this merely from an empty referenceIds list, because continuations and age variants can still contain the same character."
+            ));
+        }
+        let mut identity_carried = false;
+        let mut uncovered = Vec::new();
+        let mut overconditioned = Vec::new();
+        for (index, clip) in plan.clips.iter().enumerate() {
+            let visibly_features_subject = clip_visibly_names_subject(clip, &subject_aliases);
+            let directly_referenced = clip.reference_ids.contains(&reference.asset_id);
+            let carried_into_clip = clip.use_previous_frame && identity_carried;
+            let covered = directly_referenced || carried_into_clip;
+            identity_carried = covered;
+            if visibly_features_subject && !covered {
+                uncovered.push(index + 1);
+            } else if directly_referenced && !visibly_features_subject {
+                overconditioned.push(index + 1);
+            }
+            if directly_referenced
+                && describes_child_age(clip)
+                && !description_supplies_child_identity(&reference.description)
+            {
+                issues.push(format!(
+                    "Clip {} asks H3 to turn identity reference {} into a child or materially younger version, but the producer did not describe that image as the matching child-age identity. Ref2va preserves the supplied appearance and cannot guarantee this age transformation. Minimally keep the referenced character at the supplied age, make the childhood memory POV/off-screen or subject-free, or use a separately supplied age-matched reference; do not preserve adult beard, wardrobe, or equipment on a child.",
+                    index + 1,
+                    reference.asset_id
+                ));
+            }
+        }
+        if !uncovered.is_empty() {
+            issues.push(format!(
+                "Producer identity reference {} is for the {subject}, but independently cut scene(s) {} visibly name that subject without native identity conditioning. Attach this reference to each independent appearance. A genuinely continuous scene may instead usePreviousFrame=true with empty referenceIds when the preceding covered scene ends on the exact handoff pose. Keep POV or off-screen scenes explicitly labeled so the reference does not force the subject into protagonist-free coverage.",
+                reference.asset_id,
+                uncovered
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !overconditioned.is_empty() {
+            issues.push(format!(
+                "Producer identity reference {} is for the {subject}, but scene(s) {} do not visibly feature that subject according to their organized title and purpose. Remove the reference from those protagonist-free, insert, animal, POV, or off-screen cuts so H3 does not inject the identity; if the subject truly is visible, make that explicit in the scene purpose and keep the reference.",
+                reference.asset_id,
+                overconditioned
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
@@ -2683,7 +3016,345 @@ fn producer_intent_issues(
             }
         }
     }
+    for reference in references.iter().filter(|reference| {
+        reference.kind == "audio" && audio_reference_describes_speech(&reference.description)
+    }) {
+        for (index, clip) in plan
+            .clips
+            .iter()
+            .enumerate()
+            .filter(|(_, clip)| clip.reference_ids.contains(&reference.asset_id))
+        {
+            let lower = clip.prompt.to_ascii_lowercase();
+            let assigns_voice = [
+                "attached voice",
+                "supplied voice",
+                "reference voice",
+                "voice reference",
+                "voice identity",
+                "voice/timbre",
+                "vocal timbre",
+                "speaker's voice",
+                "speaker’s voice",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker));
+            if !assigns_voice || !has_quoted_spoken_line(&clip.prompt) {
+                issues.push(format!(
+                    "Producer audio reference {} is described as speech or a voice, but clip {} does not both assign the supplied voice/timbre and state exact dialogue in quotation marks. H3 uses audio as generative voice conditioning rather than guaranteed waveform playback. Add a literal role sentence such as: Use the supplied voice reference as the speaker's voice identity and vocal timbre. Then give the speaker short exact words that fit the native {:.1}s scene so H3 does not invent or garble narration. Do not trim, mux, replace, or pad the generated master.",
+                    reference.asset_id,
+                    index + 1,
+                    clip.duration_seconds
+                ));
+            }
+        }
+    }
     issues
+}
+
+fn identity_reference_subject(description: &str) -> Option<String> {
+    let lower = description.to_ascii_lowercase();
+    let marker = "identity reference";
+    let index = lower.find(marker)?;
+    let before = lower[..index].trim_end_matches(|character: char| {
+        character.is_whitespace() || matches!(character, '.' | ',' | ':' | ';')
+    });
+    let candidate = before
+        .split(|character: char| !character.is_alphanumeric() && character != '\'')
+        .rfind(|token| !token.is_empty())
+        .unwrap_or_default()
+        .trim_end_matches("'s");
+    if !matches!(candidate, "" | "a" | "an" | "the" | "this" | "is") {
+        return Some(candidate.to_owned());
+    }
+    lower[index + marker.len()..]
+        .strip_prefix(" for ")
+        .map(|value| value.trim_start_matches("the "))
+        .and_then(|value| {
+            value
+                .split(|character: char| !character.is_alphanumeric())
+                .find(|token| !token.is_empty())
+        })
+        .map(str::to_owned)
+}
+
+fn identity_subject_aliases(plan: &MoviePlan, subject: &str) -> Vec<String> {
+    let mut aliases = vec![subject.to_owned()];
+    let prefix = format!("{subject}:");
+    for fact in &plan.continuity_bible {
+        let lower = fact.to_ascii_lowercase();
+        let legacy_alias = lower.trim().strip_prefix(&prefix).and_then(|details| {
+            details
+                .split(|character: char| !character.is_alphanumeric())
+                .find(|token| !token.is_empty())
+        });
+        let fields = lower
+            .split(';')
+            .filter_map(|field| field.split_once(':'))
+            .map(|(key, value)| (key.trim(), value.trim()))
+            .collect::<Vec<_>>();
+        let structured_alias = fields
+            .iter()
+            .any(|(key, value)| *key == "subject" && *value == subject)
+            .then(|| {
+                fields
+                    .iter()
+                    .find(|(key, _)| *key == "name")
+                    .and_then(|(_, value)| {
+                        value
+                            .split(|character: char| !character.is_alphanumeric())
+                            .find(|token| !token.is_empty())
+                    })
+            })
+            .flatten();
+        let role_leading_alias = lower
+            .trim()
+            .strip_prefix(subject)
+            .filter(|details| details.starts_with(char::is_whitespace))
+            .and_then(|details| {
+                let heading = details.split(':').next()?.trim();
+                (!heading.contains(char::is_whitespace)
+                    && !matches!(
+                        heading,
+                        "" | "appearance" | "description" | "equipment" | "identity" | "wardrobe"
+                    ))
+                .then_some(heading)
+            });
+        let role_leading_prose_alias = lower
+            .trim()
+            .strip_prefix(subject)
+            .filter(|details| details.starts_with(char::is_whitespace))
+            .and_then(|details| {
+                details
+                    .split(|character: char| !character.is_alphanumeric())
+                    .find(|token| !token.is_empty())
+            })
+            .filter(|alias| {
+                !matches!(
+                    *alias,
+                    "appearance" | "description" | "equipment" | "identity" | "wardrobe"
+                )
+            });
+        let prose_alias = lower.find(subject).and_then(|subject_index| {
+            let before_subject = &lower[..subject_index];
+            let introduction = before_subject.split(',').next()?.trim();
+            let alias = introduction
+                .split(|character: char| !character.is_alphanumeric())
+                .find(|token| !token.is_empty())?;
+            (!matches!(
+                alias,
+                "a" | "an" | "the" | "this" | "same" | "present" | "recurring"
+            ) && before_subject.contains(','))
+            .then_some(alias)
+        });
+        for alias in legacy_alias
+            .into_iter()
+            .chain(structured_alias)
+            .chain(role_leading_alias)
+            .chain(role_leading_prose_alias)
+            .chain(prose_alias)
+        {
+            if !aliases.iter().any(|known| known == alias) {
+                aliases.push(alias.to_owned());
+            }
+        }
+    }
+    aliases
+}
+
+fn continuity_handoff_matches(previous_out: &str, current_in: &str) -> bool {
+    const GENERIC: &[&str] = &[
+        "camera",
+        "clip",
+        "continue",
+        "continues",
+        "continuation",
+        "frame",
+        "handoff",
+        "holds",
+        "same",
+        "scene",
+        "shot",
+        "still",
+        "with",
+    ];
+    let anchors = |value: &str| {
+        value
+            .to_ascii_lowercase()
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|token| token.len() >= 4 && !GENERIC.contains(token))
+            .map(str::to_owned)
+            .collect::<HashSet<_>>()
+    };
+    let previous = anchors(previous_out);
+    let current = anchors(current_in);
+    previous.intersection(&current).take(2).count() >= 2
+}
+
+fn describes_child_age(clip: &PlannedClip) -> bool {
+    let description =
+        format!("{} {} {}", clip.title, clip.purpose, clip.prompt).to_ascii_lowercase();
+    if [
+        "childhood",
+        "child version",
+        "younger version",
+        "young boy",
+        "young girl",
+    ]
+    .iter()
+    .any(|marker| description.contains(marker))
+    {
+        return true;
+    }
+    let tokens = description
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    tokens
+        .windows(2)
+        .any(|window| window[0] == "age" && window[1].parse::<u8>().is_ok_and(|age| age <= 15))
+        || tokens.windows(3).any(|window| {
+            window[1] == "year"
+                && window[2] == "old"
+                && window[0].parse::<u8>().is_ok_and(|age| age <= 15)
+        })
+}
+
+fn description_supplies_child_identity(description: &str) -> bool {
+    let lower = description.to_ascii_lowercase();
+    [
+        "child",
+        "childhood",
+        "young boy",
+        "young girl",
+        "younger identity",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn clip_visibly_names_subject(clip: &PlannedClip, subjects: &[String]) -> bool {
+    let description =
+        format!("{} {} {}", clip.title, clip.purpose, clip.prompt).to_ascii_lowercase();
+    let subject_named = subjects.iter().any(|subject| description.contains(subject));
+    let subject_explicitly_absent = subjects.iter().any(|subject| {
+        [format!("no {subject}"), format!("without {subject}")]
+            .iter()
+            .any(|marker| description.contains(marker))
+    });
+    subject_named
+        && !subject_explicitly_absent
+        && ![
+            "offscreen",
+            "off-screen",
+            "absent from frame",
+            "not visible",
+            "behind the camera",
+        ]
+        .iter()
+        .any(|marker| description.contains(marker))
+}
+
+fn clip_is_independent_subject_free(clip: &PlannedClip, subjects: &[String]) -> bool {
+    let description =
+        format!("{} {} {}", clip.title, clip.purpose, clip.prompt).to_ascii_lowercase();
+    let explicitly_absent = [
+        "subject-free",
+        "protagonist-free",
+        "animal-only",
+        "environment-only",
+        "without the vlogger",
+        "vlogger is absent",
+        "vlogger remains off-screen",
+        "vlogger remains offscreen",
+    ]
+    .iter()
+    .any(|marker| description.contains(marker))
+        || subjects.iter().any(|subject| {
+            [format!("no {subject}"), format!("without {subject}")]
+                .iter()
+                .any(|marker| description.contains(marker))
+        });
+    explicitly_absent || !subjects.iter().any(|subject| description.contains(subject))
+}
+
+fn audio_reference_describes_speech(description: &str) -> bool {
+    let lower = description.to_ascii_lowercase();
+    [
+        "voice",
+        "spoken",
+        "speech",
+        "dialogue",
+        "dialog",
+        "narration",
+        "narrator",
+        "vocal",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn has_quoted_spoken_line(prompt: &str) -> bool {
+    [('"', '"'), ('“', '”'), ('‘', '’')]
+        .iter()
+        .any(|(opening, closing)| {
+            let Some(start) = prompt.find(*opening) else {
+                return false;
+            };
+            let remainder = &prompt[start + opening.len_utf8()..];
+            let Some(end) = remainder.find(*closing) else {
+                return false;
+            };
+            remainder[..end]
+                .split_whitespace()
+                .filter(|word| word.chars().any(char::is_alphabetic))
+                .count()
+                >= 2
+        })
+}
+
+fn distinctive_prompt_similarity(left: &str, right: &str) -> f32 {
+    const BOILERPLATE: &[&str] = &[
+        "about",
+        "after",
+        "again",
+        "ambient",
+        "audio",
+        "camera",
+        "clip",
+        "continue",
+        "continues",
+        "during",
+        "frame",
+        "handheld",
+        "immersive",
+        "natural",
+        "scene",
+        "shot",
+        "sound",
+        "sounds",
+        "their",
+        "through",
+        "toward",
+        "vlogger",
+        "while",
+        "with",
+    ];
+    let tokens = |prompt: &str| {
+        prompt
+            .to_ascii_lowercase()
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|token| token.len() >= 4 && !BOILERPLATE.contains(token))
+            .map(str::to_owned)
+            .collect::<HashSet<_>>()
+    };
+    let left = tokens(left);
+    let right = tokens(right);
+    let union = left.union(&right).count();
+    if union == 0 {
+        return 0.0;
+    }
+    left.intersection(&right).count() as f32 / union as f32
 }
 
 fn requested_duration_range(prompt: &str) -> Option<(f32, f32)> {
@@ -2735,7 +3406,8 @@ fn maximum_timecode_seconds(prompt: &str) -> Option<f32> {
         {
             index += 1;
         }
-        let token = characters[start..index].iter().collect::<String>();
+        let raw_token = characters[start..index].iter().collect::<String>();
+        let token = raw_token.trim_end_matches(':');
         let seconds = if let Some((minutes, seconds)) = token.split_once(':') {
             match (minutes.parse::<f32>(), seconds.parse::<f32>()) {
                 (Ok(minutes), Ok(seconds))
@@ -2767,6 +3439,14 @@ fn maximum_timecode_seconds(prompt: &str) -> Option<f32> {
 }
 
 fn seconds_token_is_timing_context(characters: &[char], start: usize, end: usize) -> bool {
+    if start >= 2
+        && ['-', '\u{2013}', '\u{2014}'].contains(&characters[start - 1])
+        && characters[start - 2].is_alphabetic()
+        && characters[start - 2] != 's'
+    {
+        // Do not interpret prose such as "mid-30s" as a 30-second shot marker.
+        return false;
+    }
     let previous = characters[..start]
         .iter()
         .rev()
@@ -2803,6 +3483,7 @@ fn has_timed_structure(lower_prompt: &str) -> bool {
         "beat one",
         "timed beat",
         "[0",
+        "0:",
         "0s",
         "0 s",
         "0-",
@@ -3542,6 +4223,10 @@ mod tests {
         assert!(prompt.contains("movie_workspace"));
         let tools = MovieAgentWorkspace::tools();
         assert_eq!(tools.as_array().unwrap().len(), 1);
+        assert_eq!(
+            tools.pointer("/0/function/parameters/properties/files/maxItems"),
+            Some(&json!(8))
+        );
         let request = movie_agent_request(
             "bonsai",
             &[json!({"role":"user","content":"open the workspace"})],
@@ -3631,6 +4316,19 @@ mod tests {
             None
         );
         assert_eq!(
+            maximum_timecode_seconds(
+                "A mid-30s African man waits. 0:00-0:03 wide; 0:09-0:12 hold."
+            ),
+            Some(12.0)
+        );
+        assert_eq!(
+            maximum_timecode_seconds("0:00-0:08: action. 0:08-0:10: final hold."),
+            Some(10.0)
+        );
+        assert!(has_timed_structure(
+            "0:00-0:03 wide; 0:03-0:06 medium; 0:06-0:12 hold"
+        ));
+        assert_eq!(
             maximum_timecode_seconds("[0s-20s] overlong action"),
             Some(20.0)
         );
@@ -3639,12 +4337,424 @@ mod tests {
         plan.clips[2].title = "Childhood flashback".into();
         plan.clips[2].purpose = "A memory from the past".into();
         plan.clips[2].reference_ids = vec![audio_id];
+        let long_form_issues = producer_intent_issues(
+            "Make the finished film about 2-3 minutes.",
+            &plan,
+            std::slice::from_ref(&reference),
+        )
+        .join(" ");
+        assert!(long_form_issues.contains("no exact previous-frame continuation"));
+        plan.clips[1].use_previous_frame = true;
+        plan.clips[0].continuity_out =
+            "The camera holds on the same subject and handoff pose.".into();
+        plan.clips[1].continuity_in =
+            "Continue the same subject, pose, light, and screen direction.".into();
         assert!(producer_intent_issues(
             "Make the finished film about 2-3 minutes.",
             &plan,
             &[reference],
         )
         .is_empty());
+        assert!(continuity_handoff_matches(
+            &plan.clips[0].continuity_out,
+            &plan.clips[1].continuity_in
+        ));
+        plan.clips[1].continuity_in =
+            "Kwame smiles in a present-day close-up after the memory ends.".into();
+        assert!(prompt_quality_issues(&plan, &[])
+            .join(" ")
+            .contains("do not share at least two concrete handoff anchors"));
+        plan.clips[1].continuity_in =
+            "Continue the same subject, pose, light, and screen direction.".into();
+        plan.clips[0].transition = "end of film".into();
+        let final_clip = plan.clips.len() - 1;
+        plan.clips[final_clip].transition = "cut to next scene".into();
+        let transition_issues = prompt_quality_issues(&plan, &[]).join(" ");
+        assert!(transition_issues.contains("declares a terminal"));
+        assert!(transition_issues.contains("but no later scene exists"));
+    }
+
+    #[test]
+    fn native_gate_requires_identity_conditioning_on_independent_appearances() {
+        let identity_id = "vlogger-picture".to_string();
+        let reference = MovieReference {
+            asset_id: identity_id.clone(),
+            tag: "<Picture 1>".into(),
+            audio_tag: String::new(),
+            name: "vlogger.png".into(),
+            kind: "image".into(),
+            mime_type: "image/png".into(),
+            bytes: 1,
+            duration_seconds: 0.0,
+            width: 1024,
+            height: 1024,
+            has_audio: false,
+            path: "vlogger.png".into(),
+            description: "This is the vlogger's identity reference. Whenever he appears, preserve his face and wardrobe.".into(),
+            use_embedded_audio: false,
+            embedded_audio_description: String::new(),
+        };
+        let clip = |title: &str, purpose: &str| PlannedClip {
+            id: String::new(),
+            title: title.into(),
+            purpose: purpose.into(),
+            duration_seconds: 10.0,
+            prompt: "A detailed timed live-action scene with camera, lighting, and sound.".into(),
+            continuity_in: "Continue the same subject and pose.".into(),
+            continuity_out: "Hold the subject in the same pose.".into(),
+            transition: "cut".into(),
+            use_previous_frame: false,
+            source_refs: vec![],
+            reference_ids: vec![],
+        };
+        let mut plan = MoviePlan {
+            title: "Test".into(),
+            logline: "A vlogger explores a forest.".into(),
+            audience: "Film buyers".into(),
+            creative_direction: "Live-action reference test".into(),
+            continuity_bible: vec![
+                "Vlogger: Kwame, with the same face and wardrobe throughout.".into(),
+            ],
+            source_credits: vec![],
+            quality_review: MovieQualityReview::default(),
+            clips: vec![
+                clip("Vlogger arrives", "Show the vlogger entering the forest"),
+                clip("Vlogger reacts", "Close-up of the vlogger's face"),
+                clip(
+                    "Animal insert",
+                    "Vlogger POV; the vlogger remains off-screen",
+                ),
+            ],
+        };
+        plan.clips[0].reference_ids = vec![identity_id.clone()];
+        let issues =
+            producer_intent_issues("Make a short film", &plan, std::slice::from_ref(&reference));
+        assert_eq!(
+            identity_reference_subject(&reference.description).as_deref(),
+            Some("vlogger")
+        );
+        let aliases = identity_subject_aliases(&plan, "vlogger");
+        assert_eq!(aliases, vec!["vlogger", "kwame"]);
+        plan.continuity_bible = vec![
+            "description: The recurring presenter; name: Amina; subject: Vlogger; wardrobe: field jacket"
+                .into(),
+        ];
+        assert_eq!(
+            identity_subject_aliases(&plan, "vlogger"),
+            vec!["vlogger", "amina"]
+        );
+        plan.continuity_bible =
+            vec!["Vlogger: Kwame, with the same face and wardrobe throughout.".into()];
+        assert_eq!(
+            identity_subject_aliases(
+                &MoviePlan {
+                    continuity_bible: vec![
+                        "Tariq, a 34-year-old Somali vlogger with short natural hair, appears throughout."
+                            .into(),
+                    ],
+                    ..plan.clone()
+                },
+                "vlogger"
+            ),
+            vec!["vlogger", "tariq"]
+        );
+        assert_eq!(
+            identity_subject_aliases(
+                &MoviePlan {
+                    continuity_bible: vec![
+                        "Vlogger Kofi: Black male, short natural hair, olive field overshirt."
+                            .into(),
+                        "Vlogger equipment: compact camera and stabilizer.".into(),
+                    ],
+                    ..plan.clone()
+                },
+                "vlogger"
+            ),
+            vec!["vlogger", "kofi"]
+        );
+        assert_eq!(
+            identity_subject_aliases(
+                &MoviePlan {
+                    continuity_bible: vec![
+                        "Vlogger Kwame Osei (29) is a Black male with short natural hair and a trimmed beard."
+                            .into(),
+                    ],
+                    ..plan.clone()
+                },
+                "vlogger"
+            ),
+            vec!["vlogger", "kwame"]
+        );
+        assert!(clip_visibly_names_subject(
+            &clip("Kwame reacts", "Close-up of Kwame in the present day"),
+            &aliases
+        ));
+        assert!(clip_visibly_names_subject(
+            &clip("Childhood Kwame", "Young Kwame remembers the jungle"),
+            &aliases
+        ));
+        assert!(clip_visibly_names_subject(
+            &clip(
+                "Vlogger raises camera",
+                "The vlogger is visible before a POV transition"
+            ),
+            &aliases
+        ));
+        let absent_clip = clip(
+            "Jungle atmosphere",
+            "Environment-only coverage with no vlogger",
+        );
+        assert!(!clip_visibly_names_subject(&absent_clip, &aliases));
+        assert!(clip_is_independent_subject_free(&absent_clip, &aliases));
+        let mut age_variant_plan = plan.clone();
+        age_variant_plan.clips = vec![clip(
+            "Childhood Kwame",
+            "Young Kwame remembers his first jungle encounter",
+        )];
+        assert!(producer_intent_issues(
+            "Make a short film",
+            &age_variant_plan,
+            std::slice::from_ref(&reference)
+        )
+        .join(" ")
+        .contains("scene(s) 1"));
+        age_variant_plan.clips[0].reference_ids = vec![identity_id.clone()];
+        assert!(producer_intent_issues(
+            "Make a short film",
+            &age_variant_plan,
+            std::slice::from_ref(&reference)
+        )
+        .join(" ")
+        .contains("cannot guarantee this age transformation"));
+        age_variant_plan.clips[0].prompt =
+            "A 10-year-old child with the same trimmed beard walks through the jungle.".into();
+        assert!(
+            prompt_quality_issues(&age_variant_plan, std::slice::from_ref(&reference))
+                .join(" ")
+                .contains("child while retaining adult facial hair")
+        );
+        let mut child_reference = reference.clone();
+        child_reference.description = "This is the vlogger's identity reference for the child version. Whenever he appears, preserve his face and wardrobe.".into();
+        age_variant_plan.clips[0].prompt = "A child walks through the jungle.".into();
+        assert!(producer_intent_issues(
+            "Make a short film",
+            &age_variant_plan,
+            std::slice::from_ref(&child_reference)
+        )
+        .is_empty());
+        assert!(issues.join(" ").contains("scene(s) 2"));
+        assert!(!issues.join(" ").contains("scene(s) 3"));
+
+        plan.clips[1].use_previous_frame = true;
+        assert!(producer_intent_issues(
+            "Make a short film",
+            &plan,
+            std::slice::from_ref(&reference)
+        )
+        .is_empty());
+
+        plan.clips[2].reference_ids = vec!["vlogger-picture".into()];
+        let issues = producer_intent_issues("Make a short film", &plan, &[reference]);
+        assert!(issues
+            .join(" ")
+            .contains("scene(s) 3 do not visibly feature"));
+    }
+
+    #[test]
+    fn spoken_audio_reference_requires_voice_assignment_and_exact_dialogue() {
+        let reference = MovieReference {
+            asset_id: "memory-voice".into(),
+            tag: "<Audio 1>".into(),
+            audio_tag: String::new(),
+            name: "memory.wav".into(),
+            kind: "audio".into(),
+            mime_type: "audio/wav".into(),
+            bytes: 1,
+            duration_seconds: 8.0,
+            width: 0,
+            height: 0,
+            has_audio: true,
+            path: "memory.wav".into(),
+            description: "A spoken voice reference for the flashback narrator.".into(),
+            use_embedded_audio: false,
+            embedded_audio_description: String::new(),
+        };
+        let mut plan = MoviePlan {
+            title: "Memory".into(),
+            logline: "A remembered warning returns.".into(),
+            audience: "Film buyers".into(),
+            creative_direction: "Live action".into(),
+            continuity_bible: vec!["The narrator remains consistent.".into()],
+            source_credits: vec![],
+            quality_review: MovieQualityReview::default(),
+            clips: vec![PlannedClip {
+                id: String::new(),
+                title: "Flashback".into(),
+                purpose: "The narrator remembers a warning.".into(),
+                duration_seconds: 8.0,
+                prompt: "A recorded spoken memory begins over the jungle ambience.".into(),
+                continuity_in: "Dissolve into the memory.".into(),
+                continuity_out: "Hold on the remembered clearing.".into(),
+                transition: "Dissolve".into(),
+                use_previous_frame: false,
+                source_refs: vec![],
+                reference_ids: vec!["memory-voice".into()],
+            }],
+        };
+        assert!(
+            producer_intent_issues("Make a film", &plan, std::slice::from_ref(&reference))
+                .join(" ")
+                .contains("state exact dialogue in quotation marks")
+        );
+
+        plan.clips[0].prompt = "Use the supplied voice reference as the narrator's vocal timbre. The narrator says exactly: \"Listen first, then look.\" Jungle ambience remains underneath.".into();
+        assert!(producer_intent_issues("Make a film", &plan, &[reference]).is_empty());
+    }
+
+    #[test]
+    fn long_form_identity_story_requires_real_subject_free_coverage() {
+        let reference = MovieReference {
+            asset_id: "lead-picture".into(),
+            tag: "<Picture 1>".into(),
+            audio_tag: String::new(),
+            name: "lead.png".into(),
+            kind: "image".into(),
+            mime_type: "image/png".into(),
+            bytes: 1,
+            duration_seconds: 0.0,
+            width: 1,
+            height: 1,
+            has_audio: false,
+            path: "lead.png".into(),
+            description: "The vlogger's identity reference.".into(),
+            use_embedded_audio: false,
+            embedded_audio_description: String::new(),
+        };
+        let clip = PlannedClip {
+            id: String::new(),
+            title: "Vlogger journey".into(),
+            purpose: "The vlogger walks through the forest.".into(),
+            duration_seconds: 10.0,
+            prompt: "The vlogger remains visible during this forest scene.".into(),
+            continuity_in: "Independent cut.".into(),
+            continuity_out: "The vlogger keeps walking.".into(),
+            transition: "Cut".into(),
+            use_previous_frame: false,
+            source_refs: vec![],
+            reference_ids: vec!["lead-picture".into()],
+        };
+        let mut plan = MoviePlan {
+            title: "Journey".into(),
+            logline: "A vlogger crosses a forest.".into(),
+            audience: "Film buyers".into(),
+            creative_direction: "Live action".into(),
+            continuity_bible: vec!["Vlogger: Kwame, wearing the same field jacket.".into()],
+            source_credits: vec![],
+            quality_review: MovieQualityReview::default(),
+            clips: vec![clip; 12],
+        };
+        let issues = producer_intent_issues(
+            "Make a 2 to 3 minute film",
+            &plan,
+            std::slice::from_ref(&reference),
+        )
+        .join(" ");
+        assert!(issues.contains("no independently cut subject-free coverage"));
+
+        let insert = plan.clips.last_mut().unwrap();
+        insert.title = "Animal-only insert".into();
+        insert.purpose =
+            "Environment-only wildlife coverage; the vlogger remains off-screen.".into();
+        insert.prompt = "A forest animal crosses the clearing without the vlogger.".into();
+        insert.reference_ids.clear();
+        assert!(
+            !producer_intent_issues("Make a 2 to 3 minute film", &plan, &[reference])
+                .join(" ")
+                .contains("no independently cut subject-free coverage")
+        );
+    }
+
+    #[test]
+    fn native_gate_rejects_duplicate_organized_scenes() {
+        let clip = PlannedClip {
+            id: String::new(),
+            title: "Back to the Present".into(),
+            purpose: "Return to the vlogger's present-day reaction.".into(),
+            duration_seconds: 10.0,
+            prompt: "A placeholder prompt for duplicate detection.".into(),
+            continuity_in: "Independent cut".into(),
+            continuity_out: "The vlogger holds still".into(),
+            transition: "Hard cut".into(),
+            use_previous_frame: false,
+            source_refs: vec![],
+            reference_ids: vec![],
+        };
+        let plan = MoviePlan {
+            title: "Test".into(),
+            logline: "A memory returns to the present.".into(),
+            audience: "Film buyers".into(),
+            creative_direction: "Live action".into(),
+            continuity_bible: vec!["The vlogger remains visually consistent.".into()],
+            source_credits: vec![],
+            quality_review: MovieQualityReview::default(),
+            clips: vec![clip.clone(), clip],
+        };
+        assert!(prompt_quality_issues(&plan, &[])
+            .join(" ")
+            .contains("Clips 1 and 2 duplicate"));
+    }
+
+    #[test]
+    fn native_gate_rejects_near_duplicate_runtime_padding() {
+        let repeated = "At twilight the traveler walks toward the forest edge, pauses beneath the indigo sky, looks back with quiet gratitude, breathes slowly, and resumes the journey while distant birds and wind fade through the trees.";
+        let clip = |title: &str, purpose: &str| PlannedClip {
+            id: String::new(),
+            title: title.into(),
+            purpose: purpose.into(),
+            duration_seconds: 8.0,
+            prompt: repeated.into(),
+            continuity_in: "The walk continues.".into(),
+            continuity_out: "The traveler keeps walking.".into(),
+            transition: "Cut".into(),
+            use_previous_frame: false,
+            source_refs: vec![],
+            reference_ids: vec![],
+        };
+        let plan = MoviePlan {
+            title: "Test".into(),
+            logline: "A traveler leaves the forest.".into(),
+            audience: "Film buyers".into(),
+            creative_direction: "Live action".into(),
+            continuity_bible: vec!["Twilight deepens consistently.".into()],
+            source_credits: vec![],
+            quality_review: MovieQualityReview::default(),
+            clips: vec![
+                clip("Journey Home", "The traveler approaches the forest edge."),
+                clip("Last Look", "The traveler reflects before leaving."),
+            ],
+        };
+        assert!(prompt_quality_issues(&plan, &[])
+            .join(" ")
+            .contains("near-duplicate renderer direction"));
+    }
+
+    #[test]
+    fn offline_plan_rejects_fabricated_source_credits() {
+        let mut plan = MoviePlan {
+            title: "Forest".into(),
+            logline: "A traveler enters a forest.".into(),
+            audience: "Film buyers".into(),
+            creative_direction: "Live action".into(),
+            continuity_bible: vec!["The forest remains consistent.".into()],
+            source_credits: vec!["Inspired by Example Institute research".into()],
+            quality_review: MovieQualityReview::default(),
+            clips: vec![],
+        };
+        assert!(producer_intent_issues("Make a forest film", &plan, &[])
+            .join(" ")
+            .contains("invents source credits"));
+        plan.source_credits.clear();
+        assert!(producer_intent_issues("Make a forest film", &plan, &[]).is_empty());
     }
 
     #[test]
@@ -3699,6 +4809,36 @@ mod tests {
         let conflict_issues = prompt_quality_issues(&conflict, &[reference]).join(" ");
         assert!(conflict_issues.contains("mutually exclusive fl2va and ref2va"));
         assert!(conflict_issues.contains("Minimally reorganize this boundary"));
+        let mut false_continuation = plan.clone();
+        false_continuation.clips[0].purpose =
+            "A continuous shot from the previous scene follows the actor's reaction.".into();
+        assert!(prompt_quality_issues(&false_continuation, &[])
+            .join(" ")
+            .contains("usePreviousFrame is false"));
+        let mut unquoted_speech = plan.clone();
+        unquoted_speech.clips[0].purpose = "The narrator speaks about the discovery.".into();
+        assert!(prompt_quality_issues(&unquoted_speech, &[])
+            .join(" ")
+            .contains("speech or narration without exact quoted words"));
+        unquoted_speech.clips[0]
+            .prompt
+            .push_str(" The narrator says exactly: \"Listen first, then look.\"");
+        assert!(!prompt_quality_issues(&unquoted_speech, &[])
+            .join(" ")
+            .contains("speech or narration without exact quoted words"));
+        let mut ambiguous_murmur = plan.clone();
+        ambiguous_murmur.clips[0]
+            .prompt
+            .push_str(" No dialogue. A low murmur of awe is barely audible.");
+        assert!(prompt_quality_issues(&ambiguous_murmur, &[])
+            .join(" ")
+            .contains("speech or narration without exact quoted words"));
+        ambiguous_murmur.clips[0]
+            .prompt
+            .push_str(" The murmur is explicitly wordless and nonverbal.");
+        assert!(!prompt_quality_issues(&ambiguous_murmur, &[])
+            .join(" ")
+            .contains("speech or narration without exact quoted words"));
         plan.clips[0].prompt = "A nice cinematic image with sound.".into();
         let issues = prompt_quality_issues(&plan, &[]).join(" ");
         assert!(issues.contains("120-450 words"));
@@ -3713,7 +4853,7 @@ mod tests {
             "Camera tracks the subject through timed beats with live-action film lighting and textured production design while the audio carries ambience, sound effects, and score from asset {asset_id}. "
         )
         .repeat(9);
-        let plan = MoviePlan {
+        let mut plan = MoviePlan {
             title: "Test".into(),
             logline: "Test".into(),
             audience: "Film buyers".into(),
@@ -3752,8 +4892,11 @@ mod tests {
             "description": "flashback only"
         }))
         .unwrap();
-        let issues = prompt_quality_issues(&plan, &[reference]).join(" ");
+        let issues = prompt_quality_issues(&plan, std::slice::from_ref(&reference)).join(" ");
         assert!(issues.contains("internal asset ID"));
+        plan.clips[0].purpose = "The audio-1 spoken memory continues here.".into();
+        let issues = prompt_quality_issues(&plan, &[reference]).join(" ");
+        assert!(issues.contains("workspace reference ID audio-1"));
     }
 
     #[test]
@@ -4101,7 +5244,7 @@ mod tests {
                             },
                             ProducerReferenceRequest {
                                 asset_id: audio_id.clone(),
-                                description: "This exact 11.49-second spoken memory recording belongs only in the film's flashback scene. Do not assign it to a present-day scene or to any other clip.".into(),
+                                description: "This spoken voice and vocal-timbre reference belongs only in the film's flashback scene. Use its speaker identity for short original dialogue stated exactly in the clip prompt. Do not assign it to a present-day scene or to any other clip.".into(),
                                 use_embedded_audio: false,
                                 embedded_audio_description: String::new(),
                             },
@@ -4161,15 +5304,28 @@ mod tests {
                 .filter(|(_, clip)| clip.use_previous_frame)
                 .map(|(index, _)| index + 1)
                 .collect::<Vec<_>>();
+            let vlogger_aliases = identity_subject_aliases(&plan, "vlogger");
+            let subject_free_clips = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| {
+                    !clip.use_previous_frame
+                        && !clip.reference_ids.contains(&picture_id)
+                        && clip_is_independent_subject_free(clip, &vlogger_aliases)
+                })
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
             eprintln!(
-                "AFRICA ACCEPTANCE PLAN: {} clips, {:.1}s planned, quality {}/100 after {} attempt(s)\nPicture clips: {:?}\nAudio clips: {:?}\nPrevious-frame continuations: {:?}",
+                "AFRICA ACCEPTANCE PLAN: {} clips, {:.1}s planned, quality {}/100 after {} attempt(s)\nPicture clips: {:?}\nAudio clips: {:?}\nPrevious-frame continuations: {:?}\nSubject-free clips: {:?}",
                 plan.clips.len(),
                 planned_seconds,
                 plan.quality_review.score,
                 plan.quality_review.attempts,
                 picture_clips,
                 audio_clips,
-                continuations
+                continuations,
+                subject_free_clips
             );
             for (index, clip) in plan.clips.iter().enumerate() {
                 eprintln!(
@@ -4205,10 +5361,9 @@ mod tests {
                 continuations
                     .is_empty()
                     .then(|| "plan contains no exact previous-frame continuation".to_string()),
-                (picture_clips.len() == plan.clips.len()).then(|| {
-                    "every scene uses the vlogger identity image; no character-free scene exists"
-                        .to_string()
-                }),
+                subject_free_clips
+                    .is_empty()
+                    .then(|| "no independently cut protagonist-free scene exists".to_string()),
             ]
             .into_iter()
             .flatten()
@@ -4224,6 +5379,7 @@ mod tests {
                     "pictureClips": picture_clips,
                     "audioClips": audio_clips,
                     "previousFrameContinuations": continuations,
+                    "subjectFreeClips": subject_free_clips,
                     "planningGateIssues": prompt_quality_issues(&plan, &planned.references),
                 }),
             )
