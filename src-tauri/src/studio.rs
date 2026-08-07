@@ -1104,7 +1104,11 @@ impl MovieStudio {
         project.status = "running".into();
         project.phase = "resuming".into();
         project.error.clear();
-        project.detail = "Resuming from the last preserved H3 master.".into();
+        project.detail = if project.plan.is_some() {
+            "Resuming from the last preserved H3 master.".into()
+        } else {
+            "Resuming Bonsai from the durable movie workspace.".into()
+        };
         self.persist_emit(&mut project, app)?;
         Ok(project)
     }
@@ -1267,6 +1271,7 @@ impl MovieStudio {
         app: Option<&AppHandle>,
     ) -> Result<MoviePlan, StudioError> {
         let workspace_root = self.project_dir(&project.id).join("agent-workspace");
+        let resuming_existing_workspace = workspace_root.join("movie.json").is_file();
         let transcript_path = workspace_root.join("agent-transcript.json");
         let mut workspace = MovieAgentWorkspace::open(
             workspace_root,
@@ -1295,10 +1300,10 @@ impl MovieStudio {
                         .join(format!("agent-transcript-session-{:03}.json", session - 1)),
                 )?;
             }
-            let instruction = if session == 1 {
+            let instruction = if session == 1 && !resuming_existing_workspace {
                 "Open the movie workspace, read its contract and producer brief, then build, lint, code-review, and submit the complete movie. Work autonomously until the workspace accepts submit."
             } else {
-                "Resume the existing durable movie workspace after a context checkpoint. List and inspect its current files, run check first to obtain current diagnostics, then repair only affected files, perform the full review, run the required clean checks, and submit. Do not restart or replace sound work already present."
+                "Resume the existing durable movie workspace after a context checkpoint. List and inspect its current files, then run check first. If check says the review is clean and instructs you to submit without changing files, submit immediately. Otherwise repair only affected files, preserve sound work already present, perform the full review, run the required clean checks, and submit."
             };
             let mut messages = vec![
                 json!({"role":"system","content":movie_agent_prompt()}),
@@ -2616,51 +2621,9 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
         let lower = clip.prompt.to_ascii_lowercase();
         let organized_direction =
             format!("{} {} {}", clip.title, clip.purpose, clip.prompt).to_ascii_lowercase();
-        let directs_speech = [
-            "dialogue",
-            "narrat",
-            "spoken",
-            "speaks",
-            "speak ",
-            "speaking",
-            " says",
-            "saying",
-            "introduces himself",
-            "introduces herself",
-            "murmur",
-            "mumble",
-            "mutters",
-            "utter",
-            "whisper",
-            "voice-over",
-            "voiceover",
-        ]
-        .iter()
-        .any(|marker| organized_direction.contains(marker));
-        let explicitly_silent = [
-            "no dialogue",
-            "without dialogue",
-            "does not speak",
-            "remains silent",
-            "silent reaction",
-        ]
-        .iter()
-        .any(|marker| organized_direction.contains(marker));
-        let explicitly_nonverbal = [
-            "nonverbal",
-            "non-verbal",
-            "wordless",
-            "no words",
-            "without words",
-        ]
-        .iter()
-        .any(|marker| organized_direction.contains(marker));
-        if directs_speech
-            && !(explicitly_silent && explicitly_nonverbal)
-            && !has_quoted_spoken_line(&clip.prompt)
-        {
+        if directs_unquoted_speech(&organized_direction) && !has_quoted_spoken_line(&clip.prompt) {
             issues.push(format!(
-                "Clip {} directs speech or narration without exact quoted words. H3 will otherwise invent language and can produce fluent-sounding nonsense. Write short dialogue in quotation marks that comfortably fits the {:.1}s native duration, or explicitly direct a silent/no-dialogue performance.",
+                "Clip {} directs speech or narration without exact quoted words. H3 will otherwise invent language and can produce fluent-sounding nonsense. Write short dialogue in quotation marks that comfortably fits the {:.1}s native duration, or state `No dialogue or narration.` If an audible murmur, mumble, or whisper is intentional but contains no language, state that it is `wordless and nonverbal`.",
                 index + 1,
                 clip.duration_seconds
             ));
@@ -3302,8 +3265,33 @@ fn clip_visibly_names_subject(clip: &PlannedClip, subjects: &[String]) -> bool {
             .iter()
             .any(|marker| description.contains(marker))
     });
+    let subject_explicitly_visible = subjects.iter().any(|subject| {
+        [
+            format!("{subject} is visible"),
+            format!("{subject} visible"),
+            format!("show the {subject}"),
+            format!("shows the {subject}"),
+            format!("{subject} appears"),
+            format!("{subject} in frame"),
+            format!("{subject} on camera"),
+        ]
+        .iter()
+        .any(|marker| description.contains(marker))
+    });
+    let subject_pov_only = subjects.iter().any(|subject| {
+        [
+            format!("{subject} pov"),
+            format!("{subject}'s pov"),
+            format!("what the {subject} sees"),
+            format!("from the {subject}'s perspective"),
+            format!("{subject}'s subjective point of view"),
+        ]
+        .iter()
+        .any(|marker| description.contains(marker))
+    });
     subject_named
         && !subject_explicitly_absent
+        && (!subject_pov_only || subject_explicitly_visible)
         && ![
             "offscreen",
             "off-screen",
@@ -3354,6 +3342,131 @@ fn audio_reference_describes_speech(description: &str) -> bool {
     ]
     .iter()
     .any(|marker| lower.contains(marker))
+}
+
+fn directs_unquoted_speech(direction: &str) -> bool {
+    let direction = direction.to_ascii_lowercase();
+    let mut affirmative = direction.clone();
+    for negative in [
+        "no speech, narration, or dialogue",
+        "no dialogue, speech, or narration",
+        "no dialogue or narration",
+        "no speech or narration",
+        "without dialogue or narration",
+        "without speech or narration",
+        "no spoken dialogue",
+        "no spoken words",
+        "without spoken dialogue",
+        "without spoken words",
+        "no-dialogue",
+        "no-speech",
+        "no-narration",
+        "no dialogue",
+        "no speech",
+        "no narration",
+        "without dialogue",
+        "without speech",
+        "without narration",
+        "does not speak",
+        "do not speak",
+        "never speaks",
+        "never speak",
+    ] {
+        affirmative = affirmative.replace(negative, " ");
+    }
+
+    let words = affirmative
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '-')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let directs_lexical_speech = words.iter().any(|word| {
+        [
+            "dialogue",
+            "mutter",
+            "mutters",
+            "narrate",
+            "narrated",
+            "narrates",
+            "narrating",
+            "narration",
+            "narrator",
+            "saying",
+            "says",
+            "speak",
+            "speaking",
+            "speaks",
+            "spoken",
+            "utter",
+            "uttering",
+            "utters",
+            "voice-over",
+            "voiceover",
+        ]
+        .contains(word)
+    }) || affirmative.contains("introduces himself")
+        || affirmative.contains("introduces herself");
+    if directs_lexical_speech {
+        return true;
+    }
+
+    let explicitly_nonverbal = [
+        "nonverbal",
+        "non-verbal",
+        "wordless",
+        "no words",
+        "without words",
+    ]
+    .iter()
+    .any(|marker| direction.contains(marker));
+    !explicitly_nonverbal && contains_non_environmental_vocalization(&affirmative)
+}
+
+fn contains_non_environmental_vocalization(direction: &str) -> bool {
+    let words = direction
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '-')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    for (index, word) in words.iter().enumerate() {
+        if ![
+            "murmur", "murmurs", "mumble", "mumbles", "whisper", "whispers",
+        ]
+        .contains(word)
+        {
+            continue;
+        }
+        let nearby = &words[index.saturating_sub(3)..index];
+        if nearby.iter().any(|word| {
+            [
+                "actor",
+                "boy",
+                "character",
+                "child",
+                "dog",
+                "girl",
+                "man",
+                "narrator",
+                "person",
+                "speaker",
+                "subject",
+                "woman",
+            ]
+            .contains(word)
+        }) {
+            return true;
+        }
+        if nearby.iter().any(|word| {
+            [
+                "air", "branch", "branches", "canopy", "dust", "foliage", "forest", "grass",
+                "leaf", "leaves", "rain", "reeds", "sand", "stream", "tree", "trees", "water",
+                "wind", "winds",
+            ]
+            .contains(word)
+        }) {
+            continue;
+        }
+        return true;
+    }
+    false
 }
 
 fn has_quoted_spoken_line(prompt: &str) -> bool {
@@ -4601,6 +4714,13 @@ mod tests {
             ),
             &aliases
         ));
+        assert!(!clip_visibly_names_subject(
+            &identity_clip(
+                "Earth view subjective",
+                "Subjective POV: what the vlogger sees from the moon"
+            ),
+            &aliases
+        ));
         let absent_clip = identity_clip(
             "Jungle atmosphere",
             "Environment-only coverage with no vlogger",
@@ -4968,6 +5088,37 @@ mod tests {
         assert!(issues.contains("120-450 words"));
         assert!(issues.contains("camera direction"));
         assert!(issues.contains("timed shot or beat structure"));
+    }
+
+    #[test]
+    fn speech_gate_understands_negation_and_environmental_sound() {
+        assert!(!directs_unquoted_speech(
+            "No dialogue or narration. Environmental audio only: wind whispers through the leaves."
+        ));
+        assert!(!directs_unquoted_speech(
+            "Silent/no-dialogue performance; environmental sound only."
+        ));
+        assert!(!directs_unquoted_speech(
+            "No speech or audio other than environment."
+        ));
+        assert!(!directs_unquoted_speech(
+            "The cat's expression is one of complete, unspoken awe. No dialogue or narration."
+        ));
+        assert!(!directs_unquoted_speech(
+            "An utterly still visual narrative with no speech."
+        ));
+        assert!(directs_unquoted_speech(
+            "No dialogue. A low murmur of awe is barely audible."
+        ));
+        assert!(!directs_unquoted_speech(
+            "No dialogue. The murmur is explicitly wordless and nonverbal."
+        ));
+        assert!(directs_unquoted_speech(
+            "The narrator speaks about the discovery."
+        ));
+        assert!(directs_unquoted_speech(
+            "No dialogue. The dog whispers into the darkness."
+        ));
     }
 
     #[test]
@@ -5596,6 +5747,212 @@ mod tests {
             rendered_seconds, project.final_path
         );
         assert!((115.0..=195.0).contains(&rendered_seconds));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KESTREL_ACCEPTANCE_LIBRARY, KESTREL_ACCEPTANCE_PICTURE, installed Bonsai, MiniMax H3, ComfyUI, FFmpeg, and several hours"]
+    async fn live_long_moon_cat_reference_movie() {
+        let library = std::env::var_os("KESTREL_ACCEPTANCE_LIBRARY")
+            .map(PathBuf::from)
+            .expect("KESTREL_ACCEPTANCE_LIBRARY must point to the durable Kestrel library");
+        let picture = std::env::var_os("KESTREL_ACCEPTANCE_PICTURE")
+            .map(PathBuf::from)
+            .expect("KESTREL_ACCEPTANCE_PICTURE must point to the cat identity image");
+        assert!(picture.is_file(), "missing picture: {}", picture.display());
+
+        let studio = MovieStudio::new(&library).unwrap();
+        let picture_asset = studio.import_reference_path(&picture).unwrap();
+        let picture_id = picture_asset.id.clone();
+        let research = ResearchSettings::default();
+        let runtime = Arc::new(RuntimeManager::new());
+        let cancel = CancellationToken::new();
+        let producer_prompt = "A cat lowers his pawn in a glowing, misty moon, completely amazed by a beautiful view of earth. the reference image is the cat. Make the finished film about 2 to 3 minutes.";
+        let existing_project_id = std::env::var("KESTREL_ACCEPTANCE_PROJECT_ID").ok();
+
+        let result: Result<(MovieProject, MoviePlan), String> = async {
+            eprintln!("MOON CAT ACCEPTANCE: releasing ComfyUI memory before Bonsai planning");
+            studio.release_comfy_memory().await;
+            let project = if let Some(id) = existing_project_id.as_deref() {
+                studio
+                    .begin_resume(id, None)
+                    .map_err(|error| error.to_string())?
+            } else {
+                studio
+                    .create(
+                    StartMovieRequest {
+                        prompt: producer_prompt.into(),
+                        settings: MovieSettings {
+                            width: 864,
+                            height: 480,
+                            clip_seconds: 10.0,
+                            steps: 20,
+                            max_clips: 18,
+                            seed: 20_260_807,
+                            ..MovieSettings::default()
+                        },
+                        references: vec![ProducerReferenceRequest {
+                            asset_id: picture_id.clone(),
+                            description: "This is the cat's identity reference.".into(),
+                            use_embedded_audio: false,
+                            embedded_audio_description: String::new(),
+                        }],
+                        pause_after_plan: false,
+                    },
+                    true,
+                )
+                    .map_err(|error| error.to_string())?
+            };
+            eprintln!(
+                "MOON CAT ACCEPTANCE PROJECT: {}\nMOON CAT ACCEPTANCE PATH: {}",
+                project.id,
+                studio.project_dir(&project.id).display()
+            );
+            let lease = runtime
+                .lease_research(&research)
+                .await
+                .map_err(|error| error.to_string())?;
+            eprintln!("MOON CAT ACCEPTANCE: Bonsai is writing and reviewing the unattended plan");
+            let planned = match studio
+                .plan(&project.id, &lease.connection, &research, &cancel, None)
+                .await
+            {
+                Ok(planned) => planned,
+                Err(error) => {
+                    studio.fail(&project.id, &error, None);
+                    return Err(error.to_string());
+                }
+            };
+            let plan = planned
+                .plan
+                .clone()
+                .ok_or("Bonsai committed no movie plan")?;
+            let planned_seconds = plan
+                .clips
+                .iter()
+                .map(|clip| clip.duration_seconds)
+                .sum::<f32>();
+            let picture_clips = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| clip.reference_ids.contains(&picture_id))
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
+            let continuations = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| clip.use_previous_frame)
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
+            let cat_aliases = identity_subject_aliases(&plan, "cat");
+            let subject_free_clips = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| {
+                    !clip.use_previous_frame
+                        && !clip.reference_ids.contains(&picture_id)
+                        && clip_is_independent_subject_free(clip, &cat_aliases)
+                })
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
+            let planning_gate_issues = prompt_quality_issues(&plan, &planned.references);
+            eprintln!(
+                "MOON CAT ACCEPTANCE PLAN: {} clips, {:.1}s planned, quality {}/100 after {} attempt(s)\nPicture clips: {:?}\nPrevious-frame continuations: {:?}\nSubject-free clips: {:?}",
+                plan.clips.len(),
+                planned_seconds,
+                plan.quality_review.score,
+                plan.quality_review.attempts,
+                picture_clips,
+                continuations,
+                subject_free_clips
+            );
+            for (index, clip) in plan.clips.iter().enumerate() {
+                eprintln!(
+                    "\n===== SCENE {}: {} ({:.1}s) =====\nPurpose: {}\nTransition: {}\nPrevious frame: {}\nReferences: {:?}\nContinuity in: {}\nContinuity out: {}\n{}",
+                    index + 1,
+                    clip.title,
+                    clip.duration_seconds,
+                    clip.purpose,
+                    clip.transition,
+                    clip.use_previous_frame,
+                    clip.reference_ids,
+                    clip.continuity_in,
+                    clip.continuity_out,
+                    clip.prompt
+                );
+            }
+            write_json_atomic(
+                &studio.project_dir(&project.id).join("acceptance-summary.json"),
+                &json!({
+                    "producerPrompt": producer_prompt,
+                    "plannedSeconds": planned_seconds,
+                    "clipCount": plan.clips.len(),
+                    "qualityScore": plan.quality_review.score,
+                    "qualityAttempts": plan.quality_review.attempts,
+                    "pictureClips": picture_clips,
+                    "previousFrameContinuations": continuations,
+                    "subjectFreeClips": subject_free_clips,
+                    "planningGateIssues": planning_gate_issues,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            let preflight_issues = [
+                (!(120.0..=180.0).contains(&planned_seconds))
+                    .then(|| format!("planned runtime is {planned_seconds:.1}s, not 120-180s")),
+                picture_clips
+                    .is_empty()
+                    .then(|| "cat identity reference is assigned to no scene".to_string()),
+                continuations
+                    .is_empty()
+                    .then(|| "plan contains no exact previous-frame continuation".to_string()),
+                subject_free_clips
+                    .is_empty()
+                    .then(|| "no independently cut cat-free scene exists".to_string()),
+                (!planning_gate_issues.is_empty())
+                    .then(|| format!("planning gate still reports {} issue(s)", planning_gate_issues.len())),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            if !preflight_issues.is_empty() {
+                return Err(format!(
+                    "acceptance plan must not render: {}",
+                    preflight_issues.join("; ")
+                ));
+            }
+            drop(lease);
+            runtime
+                .stop_managed()
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::services::stop_bonsai(&research.bonsai_root)
+                .await
+                .map_err(|error| error.to_string())?;
+            eprintln!("MOON CAT ACCEPTANCE: planning complete; MiniMax H3 rendering begins");
+            let rendered = studio
+                .render(&project.id, &cancel, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok((rendered, plan))
+        }
+        .await;
+        let _ = runtime.stop_managed().await;
+        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let (project, plan) = result.unwrap();
+        let planned_seconds = plan
+            .clips
+            .iter()
+            .map(|clip| clip.duration_seconds)
+            .sum::<f32>();
+        assert_eq!(project.status, "complete");
+        assert!(Path::new(&project.final_path).is_file());
+        assert!(prompt_quality_issues(&plan, &project.references).is_empty());
+        assert!((120.0..=180.0).contains(&planned_seconds));
+        assert!(plan.clips.iter().any(|clip| clip.use_previous_frame));
+        assert!(plan.clips.iter().any(|clip| !clip.use_previous_frame));
+        eprintln!("MOON CAT ACCEPTANCE COMPLETE: {}", project.final_path);
     }
 
     #[tokio::test]
