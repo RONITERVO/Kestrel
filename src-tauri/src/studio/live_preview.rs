@@ -7,7 +7,11 @@ use tauri::{AppHandle, Emitter};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-const PREVIEW_NODE_ID: &str = "90";
+pub(super) const PREVIEW_NODE_ID: &str = "90";
+pub(super) const PREVIEW_NODE_REVISION: &str = "5219cd171cb44e2edce9e4daad6cc42c41eded5c";
+pub(super) const PREVIEW_DECODER_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
+pub(super) const PREVIEW_DECODER_SHA256: &str =
+    "4fd022bfcab08772fe0536b17ea1a3bbb5625be11e397868d1c5d891863d4c13";
 const MAX_ENCODED_PREVIEW_BYTES: usize = 12 * 1024 * 1024;
 const MAX_DECODED_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 
@@ -42,6 +46,9 @@ pub(super) struct MovieRenderPreviewEvent {
     pub step_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub average_step_ms: Option<f64>,
+    pub preview_node_revision: &'static str,
+    pub preview_decoder_revision: &'static str,
+    pub preview_decoder_sha256: &'static str,
     pub at: String,
 }
 
@@ -98,6 +105,9 @@ impl PreviewTarget {
             fps: None,
             step_ms: None,
             average_step_ms: None,
+            preview_node_revision: PREVIEW_NODE_REVISION,
+            preview_decoder_revision: PREVIEW_DECODER_REVISION,
+            preview_decoder_sha256: PREVIEW_DECODER_SHA256,
             at: Utc::now().to_rfc3339(),
         }
     }
@@ -108,6 +118,18 @@ pub(super) struct LivePreviewSession {
     target: PreviewTarget,
     cancel: CancellationToken,
     task: JoinHandle<()>,
+}
+
+pub(super) fn emit_preview_unavailable(app: Option<&AppHandle>, target: PreviewTarget) {
+    if let Some(app) = app {
+        let _ = app.emit(
+            "movie-render-preview",
+            target.event(
+                "unavailable",
+                "Approximate live preview is unavailable; full-quality local rendering continues.",
+            ),
+        );
+    }
 }
 
 impl LivePreviewSession {

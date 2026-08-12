@@ -11,6 +11,7 @@ use std::{
 };
 
 const MAX_WORKSPACE_FILE_BYTES: usize = 96 * 1024;
+const PRODUCER_NOTES_HEADER: &str = "# Live producer direction\n\nThese dated notes are authoritative and were added through Kestrel's planning room.\n";
 const MAX_READ_MANY_BYTES: usize = 256 * 1024;
 const MAX_TOOL_FILES: usize = 8;
 
@@ -215,22 +216,37 @@ impl MovieAgentWorkspace {
         let mut notes = match fs::read_to_string(&path) {
             Ok(value) => value,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                "# Live producer direction\n\nThese dated notes are authoritative and were added through Kestrel's planning room.\n".into()
+                PRODUCER_NOTES_HEADER.into()
             }
             Err(error) => return Err(error.into()),
         };
         for direction in directions {
+            let marker = format!("<!-- kestrel-direction:{} -->", direction.id);
+            if notes.contains(&marker) {
+                continue;
+            }
             notes.push_str(&format!(
-                "\n## {}\n\n{}\n",
+                "\n## {}\n\n{}\n\n{}\n",
                 direction.created_at,
-                direction.text.trim()
+                direction.text.trim(),
+                marker,
             ));
         }
-        if notes.len() > MAX_WORKSPACE_FILE_BYTES {
-            return Err(StudioError::Invalid(
-                "producer notes exceed the 96 KiB workspace limit; checkpoint and consolidate the direction before continuing"
-                    .into(),
-            ));
+        while notes.len() > MAX_WORKSPACE_FILE_BYTES {
+            let Some(first) = notes.find("\n## ") else {
+                return Err(StudioError::Invalid(
+                    "a single producer direction exceeds the 96 KiB workspace-file limit".into(),
+                ));
+            };
+            let Some(next) = notes[first + 1..]
+                .find("\n## ")
+                .map(|offset| first + 1 + offset)
+            else {
+                return Err(StudioError::Invalid(
+                    "a single producer direction exceeds the 96 KiB workspace-file limit".into(),
+                ));
+            };
+            notes.replace_range(first..next, "");
         }
         write_text_atomic(&path, &notes)
     }
@@ -826,6 +842,35 @@ mod tests {
             .read_file("PRODUCER-NOTES.md")
             .unwrap()
             .contains("red suitcase"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn producer_notes_rotate_old_entries_instead_of_rejecting_new_direction() {
+        let root = temp_workspace();
+        let workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a quiet observational film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        for index in 0..8 {
+            workspace
+                .record_producer_directions(&[super::super::planning::ProducerDirection {
+                    id: format!("direction-{index}"),
+                    created_at: format!("2026-08-12T10:{index:02}:00Z"),
+                    text: format!("Direction {index}: {}", "x".repeat(15_000)),
+                }])
+                .unwrap();
+        }
+        let notes = workspace.read_file("PRODUCER-NOTES.md").unwrap();
+        assert!(notes.len() <= MAX_WORKSPACE_FILE_BYTES);
+        assert!(!notes.contains("Direction 0:"));
+        assert!(notes.contains("Direction 7:"));
         fs::remove_dir_all(root).unwrap();
     }
 

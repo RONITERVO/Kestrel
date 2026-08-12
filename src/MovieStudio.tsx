@@ -48,7 +48,14 @@ const defaultSettings: MovieSettings = {
   refImageSize: "match",
 };
 
-export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], selectedModelId, onError }: { initialComfyRoot?: string; advancedEnabled: boolean; models?: ModelInfo[]; selectedModelId?: string; onError: (message: string) => void }) {
+function useStableCallback<T extends (...args: never[]) => unknown>(callback: T): T {
+  const callbackRef = useRef(callback);
+  useEffect(() => { callbackRef.current = callback; }, [callback]);
+  return useCallback(((...args: Parameters<T>) => callbackRef.current(...args)) as T, []);
+}
+
+export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], selectedModelId, onError: onErrorProp }: { initialComfyRoot?: string; advancedEnabled: boolean; models?: ModelInfo[]; selectedModelId?: string; onError: (message: string) => void }) {
+  const onError = useStableCallback(onErrorProp);
   const [movies, setMovies] = useState<MovieSummary[]>([]);
   const [project, setProject] = useState<MovieProject | null>(null);
   const [creating, setCreating] = useState(true);
@@ -608,7 +615,8 @@ function mergePreviewEvent(current: MovieRenderPreviewEvent | undefined, next: M
 export function LiveH3Preview({ event, advanced }: { event: MovieRenderPreviewEvent; advanced: boolean }) {
   const progress = event.step !== undefined && event.total ? Math.min(100, Math.round((event.step / event.total) * 100)) : 0;
   const isVideo = event.mimeType === "video/mp4";
-  return <section className={`live-h3-preview ${event.kind}`} aria-live="polite">
+  return <section className={`live-h3-preview ${event.kind}`}>
+    <span className="visually-hidden" role="status" aria-live="polite">{event.detail}</span>
     <header><span><span className="live-dot" /><strong>Live H3 preview</strong></span><small>{event.step !== undefined && event.total ? `Sample ${event.step} of ${event.total}` : event.kind === "unavailable" ? "Preview unavailable" : "Local renderer"}</small></header>
     <div className="live-h3-monitor">
       {event.dataUrl ? (isVideo
@@ -619,7 +627,7 @@ export function LiveH3Preview({ event, advanced }: { event: MovieRenderPreviewEv
     </div>
     <div className="live-h3-caption"><span>{event.detail}</span><small>The final saved picture uses MiniMax H3’s full VAE and may resolve more detail.</small></div>
     {event.total && <div className="live-h3-progress"><i style={{ width: `${progress}%` }} /></div>}
-    {advanced && <details><summary>Preview pipeline details</summary><code>ModelPreviewOverrideKJ · KJNodes@5219cd171cb44e2edce9e4daad6cc42c41eded5c</code><code>taeh3.safetensors · taehv@62f7591f59dfbb4c3c02b7a621d180a9eeaba26c · SHA-256 4fd022bfcab08772fe0536b17ea1a3bbb5625be11e397868d1c5d891863d4c13</code><code>Bounded ws://127.0.0.1:8188 transport</code><small>{event.width && event.height ? `${event.width} × ${event.height}` : "512 px maximum"}{event.averageStepMs ? ` · ${(event.averageStepMs / 1000).toFixed(1)}s average/sample` : ""}{event.fps ? ` · ${event.fps.toFixed(1)} preview fps` : ""}</small><small>Ephemeral preview bytes are not stored. Full-VAE masters and their provenance remain durable.</small></details>}
+    {advanced && <details><summary>Preview pipeline details</summary><code>ModelPreviewOverrideKJ · KJNodes@{event.previewNodeRevision}</code><code>taeh3.safetensors · taehv@{event.previewDecoderRevision} · SHA-256 {event.previewDecoderSha256}</code><code>Bounded ws://127.0.0.1:8188 transport</code><small>{event.width && event.height ? `${event.width} × ${event.height}` : "512 px maximum"}{event.averageStepMs ? ` · ${(event.averageStepMs / 1000).toFixed(1)}s average/sample` : ""}{event.fps ? ` · ${event.fps.toFixed(1)} preview fps` : ""}</small><small>Ephemeral preview bytes are not stored. Full-VAE masters and their provenance remain durable.</small></details>}
   </section>;
 }
 
@@ -638,7 +646,7 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
   return <section className="image-asset-lab">
     <div className="image-asset-heading">
       <div><span className="eyebrow">Offline image asset lab</span><strong>Generate characters, locations, props, posters, and style frames</strong><small>H3 renders one short private frame pass, then Kestrel preserves several stable candidates so you can choose the best image.</small></div>
-      <span className="image-workflow-badge">H3 · 22 internal frames · 6 choices</span>
+      <span className="image-workflow-badge">H3 · stable-frame candidate pass</span>
     </div>
     <div className="image-asset-compose">
       <label>Describe the exact image asset<textarea aria-label="Image asset prompt" maxLength={65536} value={prompt} readOnly={draftActive} disabled={generating} onChange={(event) => onPrompt(event.target.value)} placeholder="A precise character identity portrait, recurring location, hero prop, title poster, texture plate, or visual style frame… Include composition, lighting, palette, materials, and any exact text." /></label>
@@ -662,10 +670,10 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
         const selected = references.some((reference) => reference.assetId === asset.id);
         return <figure key={`${generation.id}-${frameIndex}`}>
           <img src={movieMediaUrl(asset.path)} alt={`Generated image candidate frame ${frameIndex}`} />
-          <figcaption><span>Frame {frameIndex}{frameIndex === 8 ? " · workflow pick" : ""}</span><button disabled={selected} onClick={() => onUse(asset)}>{selected ? <Check /> : <Plus />}{selected ? "Added" : "Use image"}</button></figcaption>
+          <figcaption><span>Frame {frameIndex}{frameIndex === generation.candidateStart ? " · workflow pick" : ""}</span><button disabled={selected} onClick={() => onUse(asset)}>{selected ? <Check /> : <Plus />}{selected ? "Added" : "Use image"}</button></figcaption>
         </figure>;
       })}</div>
-      {advanced && <details className="image-generation-receipt"><summary>Exact H3 prompt, models, seed, and ComfyUI graph</summary><div><span>Live preview decoder</span><code>taeh3.safetensors · taehv@62f7591f59dfbb4c3c02b7a621d180a9eeaba26c · approximate only</code><span>Final decoder</span><code>{generation.candidates[0]?.asset.generation?.vae ?? "minimax_h3_video_vae_fp16.safetensors"} · preserved master</code><span>Workflow</span><code>{generation.workflow}</code><span>Fixed source</span><code>{generation.workflowSource}@{generation.workflowRevision}</code><span>Rendered prompt</span><pre>{generation.renderedPrompt}</pre><span>Exact API graph</span><pre>{JSON.stringify(generation.exactGraph, null, 2)}</pre></div></details>}
+      {advanced && <details className="image-generation-receipt"><summary>Exact H3 prompt, models, seed, and ComfyUI graph</summary><div><span>Live preview decoder</span><code>taeh3.safetensors · taehv@{generation.previewDecoderRevision} · SHA-256 {generation.previewDecoderSha256} · approximate only</code><span>Preview node</span><code>ModelPreviewOverrideKJ · KJNodes@{generation.previewNodeRevision}</code><span>Frame pass</span><code>{generation.resolvedFrameCount} resolved frames · {generation.candidateCount} candidate frames from {generation.candidateStart}</code><span>Final decoder</span><code>{generation.candidates[0]?.asset.generation?.vae ?? "minimax_h3_video_vae_fp16.safetensors"} · preserved master</code><span>Workflow</span><code>{generation.workflow}</code><span>Fixed source</span><code>{generation.workflowSource}@{generation.workflowRevision}</code><span>Rendered prompt</span><pre>{generation.renderedPrompt}</pre><span>Exact API graph</span><pre>{JSON.stringify(generation.exactGraph, null, 2)}</pre></div></details>}
     </article>)}
     {recentIssue && !generating && <div className="image-generation-issue"><strong>{recentIssue.status === "interrupted" ? "Previous image pass was interrupted" : "Previous image pass did not finish"}</strong><span>{recentIssue.detail}</span>{recentIssue.error && <small>{recentIssue.error}</small>}</div>}
     {!ready.length && !generating && <div className="image-asset-empty"><ImageIcon /><span>Your generated candidates will stay in this private library across restarts. Only the image you choose is attached to the movie.</span></div>}
@@ -886,7 +894,7 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
       {(response || active) && <section className="copilot-response"><span><i className={active ? "live" : ""} />{status}</span>{response ? <ProducerText text={response} /> : <div className="copilot-wait"><LoaderCircle className="spin" /> Waiting for the first streamed words…</div>}</section>}
       {proposal && <section className="copilot-proposal"><span className="eyebrow">Producer approval required</span><h3>{proposal.summary}</h3><ul>{proposal.changes.map((change, index) => <li key={`${change}-${index}`}><Check />{change}</li>)}</ul><div>{applied && beforeApply ? <button onClick={revert}><RotateCcw /> Revert copilot edit</button> : <button onClick={() => setProposal(undefined)}>Dismiss</button>}<button className="accent" disabled={applied} onClick={apply}>{applied ? <Check /> : <Film />}{applied ? "Applied to cut" : "Apply as one edit"}</button></div></section>}
       {proposalLint && <section className="copilot-lint"><ShieldCheck /><span><strong>Native safety check withheld the action</strong><small>{proposalLint}</small></span></section>}
-      {advancedEnabled && receipt && <details className="copilot-advanced"><summary>Exact model context, system prompt, tool schema, and streamed arguments</summary><label>Receipt<pre>{receiptLabel}</pre></label><label>System prompt<pre>{receipt.systemPrompt}</pre></label><label>Messages received<pre>{JSON.stringify(receipt.messages, null, 2)}</pre></label><label>Native action schema<pre>{JSON.stringify(receipt.toolSchema, null, 2)}</pre></label><label>Exact request<pre>{JSON.stringify(receipt.exactRequest, null, 2)}</pre></label>{receipt.lintResult && <label>Native lint result<pre>{receipt.lintResult}</pre></label>}{advancedTokens && <label>Raw streamed tool arguments<pre>{advancedTokens}</pre></label>}</details>}
+      {advancedEnabled && receipt && <details className="copilot-advanced"><summary>Exact model context, system prompt, tool schema, and streamed arguments</summary><section><h4>Receipt</h4><pre>{receiptLabel}</pre></section><section><h4>System prompt</h4><pre>{receipt.systemPrompt}</pre></section><section><h4>Messages received</h4><pre>{JSON.stringify(receipt.messages, null, 2)}</pre></section><section><h4>Native action schema</h4><pre>{JSON.stringify(receipt.toolSchema, null, 2)}</pre></section><section><h4>Exact request</h4><pre>{JSON.stringify(receipt.exactRequest, null, 2)}</pre></section>{receipt.lintResult && <section><h4>Native lint result</h4><pre>{receipt.lintResult}</pre></section>}{advancedTokens && <section><h4>Raw streamed tool arguments</h4><pre>{advancedTokens}</pre></section>}</details>}
     </div>
     <footer><label>Local collaborator<select value={modelId} disabled={active} onChange={(event) => setModelId(event.target.value)}>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label><textarea value={instruction} disabled={active} onChange={(event) => setInstruction(event.target.value)} placeholder={workspace === "generate" ? "What should we protect or improve in these scene masters?" : workspace === "edit" ? "Make the middle move faster without losing the quiet ending…" : "Review this cut for a client review export and flag unresolved issues…"} />{active ? <button className="danger" onClick={() => void stop()}><CircleStop /> Stop + checkpoint</button> : <button className="accent" disabled={!modelId || instruction.trim().length < 3} onClick={() => void ask()}><Send /> Collaborate</button>}</footer>
   </aside>;

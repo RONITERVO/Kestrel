@@ -104,7 +104,11 @@ pub(super) fn load_control(path: &Path) -> Result<PlanningControl, StudioError> 
 pub(super) fn save_control(path: &Path, control: &mut PlanningControl) -> Result<(), StudioError> {
     control.updated_at = Utc::now().to_rfc3339();
     if path.is_file() {
-        fs::copy(path, control_recovery_path(path))?;
+        if let Ok(bytes) = fs::read(path) {
+            if serde_json::from_slice::<PlanningControl>(&bytes).is_ok() {
+                fs::write(control_recovery_path(path), bytes)?;
+            }
+        }
     }
     write_json_atomic(path, control)
 }
@@ -144,16 +148,26 @@ pub(super) fn request_checkpoint(path: &Path) -> Result<PlanningControl, StudioE
     Ok(control)
 }
 
-pub(super) fn take_pending(path: &Path) -> Result<PlanningControl, StudioError> {
-    let mut control = load_control(path)?;
-    let taken = control.clone();
-    if !control.checkpoint_requested && control.pending_directions.is_empty() {
-        return Ok(taken);
+pub(super) fn acknowledge_pending(
+    path: &Path,
+    consumed: &PlanningControl,
+) -> Result<(), StudioError> {
+    if !consumed.checkpoint_requested && consumed.pending_directions.is_empty() {
+        return Ok(());
     }
-    control.pending_directions.clear();
-    control.checkpoint_requested = false;
-    save_control(path, &mut control)?;
-    Ok(taken)
+    let mut current = load_control(path)?;
+    let consumed_ids = consumed
+        .pending_directions
+        .iter()
+        .map(|direction| direction.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    current
+        .pending_directions
+        .retain(|direction| !consumed_ids.contains(direction.id.as_str()));
+    if consumed.checkpoint_requested {
+        current.checkpoint_requested = false;
+    }
+    save_control(path, &mut current)
 }
 
 fn control_recovery_path(path: &Path) -> std::path::PathBuf {
@@ -230,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn direction_and_checkpoint_controls_are_durable_and_consumed_once() {
+    fn direction_and_checkpoint_controls_are_durable_and_acknowledged_once() {
         let path = temporary_control();
         let (_, direction) =
             add_direction(&path, "Keep the ending quiet and observational.").unwrap();
@@ -240,9 +254,7 @@ mod tests {
         assert!(restored.checkpoint_requested);
         assert_eq!(restored.pending_directions[0].id, direction.id);
 
-        let taken = take_pending(&path).unwrap();
-        assert!(taken.checkpoint_requested);
-        assert_eq!(taken.pending_directions.len(), 1);
+        acknowledge_pending(&path, &restored).unwrap();
         let cleared = load_control(&path).unwrap();
         assert!(!cleared.checkpoint_requested);
         assert!(cleared.pending_directions.is_empty());
@@ -280,5 +292,24 @@ mod tests {
         assert_eq!(recovered.pending_directions.len(), 1);
         fs::remove_file(&path).unwrap();
         fs::remove_file(control_recovery_path(&path)).unwrap();
+    }
+
+    #[test]
+    fn corrupt_primary_is_not_copied_over_the_recovery_control() {
+        let path = temporary_control();
+        add_direction(&path, "Keep the existing recovery copy readable.").unwrap();
+        request_checkpoint(&path).unwrap();
+        let recovery = control_recovery_path(&path);
+        let before = fs::read(&recovery).unwrap();
+        fs::write(&path, b"{broken").unwrap();
+
+        let mut recovered = load_control(&path).unwrap();
+        recovered.checkpoint_requested = false;
+        save_control(&path, &mut recovered).unwrap();
+
+        assert_eq!(fs::read(&recovery).unwrap(), before);
+        assert!(load_control(&path).is_ok());
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(recovery).unwrap();
     }
 }

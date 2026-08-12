@@ -48,6 +48,14 @@ describe("movie timeline decisions", () => {
     expect(timelineItems(project, split).slice(0, 2).reduce((sum, item) => sum + item.outputDuration, 0)).toBe(10);
   });
 
+  it("keeps only the leading and trailing fades when a clip is split", () => {
+    const original = decision("a", "one", 0);
+    Object.assign(original, { fadeIn: 1, fadeOut: 2, audioFadeIn: .5, audioFadeOut: 1.5 });
+    const split = splitTimelineItem(project, movieEdit([original]), "a", 4, "cut-b");
+    expect(split.clips[0]).toMatchObject({ fadeIn: 1, fadeOut: 0, audioFadeIn: .5, audioFadeOut: 0 });
+    expect(split.clips[1]).toMatchObject({ fadeIn: 0, fadeOut: 2, audioFadeIn: 0, audioFadeOut: 1.5 });
+  });
+
   it("appends a preserved master as a new non-destructive storyline decision", () => {
     const appended = appendTimelineSource(movieEdit([decision("a", "one", 0)]), "two", "new-edit");
     expect(appended.clips.map((item) => [item.id, item.clipId, item.order])).toEqual([

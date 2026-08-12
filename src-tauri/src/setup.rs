@@ -724,6 +724,39 @@ async fn ensure_h3_preview_node(
     if bundled_preview_node_ready(comfy) {
         return Ok(());
     }
+    let bundled_root = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes");
+    if bundled_root.join("preview_override_node.py").is_file() {
+        // Repair a stale but loadable KJNodes registration in place. Installing the managed
+        // fallback beside it would let ComfyUI register ModelPreviewOverrideKJ twice.
+        for (name, remote, file_name, bytes, sha256) in [
+            (
+                "MiniMax live-preview node",
+                "nodes/preview_override_node.py",
+                "preview_override_node.py",
+                37_220,
+                "327804957a278d72f86ae45b35e8573d0d310d84b6f2469b1384d8922436bcc8",
+            ),
+            (
+                "MiniMax tiny-VAE loader",
+                "nodes/tiny_vae.py",
+                "tiny_vae.py",
+                4_434,
+                "27b39e555d876775f179137d86dc1cbf317967ecd471d59197f1a179b6356ee3",
+            ),
+        ] {
+            let asset = Asset::new(
+                name,
+                &format!(
+                    "https://raw.githubusercontent.com/kijai/ComfyUI-KJNodes/{KJ_PREVIEW_REVISION}/{remote}"
+                ),
+                file_name,
+                bytes,
+                sha256,
+            );
+            download(app, "studio", &asset, &bundled_root.join(file_name), cancel).await?;
+        }
+        return Ok(());
+    }
     let root = comfy.join("custom_nodes/Kestrel-H3-Live-Preview");
     fs::create_dir_all(&root)?;
     let assets = [
@@ -1038,11 +1071,19 @@ $missing=@($required.GetEnumerator() | Where-Object {
   (-not (Test-Path -LiteralPath $path)) -or ((Get-Item -LiteralPath $path).Length -ne $_.Value)
 } | ForEach-Object { $_.Key })
 if($missing){ throw "MiniMax H3 files are missing or incomplete: $($missing -join ', '). Open Kestrel Setup and resume Movie Studio." }
-$previewNodes=@(
+$bundledPreview=@(
   (Join-Path $root 'custom_nodes\ComfyUI-KJNodes\nodes\preview_override_node.py'),
-  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\preview_override_node.py')
+  (Join-Path $root 'custom_nodes\ComfyUI-KJNodes\nodes\tiny_vae.py')
 )
-if(-not ($previewNodes | Where-Object { Test-Path -LiteralPath $_ })){
+$managedPreview=@(
+  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\__init__.py'),
+  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\preview_override_node.py'),
+  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\tiny_vae.py'),
+  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\LICENSE')
+)
+$bundledReady=@($bundledPreview | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $bundledPreview.Count
+$managedReady=@($managedPreview | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $managedPreview.Count
+if(-not ($bundledReady -or $managedReady)){
   throw "MiniMax H3 live preview is not installed. Open Kestrel Setup and resume Movie Studio."
 }
 $arguments=@(

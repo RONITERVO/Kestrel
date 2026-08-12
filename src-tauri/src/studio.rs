@@ -42,7 +42,9 @@ pub use image_assets::{
     emit_image_asset_error, GeneratedImageProvenance, MovieImageAssetGeneration,
     MovieImageAssetRequest,
 };
-use live_preview::{preview_node, LivePreviewSession, PreviewTarget};
+use live_preview::{
+    emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget, PREVIEW_NODE_ID,
+};
 use movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult};
 pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot};
 pub use prompt_collaboration::{
@@ -731,6 +733,7 @@ pub struct MovieStudio {
     root: PathBuf,
     http: Client,
     comfy_child: Arc<AsyncMutex<Option<Child>>>,
+    comfy_preview_available: Arc<AsyncMutex<Option<bool>>>,
     project_locks: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     planning_control: Arc<StdMutex<()>>,
     planning_sequence: Arc<AtomicU64>,
@@ -749,6 +752,7 @@ impl MovieStudio {
                 .timeout(Duration::from_secs(3_600))
                 .build()?,
             comfy_child: Arc::new(AsyncMutex::new(None)),
+            comfy_preview_available: Arc::new(AsyncMutex::new(None)),
             project_locks: Arc::new(StdMutex::new(HashMap::new())),
             planning_control: Arc::new(StdMutex::new(())),
             planning_sequence: Arc::new(AtomicU64::new(1)),
@@ -1286,12 +1290,23 @@ impl MovieStudio {
         self.planning_snapshot(id)
     }
 
-    fn take_planning_control(&self, id: &str) -> Result<planning::PlanningControl, StudioError> {
+    fn consume_planning_control<F>(
+        &self,
+        id: &str,
+        consume: F,
+    ) -> Result<planning::PlanningControl, StudioError>
+    where
+        F: FnOnce(&planning::PlanningControl) -> Result<(), StudioError>,
+    {
         let _guard = self
             .planning_control
             .lock()
             .map_err(|_| StudioError::Invalid("movie planning controls are unavailable".into()))?;
-        planning::take_pending(&self.planning_control_path(id))
+        let path = self.planning_control_path(id);
+        let control = planning::load_control(&path)?;
+        consume(&control)?;
+        planning::acknowledge_pending(&path, &control)?;
+        Ok(control)
     }
 
     fn project_lock(&self, id: &str) -> Result<Arc<AsyncMutex<()>>, StudioError> {
@@ -1849,14 +1864,24 @@ impl MovieStudio {
 
             for _ in 0..MOVIE_AGENT_SESSION_STEPS {
                 check_cancel(cancel)?;
-                let control = self.take_planning_control(&project.id)?;
+                let control = self.consume_planning_control(&project.id, |control| {
+                    if control.pending_directions.is_empty() && !control.checkpoint_requested {
+                        return Ok(());
+                    }
+                    if !control.pending_directions.is_empty() {
+                        workspace.record_producer_directions(&control.pending_directions)?;
+                        for direction in &control.pending_directions {
+                            messages.push(json!({
+                                "role":"user",
+                                "content":prompts::producer_direction(&direction.text),
+                            }));
+                        }
+                    }
+                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
+                    Ok(())
+                })?;
                 if !control.pending_directions.is_empty() {
-                    workspace.record_producer_directions(&control.pending_directions)?;
                     for direction in control.pending_directions {
-                        messages.push(json!({
-                            "role":"user",
-                            "content":prompts::producer_direction(&direction.text),
-                        }));
                         project.producer_feedback.push(ProducerFeedbackRecord {
                             created_at: direction.created_at,
                             scope: "live-planning".into(),
@@ -1864,12 +1889,10 @@ impl MovieStudio {
                             feedback: direction.text,
                         });
                     }
-                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
                     project.detail = "Bonsai received the producer's latest direction and is revising the durable plan.".into();
                     self.persist_emit(project, app)?;
                 }
                 if control.checkpoint_requested {
-                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
                     return Ok(MovieAgentOutcome::Checkpointed);
                 }
                 absolute_step = absolute_step.saturating_add(1);
@@ -2876,6 +2899,7 @@ impl MovieStudio {
         #[cfg(windows)]
         command.creation_flags(0x08000000);
         let child = command.spawn()?;
+        *self.comfy_preview_available.lock().await = None;
         *self.comfy_child.lock().await = Some(child);
         for _ in 0..180 {
             if self.comfy_ready().await {
@@ -2902,6 +2926,29 @@ impl MovieStudio {
             .send()
             .await
             .is_ok_and(|response| response.status().is_success())
+    }
+
+    pub(super) async fn comfy_preview_available(&self) -> bool {
+        let mut cached = self.comfy_preview_available.lock().await;
+        if let Some(available) = *cached {
+            return available;
+        }
+        let available = match self
+            .http
+            .get(format!("{COMFY_BASE}/object_info"))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => response
+                .json::<Value>()
+                .await
+                .ok()
+                .is_some_and(|value| value.get("ModelPreviewOverrideKJ").is_some()),
+            _ => false,
+        };
+        *cached = Some(available);
+        available
     }
 
     async fn render_clip(
@@ -2977,6 +3024,7 @@ impl MovieStudio {
                 planned.prompt
             )
         };
+        let preview_available = self.comfy_preview_available().await;
         let graph = h3_graph(H3GraphRequest {
             prompt: &render_prompt,
             width: project.settings.width,
@@ -2988,17 +3036,19 @@ impl MovieStudio {
             first_frame: continuity_input.as_deref(),
             references: &graph_references,
             ref_image_size: &project.settings.ref_image_size,
+            preview_available,
         });
         let client_id = format!("kestrel-preview-{}", uuid::Uuid::new_v4().simple());
         let job_id = variant
             .map(|value| format!("{}-{value}", planned.id))
             .unwrap_or_else(|| planned.id.clone());
-        let preview = LivePreviewSession::connect(
-            app,
-            &client_id,
-            PreviewTarget::movie_clip(job_id, &project.id, &planned.id, index),
-        )
-        .await;
+        let preview_target = PreviewTarget::movie_clip(job_id, &project.id, &planned.id, index);
+        let preview = if preview_available {
+            LivePreviewSession::connect(app, &client_id, preview_target).await
+        } else {
+            emit_preview_unavailable(app, preview_target);
+            None
+        };
         let response = self
             .http
             .post(format!("{COMFY_BASE}/prompt"))
@@ -3209,7 +3259,13 @@ impl MovieStudio {
                     edit.fade_out
                 ));
             }
-            video.push_str(&format!(",format=yuv420p[v{index}]"));
+            video.push_str(&format!(
+                ",scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v{index}]",
+                project.settings.width,
+                project.settings.height,
+                project.settings.width,
+                project.settings.height,
+            ));
 
             let mut audio = format!(
                 "[{index}:a]atrim=start={}:end={},asetpts=PTS-STARTPTS",
@@ -3229,7 +3285,9 @@ impl MovieStudio {
                     edit.audio_fade_out
                 ));
             }
-            audio.push_str(&format!(",aresample=async=1:first_pts=0[a{index}]"));
+            audio.push_str(&format!(
+                ",aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,aresample=48000:async=1:first_pts=0[a{index}]"
+            ));
             filters.push(format!("{video};{audio}"));
         }
         let streams = (0..edits.len())
@@ -3293,27 +3351,35 @@ impl MovieStudio {
                 truncate(&String::from_utf8_lossy(&output.stderr), 1_000)
             )));
         }
-        fs::rename(&temporary, &target)?;
         let export = MovieExport {
             id: export_id,
             created_at: Utc::now().to_rfc3339(),
             title: project.edit.export_title.clone(),
             preset: project.edit.export_preset.clone(),
             path: target.to_string_lossy().into_owned(),
-            bytes: target.metadata()?.len(),
-            sha256: hash_reference(&target)?,
+            bytes: temporary.metadata()?.len(),
+            sha256: hash_reference(&temporary)?,
             duration_seconds,
             clip_count: edits.len(),
         };
-        write_json_atomic(
-            &exports.join(format!("{file_stem}.json")),
+        let sidecar = exports.join(format!("{file_stem}.json"));
+        if let Err(error) = write_json_atomic(
+            &sidecar,
             &json!({
                 "schemaVersion": SCHEMA_VERSION,
                 "projectId": project.id,
                 "export": export,
                 "edit": project.edit,
             }),
-        )?;
+        ) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+        if let Err(error) = fs::rename(&temporary, &target) {
+            let _ = fs::remove_file(&temporary);
+            let _ = fs::remove_file(&sidecar);
+            return Err(error.into());
+        }
         project.final_path = target.to_string_lossy().into_owned();
         project.exports.push(export);
         project.schema_version = SCHEMA_VERSION;
@@ -5270,6 +5336,7 @@ struct H3GraphRequest<'a> {
     first_frame: Option<&'a str>,
     references: &'a [H3ReferenceInput<'a>],
     ref_image_size: &'a str,
+    preview_available: bool,
 }
 
 struct ClipRenderContext<'a> {
@@ -5328,6 +5395,7 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
         first_frame,
         references,
         ref_image_size,
+        preview_available,
     } = request;
     let raw_frames = (seconds * 24.0).round().max(5.0) as u32;
     let length = raw_frames + (5 + 17 - raw_frames % 17) % 17;
@@ -5349,16 +5417,20 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
         "4":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_audio_vae_fp32.safetensors"}},
         "5":conditioning,
         "6":{"class_type":"RandomNoise","inputs":{"noise_seed":seed}},
-        "7":{"class_type":"BasicScheduler","inputs":{"model":["90",0],"scheduler":"simple","steps":steps,"denoise":1.0}},
+        "7":{"class_type":"BasicScheduler","inputs":{"model":["1",0],"scheduler":"simple","steps":steps,"denoise":1.0}},
         "8":{"class_type":"KSamplerSelect","inputs":{"sampler_name":"res_multistep"}},
-        "9":{"class_type":"BasicGuider","inputs":{"model":["90",0],"conditioning":["5",0]}},
+        "9":{"class_type":"BasicGuider","inputs":{"model":["1",0],"conditioning":["5",0]}},
         "10":{"class_type":"SamplerCustomAdvanced","inputs":{"noise":["6",0],"guider":["9",0],"sampler":["8",0],"sigmas":["7",0],"latent_image":["5",1]}},
         "11":{"class_type":"VAEDecode","inputs":{"samples":["10",0],"vae":["3",0]}},
         "12":{"class_type":"VAEDecodeAudio","inputs":{"samples":["10",0],"vae":["4",0]}},
         "13":{"class_type":"CreateVideo","inputs":{"images":["11",0],"audio":["12",0],"fps":24.0,"bit_depth":8}},
         "14":{"class_type":"SaveVideo","inputs":{"video":["13",0],"filename_prefix":prefix,"format":"auto","codec":"auto"}}
     });
-    graph["90"] = preview_node("1", 12);
+    if preview_available {
+        graph[PREVIEW_NODE_ID] = preview_node("1", 12);
+        graph["7"]["inputs"]["model"] = json!([PREVIEW_NODE_ID, 0]);
+        graph["9"]["inputs"]["model"] = json!([PREVIEW_NODE_ID, 0]);
+    }
     if !using_references {
         if let Some(image) = first_frame {
             graph["15"] = json!({"class_type":"LoadImage","inputs":{"image":image}});
@@ -5724,12 +5796,33 @@ mod tests {
             first_frame: None,
             references: &[],
             ref_image_size: "match",
+            preview_available: true,
         });
         assert_eq!(graph["5"]["inputs"]["length"], 124);
         assert_eq!(graph["90"]["class_type"], "ModelPreviewOverrideKJ");
         assert_eq!(graph["90"]["inputs"]["preview_frames"], 12);
         assert_eq!(graph["7"]["inputs"]["model"], json!(["90", 0]));
         assert_eq!(graph["9"]["inputs"]["model"], json!(["90", 0]));
+    }
+
+    #[test]
+    fn h3_graph_runs_without_the_optional_preview_node() {
+        let graph = h3_graph(H3GraphRequest {
+            prompt: "test",
+            width: 864,
+            height: 480,
+            seconds: 5.0,
+            steps: 20,
+            seed: 7,
+            prefix: "test",
+            first_frame: None,
+            references: &[],
+            ref_image_size: "match",
+            preview_available: false,
+        });
+        assert!(graph.get(PREVIEW_NODE_ID).is_none());
+        assert_eq!(graph["7"]["inputs"]["model"], json!(["1", 0]));
+        assert_eq!(graph["9"]["inputs"]["model"], json!(["1", 0]));
     }
 
     #[test]
@@ -5745,6 +5838,7 @@ mod tests {
             first_frame: Some("kestrel/frame.png"),
             references: &[],
             ref_image_size: "match",
+            preview_available: true,
         });
         assert_eq!(graph["15"]["class_type"], "LoadImage");
         assert_eq!(graph["5"]["inputs"]["first_frame"], json!(["15", 0]));
@@ -5788,6 +5882,7 @@ mod tests {
             first_frame: Some("must-not-be-used.png"),
             references: &references,
             ref_image_size: "max",
+            preview_available: true,
         });
         assert_eq!(
             graph["1"]["inputs"]["unet_name"],
@@ -7797,7 +7892,7 @@ mod tests {
         let research = ResearchSettings::default();
         let runtime = Arc::new(RuntimeManager::new());
         let cancel = CancellationToken::new();
-        let producer_prompt = "A football player looks at his feet in a shimmering, misty morning, completely amazed by a beautiful view of the constructer circus. the reference image is the football player. Make the finished film about 2 to 3 minutes.";
+        let producer_prompt = "A football player looks at his feet in a shimmering, misty morning, completely amazed by a beautiful view of the construction-site circus. the reference image is the football player. Make the finished film about 2 to 3 minutes.";
         let existing_project_id = std::env::var("KESTREL_ACCEPTANCE_PROJECT_ID").ok();
 
         let result: Result<(MovieProject, MoviePlan), String> = async {
@@ -7949,13 +8044,17 @@ mod tests {
                     "pictureClips": picture_clips,
                     "previousFrameContinuations": continuations,
                     "subjectFreeClips": subject_free_clips,
-                    "planningGateIssues": planning_gate_issues,
-                    "evaluationIssues": evaluation_issues,
-                    "imageAssistObservation": "The first 1400-token LLM assist returned reasoning only; the Studio-realistic 8192-token allowance returned the visible prompt.",
-                    "referenceImageObservation": "Six stable candidates were produced; frame 11 was selected. The face is strongly shadowed and the image contains invented sportswear-style marks."
+                    "planningGateIssues": &planning_gate_issues,
+                    "evaluationIssues": &evaluation_issues
                 }),
             )
             .map_err(|error| error.to_string())?;
+            if !evaluation_issues.is_empty() {
+                return Err(format!(
+                    "football circus acceptance gate failed: {}",
+                    evaluation_issues.join("; ")
+                ));
+            }
             drop(lease);
             runtime
                 .stop_managed()
@@ -7982,9 +8081,20 @@ mod tests {
             .sum::<f32>();
         assert_eq!(project.status, "complete");
         assert!(Path::new(&project.final_path).is_file());
+        assert!(prompt_quality_issues(&plan, &project.references).is_empty());
         assert!((120.0..=180.0).contains(&planned_seconds));
         assert!(plan.clips.iter().any(|clip| clip.use_previous_frame));
         assert!(plan.clips.iter().any(|clip| !clip.use_previous_frame));
+        assert!(plan
+            .clips
+            .iter()
+            .any(|clip| clip.reference_ids.contains(&picture_id)));
+        let aliases = identity_subject_aliases(&plan, "football player");
+        assert!(plan.clips.iter().any(|clip| {
+            !clip.use_previous_frame
+                && !clip.reference_ids.contains(&picture_id)
+                && clip_is_independent_subject_free(clip, &aliases)
+        }));
         eprintln!(
             "FOOTBALL CIRCUS ACCEPTANCE COMPLETE: {}",
             project.final_path

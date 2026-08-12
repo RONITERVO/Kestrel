@@ -83,8 +83,19 @@ export function splitTimelineItem(
   if (sourceTime < minimum || sourceTime > maximum) return edit;
   const clips = [...edit.clips].sort((left, right) => left.order - right.order);
   const index = clips.findIndex((item) => item.id === itemId);
-  const first = { ...clips[index], trimEnd: selected.sourceDuration - sourceTime };
-  const second = { ...clips[index], id: nextId, trimStart: sourceTime };
+  const first = {
+    ...clips[index],
+    trimEnd: selected.sourceDuration - sourceTime,
+    fadeOut: 0,
+    audioFadeOut: 0,
+  };
+  const second = {
+    ...clips[index],
+    id: nextId,
+    trimStart: sourceTime,
+    fadeIn: 0,
+    audioFadeIn: 0,
+  };
   clips.splice(index, 1, first, second);
   return { ...edit, clips: clips.map((item, order) => ({ ...item, order })) };
 }
@@ -177,6 +188,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     onChange(orderedMovieEdit({ ...next, markers: next.markers ?? [] }));
   };
   const undoEdit = () => {
+    if (disabled) return;
     const previous = undo.at(-1);
     if (!previous) return;
     setUndo((history) => history.slice(0, -1));
@@ -184,6 +196,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     onChange(previous);
   };
   const redoEdit = () => {
+    if (disabled) return;
     const next = redo.at(-1);
     if (!next) return;
     setRedo((history) => history.slice(0, -1));
@@ -452,7 +465,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
 
     <section className="editor-timeline-panel">
       <div className="editor-tool-bar">
-        <div><button aria-label="Undo timeline change" title="Undo · ⌘Z" disabled={!undo.length} onClick={undoEdit}><Undo2 /></button><button aria-label="Redo timeline change" title="Redo · ⇧⌘Z" disabled={!redo.length} onClick={redoEdit}><Redo2 /></button><i /><button className={tool === "select" ? "active" : ""} title="Select tool · A" onClick={() => setTool("select")}><MousePointer2 /><kbd>A</kbd></button><button className={tool === "trim" ? "active" : ""} title="Trim tool · T" onClick={() => setTool("trim")}><ScanLine /><kbd>T</kbd></button><button className={tool === "blade" ? "active" : ""} title="Blade tool · B" onClick={() => setTool("blade")}><Scissors /><kbd>B</kbd></button><i /><button aria-label="Split at playhead" title="Split at playhead" disabled={!selected} onClick={split}><Scissors /></button><button aria-label="Duplicate timeline item" title="Duplicate" disabled={!selected || items.length >= 512} onClick={duplicate}><Copy /></button><button aria-label="Remove timeline item" title="Remove decision" disabled={!selected} onClick={remove}><Trash2 /></button></div>
+        <div><button aria-label="Undo timeline change" title="Undo · ⌘Z" disabled={disabled || !undo.length} onClick={undoEdit}><Undo2 /></button><button aria-label="Redo timeline change" title="Redo · ⇧⌘Z" disabled={disabled || !redo.length} onClick={redoEdit}><Redo2 /></button><i /><button className={tool === "select" ? "active" : ""} title="Select tool · A" onClick={() => setTool("select")}><MousePointer2 /><kbd>A</kbd></button><button className={tool === "trim" ? "active" : ""} title="Trim tool · T" onClick={() => setTool("trim")}><ScanLine /><kbd>T</kbd></button><button className={tool === "blade" ? "active" : ""} title="Blade tool · B" onClick={() => setTool("blade")}><Scissors /><kbd>B</kbd></button><i /><button aria-label="Split at playhead" title="Split at playhead" disabled={!selected} onClick={split}><Scissors /></button><button aria-label="Duplicate timeline item" title="Duplicate" disabled={!selected || items.length >= 512} onClick={duplicate}><Copy /></button><button aria-label="Remove timeline item" title="Remove decision" disabled={!selected} onClick={remove}><Trash2 /></button></div>
         <div><button className={snapping ? "active" : ""} title="Snapping · N" onClick={() => setSnapping((active) => !active)}><Magnet /><kbd>N</kbd></button><button className={skimming ? "active" : ""} title="Skimming · S" onClick={() => setSkimming((active) => !active)}><Eye /><kbd>S</kbd></button><button title="Keyboard shortcuts · ?" onClick={() => setShowShortcuts((visible) => !visible)}><CircleHelp /></button><span>{items.length} edits · {formatTimecode(totalDuration)}</span><ZoomIn /><input aria-label="Timeline zoom" type="range" min={28} max={180} value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><button className="zoom-fit" onClick={() => setZoom(Math.max(28, Math.min(180, 900 / Math.max(1, totalDuration))))}>Fit</button></div>
       </div>
       {markerComposer && <div className="editor-marker-composer"><Flag /><select aria-label="Marker type" value={markerKind} onChange={(event) => setMarkerKind(event.target.value as TimelineMarker["kind"])}><option value="marker">Marker</option><option value="todo">To-do</option><option value="chapter">Chapter</option></select><input autoFocus maxLength={120} value={markerLabel} onChange={(event) => setMarkerLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addMarker(markerLabel, markerKind); if (event.key === "Escape") setMarkerComposer(false); }} placeholder={`Note at ${formatTimecode(elapsed)}`} /><button onClick={() => addMarker(markerLabel, markerKind)}>Add at playhead</button><button aria-label="Close marker composer" onClick={() => setMarkerComposer(false)}><X /></button></div>}
@@ -520,7 +533,7 @@ function EditorMonitorEmpty({ source = false }: { source?: boolean }) {
 function TimelineNumber({ label, value, min, max, step, suffix, onChange }: {
   label: string; value: number; min: number; max: number; step: number; suffix: string; onChange: (value: number) => void;
 }) {
-  return <label>{label}<span className="timeline-number"><input type="number" value={Number.isFinite(value) ? Number(value.toFixed(3)) : 0} min={min} max={max} step={step} onChange={(event) => { const parsed = Number(event.target.value); if (Number.isFinite(parsed)) onChange(Math.min(max, Math.max(min, parsed))); }} /><b>{suffix}</b></span></label>;
+  return <label>{label}<span className="timeline-number"><input type="number" value={Number.isFinite(value) ? Number(value.toFixed(3)) : 0} min={min} max={max} step={step} onChange={(event) => { if (event.target.value === "") return; const parsed = Number(event.target.value); if (Number.isFinite(parsed)) onChange(Math.min(max, Math.max(min, parsed))); }} /><b>{suffix}</b></span></label>;
 }
 
 function rulerLabels(duration: number, width: number): Array<{ time: number; left: number }> {

@@ -223,6 +223,9 @@ export interface MovieImageAssetGeneration {
   workflow: string;
   workflowSource: string;
   workflowRevision: string;
+  previewNodeRevision: string;
+  previewDecoderRevision: string;
+  previewDecoderSha256: string;
   requestedLength: number;
   resolvedFrameCount: number;
   candidateStart: number;
@@ -263,6 +266,9 @@ export interface MovieRenderPreviewEvent {
   fps?: number;
   stepMs?: number;
   averageStepMs?: number;
+  previewNodeRevision: string;
+  previewDecoderRevision: string;
+  previewDecoderSha256: string;
   at: string;
 }
 

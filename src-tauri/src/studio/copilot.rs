@@ -151,10 +151,10 @@ impl MovieCopilotJob {
             .expect("validated copilot model");
         emit(
             &app,
-            &request,
+            &request.request_id,
+            &request.project_id,
             "queued",
-            None,
-            Some(&model.name),
+            (None, Some(&model.name)),
             None,
             None,
         );
@@ -164,7 +164,7 @@ impl MovieCopilotJob {
                 result.map_err(|error| error.to_string())?
             }
             _ = cancel.cancelled() => {
-                emit(&app, &request, "cancelled", None, Some(&model.name), None, None);
+                emit(&app, &request.request_id, &request.project_id, "cancelled", (None, Some(&model.name)), None, None);
                 record_turn(&studio, &request, "", "cancelled", "").await?;
                 return Ok(());
             }
@@ -189,11 +189,19 @@ impl MovieCopilotJob {
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        let mut exact_request = body.clone();
+        if let Some(request) = exact_request.as_object_mut() {
+            request.remove("messages");
+            request.insert(
+                "messages".into(),
+                json!({"storedInReceiptField":"messages"}),
+            );
+        }
         let mut receipt = MovieCopilotReceipt {
             system_prompt: SYSTEM_PROMPT.into(),
             messages: messages.clone(),
             tool_schema: body["tools"][0].clone(),
-            exact_request: body.clone(),
+            exact_request,
             lint_result: String::new(),
         };
         save_receipt(&studio, &request.project_id, &request.request_id, &receipt)?;
@@ -220,10 +228,10 @@ impl MovieCopilotJob {
         }
         emit(
             &app,
-            &request,
+            &request.request_id,
+            &request.project_id,
             "started",
-            None,
-            Some(&model.name),
+            (None, Some(&model.name)),
             Some(receipt.clone()),
             None,
         );
@@ -238,7 +246,7 @@ impl MovieCopilotJob {
             let next = tokio::select! {
                 value = stream.next() => value,
                 _ = cancel.cancelled() => {
-                    emit(&app, &request, "cancelled", None, Some(&model.name), None, None);
+                    emit(&app, &request.request_id, &request.project_id, "cancelled", (None, Some(&model.name)), None, None);
                     record_turn(&studio, &request, &response_text, "cancelled", "").await?;
                     return Ok(());
                 }
@@ -269,10 +277,10 @@ impl MovieCopilotJob {
                         response_text.push_str(accepted);
                         emit(
                             &app,
-                            &request,
+                            &request.request_id,
+                            &request.project_id,
                             "token",
-                            Some(accepted),
-                            Some(&model.name),
+                            (Some(accepted), Some(&model.name)),
                             None,
                             None,
                         );
@@ -288,10 +296,10 @@ impl MovieCopilotJob {
                     reasoning_announced = true;
                     emit(
                         &app,
-                        &request,
+                        &request.request_id,
+                        &request.project_id,
                         "reasoning",
-                        None,
-                        Some(&model.name),
+                        (None, Some(&model.name)),
                         None,
                         None,
                     );
@@ -319,10 +327,10 @@ impl MovieCopilotJob {
                             tool_calls[index].arguments.push_str(fragment);
                             emit(
                                 &app,
-                                &request,
+                                &request.request_id,
+                                &request.project_id,
                                 "advanced-token",
-                                Some(fragment),
-                                Some(&model.name),
+                                (Some(fragment), Some(&model.name)),
                                 None,
                                 None,
                             );
@@ -342,10 +350,10 @@ impl MovieCopilotJob {
                 receipt.lint_result = error.clone();
                 emit(
                     &app,
-                    &request,
+                    &request.request_id,
+                    &request.project_id,
                     "proposal-rejected",
-                    Some(&error),
-                    Some(&model.name),
+                    (Some(&error), Some(&model.name)),
                     None,
                     None,
                 );
@@ -375,10 +383,10 @@ impl MovieCopilotJob {
         .await?;
         emit(
             &app,
-            &request,
+            &request.request_id,
+            &request.project_id,
             "complete",
-            None,
-            Some(&model.name),
+            (None, Some(&model.name)),
             None,
             proposal,
         );
@@ -656,18 +664,19 @@ fn workspace_name(workspace: MovieCopilotWorkspace) -> &'static str {
 
 fn emit(
     app: &AppHandle,
-    request: &MovieCopilotRequest,
+    request_id: &str,
+    project_id: &str,
     kind: &str,
-    content: Option<&str>,
-    model_name: Option<&str>,
+    presentation: (Option<&str>, Option<&str>),
     receipt: Option<MovieCopilotReceipt>,
     proposal: Option<MovieCopilotProposal>,
 ) {
+    let (content, model_name) = presentation;
     let _ = app.emit(
         "movie-copilot",
         MovieCopilotEvent {
-            request_id: request.request_id.clone(),
-            project_id: request.project_id.clone(),
+            request_id: request_id.into(),
+            project_id: project_id.into(),
             kind: kind.into(),
             content: content.map(str::to_owned),
             model_name: model_name.map(str::to_owned),
@@ -679,41 +688,27 @@ fn emit(
 }
 
 pub fn emit_error(app: &AppHandle, request_id: &str, project_id: &str, error: String) {
-    let request = MovieCopilotRequest {
-        request_id: request_id.into(),
-        project_id: project_id.into(),
-        model_id: String::new(),
-        workspace: MovieCopilotWorkspace::Edit,
-        instruction: String::new(),
-        edit: MovieEdit {
-            clips: Vec::new(),
-            export_title: String::new(),
-            export_preset: String::new(),
-            normalize_audio: false,
-            target_lufs: -14.0,
-            markers: Vec::new(),
-        },
-    };
-    emit(app, &request, "error", Some(&error), None, None, None);
+    emit(
+        app,
+        request_id,
+        project_id,
+        "error",
+        (Some(&error), None),
+        None,
+        None,
+    );
 }
 
 pub fn emit_settled(app: &AppHandle, request_id: &str, project_id: &str) {
-    let request = MovieCopilotRequest {
-        request_id: request_id.into(),
-        project_id: project_id.into(),
-        model_id: String::new(),
-        workspace: MovieCopilotWorkspace::Edit,
-        instruction: String::new(),
-        edit: MovieEdit {
-            clips: Vec::new(),
-            export_title: String::new(),
-            export_preset: String::new(),
-            normalize_audio: false,
-            target_lufs: -14.0,
-            markers: Vec::new(),
-        },
-    };
-    emit(app, &request, "settled", None, None, None, None);
+    emit(
+        app,
+        request_id,
+        project_id,
+        "settled",
+        (None, None),
+        None,
+        None,
+    );
 }
 
 fn truncate(value: &str, max: usize) -> String {

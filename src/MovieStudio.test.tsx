@@ -66,7 +66,7 @@ describe("Kestrel Movie Studio", () => {
     render(<MovieStudio advancedEnabled onError={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /ImagesGenerate visual assets/i }));
     expect(screen.getByText(/Offline image asset lab/i)).toBeInTheDocument();
-    expect(screen.getByText(/22 internal frames · 6 choices/i)).toBeInTheDocument();
+    expect(screen.getByText(/stable-frame candidate pass/i)).toBeInTheDocument();
     const generate = screen.getByRole("button", { name: /Generate candidates/i });
     expect(generate).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Image asset prompt"), { target: { value: "A precise portrait of the recurring lead character" } });
@@ -110,6 +110,9 @@ describe("Kestrel Movie Studio", () => {
       step: 7,
       total: 20,
       averageStepMs: 1250,
+      previewNodeRevision: "kj-revision",
+      previewDecoderRevision: "taehv-revision",
+      previewDecoderSha256: "decoder-sha256",
       at: new Date().toISOString(),
     };
     render(<LiveH3Preview event={event} advanced />);
@@ -118,6 +121,9 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByAltText(/Approximate live MiniMax H3/i)).toHaveAttribute("src", event.dataUrl);
     fireEvent.click(screen.getByText("Preview pipeline details"));
     expect(screen.getByText(/taeh3.safetensors/)).toBeInTheDocument();
+    expect(screen.getByText(/KJNodes@kj-revision/)).toBeInTheDocument();
+    expect(screen.getByText(/taehv-revision/)).toBeInTheDocument();
+    expect(screen.getByText(/decoder-sha256/)).toBeInTheDocument();
     expect(screen.getByText(/Ephemeral preview bytes are not stored/i)).toBeInTheDocument();
   });
 

@@ -1,4 +1,7 @@
-use super::live_preview::{preview_node, LivePreviewSession, PreviewTarget};
+use super::live_preview::{
+    emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget,
+    PREVIEW_DECODER_REVISION, PREVIEW_DECODER_SHA256, PREVIEW_NODE_ID, PREVIEW_NODE_REVISION,
+};
 use super::{
     comfy_execution_error, truncate, write_json_atomic, MovieReferenceAsset, MovieStudio,
     StudioError, COMFY_BASE, COMFY_RENDER_TIMEOUT, MAX_MOVIE_PROMPT_BYTES,
@@ -25,6 +28,7 @@ const CANDIDATE_START: u32 = 8;
 const CANDIDATE_COUNT: u32 = 6;
 const MAX_GENERATION_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_LISTED_GENERATIONS: usize = 50;
+const MAX_HISTORY_FAILURES: u8 = 5;
 const STILLNESS_SUFFIX: &str = "Create a single static image composition. Keep identity, lettering, geometry, texture, lighting, and fine details stable across the internal frame pass. No camera movement, subject motion, or temporal progression.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +101,12 @@ pub struct MovieImageAssetGeneration {
     pub workflow: String,
     pub workflow_source: String,
     pub workflow_revision: String,
+    #[serde(default = "preview_node_revision")]
+    pub preview_node_revision: String,
+    #[serde(default = "preview_decoder_revision")]
+    pub preview_decoder_revision: String,
+    #[serde(default = "preview_decoder_sha256")]
+    pub preview_decoder_sha256: String,
     pub requested_length: u32,
     pub resolved_frame_count: u32,
     pub candidate_start: u32,
@@ -112,6 +122,18 @@ pub struct MovieImageAssetGeneration {
     pub candidates: Vec<MovieImageAssetCandidate>,
     #[serde(default)]
     pub exact_graph: Value,
+}
+
+fn preview_node_revision() -> String {
+    PREVIEW_NODE_REVISION.into()
+}
+
+fn preview_decoder_revision() -> String {
+    PREVIEW_DECODER_REVISION.into()
+}
+
+fn preview_decoder_sha256() -> String {
+    PREVIEW_DECODER_SHA256.into()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -215,9 +237,13 @@ impl MovieStudio {
             }
             let mut generation: MovieImageAssetGeneration =
                 serde_json::from_slice(&fs::read(&path)?)?;
-            for candidate in &mut generation.candidates {
-                candidate.asset = self.resolve_reference_asset(&candidate.asset.id)?;
-            }
+            generation.candidates.retain_mut(|candidate| {
+                let Ok(asset) = self.resolve_reference_asset(&candidate.asset.id) else {
+                    return false;
+                };
+                candidate.asset = asset;
+                true
+            });
             generations.push(generation);
         }
         generations.sort_by(|left, right| right.created_at.cmp(&left.created_at));
@@ -270,6 +296,7 @@ impl MovieStudio {
             request.steps,
             seed,
             &prefix,
+            false,
         );
         let now = Utc::now().to_rfc3339();
         let mut generation = MovieImageAssetGeneration {
@@ -287,6 +314,9 @@ impl MovieStudio {
             workflow: WORKFLOW_NAME.into(),
             workflow_source: WORKFLOW_SOURCE.into(),
             workflow_revision: WORKFLOW_REVISION.into(),
+            preview_node_revision: preview_node_revision(),
+            preview_decoder_revision: preview_decoder_revision(),
+            preview_decoder_sha256: preview_decoder_sha256(),
             requested_length: REQUESTED_LENGTH,
             resolved_frame_count: RESOLVED_FRAME_COUNT,
             candidate_start: CANDIDATE_START,
@@ -367,6 +397,7 @@ impl MovieStudio {
             Some(cancel),
         )
         .await?;
+        let preview_available = self.comfy_preview_available().await;
 
         check_image_cancel(cancel)?;
         generation.stage = "queued".into();
@@ -380,12 +411,23 @@ impl MovieStudio {
         self.save_image_generation(generation)?;
         emit_image_event(app, generation, "progress", 10, None);
         let client_id = format!("kestrel-image-{}", generation.id);
-        let preview = LivePreviewSession::connect(
-            app,
-            &client_id,
-            PreviewTarget::image_asset(&generation.id),
-        )
-        .await;
+        let preview_target = PreviewTarget::image_asset(&generation.id);
+        let preview = if preview_available {
+            LivePreviewSession::connect(app, &client_id, preview_target).await
+        } else {
+            emit_preview_unavailable(app, preview_target);
+            None
+        };
+        generation.exact_graph = pseudo_image_graph(
+            &generation.rendered_prompt,
+            generation.width,
+            generation.height,
+            generation.steps,
+            generation.seed,
+            &format!("kestrel_images/{}/candidate", generation.id),
+            preview_available,
+        );
+        self.save_image_generation(generation)?;
         let response = self
             .http
             .post(format!("{COMFY_BASE}/prompt"))
@@ -416,6 +458,7 @@ impl MovieStudio {
 
         let deadline = tokio::time::Instant::now() + COMFY_RENDER_TIMEOUT;
         let mut last_heartbeat = tokio::time::Instant::now();
+        let mut history_failures = 0_u8;
         loop {
             if cancel.is_cancelled() {
                 let _ = self
@@ -431,16 +474,43 @@ impl MovieStudio {
                     generation.comfy_prompt_id
                 )));
             }
-            let history: Value = self
+            let history = self
                 .http
                 .get(format!(
                     "{COMFY_BASE}/history/{}",
                     generation.comfy_prompt_id
                 ))
                 .send()
-                .await?
-                .json()
-                .await?;
+                .await
+                .and_then(reqwest::Response::error_for_status);
+            let history: Value = match history {
+                Ok(response) => match response.json().await {
+                    Ok(value) => {
+                        history_failures = 0;
+                        value
+                    }
+                    Err(error) => {
+                        history_failures = history_failures.saturating_add(1);
+                        if history_failures >= MAX_HISTORY_FAILURES {
+                            return Err(StudioError::Render(format!(
+                                "ComfyUI history remained unreadable after {MAX_HISTORY_FAILURES} attempts: {error}"
+                            )));
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                },
+                Err(error) => {
+                    history_failures = history_failures.saturating_add(1);
+                    if history_failures >= MAX_HISTORY_FAILURES {
+                        return Err(StudioError::Render(format!(
+                            "ComfyUI history was unavailable for {MAX_HISTORY_FAILURES} consecutive attempts: {error}"
+                        )));
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
             if let Some(entry) = history.get(&generation.comfy_prompt_id) {
                 if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
                     let detail = comfy_execution_error(entry).unwrap_or_else(|| {
@@ -515,15 +585,17 @@ impl MovieStudio {
                 continue;
             }
             asset.name = format!("Generated H3 image - frame {frame_index:02}");
-            asset.generation = Some(provenance);
-            write_json_atomic(
-                &self
-                    .root
-                    .join("_references")
-                    .join("meta")
-                    .join(format!("{}.json", asset.id)),
-                &asset,
-            )?;
+            if asset.generation.is_none() {
+                asset.generation = Some(provenance);
+                write_json_atomic(
+                    &self
+                        .root
+                        .join("_references")
+                        .join("meta")
+                        .join(format!("{}.json", asset.id)),
+                    &asset,
+                )?;
+            }
             candidates.push(MovieImageAssetCandidate { frame_index, asset });
         }
         if candidates.is_empty() {
@@ -559,6 +631,7 @@ fn pseudo_image_graph(
     steps: u32,
     seed: u64,
     prefix: &str,
+    preview_available: bool,
 ) -> Value {
     let mut graph = json!({
         "1":{"class_type":"UNETLoader","inputs":{"unet_name":"minimax_h3_fl2va_pruned_int8_convrot.safetensors","weight_dtype":"default"}},
@@ -566,15 +639,19 @@ fn pseudo_image_graph(
         "3":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_video_vae_fp16.safetensors"}},
         "4":{"class_type":"MiniMaxH3ImageToVideo","inputs":{"clip":["2",0],"vae":["3",0],"prompt":prompt,"width":width,"height":height,"length":REQUESTED_LENGTH}},
         "5":{"class_type":"RandomNoise","inputs":{"noise_seed":seed}},
-        "6":{"class_type":"BasicScheduler","inputs":{"model":["90",0],"scheduler":"simple","steps":steps,"denoise":1.0}},
+        "6":{"class_type":"BasicScheduler","inputs":{"model":["1",0],"scheduler":"simple","steps":steps,"denoise":1.0}},
         "7":{"class_type":"KSamplerSelect","inputs":{"sampler_name":"euler"}},
-        "8":{"class_type":"BasicGuider","inputs":{"model":["90",0],"conditioning":["4",0]}},
+        "8":{"class_type":"BasicGuider","inputs":{"model":["1",0],"conditioning":["4",0]}},
         "9":{"class_type":"SamplerCustomAdvanced","inputs":{"noise":["5",0],"guider":["8",0],"sampler":["7",0],"sigmas":["6",0],"latent_image":["4",1]}},
         "10":{"class_type":"VAEDecode","inputs":{"samples":["9",0],"vae":["3",0]}},
         "11":{"class_type":"ImageFromBatch","inputs":{"image":["10",0],"batch_index":CANDIDATE_START,"length":CANDIDATE_COUNT}},
         "12":{"class_type":"SaveImage","inputs":{"images":["11",0],"filename_prefix":prefix}}
     });
-    graph["90"] = preview_node("1", 6);
+    if preview_available {
+        graph[PREVIEW_NODE_ID] = preview_node("1", 6);
+        graph["6"]["inputs"]["model"] = json!([PREVIEW_NODE_ID, 0]);
+        graph["8"]["inputs"]["model"] = json!([PREVIEW_NODE_ID, 0]);
+    }
     graph
 }
 
@@ -694,7 +771,7 @@ mod tests {
 
     #[test]
     fn pseudo_image_graph_matches_the_researched_stable_frame_pass() {
-        let graph = pseudo_image_graph("test", 1_344, 768, 20, 7, "kestrel/test");
+        let graph = pseudo_image_graph("test", 1_344, 768, 20, 7, "kestrel/test", true);
         assert_eq!(graph["4"]["inputs"]["length"], REQUESTED_LENGTH);
         assert_eq!(graph["7"]["inputs"]["sampler_name"], "euler");
         assert_eq!(graph["11"]["inputs"]["batch_index"], CANDIDATE_START);
@@ -708,6 +785,14 @@ mod tests {
     }
 
     #[test]
+    fn pseudo_image_graph_runs_without_the_optional_preview_node() {
+        let graph = pseudo_image_graph("test", 1_344, 768, 20, 7, "kestrel/test", false);
+        assert!(graph.get(PREVIEW_NODE_ID).is_none());
+        assert_eq!(graph["6"]["inputs"]["model"], json!(["1", 0]));
+        assert_eq!(graph["8"]["inputs"]["model"], json!(["1", 0]));
+    }
+
+    #[test]
     fn image_prompt_keeps_the_same_long_form_limit_as_the_movie_brief() {
         let mut value = request();
         value.prompt = "x".repeat(MAX_MOVIE_PROMPT_BYTES);
@@ -717,15 +802,15 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires the installed MiniMax H3 ComfyUI stack and several minutes"]
+    #[ignore = "requires KESTREL_LIVE_COMFY_ROOT, the installed MiniMax H3 ComfyUI stack, and several minutes"]
     async fn live_h3_image_pass_preserves_selectable_candidates_and_provenance() {
         use futures_util::StreamExt as _;
 
         let library = tempfile::tempdir().unwrap();
         let studio = MovieStudio::new(library.path()).unwrap();
         let mut value = request();
-        value.comfy_root =
-            std::env::var("KESTREL_LIVE_COMFY_ROOT").unwrap_or_else(|_| r"D:\AI\ComfyUI".into());
+        value.comfy_root = std::env::var("KESTREL_LIVE_COMFY_ROOT")
+            .expect("KESTREL_LIVE_COMFY_ROOT must point to the installed ComfyUI root");
         value.width = 512;
         value.height = 512;
         value.prompt = "A single handmade brass compass on a dark green linen field, centered product reference, precise engraved details, soft north-window light, no hands, no labels, no motion.".into();
@@ -759,7 +844,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             preview.pointer("/data/node_id").and_then(Value::as_str),
-            Some("90")
+            Some(PREVIEW_NODE_ID)
         );
         assert!(preview
             .pointer("/data/image")
@@ -779,16 +864,16 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires KESTREL_ACCEPTANCE_LIBRARY and the installed MiniMax H3 ComfyUI stack"]
-    async fn live_football_circus_reference_image_from_llm_assist() {
+    #[ignore = "requires KESTREL_ACCEPTANCE_LIBRARY, KESTREL_LIVE_COMFY_ROOT, and the installed MiniMax H3 ComfyUI stack"]
+    async fn live_football_circus_reference_image_direct_h3_generation() {
         let library = std::env::var_os("KESTREL_ACCEPTANCE_LIBRARY")
             .map(PathBuf::from)
             .expect("KESTREL_ACCEPTANCE_LIBRARY must point to the durable Kestrel library");
         let studio = MovieStudio::new(&library).unwrap();
         let request_id = uuid::Uuid::new_v4().to_string();
-        let prompt = "A full-body still image of professional American football quarterback Elias Vance, age twenty eight, standing in a wide practice field at dawn. He is captured in a three-quarter front stance, shoulders relaxed, head tilted slightly downward as he stares intently at his cleats, expression one of quiet awe and focus. The camera is positioned at eye level, centered on the figure with a shallow depth of field that keeps him sharply defined while softening the background. Lighting is early morning, diffused through a shimmering, low-lying mist that clings to the grass and catches in the air as fine luminous particles. A cool blue-gray ambient wash dominates the scene, punctuated by soft amber rim light outlining his silhouette. The color palette consists of muted steel blue, charcoal gray, pale mist white, and subtle warm gold tones. Materials are rendered with tactile precision: the damp slightly wrinkled cotton-polyester blend of his navy blue practice jersey with a single white vertical stripe, charcoal gray compression shorts, matte black leather football cleats with white laces, and thin white athletic socks. Faint athletic tape wraps his left forearm, and the fabric shows natural morning condensation. In the distant background, partially obscured by the atmospheric haze, a large constructer circus framework rises with intricate steel trusses, draped canvas canopies, and geometric rigging, rendered as a soft secondary element that never competes with the primary subject. The composition remains tightly focused on the player, establishing a reusable identity reference for consistent character portrayal.";
+        let prompt = "A full-body still image of professional American football quarterback Elias Vance, age twenty eight, standing in a wide practice field at dawn. He is captured in a three-quarter front stance, shoulders relaxed, head tilted slightly downward as he stares intently at his cleats, expression one of quiet awe and focus. The camera is positioned at eye level, centered on the figure with a shallow depth of field that keeps him sharply defined while softening the background. Lighting is early morning, diffused through a shimmering, low-lying mist that clings to the grass and catches in the air as fine luminous particles. A cool blue-gray ambient wash dominates the scene, punctuated by soft amber rim light outlining his silhouette. The color palette consists of muted steel blue, charcoal gray, pale mist white, and subtle warm gold tones. Materials are rendered with tactile precision: the damp slightly wrinkled cotton-polyester blend of his navy blue practice jersey with a single white vertical stripe, charcoal gray compression shorts, matte black leather football cleats with white laces, and thin white athletic socks. Faint athletic tape wraps his left forearm, and the fabric shows natural morning condensation. In the distant background, partially obscured by the atmospheric haze, a large construction-site circus framework rises with intricate steel trusses, draped canvas canopies, and geometric rigging, rendered as a soft secondary element that never competes with the primary subject. The composition remains tightly focused on the player, establishing a reusable identity reference for consistent character portrayal.";
         eprintln!(
-            "FOOTBALL IMAGE ACCEPTANCE: LLM-assisted identity prompt\n{prompt}\n\nGeneration ID: {request_id}"
+            "FOOTBALL IMAGE ACCEPTANCE: direct H3 identity prompt\n{prompt}\n\nGeneration ID: {request_id}"
         );
         let generation = studio
             .generate_image_assets(
@@ -800,7 +885,7 @@ mod tests {
                     steps: 20,
                     seed: 20_260_812,
                     comfy_root: std::env::var("KESTREL_LIVE_COMFY_ROOT")
-                        .unwrap_or_else(|_| r"D:\AI\ComfyUI".into()),
+                        .expect("KESTREL_LIVE_COMFY_ROOT must point to the installed ComfyUI root"),
                     stabilize: true,
                 },
                 &CancellationToken::new(),
