@@ -44,7 +44,7 @@ pub use prompt_collaboration::{
     validate_request as validate_prompt_draft_request, PromptDraftJob, PromptDraftRequest,
 };
 
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
@@ -564,6 +564,10 @@ pub struct ClipEdit {
     pub audio_fade_in: f32,
     #[serde(default)]
     pub audio_fade_out: f32,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub notes: String,
 }
 
 fn default_gain() -> f32 {
@@ -587,6 +591,24 @@ pub struct MovieEdit {
     pub normalize_audio: bool,
     #[serde(default = "default_target_lufs")]
     pub target_lufs: f32,
+    #[serde(default)]
+    pub markers: Vec<TimelineMarker>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineMarker {
+    pub id: String,
+    pub time_seconds: f32,
+    pub label: String,
+    #[serde(default = "default_marker_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub completed: bool,
+}
+
+fn default_marker_kind() -> String {
+    "marker".into()
 }
 
 fn default_export_title() -> String {
@@ -820,6 +842,7 @@ impl MovieStudio {
                 export_preset: default_export_preset(),
                 normalize_audio: false,
                 target_lufs: default_target_lufs(),
+                markers: Vec::new(),
             },
             final_path: String::new(),
             exports: Vec::new(),
@@ -1299,6 +1322,8 @@ impl MovieStudio {
                 fade_out: 0.0,
                 audio_fade_in: 0.0,
                 audio_fade_out: 0.0,
+                label: String::new(),
+                notes: String::new(),
             })
             .collect();
         project.plan = Some(plan.clone());
@@ -1483,6 +1508,8 @@ impl MovieStudio {
                 fade_out: 0.0,
                 audio_fade_in: 0.0,
                 audio_fade_out: 0.0,
+                label: String::new(),
+                notes: String::new(),
             })
             .collect();
         project.plan = Some(plan.clone());
@@ -3103,6 +3130,19 @@ fn validate_movie_edit(project: &MovieProject, edit: &mut MovieEdit) -> Result<(
                 item.id
             )));
         }
+        if item.label.chars().count() > 120
+            || item.label.chars().any(char::is_control)
+            || item.notes.chars().count() > 4_000
+            || item
+                .notes
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+        {
+            return Err(StudioError::Invalid(format!(
+                "timeline item {} has a label or producer note outside supported bounds",
+                item.id
+            )));
+        }
         let source_duration = source.duration_seconds;
         if item.trim_start + item.trim_end > source_duration - 0.1 {
             return Err(StudioError::Invalid(format!(
@@ -3118,6 +3158,35 @@ fn validate_movie_edit(project: &MovieProject, edit: &mut MovieEdit) -> Result<(
                 "timeline item {} fades overlap beyond its {:.2}-second edited duration",
                 item.id, output_duration
             )));
+        }
+    }
+    if edit.markers.len() > 256 {
+        return Err(StudioError::Invalid(
+            "a movie timeline can contain at most 256 markers and to-do items".into(),
+        ));
+    }
+    let mut marker_ids = HashSet::new();
+    edit.markers.sort_by(|left, right| {
+        left.time_seconds
+            .partial_cmp(&right.time_seconds)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for marker in &mut edit.markers {
+        marker.label = marker.label.trim().into();
+        if marker.id.is_empty()
+            || marker.id.len() > 128
+            || marker.id.chars().any(char::is_control)
+            || !marker_ids.insert(marker.id.clone())
+            || !marker.time_seconds.is_finite()
+            || !(0.0..=86_400.0).contains(&marker.time_seconds)
+            || marker.label.is_empty()
+            || marker.label.chars().count() > 120
+            || marker.label.chars().any(char::is_control)
+            || !matches!(marker.kind.as_str(), "marker" | "todo" | "chapter")
+        {
+            return Err(StudioError::Invalid(
+                "timeline markers require a unique ID, a printable label, a valid time, and marker, todo, or chapter type".into(),
+            ));
         }
     }
     Ok(())
@@ -5319,6 +5388,8 @@ mod tests {
             fade_out: 0.0,
             audio_fade_in: 0.0,
             audio_fade_out: 0.0,
+            label: String::new(),
+            notes: String::new(),
         };
         let mut edit = MovieEdit {
             clips: vec![decision("second", 8), decision("first", 2)],
@@ -5326,6 +5397,13 @@ mod tests {
             export_preset: "archive".into(),
             normalize_audio: true,
             target_lufs: -16.0,
+            markers: vec![TimelineMarker {
+                id: "opening-note".into(),
+                time_seconds: 1.0,
+                label: "Check the opening beat".into(),
+                kind: "todo".into(),
+                completed: false,
+            }],
         };
         validate_movie_edit(&project, &mut edit).unwrap();
         assert_eq!(edit.clips[0].id, "first");
@@ -7102,6 +7180,8 @@ mod tests {
                     fade_out: 0.1,
                     audio_fade_in: 0.1,
                     audio_fade_out: 0.1,
+                    label: "Fast opening".into(),
+                    notes: "Producer-approved timing.".into(),
                 },
                 ClipEdit {
                     id: "timeline-second".into(),
@@ -7117,12 +7197,15 @@ mod tests {
                     fade_out: 0.0,
                     audio_fade_in: 0.0,
                     audio_fade_out: 0.0,
+                    label: String::new(),
+                    notes: String::new(),
                 },
             ],
             export_title: "Offline Timeline Regression".into(),
             export_preset: "review".into(),
             normalize_audio: true,
             target_lufs: -16.0,
+            markers: Vec::new(),
         };
         studio.save(&project).unwrap();
         let edited = studio.render_edit(&project.id).await.unwrap();

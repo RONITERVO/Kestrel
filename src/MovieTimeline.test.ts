@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { moveTimelineItem, splitTimelineItem, timelineItems } from "./MovieTimeline";
+import { appendTimelineSource, formatTimecode, moveTimelineItem, splitTimelineItem, timelineItems } from "./MovieTimeline";
 import type { ClipEdit, MovieEdit, MovieProject } from "./types";
 
 const decision = (id: string, clipId: string, order: number): ClipEdit => ({
   id, clipId, order, enabled: true, trimStart: 0, trimEnd: 0, audioGain: 1,
-  sourceVersionId: "", speed: 1, fadeIn: 0, fadeOut: 0, audioFadeIn: 0, audioFadeOut: 0,
+  sourceVersionId: "", speed: 1, fadeIn: 0, fadeOut: 0, audioFadeIn: 0, audioFadeOut: 0, label: "", notes: "",
 });
 
 const project = {
@@ -17,7 +17,7 @@ const project = {
 } as MovieProject;
 
 const movieEdit = (clips: ClipEdit[]): MovieEdit => ({
-  clips, exportTitle: "Test", exportPreset: "publish", normalizeAudio: false, targetLufs: -14,
+  clips, exportTitle: "Test", exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [],
 });
 
 describe("movie timeline decisions", () => {
@@ -46,5 +46,18 @@ describe("movie timeline decisions", () => {
     expect(split.clips[0].trimEnd).toBe(6);
     expect(split.clips[1].trimStart).toBe(4);
     expect(timelineItems(project, split).slice(0, 2).reduce((sum, item) => sum + item.outputDuration, 0)).toBe(10);
+  });
+
+  it("appends a preserved master as a new non-destructive storyline decision", () => {
+    const appended = appendTimelineSource(movieEdit([decision("a", "one", 0)]), "two", "new-edit");
+    expect(appended.clips.map((item) => [item.id, item.clipId, item.order])).toEqual([
+      ["a", "one", 0], ["new-edit", "two", 1],
+    ]);
+    expect(appended.clips[1]).toMatchObject({ enabled: true, speed: 1, label: "", notes: "" });
+  });
+
+  it("shows familiar 24 fps producer timecode", () => {
+    expect(formatTimecode(65.5)).toBe("00:01:05:12");
+    expect(formatTimecode(3661 + 1 / 24)).toBe("01:01:01:01");
   });
 });

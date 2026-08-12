@@ -70,7 +70,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const [imagePreview, setImagePreview] = useState<MovieRenderPreviewEvent>();
   const [moviePreview, setMoviePreview] = useState<MovieRenderPreviewEvent>();
   const [busy, setBusy] = useState(false);
-  const [edit, setEdit] = useState<MovieEdit>({ clips: [], exportTitle: "Kestrel Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14 });
+  const [edit, setEdit] = useState<MovieEdit>({ clips: [], exportTitle: "Kestrel Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [] });
   const [references, setReferences] = useState<PendingMovieReference[]>([]);
   const activeProjectId = useRef<string | undefined>(undefined);
   const promptDraftActiveRef = useRef<ActivePromptDraft | undefined>(undefined);
@@ -634,8 +634,8 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, preview, onErr
       })} />}
     {project.plan && project.status !== "awaiting-review" && <section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Bonsai acceptance</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "attempt" : "attempts"}. {project.plan.qualityReview.verdict}</p></article></section>}
     {project.clips.length > 0 && <section className="movie-timeline-section">
-      <div className="movie-section-heading"><div><span className="eyebrow">Non-destructive edit</span><h2>Timeline & program monitor</h2><small>Split, repeat, reorder, retime, fade, and audition any preserved scene version. Masters remain immutable.</small></div><div><button disabled={busy} onClick={onSave}><Save /> Save timeline</button><button className="accent" disabled={busy || complete === 0 || project.status === "running" || !edit.clips.some((item) => item.enabled)} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export new cut</button></div></div>
-      <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} />
+      <div className="movie-section-heading"><div><span className="eyebrow">Producer cut room</span><h2>Edit with the whole production in view</h2><small>Audition masters and references, skim and blade the magnetic storyline, leave durable markers and notes, refine picture and native sound, then create an immutable deliverable.</small></div><div><button disabled={busy} onClick={onSave}><Save /> Save changes</button><button className="accent" disabled={busy || complete === 0 || project.status === "running" || !edit.clips.some((item) => item.enabled)} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export new cut</button></div></div>
+      <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} onRequestSave={onSave} />
       <details className="movie-master-bin"><summary><span><Film /> Preserved master bin</span><small>{project.clips.length} original scenes · open for story notes, prompts, and Bonsai versioning</small></summary>
         <div className="movie-clip-grid">{project.clips.map((clip) => {
           const planned = project.plan?.clips.find((item) => item.id === clip.id);

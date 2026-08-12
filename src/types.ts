@@ -389,6 +389,16 @@ export interface ClipEdit {
   fadeOut: number;
   audioFadeIn: number;
   audioFadeOut: number;
+  label: string;
+  notes: string;
+}
+
+export interface TimelineMarker {
+  id: string;
+  timeSeconds: number;
+  label: string;
+  kind: "marker" | "todo" | "chapter";
+  completed: boolean;
 }
 
 export interface MovieEdit {
@@ -397,6 +407,7 @@ export interface MovieEdit {
   exportPreset: "archive" | "publish" | "review";
   normalizeAudio: boolean;
   targetLufs: number;
+  markers: TimelineMarker[];
 }
 
 export interface MovieExport {
