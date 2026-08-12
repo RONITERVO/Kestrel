@@ -5,16 +5,17 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  approveMoviePlan, askBonsaiMovieClip, cancelMovie, checkpointMoviePlanning,
-  cancelMovieStoryDraft, directMoviePlanning, getMovie, getMoviePlanning, listMovies, movieMediaUrl,
-  onMoviePlanning, onMovieProject, onMovieStoryDraft, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
+  approveMoviePlan, askBonsaiMovieClip, cancelMovie, cancelMovieImageAsset, checkpointMoviePlanning,
+  cancelMovieStoryDraft, directMoviePlanning, getMovie, getMoviePlanning, listMovieImageAssets, listMovies, movieMediaUrl,
+  onMovieImageAsset, onMoviePlanning, onMovieProject, onMovieStoryDraft, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
   resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startMovie,
-  startMovieStoryDraft,
+  startMovieImageAsset, startMovieStoryDraft,
 } from "./api";
 import { MovieTimeline } from "./MovieTimeline";
 import type {
   MovieClipSuggestion, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
-  ModelInfo, MovieProject, MovieSettings, MovieSummary, PendingMovieReference, PlannedClip,
+  ModelInfo, MovieImageAssetGeneration, MovieProject, MovieReferenceAsset, MovieSettings,
+  MovieSummary, PendingMovieReference, PlannedClip,
   RenderedClip,
 } from "./types";
 
@@ -45,11 +46,21 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const [storyModelId, setStoryModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
   const [storyGenerating, setStoryGenerating] = useState(false);
   const [storyStatus, setStoryStatus] = useState("");
+  const [imagePrompt, setImagePrompt] = useState("");
+  const [imageWidth, setImageWidth] = useState(768);
+  const [imageHeight, setImageHeight] = useState(1344);
+  const [imageSteps, setImageSteps] = useState(20);
+  const [imageSeed, setImageSeed] = useState(0);
+  const [imageStabilize, setImageStabilize] = useState(true);
+  const [imageGenerating, setImageGenerating] = useState(false);
+  const [imageStatus, setImageStatus] = useState("");
+  const [imageGenerations, setImageGenerations] = useState<MovieImageAssetGeneration[]>([]);
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState<MovieEdit>({ clips: [], exportTitle: "Kestrel Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14 });
   const [references, setReferences] = useState<PendingMovieReference[]>([]);
   const activeProjectId = useRef<string | undefined>(undefined);
   const storyRequestId = useRef<string | undefined>(undefined);
+  const imageRequestId = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (models.some((model) => model.id === storyModelId)) return;
@@ -87,6 +98,34 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
     }).then((unlisten) => { dispose = unlisten; });
     return () => dispose?.();
   }, [onError]);
+
+  const refreshImageAssets = useCallback(async () => {
+    try { setImageGenerations(await listMovieImageAssets()); } catch (error) { onError(String(error)); }
+  }, [onError]);
+
+  useEffect(() => {
+    void refreshImageAssets();
+    let dispose: (() => void) | undefined;
+    void onMovieImageAsset((event) => {
+      if (event.requestId !== imageRequestId.current) return;
+      setImageStatus(event.detail);
+      if (event.kind === "complete" && event.generation) {
+        setImageGenerations((known) => [event.generation!, ...known.filter((item) => item.id !== event.generation!.id)]);
+        setImageGenerating(false);
+        imageRequestId.current = undefined;
+      } else if (event.kind === "cancelled") {
+        setImageGenerating(false);
+        imageRequestId.current = undefined;
+        void refreshImageAssets();
+      } else if (event.kind === "error") {
+        setImageGenerating(false);
+        imageRequestId.current = undefined;
+        onError(event.detail || "Local H3 image generation failed.");
+        void refreshImageAssets();
+      }
+    }).then((unlisten) => { dispose = unlisten; });
+    return () => dispose?.();
+  }, [onError, refreshImageAssets]);
 
   const refreshList = useCallback(async () => {
     try { setMovies(await listMovies()); } catch (error) { onError(String(error)); }
@@ -174,6 +213,55 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
     }
   };
 
+  const generateImageAsset = async () => {
+    if (imageGenerating || imagePrompt.trim().length < 3) return;
+    const requestId = crypto.randomUUID();
+    imageRequestId.current = requestId;
+    setImageGenerating(true);
+    setImageStatus("Preparing the private H3 image workflow…");
+    try {
+      await startMovieImageAsset({
+        requestId,
+        prompt: imagePrompt,
+        width: imageWidth,
+        height: imageHeight,
+        steps: imageSteps,
+        seed: imageSeed,
+        comfyRoot: settings.comfyRoot,
+        stabilize: imageStabilize,
+      });
+    } catch (error) {
+      imageRequestId.current = undefined;
+      setImageGenerating(false);
+      setImageStatus("");
+      onError(String(error));
+    }
+  };
+
+  const stopImageAsset = async () => {
+    const requestId = imageRequestId.current;
+    if (!requestId) return;
+    setImageStatus("Stopping the local image pass…");
+    try { await cancelMovieImageAsset(requestId); } catch (error) { onError(String(error)); }
+  };
+
+  const useGeneratedImage = (asset: MovieReferenceAsset) => {
+    if (references.some((reference) => reference.assetId === asset.id)) return;
+    if (references.filter((reference) => reference.kind === "image").length >= 9) {
+      onError("MiniMax H3 accepts at most 9 picture references. Remove one before adding this candidate.");
+      return;
+    }
+    const sourcePrompt = asset.generation?.prompt.trim().replace(/\s+/g, " ") ?? "";
+    const description = `Use this generated image as a native visual identity and art-direction reference.${sourcePrompt ? ` Generation brief: ${sourcePrompt.slice(0, 1_000)}` : ""}`;
+    setReferences((known) => [...known, {
+      ...asset,
+      assetId: asset.id,
+      description,
+      useEmbeddedAudio: false,
+      embeddedAudioDescription: "",
+    }]);
+  };
+
   const attachReferences = async () => {
     setBusy(true);
     try {
@@ -221,6 +309,11 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
             pauseAfterPlan={pauseAfterPlan} onPauseAfterPlan={setPauseAfterPlan}
             models={models} storyModelId={storyModelId} storyGenerating={storyGenerating} storyStatus={storyStatus}
             onStoryModel={setStoryModelId} onGenerateStory={() => void generateStory()} onStopStory={() => void stopStory()}
+            imagePrompt={imagePrompt} imageWidth={imageWidth} imageHeight={imageHeight} imageSteps={imageSteps} imageSeed={imageSeed}
+            imageStabilize={imageStabilize} imageGenerating={imageGenerating} imageStatus={imageStatus} imageGenerations={imageGenerations}
+            onImagePrompt={setImagePrompt} onImageCanvas={(width, height) => { setImageWidth(width); setImageHeight(height); }}
+            onImageSteps={setImageSteps} onImageSeed={setImageSeed} onImageStabilize={setImageStabilize}
+            onGenerateImage={() => void generateImageAsset()} onStopImage={() => void stopImageAsset()} onUseGeneratedImage={useGeneratedImage}
             onPrompt={setPrompt} onSettings={setSettings} onReferences={setReferences} onAttach={() => void attachReferences()} onAdvanced={setAdvanced} onMake={() => void makeMovie()} />
         ) : (
           <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} onError={onError} onEdit={setEdit}
@@ -236,11 +329,16 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   );
 }
 
-function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, models, storyModelId, storyGenerating, storyStatus, onStoryModel, onGenerateStory, onStopStory, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake }: {
+function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, models, storyModelId, storyGenerating, storyStatus, onStoryModel, onGenerateStory, onStopStory, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake }: {
   prompt: string; settings: MovieSettings; references: PendingMovieReference[]; advanced: boolean; advancedEnabled: boolean; busy: boolean;
   pauseAfterPlan: boolean; onPauseAfterPlan: (value: boolean) => void;
   models: ModelInfo[]; storyModelId: string; storyGenerating: boolean; storyStatus: string;
   onStoryModel: (value: string) => void; onGenerateStory: () => void; onStopStory: () => void;
+  imagePrompt: string; imageWidth: number; imageHeight: number; imageSteps: number; imageSeed: number; imageStabilize: boolean;
+  imageGenerating: boolean; imageStatus: string; imageGenerations: MovieImageAssetGeneration[];
+  onImagePrompt: (value: string) => void; onImageCanvas: (width: number, height: number) => void;
+  onImageSteps: (value: number) => void; onImageSeed: (value: number) => void; onImageStabilize: (value: boolean) => void;
+  onGenerateImage: () => void; onStopImage: () => void; onUseGeneratedImage: (asset: MovieReferenceAsset) => void;
   onPrompt: (value: string) => void; onSettings: (value: MovieSettings) => void; onReferences: (value: PendingMovieReference[]) => void;
   onAttach: () => void; onAdvanced: (value: boolean) => void; onMake: () => void;
 }) {
@@ -251,14 +349,21 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     <h1>Describe the movie.<br />Kestrel runs the studio.</h1>
     <p>One prompt becomes a reviewed screenplay, continuity bible, native H3 picture-and-sound scenes, and an untouched review cut—entirely on this computer.</p>
     <div className="movie-prompt-box">
-      <textarea autoFocus value={prompt} readOnly={storyGenerating} onChange={(event) => onPrompt(event.target.value)} placeholder="Write or paste your story here—or ask any local model to invent one…" />
-      <div><span><Check size={14} /> Bonsai drafts, reviews, and repairs every H3 scene prompt</span><button disabled={busy || storyGenerating || prompt.trim().length < 3 || !referencesReady(references)} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Make movie</button></div>
+      <textarea aria-label="Movie brief" autoFocus value={prompt} readOnly={storyGenerating} onChange={(event) => onPrompt(event.target.value)} placeholder="Write or paste your story here—or ask any local model to invent one…" />
+      <div><span><Check size={14} /> Bonsai drafts, reviews, and repairs every H3 scene prompt</span><button disabled={busy || storyGenerating || imageGenerating || prompt.trim().length < 3 || !referencesReady(references)} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Make movie</button></div>
     </div>
     <div className="story-collaborator">
       <div><span className="eyebrow">Offline story collaborator</span><strong>{prompt.trim() ? "Continue the story already in the box" : "Invent a story from scratch"}</strong><small>{storyStatus || "Choose any discovered local model. Its tokens stream into the editable movie brief; no tools or network are available."}</small></div>
       <label>Story model<select aria-label="Story model" value={storyModelId} disabled={storyGenerating || !models.length} onChange={(event) => onStoryModel(event.target.value)}>{!models.length && <option value="">No local models discovered</option>}{models.map((model) => <option key={model.id} value={model.id}>{model.name}{model.quantization ? ` · ${model.quantization}` : ""}</option>)}</select></label>
-      {storyGenerating ? <button className="story-stop" onClick={onStopStory}><CircleStop /> Stop writing</button> : <button disabled={!storyModelId || busy} onClick={onGenerateStory}><Sparkles /> {prompt.trim() ? "Continue story" : "Invent story"}</button>}
+      {storyGenerating ? <button className="story-stop" onClick={onStopStory}><CircleStop /> Stop writing</button> : <button disabled={!storyModelId || busy || imageGenerating} onClick={onGenerateStory}><Sparkles /> {prompt.trim() ? "Continue story" : "Invent story"}</button>}
     </div>
+    <ImageAssetLab
+      prompt={imagePrompt} width={imageWidth} height={imageHeight} steps={imageSteps} seed={imageSeed}
+      stabilize={imageStabilize} generating={imageGenerating} status={imageStatus} generations={imageGenerations}
+      references={references} advanced={advanced} expertEnabled={advancedEnabled} disabled={busy || storyGenerating}
+      onPrompt={onImagePrompt} onCanvas={onImageCanvas} onSteps={onImageSteps} onSeed={onImageSeed}
+      onStabilize={onImageStabilize} onGenerate={onGenerateImage} onStop={onStopImage} onUse={onUseGeneratedImage}
+    />
     <section className="movie-reference-builder">
       <div className="movie-reference-heading"><div><span className="eyebrow">Producer references</span><strong>Show and tell H3 what must carry through</strong><small>Attach the actual media, then describe its job. Kestrel binds it natively per shot.</small></div><button disabled={busy} onClick={onAttach}><Paperclip /> Attach image, video, or audio</button></div>
       {references.length > 0 && <div className="movie-reference-grid">{references.map((reference) => {
@@ -295,6 +400,50 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     <label className="wide producer-pause-toggle"><span><input type="checkbox" checked={pauseAfterPlan} onChange={(event) => onPauseAfterPlan(event.target.checked)} /> Review the plan before rendering</span><small>Recommended. Edit scenes or redirect Bonsai before any H3 clip is rendered.</small></label>
     <div className="movie-capabilities"><span><Check />98,304 context</span><span><Check />32,768 max thinking</span><span><Check />32,768 output</span><span><Check />Untouched H3 audio</span><span><Check />Crash-safe masters</span></div>
   </div>;
+}
+
+function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, references, advanced, expertEnabled, disabled, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
+  prompt: string; width: number; height: number; steps: number; seed: number; stabilize: boolean;
+  generating: boolean; status: string; generations: MovieImageAssetGeneration[]; references: PendingMovieReference[];
+  advanced: boolean; expertEnabled: boolean; disabled: boolean; onPrompt: (value: string) => void; onCanvas: (width: number, height: number) => void;
+  onSteps: (value: number) => void; onSeed: (value: number) => void; onStabilize: (value: boolean) => void;
+  onGenerate: () => void; onStop: () => void; onUse: (asset: MovieReferenceAsset) => void;
+}) {
+  const canvas = `${width}x${height}`;
+  const ready = generations.filter((generation) => generation.status === "complete" && generation.candidates.length).slice(0, 2);
+  const recentIssue = generations[0] && generations[0].status !== "complete" ? generations[0] : undefined;
+  return <section className="image-asset-lab">
+    <div className="image-asset-heading">
+      <div><span className="eyebrow">Offline image asset lab</span><strong>Generate characters, locations, props, posters, and style frames</strong><small>H3 renders one short private frame pass, then Kestrel preserves several stable candidates so you can choose the best image.</small></div>
+      <span className="image-workflow-badge">H3 · 22 internal frames · 6 choices</span>
+    </div>
+    <div className="image-asset-compose">
+      <label>Describe the exact image asset<textarea aria-label="Image asset prompt" maxLength={65536} value={prompt} disabled={generating} onChange={(event) => onPrompt(event.target.value)} placeholder="A precise character identity portrait, recurring location, hero prop, title poster, texture plate, or visual style frame… Include composition, lighting, palette, materials, and any exact text." /></label>
+      <div className="image-asset-controls">
+        <label>Canvas<select aria-label="Image canvas" value={canvas} disabled={generating} onChange={(event) => {
+          const [nextWidth, nextHeight] = event.target.value.split("x").map(Number);
+          onCanvas(nextWidth, nextHeight);
+        }}><option value="768x1344">Portrait · 768 × 1344</option><option value="1344x768">Landscape · 1344 × 768</option><option value="1024x1024">Square · 1024 × 1024</option></select></label>
+        <label className="image-stabilize"><input type="checkbox" checked={stabilize} disabled={generating} onChange={(event) => onStabilize(event.target.checked)} /><span><strong>Stabilize as a still image</strong><small>Recommended for consistent faces, geometry, and lettering.</small></span></label>
+        {generating ? <button className="image-stop" onClick={onStop}><CircleStop /> Stop image pass</button> : <button disabled={disabled || prompt.trim().length < 3} onClick={onGenerate}><ImageIcon /> Generate candidates</button>}
+      </div>
+      {advanced && <div className="image-asset-advanced"><NumberField label="Image sampling steps" value={steps} min={1} max={expertEnabled ? 100 : 40} step={1} onChange={onSteps} /><NumberField label="Image seed (0 = random)" value={seed} min={0} max={Number.MAX_SAFE_INTEGER} step={1} onChange={onSeed} /></div>}
+      {(generating || status) && <div className={`image-asset-status ${generating ? "running" : ""}`}>{generating && <LoaderCircle className="spin" />}<span>{status}</span></div>}
+    </div>
+    {ready.map((generation) => <article className="image-generation" key={generation.id}>
+      <header><span><strong>{generation.width} × {generation.height} candidate strip</strong><small>{generation.candidates.length} preserved choices · seed {generation.seed} · {generation.steps} steps</small></span><small>{new Date(generation.completedAt || generation.createdAt).toLocaleString()}</small></header>
+      <div className="image-candidate-grid">{generation.candidates.map(({ frameIndex, asset }) => {
+        const selected = references.some((reference) => reference.assetId === asset.id);
+        return <figure key={`${generation.id}-${frameIndex}`}>
+          <img src={movieMediaUrl(asset.path)} alt={`Generated image candidate frame ${frameIndex}`} />
+          <figcaption><span>Frame {frameIndex}{frameIndex === 8 ? " · workflow pick" : ""}</span><button disabled={selected} onClick={() => onUse(asset)}>{selected ? <Check /> : <Plus />}{selected ? "Added" : "Use image"}</button></figcaption>
+        </figure>;
+      })}</div>
+      {advanced && <details className="image-generation-receipt"><summary>Exact H3 prompt, models, seed, and ComfyUI graph</summary><div><span>Workflow</span><code>{generation.workflow}</code><span>Fixed source</span><code>{generation.workflowSource}@{generation.workflowRevision}</code><span>Rendered prompt</span><pre>{generation.renderedPrompt}</pre><span>Exact API graph</span><pre>{JSON.stringify(generation.exactGraph, null, 2)}</pre></div></details>}
+    </article>)}
+    {recentIssue && !generating && <div className="image-generation-issue"><strong>{recentIssue.status === "interrupted" ? "Previous image pass was interrupted" : "Previous image pass did not finish"}</strong><span>{recentIssue.detail}</span>{recentIssue.error && <small>{recentIssue.error}</small>}</div>}
+    {!ready.length && !generating && <div className="image-asset-empty"><ImageIcon /><span>Your generated candidates will stay in this private library across restarts. Only the image you choose is attached to the movie.</span></div>}
+  </section>;
 }
 
 function MovieProjectView({ project, edit, busy, advancedEnabled, onError, onProject, onEdit, onNew, onCancel, onResume, onReveal, onSave, onExport }: {
@@ -334,7 +483,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, onError, onPro
     </div>
     {(project.status === "planning-checkpoint" || (project.status === "running" && ["writing", "agent-workspace", "resuming", "producer-revision"].includes(project.phase))) && <ProducerPlanningRoom project={project} advancedEnabled={advancedEnabled} onError={onError} />}
     {project.finalPath && <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">{latestExport ? "Latest immutable timeline export" : "Assembled file"}</span><h2>{latestExport?.title ?? "Untouched H3 review cut"}</h2><small>{latestExport ? `${latestExport.preset} preset · ${latestExport.clipCount} timeline items · SHA-256 recorded` : "Native clip duration and audio are preserved. Only an explicit editor export creates an altered cut."}</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section>}
-    {project.references.length > 0 && <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}</span></article>)}</div></section>}
+    {project.references.length > 0 && <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}{reference.generation && <details><summary>Generated-image provenance</summary><small>Frame {reference.generation.frameIndex} · seed {reference.generation.seed} · {reference.generation.steps} steps · {reference.generation.width} × {reference.generation.height}</small><pre>{reference.generation.renderedPrompt}</pre><pre>{JSON.stringify(reference.generation.exactGraph, null, 2)}</pre></details>}</span></article>)}</div></section>}
     {project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={working} onPlan={setDraftPlan}
       onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
       onRevise={(feedback) => runProjectAction(async () => {

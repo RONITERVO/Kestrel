@@ -12,7 +12,7 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByText(/drafts, reviews, and repairs/i)).toBeInTheDocument();
     expect(screen.queryByText(/Wikipedia/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Make movie/i })).toBeDisabled();
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "A tiny film about a lighthouse keeper" } });
+    fireEvent.change(screen.getByLabelText("Movie brief"), { target: { value: "A tiny film about a lighthouse keeper" } });
     expect(screen.getByRole("button", { name: /Make movie/i })).toBeEnabled();
   });
 
@@ -48,9 +48,25 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByLabelText("Story model")).toHaveValue("story-large");
     expect(screen.getByRole("option", { name: /Small Story Model/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Invent story/i })).toBeEnabled();
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "A botanist finds a singing seed." } });
+    fireEvent.change(screen.getByLabelText("Movie brief"), { target: { value: "A botanist finds a singing seed." } });
     expect(screen.getByRole("button", { name: /Continue story/i })).toBeEnabled();
     expect(screen.getByText(/Continue the story already in the box/i)).toBeInTheDocument();
+  });
+
+  it("offers a producer-friendly durable H3 image asset workflow", () => {
+    render(<MovieStudio advancedEnabled onError={vi.fn()} />);
+    expect(screen.getByText(/Offline image asset lab/i)).toBeInTheDocument();
+    expect(screen.getByText(/22 internal frames · 6 choices/i)).toBeInTheDocument();
+    const generate = screen.getByRole("button", { name: /Generate candidates/i });
+    expect(generate).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Image asset prompt"), { target: { value: "A precise portrait of the recurring lead character" } });
+    expect(generate).toBeEnabled();
+    expect(screen.getByLabelText("Image canvas")).toHaveValue("768x1344");
+    fireEvent.change(screen.getByLabelText("Image canvas"), { target: { value: "1024x1024" } });
+    expect(screen.getByLabelText("Image canvas")).toHaveValue("1024x1024");
+    fireEvent.click(screen.getByRole("button", { name: /Advanced production controls/i }));
+    expect(screen.getByLabelText("Image sampling steps")).toHaveValue(20);
+    expect(screen.getByLabelText("Image seed \(0 = random\)")).toHaveValue(0);
   });
 
   it("numbers native H3 labels by type and puts embedded video audio first", () => {

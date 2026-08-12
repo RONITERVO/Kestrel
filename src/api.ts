@@ -31,6 +31,9 @@ import type {
   MovieClipRenderRequest,
   MovieClipSuggestion,
   MovieEdit,
+  MovieImageAssetEvent,
+  MovieImageAssetGeneration,
+  MovieImageAssetRequest,
   MoviePlan,
   MoviePlanningEvent,
   MoviePlanningSnapshot,
@@ -147,6 +150,25 @@ export async function getMovie(id: string): Promise<MovieProject> {
 export async function pickMovieReferenceFiles(): Promise<MovieReferenceImport> {
   if (!isTauri()) return { references: [], failures: [] };
   return invoke<MovieReferenceImport>("pick_movie_reference_files");
+}
+
+export async function listMovieImageAssets(): Promise<MovieImageAssetGeneration[]> {
+  if (!isTauri()) return [];
+  return invoke<MovieImageAssetGeneration[]>("list_movie_image_assets");
+}
+
+export async function startMovieImageAsset(request: MovieImageAssetRequest): Promise<string> {
+  if (!isTauri()) throw new Error("Local H3 image generation requires the desktop application.");
+  return invoke<string>("start_movie_image_asset", { request });
+}
+
+export async function cancelMovieImageAsset(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_image_asset", { requestId });
+}
+
+export async function onMovieImageAsset(callback: (event: MovieImageAssetEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieImageAssetEvent>("movie-image-asset", (event) => callback(event.payload));
+  return () => undefined;
 }
 
 export async function startMovie(request: StartMovieRequest): Promise<MovieProject> {

@@ -25,11 +25,16 @@ use thiserror::Error;
 use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
+mod image_assets;
 mod movie_agent;
 mod planning;
 mod prompts;
 mod story;
 
+pub use image_assets::{
+    emit_image_asset_error, GeneratedImageProvenance, MovieImageAssetGeneration,
+    MovieImageAssetRequest,
+};
 use movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult};
 pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot};
 pub use story::{
@@ -200,7 +205,7 @@ pub enum StudioError {
     Planning(String),
     #[error("MiniMax H3 render failed: {0}")]
     Render(String),
-    #[error("movie production was stopped")]
+    #[error("studio operation was stopped")]
     Cancelled,
 }
 
@@ -283,6 +288,8 @@ pub struct MovieReferenceAsset {
     pub has_audio: bool,
     pub path: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<GeneratedImageProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,6 +313,8 @@ pub struct MovieReference {
     pub use_embedded_audio: bool,
     #[serde(default)]
     pub embedded_audio_description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<GeneratedImageProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -696,6 +705,7 @@ impl MovieStudio {
             planning_sequence: Arc::new(AtomicU64::new(1)),
         };
         studio.recover_interrupted()?;
+        studio.recover_image_asset_generations()?;
         Ok(studio)
     }
 
@@ -748,6 +758,7 @@ impl MovieStudio {
             has_audio: probe.has_audio,
             path: object_path.to_string_lossy().into_owned(),
             created_at: Utc::now().to_rfc3339(),
+            generation: None,
         };
         write_json_atomic(&meta_path, &asset)?;
         Ok(asset)
@@ -981,6 +992,7 @@ impl MovieStudio {
                 description: request.description.trim().into(),
                 use_embedded_audio: request.use_embedded_audio,
                 embedded_audio_description: request.embedded_audio_description.trim().into(),
+                generation: asset.generation,
             });
         }
         Ok(result)
@@ -2411,6 +2423,22 @@ impl MovieStudio {
         if self.comfy_ready().await {
             return Ok(());
         }
+        project.phase = "starting-renderer".into();
+        project.detail = "Starting the private ComfyUI MiniMax H3 renderer.".into();
+        self.persist_emit(project, app)?;
+        let logs = self.project_dir(&project.id).join("logs");
+        self.ensure_comfy_process(root, &logs, None).await
+    }
+
+    pub(super) async fn ensure_comfy_process(
+        &self,
+        root: &str,
+        logs: &Path,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<(), StudioError> {
+        if self.comfy_ready().await {
+            return Ok(());
+        }
         let root = PathBuf::from(root);
         let script = root.join("Start-ComfyUI-MiniMax-H3.ps1");
         if !script.is_file() {
@@ -2419,11 +2447,7 @@ impl MovieStudio {
                 script.display()
             )));
         }
-        project.phase = "starting-renderer".into();
-        project.detail = "Starting the private ComfyUI MiniMax H3 renderer.".into();
-        self.persist_emit(project, app)?;
-        let logs = self.project_dir(&project.id).join("logs");
-        fs::create_dir_all(&logs)?;
+        fs::create_dir_all(logs)?;
         let stdout = fs::File::create(logs.join("comfy.stdout.log"))?;
         let stderr = fs::File::create(logs.join("comfy.stderr.log"))?;
         let mut command = tokio::process::Command::new("powershell.exe");
@@ -2444,14 +2468,21 @@ impl MovieStudio {
             if self.comfy_ready().await {
                 return Ok(());
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            if let Some(cancel) = cancel {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {},
+                    _ = cancel.cancelled() => return Err(StudioError::Cancelled),
+                }
+            } else {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
         }
         Err(StudioError::Render(
             "ComfyUI did not become ready within six minutes; see the project logs".into(),
         ))
     }
 
-    async fn comfy_ready(&self) -> bool {
+    pub(super) async fn comfy_ready(&self) -> bool {
         self.http
             .get(format!("{COMFY_BASE}/system_stats"))
             .timeout(Duration::from_secs(3))
@@ -5373,6 +5404,7 @@ mod tests {
             description: "Use this exact recording only in the flashback scene.".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
+            generation: None,
         }
     }
 
@@ -5546,6 +5578,7 @@ mod tests {
             description: "This is the vlogger's identity reference. Whenever he appears, preserve his face and wardrobe.".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
+            generation: None,
         }
     }
 
@@ -5762,6 +5795,7 @@ mod tests {
             description: "A spoken voice reference for the flashback narrator.".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
+            generation: None,
         };
         let mut plan = MoviePlan {
             title: "Memory".into(),
@@ -5813,6 +5847,7 @@ mod tests {
             description: "The vlogger's identity reference.".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
+            generation: None,
         };
         let clip = PlannedClip {
             id: String::new(),
@@ -5989,6 +6024,7 @@ mod tests {
             description: "The lead actor's identity".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
+            generation: None,
         };
         let conflict_issues = prompt_quality_issues(&conflict, &[reference]).join(" ");
         assert!(conflict_issues.contains("mutually exclusive fl2va and ref2va"));

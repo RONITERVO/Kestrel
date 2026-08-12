@@ -165,6 +165,85 @@ export interface MovieReferenceAsset {
   hasAudio: boolean;
   path: string;
   createdAt: string;
+  generation?: GeneratedImageProvenance;
+}
+
+export interface GeneratedImageProvenance {
+  generationId: string;
+  workflow: string;
+  workflowSource: string;
+  workflowRevision: string;
+  prompt: string;
+  renderedPrompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  seed: number;
+  requestedLength: number;
+  resolvedFrameCount: number;
+  frameIndex: number;
+  sampler: string;
+  scheduler: string;
+  diffusionModel: string;
+  textEncoder: string;
+  vae: string;
+  comfyPromptId: string;
+  createdAt: string;
+  exactGraph: unknown;
+}
+
+export interface MovieImageAssetRequest {
+  requestId: string;
+  prompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  seed: number;
+  comfyRoot: string;
+  stabilize: boolean;
+}
+
+export interface MovieImageAssetCandidate {
+  frameIndex: number;
+  asset: MovieReferenceAsset;
+}
+
+export interface MovieImageAssetGeneration {
+  id: string;
+  status: "running" | "complete" | "failed" | "cancelled" | string;
+  stage: string;
+  detail: string;
+  prompt: string;
+  renderedPrompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  seed: number;
+  stabilize: boolean;
+  workflow: string;
+  workflowSource: string;
+  workflowRevision: string;
+  requestedLength: number;
+  resolvedFrameCount: number;
+  candidateStart: number;
+  candidateCount: number;
+  comfyPromptId: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string;
+  error: string;
+  candidates: MovieImageAssetCandidate[];
+  exactGraph: unknown;
+}
+
+export interface MovieImageAssetEvent {
+  requestId: string;
+  kind: "started" | "progress" | "complete" | "cancelled" | "error" | string;
+  stage: string;
+  detail: string;
+  progress: number;
+  at: string;
+  generation?: MovieImageAssetGeneration;
 }
 
 export interface ProducerReferenceRequest {
@@ -197,6 +276,7 @@ export interface MovieReference {
   description: string;
   useEmbeddedAudio: boolean;
   embeddedAudioDescription: string;
+  generation?: GeneratedImageProvenance;
 }
 
 export interface PlannedClip {

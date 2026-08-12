@@ -40,9 +40,10 @@ use std::{
 };
 use store::ResearchStore;
 use studio::{
-    MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieEdit, MoviePlan,
-    MoviePlanFeedbackRequest, MoviePlanningSnapshot, MovieProject, MovieReferenceImport,
-    MovieStudio, MovieSummary, StartMovieRequest, StoryDraftJob, StoryDraftRequest,
+    MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieEdit,
+    MovieImageAssetGeneration, MovieImageAssetRequest, MoviePlan, MoviePlanFeedbackRequest,
+    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
+    StartMovieRequest, StoryDraftJob, StoryDraftRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -69,6 +70,7 @@ struct AppState {
     interactive_jobs: Mutex<HashMap<String, CancellationToken>>,
     studio: MovieStudio,
     movie_jobs: Mutex<HashMap<String, CancellationToken>>,
+    image_asset_jobs: Mutex<HashMap<String, CancellationToken>>,
     setup_job: Mutex<Option<CancellationToken>>,
 }
 
@@ -233,6 +235,92 @@ async fn pick_movie_reference_files(
     })
     .await
     .map_err(|error| format!("Reference import stopped unexpectedly: {error}"))
+}
+
+#[tauri::command]
+fn list_movie_image_assets(
+    state: State<'_, AppState>,
+) -> Result<Vec<MovieImageAssetGeneration>, String> {
+    state
+        .studio
+        .list_image_asset_generations()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn start_movie_image_asset(
+    request: MovieImageAssetRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    ensure_workspace_idle(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    request
+        .validate(research.advanced_mode)
+        .map_err(|error| error.to_string())?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI or Studio job is already active.".to_string())?;
+    let cancel = CancellationToken::new();
+    if state
+        .image_asset_jobs
+        .lock()
+        .map(|mut jobs| {
+            jobs.insert(request.request_id.clone(), cancel.clone());
+        })
+        .is_err()
+    {
+        state.work_active.store(false, Ordering::Release);
+        return Err("image asset job registry is unavailable".into());
+    }
+    let request_id = request.request_id.clone();
+    let task_id = request_id.clone();
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let managed = app_for_task.state::<AppState>();
+        let _guard = WorkGuard(&managed.work_active);
+        let renderer_ready: Result<(), String> = async {
+            managed
+                .runtime
+                .stop_managed()
+                .await
+                .map_err(|error| error.to_string())?;
+            services::stop_bonsai(&research.bonsai_root)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        .await;
+        if let Err(error) = renderer_ready {
+            studio::emit_image_asset_error(&app_for_task, &task_id, error);
+        } else {
+            let _ = managed
+                .studio
+                .generate_image_assets(request, &cancel, Some(&app_for_task))
+                .await;
+        }
+        if let Ok(mut jobs) = managed.image_asset_jobs.lock() {
+            jobs.remove(&task_id);
+        };
+    });
+    Ok(request_id)
+}
+
+#[tauri::command]
+fn cancel_movie_image_asset(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .image_asset_jobs
+        .lock()
+        .map_err(|_| "image asset job registry is unavailable".to_string())?
+        .get(&request_id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1175,7 +1263,18 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        research.into_iter().chain(interactive).collect::<Vec<_>>()
+        let image_assets = state
+            .image_asset_jobs
+            .lock()
+            .map_err(|_| "image asset job registry is unavailable".to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        research
+            .into_iter()
+            .chain(interactive)
+            .chain(image_assets)
+            .collect::<Vec<_>>()
     };
     for cancellation in cancellations {
         cancellation.cancel();
@@ -1199,6 +1298,7 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
     services::stop_bonsai(&research.bonsai_root)
         .await
         .map_err(|error| error.to_string())?;
+    state.studio.release_comfy_memory().await;
     state
         .runtime
         .stop_orphaned_kestrel_processes()
@@ -1926,6 +2026,7 @@ pub fn run() {
                 interactive_jobs: Mutex::new(HashMap::new()),
                 studio,
                 movie_jobs: Mutex::new(HashMap::new()),
+                image_asset_jobs: Mutex::new(HashMap::new()),
                 setup_job: Mutex::new(None),
             });
             let handle = app.handle().clone();
@@ -1968,6 +2069,9 @@ pub fn run() {
             list_movies,
             get_movie,
             pick_movie_reference_files,
+            list_movie_image_assets,
+            start_movie_image_asset,
+            cancel_movie_image_asset,
             start_movie,
             resume_movie,
             cancel_movie,

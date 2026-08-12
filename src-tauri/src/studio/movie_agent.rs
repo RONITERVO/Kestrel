@@ -907,6 +907,7 @@ mod tests {
             description: "This is the vlogger's identity reference.".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
+            generation: None,
         };
         let mut workspace = MovieAgentWorkspace::open(
             root.clone(),
@@ -976,6 +977,7 @@ mod tests {
             description: "Identity reference".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
+            generation: None,
         };
         let references = vec![
             reference("Picture 10", "first"),
