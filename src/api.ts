@@ -30,12 +30,23 @@ import type {
   SetupSnapshot,
   MovieClipRenderRequest,
   MovieClipSuggestion,
+  MovieCopilotEvent,
+  MovieCopilotReceipt,
+  MovieCopilotRequest,
   MovieEdit,
+  MovieImageAssetEvent,
+  MovieImageAssetGeneration,
+  MovieImageAssetRequest,
   MoviePlan,
+  MoviePlanningEvent,
+  MoviePlanningSnapshot,
   MovieProject,
+  MovieRenderPreviewEvent,
   MovieReferenceImport,
   MovieSummary,
   StartMovieRequest,
+  PromptDraftEvent,
+  PromptDraftRequest,
 } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -145,9 +156,38 @@ export async function pickMovieReferenceFiles(): Promise<MovieReferenceImport> {
   return invoke<MovieReferenceImport>("pick_movie_reference_files");
 }
 
+export async function listMovieImageAssets(): Promise<MovieImageAssetGeneration[]> {
+  if (!isTauri()) return [];
+  return invoke<MovieImageAssetGeneration[]>("list_movie_image_assets");
+}
+
+export async function startMovieImageAsset(request: MovieImageAssetRequest): Promise<string> {
+  if (!isTauri()) throw new Error("Local H3 image generation requires the desktop application.");
+  return invoke<string>("start_movie_image_asset", { request });
+}
+
+export async function cancelMovieImageAsset(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_image_asset", { requestId });
+}
+
+export async function onMovieImageAsset(callback: (event: MovieImageAssetEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieImageAssetEvent>("movie-image-asset", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function onMovieRenderPreview(callback: (event: MovieRenderPreviewEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieRenderPreviewEvent>("movie-render-preview", (event) => callback(event.payload));
+  return () => undefined;
+}
+
 export async function startMovie(request: StartMovieRequest): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Movie production requires the desktop application.");
   return invoke<MovieProject>("start_movie", { request });
+}
+
+export async function startManualMovie(request: StartMovieRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
+  return invoke<MovieProject>("start_manual_movie", { request });
 }
 
 export async function resumeMovie(id: string): Promise<MovieProject> {
@@ -158,6 +198,54 @@ export async function resumeMovie(id: string): Promise<MovieProject> {
 export async function cancelMovie(id: string): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Movie production requires the desktop application.");
   return invoke<MovieProject>("cancel_movie", { id });
+}
+
+export async function startMoviePromptDraft(request: PromptDraftRequest): Promise<string> {
+  if (!isTauri()) throw new Error("Local prompt collaboration requires the desktop application.");
+  return invoke<string>("start_movie_prompt_draft", { request });
+}
+
+export async function cancelMoviePromptDraft(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_prompt_draft", { requestId });
+}
+
+export async function onMoviePromptDraft(callback: (event: PromptDraftEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<PromptDraftEvent>("movie-prompt-draft", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function startMovieCopilot(request: MovieCopilotRequest): Promise<string> {
+  if (!isTauri()) throw new Error("The producer copilot requires the desktop application.");
+  return invoke<string>("start_movie_copilot", { request });
+}
+
+export async function cancelMovieCopilot(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_copilot", { requestId });
+}
+
+export async function onMovieCopilot(callback: (event: MovieCopilotEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieCopilotEvent>("movie-copilot", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function getMovieCopilotReceipt(projectId: string, requestId: string): Promise<MovieCopilotReceipt> {
+  if (!isTauri()) throw new Error("Copilot audit inspection requires the desktop application.");
+  return invoke<MovieCopilotReceipt>("get_movie_copilot_receipt", { projectId, requestId });
+}
+
+export async function getMoviePlanning(id: string): Promise<MoviePlanningSnapshot> {
+  if (!isTauri()) throw new Error("Movie planning requires the desktop application.");
+  return invoke<MoviePlanningSnapshot>("get_movie_planning", { id });
+}
+
+export async function directMoviePlanning(id: string, text: string): Promise<MoviePlanningSnapshot> {
+  if (!isTauri()) throw new Error("Live producer direction requires the desktop application.");
+  return invoke<MoviePlanningSnapshot>("direct_movie_planning", { id, text });
+}
+
+export async function checkpointMoviePlanning(id: string): Promise<MoviePlanningSnapshot> {
+  if (!isTauri()) throw new Error("Planning checkpoints require the desktop application.");
+  return invoke<MoviePlanningSnapshot>("checkpoint_movie_planning", { id });
 }
 
 export async function saveMoviePlan(id: string, plan: MoviePlan): Promise<MovieProject> {
@@ -201,6 +289,21 @@ export async function revealMovie(id: string): Promise<void> {
 
 export async function onMovieProject(callback: (project: MovieProject) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MovieProject>("movie-project", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function getMoviePlanExchangePrompt(id: string): Promise<string> {
+  if (!isTauri()) throw new Error("External plan exchange requires the desktop application.");
+  return invoke<string>("get_movie_plan_exchange_prompt", { id });
+}
+
+export async function parseMoviePlanExchange(id: string, text: string): Promise<MoviePlan> {
+  if (!isTauri()) throw new Error("External plan exchange requires the desktop application.");
+  return invoke<MoviePlan>("parse_movie_plan_exchange", { id, text });
+}
+
+export async function onMoviePlanning(callback: (event: MoviePlanningEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MoviePlanningEvent>("movie-planning", (event) => callback(event.payload));
   return () => undefined;
 }
 

@@ -1,6 +1,6 @@
 use super::{
-    producer_intent_issues, prompt_quality_issues, MoviePlan, MovieQualityReview, MovieReference,
-    MovieSettings, PlannedClip, StudioError,
+    producer_intent_issues, prompt_quality_issues, prompts, MoviePlan, MovieQualityReview,
+    MovieReference, MovieSettings, PlannedClip, PlanningStage, StudioError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -11,6 +11,8 @@ use std::{
 };
 
 const MAX_WORKSPACE_FILE_BYTES: usize = 96 * 1024;
+const PRODUCER_NOTES_HEADER: &str = "# Live producer direction\n\nThese dated notes are authoritative and were added through Kestrel's planning room.\n";
+const PRODUCER_DIRECTION_MARKER_PREFIX: &str = "\n<!-- kestrel-direction:";
 const MAX_READ_MANY_BYTES: usize = 256 * 1024;
 const MAX_TOOL_FILES: usize = 8;
 
@@ -67,13 +69,41 @@ struct WorkspaceState {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WorkspaceToolRequest {
-    action: String,
+    pub(super) action: WorkspaceAction,
     #[serde(default)]
-    path: String,
+    pub(super) path: String,
     #[serde(default)]
     content: String,
     #[serde(default)]
     files: Vec<WorkspaceFileWrite>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum WorkspaceAction {
+    List,
+    Read,
+    ReadMany,
+    Write,
+    WriteBatch,
+    Delete,
+    Check,
+    Submit,
+}
+
+impl WorkspaceAction {
+    pub(super) fn planning_stage(self) -> PlanningStage {
+        match self {
+            Self::List => PlanningStage::List,
+            Self::Read => PlanningStage::Read,
+            Self::ReadMany => PlanningStage::ReadMany,
+            Self::Write => PlanningStage::Write,
+            Self::WriteBatch => PlanningStage::WriteBatch,
+            Self::Delete => PlanningStage::Delete,
+            Self::Check => PlanningStage::Check,
+            Self::Submit => PlanningStage::Submit,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,8 +113,20 @@ struct WorkspaceFileWrite {
 }
 
 pub(super) struct WorkspaceToolResult {
+    pub(super) outcome: WorkspaceOutcome,
     pub(super) message: String,
     pub(super) submitted: Option<MoviePlan>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WorkspaceOutcome {
+    Observed,
+    Mutated,
+    CheckPassed,
+    CheckFailed { issue_count: usize },
+    SubmissionBlocked,
+    Submitted,
+    Rejected,
 }
 
 pub(super) struct MovieAgentWorkspace {
@@ -98,6 +140,48 @@ pub(super) struct MovieAgentWorkspace {
 impl MovieAgentWorkspace {
     pub(super) fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(super) fn authoritative_story_memory(&self) -> Result<String, StudioError> {
+        let mut paths = vec!["BRIEF.md".to_string(), "REFERENCES.md".into()];
+        if self.root.join("PRODUCER-NOTES.md").is_file() {
+            paths.push("PRODUCER-NOTES.md".into());
+        }
+        if self.root.join("movie.json").is_file() {
+            paths.push("movie.json".into());
+        }
+        let mut scene_paths = fs::read_dir(self.root.join("scenes"))?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .filter_map(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| format!("scenes/{name}"))
+            })
+            .collect::<Vec<_>>();
+        scene_paths.sort();
+        paths.extend(scene_paths);
+
+        let mut snapshot = String::from(
+            "AUTHORITATIVE CURRENT STORY MEMORY\n\
+             This exact durable snapshot is supplied fresh on every model turn. BRIEF.md and the newest producer notes are authoritative. movie.json and every scene below are the complete current story; never replace them with an unrelated premise, character, location, genre, or ending. Reconcile any draft conflict against the brief and notes before editing.\n",
+        );
+        for path in paths {
+            let section = format!("\n===== {path} =====\n{}\n", self.read_file(&path)?);
+            if snapshot
+                .len()
+                .checked_add(section.len())
+                .is_none_or(|size| size > MAX_READ_MANY_BYTES)
+            {
+                return Err(StudioError::Invalid(
+                    "the complete current movie exceeds the 256 KiB authoritative-memory limit; shorten scene prompts or split the production before continuing"
+                        .into(),
+                ));
+            }
+            snapshot.push_str(&section);
+        }
+        Ok(snapshot)
     }
 
     pub(super) fn open(
@@ -162,10 +246,69 @@ impl MovieAgentWorkspace {
         }])
     }
 
+    pub(super) fn record_producer_directions(
+        &self,
+        directions: &[super::planning::ProducerDirection],
+    ) -> Result<(), StudioError> {
+        if directions.is_empty() {
+            return Ok(());
+        }
+        let path = self.root.join("PRODUCER-NOTES.md");
+        let mut notes = match fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                PRODUCER_NOTES_HEADER.into()
+            }
+            Err(error) => return Err(error.into()),
+        };
+        for direction in directions {
+            let marker = format!("<!-- kestrel-direction:{} -->", direction.id);
+            if notes.contains(&marker) {
+                continue;
+            }
+            notes.push_str(&format!(
+                "\n## {}\n\n{}\n\n{}\n",
+                direction.created_at,
+                direction.text.trim(),
+                marker,
+            ));
+        }
+        while notes.len() > MAX_WORKSPACE_FILE_BYTES {
+            let Some(marker_start) = notes.find(PRODUCER_DIRECTION_MARKER_PREFIX) else {
+                return Err(StudioError::Invalid(
+                    "a single producer direction exceeds the 96 KiB workspace-file limit".into(),
+                ));
+            };
+            let Some(marker_end) = notes[marker_start..]
+                .find("-->")
+                .map(|offset| marker_start + offset + 3)
+            else {
+                return Err(StudioError::Invalid(
+                    "a single producer direction exceeds the 96 KiB workspace-file limit".into(),
+                ));
+            };
+            if !notes.starts_with(PRODUCER_NOTES_HEADER)
+                || marker_end <= PRODUCER_NOTES_HEADER.len()
+            {
+                return Err(StudioError::Invalid(
+                    "producer direction notes are missing their durable entry boundary".into(),
+                ));
+            }
+            let entry_end = marker_end
+                + notes.as_bytes()[marker_end..]
+                    .iter()
+                    .take_while(|byte| **byte == b'\n' || **byte == b'\r')
+                    .count();
+            notes.replace_range(PRODUCER_NOTES_HEADER.len()..entry_end, "");
+        }
+        write_text_atomic(&path, &notes)
+    }
+
     pub(super) fn execute(&mut self, request: WorkspaceToolRequest) -> WorkspaceToolResult {
         match self.try_execute(request) {
             Ok(result) => result,
             Err(error) => WorkspaceToolResult {
+                outcome: WorkspaceOutcome::Rejected,
                 message: format!("ERROR: {error}"),
                 submitted: None,
             },
@@ -176,10 +319,16 @@ impl MovieAgentWorkspace {
         &mut self,
         request: WorkspaceToolRequest,
     ) -> Result<WorkspaceToolResult, StudioError> {
-        match request.action.as_str() {
-            "list" => Ok(self.result(self.list_files()?, None)),
-            "read" => Ok(self.result(self.read_file(&request.path)?, None)),
-            "read_many" => {
+        match request.action {
+            WorkspaceAction::List => {
+                Ok(self.result(WorkspaceOutcome::Observed, self.list_files()?, None))
+            }
+            WorkspaceAction::Read => Ok(self.result(
+                WorkspaceOutcome::Observed,
+                self.read_file(&request.path)?,
+                None,
+            )),
+            WorkspaceAction::ReadMany => {
                 if request.files.is_empty() || request.files.len() > MAX_TOOL_FILES {
                     return Err(StudioError::Invalid(
                         "read_many needs 1 to 8 workspace paths".into(),
@@ -203,13 +352,17 @@ impl MovieAgentWorkspace {
                     }
                     output.push_str(&section);
                 }
-                Ok(self.result(output, None))
+                Ok(self.result(WorkspaceOutcome::Observed, output, None))
             }
-            "write" => {
+            WorkspaceAction::Write => {
                 self.write_file(&request.path, &request.content)?;
-                Ok(self.result(format!("WROTE {}", request.path), None))
+                Ok(self.result(
+                    WorkspaceOutcome::Mutated,
+                    format!("WROTE {}", request.path),
+                    None,
+                ))
             }
-            "write_batch" => {
+            WorkspaceAction::WriteBatch => {
                 let batch_limit = (self.max_clips + 1).min(MAX_TOOL_FILES);
                 if request.files.is_empty() || request.files.len() > batch_limit {
                     return Err(StudioError::Invalid(format!(
@@ -228,9 +381,13 @@ impl MovieAgentWorkspace {
                     self.write_validated_file(&file.path, &file.content)?;
                     paths.push(file.path);
                 }
-                Ok(self.result(format!("WROTE {}", paths.join(", ")), None))
+                Ok(self.result(
+                    WorkspaceOutcome::Mutated,
+                    format!("WROTE {}", paths.join(", ")),
+                    None,
+                ))
             }
-            "delete" => {
+            WorkspaceAction::Delete => {
                 let path = writable_path(&request.path)?;
                 if path == "movie.json" {
                     return Err(StudioError::Invalid(
@@ -243,9 +400,9 @@ impl MovieAgentWorkspace {
                 if target.is_file() {
                     fs::remove_file(target)?;
                 }
-                Ok(self.result(format!("DELETED {path}"), None))
+                Ok(self.result(WorkspaceOutcome::Mutated, format!("DELETED {path}"), None))
             }
-            "check" => {
+            WorkspaceAction::Check => {
                 let (plan, issues) = self.compile_and_check()?;
                 self.state.mutations_since_check = 0;
                 if issues.is_empty() {
@@ -253,11 +410,12 @@ impl MovieAgentWorkspace {
                     self.state.clean_check_passes = self.state.clean_check_passes.saturating_add(1);
                     self.persist_state()?;
                     let next = if self.state.clean_check_passes == 1 {
-                        "Native H3 checks pass. Now perform a CodeRabbit-style review: inspect movie.json and every scene for story causality, continuity, reference placement, shot specificity, production feasibility, and fidelity to BRIEF.md. Patch any weakness, then run check again."
+                        prompts::FIRST_CLEAN_CHECK
                     } else {
-                        "Native checks and the review pass are clean. Call submit without changing files."
+                        prompts::SECOND_CLEAN_CHECK
                     };
                     Ok(self.result(
+                        WorkspaceOutcome::CheckPassed,
                         format!(
                             "CHECK PASS: {} scenes, {:.1} seconds. {next}",
                             plan.clips.len(),
@@ -269,22 +427,34 @@ impl MovieAgentWorkspace {
                     self.state.last_checked_revision = Some(self.state.revision);
                     self.state.clean_check_passes = 0;
                     self.persist_state()?;
-                    Ok(self.result(format_issues(&issues), None))
+                    Ok(self.result(
+                        WorkspaceOutcome::CheckFailed {
+                            issue_count: issues.len(),
+                        },
+                        format_issues(&issues),
+                        None,
+                    ))
                 }
             }
-            "submit" => {
+            WorkspaceAction::Submit => {
                 let (mut plan, issues) = self.compile_and_check()?;
                 if !issues.is_empty() {
                     self.state.clean_check_passes = 0;
                     self.persist_state()?;
-                    return Ok(self.result(format_issues(&issues), None));
+                    return Ok(self.result(
+                        WorkspaceOutcome::CheckFailed {
+                            issue_count: issues.len(),
+                        },
+                        format_issues(&issues),
+                        None,
+                    ));
                 }
                 if self.state.last_checked_revision != Some(self.state.revision)
                     || self.state.clean_check_passes < 2
                 {
                     return Ok(self.result(
-                        "SUBMIT BLOCKED: run check on the current revision. After the first clean check, inspect the complete codebase as a film/code reviewer and run a second clean check before submit."
-                            .into(),
+                        WorkspaceOutcome::SubmissionBlocked,
+                        prompts::SUBMIT_BLOCKED.into(),
                         None,
                     ));
                 }
@@ -294,6 +464,7 @@ impl MovieAgentWorkspace {
                     verdict: "Bonsai completed an incremental workspace build, native H3 lint, and full code-review pass.".into(),
                 };
                 Ok(self.result(
+                    WorkspaceOutcome::Submitted,
                     format!(
                         "SUBMITTED: {} scenes, {:.1} seconds. The app will now preserve the canonical plan.",
                         plan.clips.len(),
@@ -302,15 +473,20 @@ impl MovieAgentWorkspace {
                     Some(plan),
                 ))
             }
-            _ => Err(StudioError::Invalid(format!(
-                "unknown movie workspace action: {}",
-                request.action
-            ))),
         }
     }
 
-    fn result(&self, message: String, submitted: Option<MoviePlan>) -> WorkspaceToolResult {
-        WorkspaceToolResult { message, submitted }
+    fn result(
+        &self,
+        outcome: WorkspaceOutcome,
+        message: String,
+        submitted: Option<MoviePlan>,
+    ) -> WorkspaceToolResult {
+        WorkspaceToolResult {
+            outcome,
+            message,
+            submitted,
+        }
     }
 
     fn list_files(&self) -> Result<String, StudioError> {
@@ -319,6 +495,9 @@ impl MovieAgentWorkspace {
             "BRIEF.md".into(),
             "REFERENCES.md".into(),
         ];
+        if self.root.join("PRODUCER-NOTES.md").is_file() {
+            files.push("PRODUCER-NOTES.md".into());
+        }
         if self.root.join("movie.json").is_file() {
             files.push("movie.json".into());
         }
@@ -634,13 +813,13 @@ fn readable_path(path: &str) -> Result<String, StudioError> {
     let path = path.trim().replace('\\', "/");
     if matches!(
         path.as_str(),
-        "README.md" | "BRIEF.md" | "REFERENCES.md" | "movie.json"
+        "README.md" | "BRIEF.md" | "REFERENCES.md" | "PRODUCER-NOTES.md" | "movie.json"
     ) || scene_path_is_valid(&path)
     {
         Ok(path)
     } else {
         Err(StudioError::Invalid(
-            "path must be README.md, BRIEF.md, REFERENCES.md, movie.json, or scenes/NNN.json"
+            "path must be README.md, BRIEF.md, REFERENCES.md, PRODUCER-NOTES.md, movie.json, or scenes/NNN.json"
                 .into(),
         ))
     }
@@ -727,6 +906,115 @@ mod tests {
     }
 
     #[test]
+    fn producer_notes_are_durable_and_model_readable() {
+        let root = temp_workspace();
+        let workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a quiet observational film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        workspace
+            .record_producer_directions(&[super::super::planning::ProducerDirection {
+                id: "direction-1".into(),
+                created_at: "2026-08-12T10:00:00Z".into(),
+                text: "Reveal the red suitcase earlier without changing the ending.".into(),
+            }])
+            .unwrap();
+        assert!(workspace
+            .list_files()
+            .unwrap()
+            .contains("PRODUCER-NOTES.md"));
+        assert!(workspace
+            .read_file("PRODUCER-NOTES.md")
+            .unwrap()
+            .contains("red suitcase"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn producer_notes_rotate_old_entries_instead_of_rejecting_new_direction() {
+        let root = temp_workspace();
+        let workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a quiet observational film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        for index in 0..8 {
+            workspace
+                .record_producer_directions(&[super::super::planning::ProducerDirection {
+                    id: format!("direction-{index}"),
+                    created_at: format!("2026-08-12T10:{index:02}:00Z"),
+                    text: format!("Direction {index}: {}", "x".repeat(15_000)),
+                }])
+                .unwrap();
+        }
+        let notes = workspace.read_file("PRODUCER-NOTES.md").unwrap();
+        assert!(notes.len() <= MAX_WORKSPACE_FILE_BYTES);
+        assert!(!notes.contains("Direction 0:"));
+        assert!(notes.contains("Direction 7:"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn producer_note_rotation_uses_direction_markers_not_producer_headings() {
+        let root = temp_workspace();
+        let workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a quiet observational film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let embedded_heading = format!(
+            "Keep this direction intact.\n## This is producer prose, not an entry boundary\n{}",
+            "y".repeat(25_000)
+        );
+        let direction = super::super::planning::ProducerDirection {
+            id: "heading-direction".into(),
+            created_at: "2026-08-12T11:00:00Z".into(),
+            text: embedded_heading.clone(),
+        };
+        workspace
+            .record_producer_directions(&[
+                super::super::planning::ProducerDirection {
+                    id: "old-large-direction".into(),
+                    created_at: "2026-08-12T10:00:00Z".into(),
+                    text: "x".repeat(80_000),
+                },
+                direction.clone(),
+            ])
+            .unwrap();
+        workspace
+            .record_producer_directions(std::slice::from_ref(&direction))
+            .unwrap();
+
+        let notes = workspace.read_file("PRODUCER-NOTES.md").unwrap();
+        assert!(notes.len() <= MAX_WORKSPACE_FILE_BYTES);
+        assert!(!notes.contains("old-large-direction"));
+        assert!(notes.contains(&embedded_heading));
+        assert_eq!(
+            notes
+                .matches("<!-- kestrel-direction:heading-direction -->")
+                .count(),
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn workspace_persists_seed_as_incremental_files() {
         let root = temp_workspace();
         let plan = MoviePlan {
@@ -768,6 +1056,57 @@ mod tests {
             .read_file("BRIEF.md")
             .unwrap()
             .contains("Keep the opening"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authoritative_memory_reanchors_the_complete_current_story() {
+        let root = temp_workspace();
+        let plan = MoviePlan {
+            title: "The Red Suitcase".into(),
+            logline: "A porter carries one red suitcase through a flooded station before dawn."
+                .into(),
+            audience: "Independent-film producers".into(),
+            creative_direction: "A restrained, rain-soaked live-action mystery with patient cuts."
+                .into(),
+            continuity_bible: vec![
+                "The same scratched red suitcase remains the story's visual anchor.".into(),
+            ],
+            source_credits: Vec::new(),
+            quality_review: MovieQualityReview::default(),
+            clips: vec![PlannedClip {
+                id: "clip-001".into(),
+                title: "Flooded platform".into(),
+                purpose: "The porter finds the red suitcase.".into(),
+                duration_seconds: 10.0,
+                prompt:
+                    "The porter discovers the scratched red suitcase beside the flooded platform."
+                        .into(),
+                continuity_in: "Rain before dawn.".into(),
+                continuity_out: "The porter grips the red handle.".into(),
+                transition: "Hard cut.".into(),
+                use_previous_frame: false,
+                source_refs: Vec::new(),
+                reference_ids: Vec::new(),
+            }],
+        };
+        let workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "A porter must return a red suitcase before sunrise.",
+            "",
+            &MovieSettings::default(),
+            &[],
+            Some(&plan),
+            Some("Never replace the suitcase with a different object."),
+        )
+        .unwrap();
+
+        let memory = workspace.authoritative_story_memory().unwrap();
+        assert!(memory.contains("A porter must return a red suitcase before sunrise."));
+        assert!(memory.contains("Never replace the suitcase with a different object."));
+        assert!(memory.contains("===== movie.json ====="));
+        assert!(memory.contains("===== scenes/001.json ====="));
+        assert!(memory.contains("Flooded platform"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -846,6 +1185,7 @@ mod tests {
             description: "This is the vlogger's identity reference.".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
+            generation: None,
         };
         let mut workspace = MovieAgentWorkspace::open(
             root.clone(),
@@ -915,6 +1255,7 @@ mod tests {
             description: "Identity reference".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
+            generation: None,
         };
         let references = vec![
             reference("Picture 10", "first"),
@@ -984,7 +1325,7 @@ mod tests {
             .unwrap();
         }
         let result = workspace.execute(WorkspaceToolRequest {
-            action: "read_many".into(),
+            action: WorkspaceAction::ReadMany,
             path: String::new(),
             content: String::new(),
             files: (1..=3)
@@ -994,6 +1335,7 @@ mod tests {
                 })
                 .collect(),
         });
+        assert_eq!(result.outcome, WorkspaceOutcome::Rejected);
         assert!(result.message.contains("aggregate limit"));
         fs::remove_dir_all(root).unwrap();
     }
@@ -1090,22 +1432,27 @@ mod tests {
         workspace.write_file("movie.json", &metadata).unwrap();
         workspace.write_file("scenes/001.json", &scene).unwrap();
         let blocked = workspace.execute(WorkspaceToolRequest {
-            action: "write".into(),
+            action: WorkspaceAction::Write,
             path: "scenes/001.json".into(),
             content: scene.clone(),
             files: Vec::new(),
         });
+        assert_eq!(blocked.outcome, WorkspaceOutcome::Rejected);
         assert!(blocked.message.contains("CHECK REQUIRED"));
         assert_eq!(workspace.state.revision, 2);
 
         let checked = workspace
             .try_execute(WorkspaceToolRequest {
-                action: "check".into(),
+                action: WorkspaceAction::Check,
                 path: String::new(),
                 content: String::new(),
                 files: Vec::new(),
             })
             .unwrap();
+        assert!(matches!(
+            checked.outcome,
+            WorkspaceOutcome::CheckFailed { issue_count } if issue_count > 0
+        ));
         assert!(checked.message.contains("CHECK FAIL"));
         assert_eq!(workspace.state.mutations_since_check, 0);
         workspace.write_file("scenes/001.json", &scene).unwrap();
@@ -1150,7 +1497,7 @@ mod tests {
         .to_string();
         workspace
             .try_execute(WorkspaceToolRequest {
-                action: "write_batch".into(),
+                action: WorkspaceAction::WriteBatch,
                 path: String::new(),
                 content: String::new(),
                 files: vec![
@@ -1167,12 +1514,16 @@ mod tests {
             .unwrap();
         let failed = workspace
             .try_execute(WorkspaceToolRequest {
-                action: "check".into(),
+                action: WorkspaceAction::Check,
                 path: String::new(),
                 content: String::new(),
                 files: Vec::new(),
             })
             .unwrap();
+        assert!(matches!(
+            failed.outcome,
+            WorkspaceOutcome::CheckFailed { issue_count } if issue_count > 0
+        ));
         assert!(failed.message.contains("prompt has 2 words"));
 
         let mut prompt = String::from(
@@ -1198,7 +1549,7 @@ mod tests {
         .to_string();
         workspace
             .try_execute(WorkspaceToolRequest {
-                action: "write".into(),
+                action: WorkspaceAction::Write,
                 path: "scenes/001.json".into(),
                 content: repaired_scene,
                 files: Vec::new(),
@@ -1207,23 +1558,25 @@ mod tests {
         for expected_pass in 1..=2 {
             let checked = workspace
                 .try_execute(WorkspaceToolRequest {
-                    action: "check".into(),
+                    action: WorkspaceAction::Check,
                     path: String::new(),
                     content: String::new(),
                     files: Vec::new(),
                 })
                 .unwrap();
+            assert_eq!(checked.outcome, WorkspaceOutcome::CheckPassed);
             assert!(checked.message.contains("CHECK PASS"));
             assert_eq!(workspace.state.clean_check_passes, expected_pass);
         }
         let submitted = workspace
             .try_execute(WorkspaceToolRequest {
-                action: "submit".into(),
+                action: WorkspaceAction::Submit,
                 path: String::new(),
                 content: String::new(),
                 files: Vec::new(),
             })
             .unwrap();
+        assert_eq!(submitted.outcome, WorkspaceOutcome::Submitted);
         assert!(submitted.submitted.is_some());
         assert_eq!(submitted.submitted.unwrap().quality_review.score, 100);
         fs::remove_dir_all(root).unwrap();

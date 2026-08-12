@@ -18,6 +18,8 @@ const BONSAI_REVISION: &str = "abbae723028d71be674e71e1a71201a6f43fab22";
 const BONSAI_RELEASE: &str = "prism-b9596-9fcaed7";
 const H3_REVISION: &str = "0bd506d2e895983a9663037febda27aa3948cf48";
 const COMFY_VERSION: &str = "v0.30.0";
+const KJ_PREVIEW_REVISION: &str = "5219cd171cb44e2edce9e4daad6cc42c41eded5c";
+const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,7 +131,8 @@ pub fn snapshot(
         .all(|asset| comfy.join("models").join(asset.relative).is_file());
     let studio_ready = comfy.join("main.py").is_file()
         && comfy.join("Start-ComfyUI-MiniMax-H3.ps1").is_file()
-        && h3_files;
+        && h3_files
+        && h3_live_preview_ready(comfy);
     let studio_partial = comfy.join("main.py").is_file()
         || h3_assets()
             .iter()
@@ -186,9 +189,9 @@ pub fn snapshot(
             "MiniMax H3 Movie Studio",
             (studio_ready, studio_partial),
             if studio_ready {
-                "Ready for high-quality local picture-and-sound generation."
+                "Ready for high-quality local picture-and-sound generation with live sampling previews."
             } else {
-                "Optional: about 61 GB plus ComfyUI; intended for a capable NVIDIA PC."
+                "Optional: about 61 GB plus ComfyUI, the full H3 decoders, and a pinned live-preview decoder; intended for a capable NVIDIA PC."
             },
             &research.comfy_root,
             (65_550_000_000, true),
@@ -597,6 +600,16 @@ async fn install_studio(
         )
         .await?;
     }
+    let decoder = h3_preview_decoder();
+    download(
+        app,
+        "studio",
+        &decoder,
+        &comfy.join("models/vae_approx/taeh3.safetensors"),
+        &cancel,
+    )
+    .await?;
+    ensure_h3_preview_node(app, &comfy, &cancel).await?;
     ensure_comfy_launcher(&comfy)?;
     settings.comfy_root = comfy.to_string_lossy().into_owned();
     emit(
@@ -661,6 +674,135 @@ fn h3_assets() -> Vec<H3Asset> {
             sha256: "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48",
         },
     ]
+}
+
+fn h3_preview_decoder() -> Asset {
+    Asset::new(
+        "MiniMax H3 live-preview decoder",
+        &format!(
+            "https://raw.githubusercontent.com/madebyollin/taehv/{TAEH3_REVISION}/safetensors/taeh3.safetensors"
+        ),
+        "taeh3.safetensors",
+        22_709_752,
+        "4fd022bfcab08772fe0536b17ea1a3bbb5625be11e397868d1c5d891863d4c13",
+    )
+}
+
+fn bundled_preview_node_ready(comfy: &Path) -> bool {
+    let source = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes/preview_override_node.py");
+    let tiny_vae = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes/tiny_vae.py");
+    source.is_file()
+        && tiny_vae.is_file()
+        && fs::metadata(&source).is_ok_and(|metadata| metadata.len() <= 128 * 1024)
+        && fs::read_to_string(source)
+            .map(|value| {
+                value.contains("class ModelPreviewOverrideKJ")
+                    && value.contains("kj_preview_override")
+                    && value.contains("tiny_vae")
+            })
+            .unwrap_or(false)
+}
+
+fn managed_preview_node_ready(comfy: &Path) -> bool {
+    let root = comfy.join("custom_nodes/Kestrel-H3-Live-Preview");
+    root.join("__init__.py").is_file()
+        && root.join("preview_override_node.py").is_file()
+        && root.join("tiny_vae.py").is_file()
+        && root.join("LICENSE").is_file()
+}
+
+fn h3_live_preview_ready(comfy: &Path) -> bool {
+    comfy.join("models/vae_approx/taeh3.safetensors").is_file()
+        && (bundled_preview_node_ready(comfy) || managed_preview_node_ready(comfy))
+}
+
+async fn ensure_h3_preview_node(
+    app: &AppHandle,
+    comfy: &Path,
+    cancel: &CancellationToken,
+) -> Result<(), SetupError> {
+    if bundled_preview_node_ready(comfy) {
+        return Ok(());
+    }
+    let bundled_root = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes");
+    if bundled_root.join("preview_override_node.py").is_file() {
+        // Repair a stale but loadable KJNodes registration in place. Installing the managed
+        // fallback beside it would let ComfyUI register ModelPreviewOverrideKJ twice.
+        for (name, remote, file_name, bytes, sha256) in [
+            (
+                "MiniMax live-preview node",
+                "nodes/preview_override_node.py",
+                "preview_override_node.py",
+                37_220,
+                "327804957a278d72f86ae45b35e8573d0d310d84b6f2469b1384d8922436bcc8",
+            ),
+            (
+                "MiniMax tiny-VAE loader",
+                "nodes/tiny_vae.py",
+                "tiny_vae.py",
+                4_434,
+                "27b39e555d876775f179137d86dc1cbf317967ecd471d59197f1a179b6356ee3",
+            ),
+        ] {
+            let asset = Asset::new(
+                name,
+                &format!(
+                    "https://raw.githubusercontent.com/kijai/ComfyUI-KJNodes/{KJ_PREVIEW_REVISION}/{remote}"
+                ),
+                file_name,
+                bytes,
+                sha256,
+            );
+            download(app, "studio", &asset, &bundled_root.join(file_name), cancel).await?;
+        }
+        return Ok(());
+    }
+    let root = comfy.join("custom_nodes/Kestrel-H3-Live-Preview");
+    fs::create_dir_all(&root)?;
+    let assets = [
+        (
+            "MiniMax live-preview node",
+            "nodes/preview_override_node.py",
+            "preview_override_node.py",
+            37_220,
+            "327804957a278d72f86ae45b35e8573d0d310d84b6f2469b1384d8922436bcc8",
+        ),
+        (
+            "MiniMax tiny-VAE loader",
+            "nodes/tiny_vae.py",
+            "tiny_vae.py",
+            4_434,
+            "27b39e555d876775f179137d86dc1cbf317967ecd471d59197f1a179b6356ee3",
+        ),
+        (
+            "KJNodes GPL-3 license",
+            "LICENSE",
+            "LICENSE",
+            35_149,
+            "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+        ),
+    ];
+    for (name, remote, file_name, bytes, sha256) in assets {
+        let asset = Asset::new(
+            name,
+            &format!(
+                "https://raw.githubusercontent.com/kijai/ComfyUI-KJNodes/{KJ_PREVIEW_REVISION}/{remote}"
+            ),
+            file_name,
+            bytes,
+            sha256,
+        );
+        download(app, "studio", &asset, &root.join(file_name), cancel).await?;
+    }
+    let init = r#"# Kestrel-managed minimal H3 live-preview plugin.
+# Upstream source and GPL-3 license are pinned beside this file.
+from .preview_override_node import ModelPreviewOverrideKJ
+
+NODE_CLASS_MAPPINGS = {"ModelPreviewOverrideKJ": ModelPreviewOverrideKJ}
+NODE_DISPLAY_NAME_MAPPINGS = {"ModelPreviewOverrideKJ": "Model Preview Override KJ"}
+"#;
+    fs::write(root.join("__init__.py"), init)?;
+    Ok(())
 }
 
 struct Asset {
@@ -922,12 +1064,28 @@ $required=[ordered]@{
   'models\text_encoders\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'=15687142551
   'models\vae\minimax_h3_video_vae_fp16.safetensors'=5207808496
   'models\vae\minimax_h3_audio_vae_fp32.safetensors'=605254808
+  'models\vae_approx\taeh3.safetensors'=22709752
 }
 $missing=@($required.GetEnumerator() | Where-Object {
   $path=Join-Path $root $_.Key
   (-not (Test-Path -LiteralPath $path)) -or ((Get-Item -LiteralPath $path).Length -ne $_.Value)
 } | ForEach-Object { $_.Key })
 if($missing){ throw "MiniMax H3 files are missing or incomplete: $($missing -join ', '). Open Kestrel Setup and resume Movie Studio." }
+$bundledPreview=@(
+  (Join-Path $root 'custom_nodes\ComfyUI-KJNodes\nodes\preview_override_node.py'),
+  (Join-Path $root 'custom_nodes\ComfyUI-KJNodes\nodes\tiny_vae.py')
+)
+$managedPreview=@(
+  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\__init__.py'),
+  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\preview_override_node.py'),
+  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\tiny_vae.py'),
+  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\LICENSE')
+)
+$bundledReady=@($bundledPreview | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $bundledPreview.Count
+$managedReady=@($managedPreview | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $managedPreview.Count
+if(-not ($bundledReady -or $managedReady)){
+  throw "MiniMax H3 live preview is not installed. Open Kestrel Setup and resume Movie Studio."
+}
 $arguments=@(
   (Join-Path $root 'main.py'),
   '--listen','127.0.0.1',
@@ -1086,6 +1244,17 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"x").unwrap();
         }
+        let decoder = comfy.join("models/vae_approx/taeh3.safetensors");
+        fs::create_dir_all(decoder.parent().unwrap()).unwrap();
+        fs::write(decoder, b"x").unwrap();
+        let preview = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes");
+        fs::create_dir_all(&preview).unwrap();
+        fs::write(
+            preview.join("preview_override_node.py"),
+            b"class ModelPreviewOverrideKJ: pass\nkj_preview_override = True\ntiny_vae = True",
+        )
+        .unwrap();
+        fs::write(preview.join("tiny_vae.py"), b"x").unwrap();
         let research = ResearchSettings {
             bonsai_root: bonsai.to_string_lossy().into_owned(),
             wikipedia_zim_path: wikipedia.join("archive.zim").to_string_lossy().into_owned(),

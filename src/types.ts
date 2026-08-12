@@ -165,6 +165,111 @@ export interface MovieReferenceAsset {
   hasAudio: boolean;
   path: string;
   createdAt: string;
+  generation?: GeneratedImageProvenance;
+}
+
+export interface GeneratedImageProvenance {
+  generationId: string;
+  workflow: string;
+  workflowSource: string;
+  workflowRevision: string;
+  prompt: string;
+  renderedPrompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  seed: number;
+  requestedLength: number;
+  resolvedFrameCount: number;
+  frameIndex: number;
+  sampler: string;
+  scheduler: string;
+  diffusionModel: string;
+  textEncoder: string;
+  vae: string;
+  comfyPromptId: string;
+  createdAt: string;
+  exactGraph: unknown;
+}
+
+export interface MovieImageAssetRequest {
+  requestId: string;
+  prompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  seed: number;
+  comfyRoot: string;
+  stabilize: boolean;
+}
+
+export interface MovieImageAssetCandidate {
+  frameIndex: number;
+  asset: MovieReferenceAsset;
+}
+
+export interface MovieImageAssetGeneration {
+  id: string;
+  status: "running" | "complete" | "failed" | "cancelled" | string;
+  stage: string;
+  detail: string;
+  prompt: string;
+  renderedPrompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  seed: number;
+  stabilize: boolean;
+  workflow: string;
+  workflowSource: string;
+  workflowRevision: string;
+  previewNodeRevision: string;
+  previewDecoderRevision: string;
+  previewDecoderSha256: string;
+  requestedLength: number;
+  resolvedFrameCount: number;
+  candidateStart: number;
+  candidateCount: number;
+  comfyPromptId: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string;
+  error: string;
+  candidates: MovieImageAssetCandidate[];
+  exactGraph: unknown;
+}
+
+export interface MovieImageAssetEvent {
+  requestId: string;
+  kind: "started" | "progress" | "complete" | "cancelled" | "error" | string;
+  stage: string;
+  detail: string;
+  progress: number;
+  at: string;
+  generation?: MovieImageAssetGeneration;
+}
+
+export interface MovieRenderPreviewEvent {
+  kind: "connected" | "frame" | "finished" | "unavailable" | string;
+  target: "imageAsset" | "movieClip" | string;
+  jobId: string;
+  projectId?: string;
+  clipId?: string;
+  clipIndex?: number;
+  detail: string;
+  mimeType?: "image/jpeg" | "image/png" | "image/webp" | "video/mp4" | string;
+  dataUrl?: string;
+  width?: number;
+  height?: number;
+  step?: number;
+  total?: number;
+  fps?: number;
+  stepMs?: number;
+  averageStepMs?: number;
+  previewNodeRevision: string;
+  previewDecoderRevision: string;
+  previewDecoderSha256: string;
+  at: string;
 }
 
 export interface ProducerReferenceRequest {
@@ -197,6 +302,7 @@ export interface MovieReference {
   description: string;
   useEmbeddedAudio: boolean;
   embeddedAudioDescription: string;
+  generation?: GeneratedImageProvenance;
 }
 
 export interface PlannedClip {
@@ -276,17 +382,97 @@ export interface MovieClipRenderRequest {
 }
 
 export interface ClipEdit {
+  id: string;
   clipId: string;
   enabled: boolean;
   order: number;
   trimStart: number;
   trimEnd: number;
   audioGain: number;
+  sourceVersionId: string;
+  speed: number;
+  fadeIn: number;
+  fadeOut: number;
+  audioFadeIn: number;
+  audioFadeOut: number;
+  label: string;
+  notes: string;
+}
+
+export interface TimelineMarker {
+  id: string;
+  timeSeconds: number;
+  label: string;
+  kind: "marker" | "todo" | "chapter";
+  completed: boolean;
 }
 
 export interface MovieEdit {
   clips: ClipEdit[];
   exportTitle: string;
+  exportPreset: "archive" | "publish" | "review";
+  normalizeAudio: boolean;
+  targetLufs: number;
+  markers: TimelineMarker[];
+}
+
+export type MovieCopilotWorkspace = "generate" | "edit" | "deliver";
+
+export interface MovieCopilotTurn {
+  id: string;
+  createdAt: string;
+  workspace: MovieCopilotWorkspace;
+  producerRequest: string;
+  modelId: string;
+  response: string;
+  status: string;
+  proposalSummary: string;
+}
+
+export interface MovieCopilotRequest {
+  requestId: string;
+  projectId: string;
+  modelId: string;
+  workspace: MovieCopilotWorkspace;
+  instruction: string;
+  edit: MovieEdit;
+}
+
+export interface MovieCopilotReceipt {
+  systemPrompt: string;
+  messages: unknown[];
+  toolSchema: unknown;
+  exactRequest: unknown;
+  lintResult: string;
+}
+
+export interface MovieCopilotProposal {
+  summary: string;
+  changes: string[];
+  edit: MovieEdit;
+}
+
+export interface MovieCopilotEvent {
+  requestId: string;
+  projectId: string;
+  kind: "queued" | "started" | "reasoning" | "token" | "advanced-token" | "complete" | "cancelled" | "error" | "settled" | string;
+  content?: string;
+  modelName?: string;
+  receipt?: MovieCopilotReceipt;
+  proposal?: MovieCopilotProposal;
+  at: string;
+}
+
+export interface MovieExport {
+  id: string;
+  createdAt: string;
+  title: string;
+  preset: "archive" | "publish" | "review" | string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  durationSeconds: number;
+  clipCount: number;
 }
 
 export interface MovieProject {
@@ -308,10 +494,47 @@ export interface MovieProject {
   clips: RenderedClip[];
   edit: MovieEdit;
   finalPath: string;
+  exports: MovieExport[];
   error: string;
   producerReviewRequired: boolean;
   producerApprovedAt: string;
   producerFeedback: ProducerFeedbackRecord[];
+  copilotHistory: MovieCopilotTurn[];
+}
+
+export interface ProducerDirection {
+  id: string;
+  createdAt: string;
+  text: string;
+}
+
+export interface MoviePromptDocument {
+  id: string;
+  title: string;
+  category: string;
+  content: string;
+}
+
+export interface MoviePlanningSnapshot {
+  projectId: string;
+  checkpointRequested: boolean;
+  pendingDirections: ProducerDirection[];
+  promptDocuments: MoviePromptDocument[];
+  toolSchema: unknown;
+  lastRequest: unknown;
+  transcript: unknown;
+  currentText: string;
+}
+
+export interface MoviePlanningEvent {
+  projectId: string;
+  sequence: number;
+  kind: "token" | "advanced-token" | "reasoning" | "turn-start" | "turn-complete" | "activity" | "tool-result" | "direction-queued" | "checkpoint-requested" | "checkpoint-saved";
+  stage: "planning" | "thinking" | "producer" | "native-check" | "checkpoint" | "model-text" | "tool-arguments" | "list" | "read" | "read_many" | "write" | "write_batch" | "delete" | "check" | "submit";
+  text: string;
+  session: number;
+  step: number;
+  createdAt: string;
 }
 
 export interface MovieSummary {
@@ -329,6 +552,41 @@ export interface StartMovieRequest {
   settings: MovieSettings;
   references: ProducerReferenceRequest[];
   pauseAfterPlan: boolean;
+}
+
+export type PromptDraftTarget = "story" | "imageAsset" | "referenceDescription";
+export type PromptDraftMode = "develop" | "continue";
+
+export interface PromptDraftRequest {
+  requestId: string;
+  modelId: string;
+  target: PromptDraftTarget;
+  mode: PromptDraftMode;
+  storyText: string;
+  existingText: string;
+  assetName: string;
+  assetKind: string;
+}
+
+export interface PromptDraftReceipt {
+  target: PromptDraftTarget;
+  mode: PromptDraftMode;
+  modelId: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature: number;
+  topP: number;
+  topK: number;
+  maxTokens: number;
+  exactRequest: Record<string, unknown>;
+}
+
+export interface PromptDraftEvent {
+  requestId: string;
+  kind: "queued" | "started" | "token" | "reasoning" | "complete" | "limited" | "cancelled" | "error" | "settled" | string;
+  content?: string;
+  modelName?: string;
+  receipt?: PromptDraftReceipt;
+  at: string;
 }
 
 export interface ModelInfo {

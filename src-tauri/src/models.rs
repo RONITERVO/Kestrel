@@ -312,7 +312,7 @@ pub struct DeveloperRepairReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct ResearchSettings {
     pub advanced_mode: bool,
     pub bonsai_root: String,
