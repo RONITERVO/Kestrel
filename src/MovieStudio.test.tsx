@@ -11,9 +11,10 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByText(/Shape the production brief together/i)).toBeInTheDocument();
     expect(screen.getByText(/drafts, reviews, and repairs/i)).toBeInTheDocument();
     expect(screen.queryByText(/Wikipedia/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Plan this movie/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Ask Bonsai to plan/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Write plan myself/i })).toBeEnabled();
     fireEvent.change(screen.getByLabelText("Movie brief"), { target: { value: "A tiny film about a lighthouse keeper" } });
-    expect(screen.getByRole("button", { name: /Plan this movie/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Ask Bonsai to plan/i })).toBeEnabled();
   });
 
   it("keeps full-context and expert production controls discoverable", () => {
@@ -89,7 +90,8 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.queryByLabelText("Movie brief")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /SetupQuality and controls/i }));
     expect(screen.getByText(/Choose the working quality and review boundary/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Plan this movie/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Ask Bonsai to plan/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Write plan myself/i })).toBeEnabled();
   });
 
   it("shows a plain-language live H3 monitor with advanced offline provenance", () => {

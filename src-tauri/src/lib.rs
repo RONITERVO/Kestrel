@@ -362,6 +362,22 @@ fn start_movie(
 }
 
 #[tauri::command]
+fn start_manual_movie(
+    request: StartMovieRequest,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let _guard = claim_workspace(&state)?;
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    state
+        .studio
+        .create_manual(request, settings.advanced_mode)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn resume_movie(
     id: String,
     app: AppHandle,
@@ -2162,6 +2178,7 @@ pub fn run() {
             start_movie_image_asset,
             cancel_movie_image_asset,
             start_movie,
+            start_manual_movie,
             resume_movie,
             cancel_movie,
             get_movie_planning,

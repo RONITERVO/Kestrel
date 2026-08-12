@@ -815,6 +815,23 @@ impl MovieStudio {
         request: StartMovieRequest,
         advanced: bool,
     ) -> Result<MovieProject, StudioError> {
+        self.create_project(request, advanced, false)
+    }
+
+    pub fn create_manual(
+        &self,
+        request: StartMovieRequest,
+        advanced: bool,
+    ) -> Result<MovieProject, StudioError> {
+        self.create_project(request, advanced, true)
+    }
+
+    fn create_project(
+        &self,
+        request: StartMovieRequest,
+        advanced: bool,
+        producer_authored: bool,
+    ) -> Result<MovieProject, StudioError> {
         let StartMovieRequest {
             prompt,
             settings,
@@ -822,9 +839,16 @@ impl MovieStudio {
             pause_after_plan,
         } = request;
         let meaningful_prompt = prompt.trim();
-        if meaningful_prompt.chars().count() < 3 || prompt.len() > MAX_MOVIE_PROMPT_BYTES {
+        if prompt.len() > MAX_MOVIE_PROMPT_BYTES
+            || (!producer_authored && meaningful_prompt.chars().count() < 3)
+        {
             return Err(StudioError::Invalid(
-                "movie prompt must be between 3 characters and 64 KiB".into(),
+                if producer_authored {
+                    "optional movie notes must not exceed 64 KiB"
+                } else {
+                    "movie prompt must be between 3 characters and 64 KiB"
+                }
+                .into(),
             ));
         }
         let settings = settings.validate(advanced)?;
@@ -841,21 +865,55 @@ impl MovieStudio {
                 return Err(error);
             }
         };
+        let plan = producer_authored.then(|| MoviePlan {
+            title: "Untitled movie".into(),
+            logline: String::new(),
+            audience: String::new(),
+            creative_direction: String::new(),
+            continuity_bible: Vec::new(),
+            source_credits: Vec::new(),
+            quality_review: MovieQualityReview {
+                attempts: 0,
+                score: 0,
+                verdict: "Producer-owned blank plan. Bonsai has not been used.".into(),
+            },
+            clips: Vec::new(),
+        });
         let project = MovieProject {
             schema_version: SCHEMA_VERSION,
             id: id.clone(),
             prompt,
             title: "Untitled movie".into(),
-            status: "running".into(),
-            phase: "planning".into(),
-            detail: "Bonsai is shaping the story, continuity, and production plan.".into(),
+            status: if producer_authored {
+                "awaiting-review"
+            } else {
+                "running"
+            }
+            .into(),
+            phase: if producer_authored {
+                "awaiting-producer"
+            } else {
+                "planning"
+            }
+            .into(),
+            detail: if producer_authored {
+                "A blank producer-owned plan is ready. Add scenes and approve when native checks pass; Bonsai has not been started."
+            } else {
+                "Bonsai is shaping the story, continuity, and production plan."
+            }
+            .into(),
             created_at: now.clone(),
             updated_at: now,
-            model: "Ternary Bonsai 27B Q2_0".into(),
+            model: if producer_authored {
+                "Producer-authored; local model help is optional"
+            } else {
+                "Ternary Bonsai 27B Q2_0"
+            }
+            .into(),
             renderer: "MiniMax H3 / ComfyUI native".into(),
             settings,
             references,
-            plan: None,
+            plan,
             sources: Vec::new(),
             clips: Vec::new(),
             edit: MovieEdit {
@@ -869,7 +927,7 @@ impl MovieStudio {
             final_path: String::new(),
             exports: Vec::new(),
             error: String::new(),
-            producer_review_required: pause_after_plan,
+            producer_review_required: producer_authored || pause_after_plan,
             producer_approved_at: String::new(),
             producer_feedback: Vec::new(),
             copilot_history: Vec::new(),
@@ -879,6 +937,9 @@ impl MovieStudio {
             &json!({"prompt":project.prompt,"settings":project.settings,"references":project.references,"createdAt":project.created_at}),
         )?;
         write_json_atomic(&folder.join("references.json"), &project.references)?;
+        if let Some(plan) = project.plan.as_ref() {
+            write_json_atomic(&folder.join("plan.json"), plan)?;
+        }
         self.save(&project)?;
         Ok(project)
     }
@@ -1251,7 +1312,7 @@ impl MovieStudio {
         let _guard = lock.lock().await;
         let mut project = self.get(id)?;
         ensure_plan_is_unrendered(&project)?;
-        prepare_producer_plan(&project, &mut plan)?;
+        prepare_producer_draft(&project, &mut plan)?;
         plan.quality_review = MovieQualityReview {
             attempts: 0,
             score: 0,
@@ -1283,17 +1344,28 @@ impl MovieStudio {
         let _guard = lock.lock().await;
         let mut project = self.get(id)?;
         ensure_plan_is_unrendered(&project)?;
-        let plan = project
+        let mut plan = project
             .plan
             .as_ref()
-            .ok_or_else(|| StudioError::Invalid("project has no saved movie plan".into()))?;
-        let issues = prompt_quality_issues(plan, &project.references);
+            .ok_or_else(|| StudioError::Invalid("project has no saved movie plan".into()))?
+            .clone();
+        prepare_producer_plan(&project, &mut plan)?;
+        let issues = prompt_quality_issues(&plan, &project.references);
         if !issues.is_empty() {
             return Err(StudioError::Invalid(format!(
                 "producer plan is not render-ready: {}",
                 issues.join(" ")
             )));
         }
+        if plan.quality_review.attempts == 0 {
+            plan.quality_review = MovieQualityReview {
+                attempts: 0,
+                score: 100,
+                verdict: "Producer-authored plan passed Kestrel's native release checks without an agent review.".into(),
+            };
+        }
+        write_json_atomic(&self.project_dir(id).join("plan.json"), &plan)?;
+        project.plan = Some(plan);
         project.status = "running".into();
         project.phase = "producer-approved".into();
         project.detail = "Producer approved the structured plan. H3 rendering may begin.".into();
@@ -1309,8 +1381,13 @@ impl MovieStudio {
         detail: &str,
         app: Option<&AppHandle>,
     ) -> Result<(), StudioError> {
-        project.title.clone_from(&plan.title);
-        project.edit.export_title.clone_from(&plan.title);
+        let library_title = if plan.title.trim().is_empty() {
+            "Untitled movie"
+        } else {
+            plan.title.as_str()
+        };
+        project.title = library_title.into();
+        project.edit.export_title = library_title.into();
         project.clips = plan
             .clips
             .iter()
@@ -3450,9 +3527,31 @@ fn ensure_producer_render_approval(project: &MovieProject) -> Result<(), StudioE
 }
 
 fn prepare_producer_plan(project: &MovieProject, plan: &mut MoviePlan) -> Result<(), StudioError> {
+    prepare_producer_draft(project, plan)?;
     if plan.title.trim().is_empty() || plan.clips.is_empty() {
         return Err(StudioError::Invalid(
             "the structured plan needs a title and at least one scene".into(),
+        ));
+    }
+    for (index, clip) in plan.clips.iter().enumerate() {
+        if clip.title.trim().is_empty() || clip.prompt.trim().is_empty() {
+            return Err(StudioError::Invalid(format!(
+                "scene {} needs a title and renderer direction before approval",
+                index + 1
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn prepare_producer_draft(project: &MovieProject, plan: &mut MoviePlan) -> Result<(), StudioError> {
+    if plan.title.len() > 4_000
+        || plan.logline.len() > 16_000
+        || plan.audience.len() > 4_000
+        || plan.creative_direction.len() > 64 * 1024
+    {
+        return Err(StudioError::Invalid(
+            "producer plan fields exceed their durable checkpoint limits".into(),
         ));
     }
     if plan.clips.len() > project.settings.max_clips as usize {
@@ -3469,15 +3568,20 @@ fn prepare_producer_plan(project: &MovieProject, plan: &mut MoviePlan) -> Result
         .collect::<HashSet<_>>();
     for (index, clip) in plan.clips.iter_mut().enumerate() {
         clip.id = format!("clip-{:03}", index + 1);
+        if index == 0 && clip.use_previous_frame {
+            return Err(StudioError::Invalid(
+                "scene 1 cannot continue from a previous frame; turn off first-frame continuation or move it later in the sequence".into(),
+            ));
+        }
         if !clip.duration_seconds.is_finite() || !(5.0..=15.0).contains(&clip.duration_seconds) {
             return Err(StudioError::Invalid(format!(
                 "scene {} duration must be between 5 and 15 seconds",
                 index + 1
             )));
         }
-        if clip.title.trim().is_empty() || clip.prompt.len() > 64 * 1024 {
+        if clip.title.len() > 4_000 || clip.prompt.len() > 64 * 1024 {
             return Err(StudioError::Invalid(format!(
-                "scene {} needs a title and a reasonably sized renderer prompt",
+                "scene {} title or renderer direction exceeds its checkpoint limit",
                 index + 1
             )));
         }
@@ -5686,6 +5790,100 @@ mod tests {
         project.producer_review_required = false;
         project.producer_approved_at.clear();
         assert!(ensure_producer_render_approval(&project).is_ok());
+    }
+
+    #[tokio::test]
+    async fn producer_can_checkpoint_and_approve_a_movie_without_starting_bonsai() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let project = studio
+            .create_manual(
+                StartMovieRequest {
+                    prompt: String::new(),
+                    settings: MovieSettings::default(),
+                    references: vec![],
+                    pause_after_plan: true,
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(project.status, "awaiting-review");
+        assert_eq!(project.phase, "awaiting-producer");
+        assert!(project.plan.as_ref().unwrap().clips.is_empty());
+        assert!(project.detail.contains("Bonsai has not been started"));
+
+        let blank_checkpoint = studio
+            .save_producer_plan(
+                &project.id,
+                MoviePlan {
+                    title: "Producer's private cut".into(),
+                    logline: String::new(),
+                    audience: String::new(),
+                    creative_direction: String::new(),
+                    continuity_bible: vec![],
+                    source_credits: vec![],
+                    quality_review: MovieQualityReview::default(),
+                    clips: vec![],
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(blank_checkpoint.title, "Producer's private cut");
+        assert!(blank_checkpoint.clips.is_empty());
+
+        let detailed_direction = format!(
+            "At 0:00-0:02, a locked wide camera frames the empty circus ring as soft morning light reveals silver mist and red canvas texture. At 0:02-0:05, the camera makes a slow controlled push toward a football resting on sawdust while warm practical lighting blooms around the ring and gentle crowd ambience, leather creaks, distant rigging sound, and a restrained orchestral score settle through the exact final frame. {}",
+            "Maintain grounded live-action scale, stable geometry, natural motion, coherent shadows, precise screen direction, restrained film grain, clean spatial depth, readable foreground separation, consistent color, and an unbroken final hold. ".repeat(5)
+        );
+        assert!((MIN_H3_PROMPT_WORDS..=MAX_H3_PROMPT_WORDS)
+            .contains(&detailed_direction.split_whitespace().count()));
+        let ready = studio
+            .save_producer_plan(
+                &project.id,
+                MoviePlan {
+                    title: "Producer's private cut".into(),
+                    logline: "A quiet circus reveal begins with a lone football.".into(),
+                    audience: "Film buyers".into(),
+                    creative_direction: "A tactile, restrained live-action selling film.".into(),
+                    continuity_bible: vec![
+                        "Morning mist remains silver beneath the red circus canvas.".into(),
+                    ],
+                    source_credits: vec![],
+                    quality_review: MovieQualityReview::default(),
+                    clips: vec![PlannedClip {
+                        id: "producer-draft-id".into(),
+                        title: "The empty ring".into(),
+                        purpose: "Establish the circus world before the player arrives.".into(),
+                        duration_seconds: 5.0,
+                        prompt: detailed_direction,
+                        continuity_in: "Independent opening on an empty misty ring.".into(),
+                        continuity_out: "The football rests centered on the sawdust.".into(),
+                        transition: "fade to black".into(),
+                        use_previous_frame: false,
+                        source_refs: vec![],
+                        reference_ids: vec![],
+                    }],
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ready.plan.as_ref().unwrap().clips[0].id, "clip-001");
+        let approved = studio
+            .approve_producer_plan(&project.id, None)
+            .await
+            .unwrap();
+        assert_eq!(approved.phase, "producer-approved");
+        assert!(!approved.producer_approved_at.is_empty());
+        assert_eq!(approved.plan.as_ref().unwrap().quality_review.score, 100);
+        assert!(approved
+            .plan
+            .as_ref()
+            .unwrap()
+            .quality_review
+            .verdict
+            .contains("without an agent review"));
     }
 
     #[test]

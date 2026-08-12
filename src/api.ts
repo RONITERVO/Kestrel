@@ -185,6 +185,11 @@ export async function startMovie(request: StartMovieRequest): Promise<MovieProje
   return invoke<MovieProject>("start_movie", { request });
 }
 
+export async function startManualMovie(request: StartMovieRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
+  return invoke<MovieProject>("start_manual_movie", { request });
+}
+
 export async function resumeMovie(id: string): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Movie production requires the desktop application.");
   return invoke<MovieProject>("resume_movie", { id });

@@ -8,7 +8,7 @@ import {
   approveMoviePlan, askBonsaiMovieClip, cancelMovie, cancelMovieImageAsset, checkpointMoviePlanning,
   cancelMovieCopilot, cancelMoviePromptDraft, directMoviePlanning, getMovie, getMovieCopilotReceipt, getMoviePlanning, listMovieImageAssets, listMovies, movieMediaUrl,
   onMovieCopilot, onMovieImageAsset, onMoviePlanning, onMovieProject, onMoviePromptDraft, onMovieRenderPreview, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
-  resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startMovie,
+  resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startManualMovie, startMovie,
   startMovieCopilot, startMovieImageAsset, startMoviePromptDraft,
 } from "./api";
 import { MovieTimeline } from "./MovieTimeline";
@@ -264,6 +264,23 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
     } catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
+  const makeManualMovie = async () => {
+    if (!referencesReady(references)) return;
+    setBusy(true);
+    try {
+      const next = await startManualMovie({
+        prompt,
+        settings,
+        references: references.map(({ assetId, description, useEmbeddedAudio, embeddedAudioDescription }) => ({
+          assetId, description, useEmbeddedAudio, embeddedAudioDescription,
+        })),
+        pauseAfterPlan: true,
+      });
+      activeProjectId.current = next.id;
+      setProject(next); setEdit(next.edit); setCreating(false); await refreshList();
+    } catch (error) { onError(String(error)); } finally { setBusy(false); }
+  };
+
   const setPromptField = (field: PromptField, value: string) => {
     if (field.kind === "story") setPrompt(value);
     if (field.kind === "imageAsset") setImagePrompt(value);
@@ -422,7 +439,8 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
             onImagePrompt={setImagePrompt} onImageCanvas={(width, height) => { setImageWidth(width); setImageHeight(height); }}
             onImageSteps={setImageSteps} onImageSeed={setImageSeed} onImageStabilize={setImageStabilize}
             onGenerateImage={() => void generateImageAsset()} onStopImage={() => void stopImageAsset()} onUseGeneratedImage={useGeneratedImage}
-            onPrompt={setPrompt} onSettings={setSettings} onReferences={setReferences} onAttach={() => void attachReferences()} onAdvanced={setAdvanced} onMake={() => void makeMovie()} />
+            onPrompt={setPrompt} onSettings={setSettings} onReferences={setReferences} onAttach={() => void attachReferences()} onAdvanced={setAdvanced}
+            onMake={() => void makeMovie()} onMakeManual={() => void makeManualMovie()} />
         ) : (
           <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} models={models} selectedModelId={promptModelId} preview={moviePreview} onError={onError} onEdit={setEdit} onCopilotHistory={handleCopilotHistory}
             onProject={(next) => { activeProjectId.current = next.id; setProject(next); setEdit(next.edit); void refreshList(); }}
@@ -437,7 +455,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   );
 }
 
-function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, models, promptModelId, promptDraftActive, promptDraftLastField, promptDraftStatus, promptDraftReceipt, storyDraftMode, imageDraftMode, referenceDraftModes, onPromptModel, onStoryDraftMode, onImageDraftMode, onReferenceDraftMode, onGeneratePrompt, onStopPrompt, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, imagePreview, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake }: {
+function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, models, promptModelId, promptDraftActive, promptDraftLastField, promptDraftStatus, promptDraftReceipt, storyDraftMode, imageDraftMode, referenceDraftModes, onPromptModel, onStoryDraftMode, onImageDraftMode, onReferenceDraftMode, onGeneratePrompt, onStopPrompt, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, imagePreview, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake, onMakeManual }: {
   prompt: string; settings: MovieSettings; references: PendingMovieReference[]; advanced: boolean; advancedEnabled: boolean; busy: boolean;
   pauseAfterPlan: boolean; onPauseAfterPlan: (value: boolean) => void;
   models: ModelInfo[]; promptModelId: string; promptDraftActive?: ActivePromptDraft; promptDraftLastField?: PromptField; promptDraftStatus: string; promptDraftReceipt?: PromptDraftReceipt;
@@ -451,7 +469,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
   onImageSteps: (value: number) => void; onImageSeed: (value: number) => void; onImageStabilize: (value: boolean) => void;
   onGenerateImage: () => void; onStopImage: () => void; onUseGeneratedImage: (asset: MovieReferenceAsset) => void;
   onPrompt: (value: string) => void; onSettings: (value: MovieSettings) => void; onReferences: (value: PendingMovieReference[]) => void;
-  onAttach: () => void; onAdvanced: (value: boolean) => void; onMake: () => void;
+  onAttach: () => void; onAdvanced: (value: boolean) => void; onMake: () => void; onMakeManual: () => void;
 }) {
   const quality = settings.width === 1344 ? "master" : settings.width === 864 ? "preview" : "custom";
   const storyWriting = promptFieldMatches(promptDraftActive?.field, { kind: "story" });
@@ -463,7 +481,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
   return <div className="movie-launch movie-production-shell">
     <header className="studio-window-header">
       <div className="movie-launch-mark"><Clapperboard /></div>
-      <span><small>Bonsai director · MiniMax H3 picture & sound</small><strong>New offline production</strong></span>
+      <span><small>Producer-led · optional Bonsai help · MiniMax H3</small><strong>New offline production</strong></span>
       <p>Story, assets, direction, picture, and sound stay in one private production window.</p>
     </header>
     <nav className="studio-workspace-tabs" aria-label="New production workspaces">
@@ -545,8 +563,11 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     </section>}
     </div>
     <footer className="studio-launch-footer">
-      <span>{prompt.trim().length < 3 ? "Add a story or ask a local model to propose one." : !referenceReady ? "Finish the descriptions for attached references." : "Ready for Bonsai to plan. You can review before H3 renders anything."}</span>
-      <button disabled={busy || promptBusy || imageGenerating || prompt.trim().length < 3 || !referenceReady} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Plan this movie</button>
+      <span>{!referenceReady ? "Finish the descriptions for attached references." : prompt.trim().length < 3 ? "Write the plan yourself, or add a story for Bonsai to plan." : "Write every scene yourself, or ask Bonsai to create the first plan."}</span>
+      <div className="studio-launch-actions">
+        <button disabled={busy || promptBusy || imageGenerating || !referenceReady} onClick={onMakeManual}><Film /> Write plan myself</button>
+        <button className="accent" disabled={busy || promptBusy || imageGenerating || prompt.trim().length < 3 || !referenceReady} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Ask Bonsai to plan</button>
+      </div>
     </footer>
   </div>;
 }
@@ -697,7 +718,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
       {project.error && <button title={project.error} onClick={() => onError(project.error)}>Production issue</button>}
     </div>
     <nav className="studio-workspace-tabs project-tabs" aria-label="Production workspaces">
-      <button className={workspace === "plan" ? "active" : ""} onClick={() => setWorkspace("plan")}><Sparkles /><span><strong>Plan</strong><small>Direct and review Bonsai</small></span>{project.plan && <Check />}</button>
+      <button className={workspace === "plan" ? "active" : ""} onClick={() => setWorkspace("plan")}><Sparkles /><span><strong>Plan</strong><small>Write directly or ask Bonsai</small></span>{project.plan && <Check />}</button>
       <button className={workspace === "generate" ? "active" : ""} disabled={!project.plan && !planningLive} onClick={() => setWorkspace("generate")}><Video /><span><strong>Generate</strong><small>H3 picture and sound</small></span>{project.status === "running" ? <LoaderCircle className="spin" /> : project.clips.length > 0 && <b>{complete}/{project.clips.length}</b>}</button>
       <button className={workspace === "edit" ? "active" : ""} disabled={!project.clips.length} onClick={() => setWorkspace("edit")}><Film /><span><strong>Edit</strong><small>Storyline and native mix</small></span>{edit.clips.length > 0 && <b>{edit.clips.filter((item) => item.enabled).length}</b>}</button>
       <button className={workspace === "deliver" ? "active" : ""} disabled={!project.clips.length} onClick={() => setWorkspace("deliver")}><Download /><span><strong>Deliver</strong><small>Review and immutable exports</small></span>{project.exports?.length > 0 && <b>{project.exports.length}</b>}</button>
@@ -709,7 +730,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
           onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
           onRevise={(feedback) => runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return reviseMoviePlan(project.id, feedback); })}
           onApprove={() => void runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return approveMoviePlan(project.id); })} />}
-        {project.plan && project.status !== "awaiting-review" && !planningLive && <><div className="studio-room-heading"><span><small>Approved production plan</small><strong>Creative contract shared by producer and models</strong></span><em>{project.plan.clips.length} scenes</em></div><section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Bonsai acceptance</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "attempt" : "attempts"}. {project.plan.qualityReview.verdict}</p></article></section></>}
+        {project.plan && project.status !== "awaiting-review" && !planningLive && <><div className="studio-room-heading"><span><small>Approved production plan</small><strong>Producer-owned creative contract for picture and sound</strong></span><em>{project.plan.clips.length} scenes</em></div><section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Plan validation</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "review" : "reviews"}. {project.plan.qualityReview.verdict}</p></article></section></>}
       </section>}
       {workspace === "generate" && <section className="project-room-scroll generation-room">
         <div className="studio-room-heading"><span><small>Producer + MiniMax H3</small><strong>Watch generation and manage preserved masters</strong></span><em>{complete} / {project.clips.length || "—"} complete</em></div>
@@ -1026,19 +1047,30 @@ function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise, onApp
 }) {
   const [feedback, setFeedback] = useState("");
   const updateClip = (index: number, clip: PlannedClip) => onPlan({ ...plan, clips: plan.clips.map((item, itemIndex) => itemIndex === index ? clip : item) });
+  const keepFirstSceneIndependent = (clips: PlannedClip[]) => clips.map((clip, index) => index === 0 && clip.usePreviousFrame ? { ...clip, usePreviousFrame: false } : clip);
   const moveClip = (index: number, direction: number) => {
     const target = index + direction;
     if (target < 0 || target >= plan.clips.length) return;
     const clips = [...plan.clips];
     [clips[index], clips[target]] = [clips[target], clips[index]];
-    onPlan({ ...plan, clips });
+    onPlan({ ...plan, clips: keepFirstSceneIndependent(clips) });
   };
+  const insertClip = (index: number) => {
+    if (plan.clips.length >= project.settings.maxClips) return;
+    const clips = [...plan.clips];
+    clips.splice(index, 0, emptyPlannedClip(index));
+    onPlan({ ...plan, clips: keepFirstSceneIndependent(clips) });
+  };
+  const removeClip = (index: number) => onPlan({
+    ...plan,
+    clips: keepFirstSceneIndependent(plan.clips.filter((_, itemIndex) => itemIndex !== index)),
+  });
   const sendFeedback = async () => {
     if (feedback.trim().length < 3) return;
     if (await onRevise(feedback)) setFeedback("");
   };
   return <section className="producer-plan-desk">
-    <div className="movie-section-heading"><div><span className="eyebrow">Producer checkpoint · no H3 render has started</span><h2>Organize the Bonsai plan</h2><small>Edit fields directly, or send the whole structured plan back to Bonsai with production notes.</small></div><div><button disabled={busy} onClick={onSave}><Save /> Save structured draft</button><button className="accent" disabled={busy || plan.clips.length === 0} onClick={onApprove}>{busy ? <LoaderCircle className="spin" /> : <Play />} Approve & render H3</button></div></div>
+    <div className="movie-section-heading"><div><span className="eyebrow">Producer-owned checkpoint · no H3 render has started</span><h2>Write and sequence the production plan</h2><small>Author every field yourself. Bonsai is optional help and never owns approval.</small></div><div><button disabled={busy} onClick={onSave}><Save /> Save draft checkpoint</button><button className="accent" disabled={busy || plan.clips.length === 0} onClick={onApprove}>{busy ? <LoaderCircle className="spin" /> : <Play />} Approve & render H3</button></div></div>
     <div className="producer-plan-basics">
       <label>Title<input value={plan.title} onChange={(event) => onPlan({ ...plan, title: event.target.value })} /></label>
       <label>Audience<input value={plan.audience} onChange={(event) => onPlan({ ...plan, audience: event.target.value })} /></label>
@@ -1047,15 +1079,15 @@ function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise, onApp
       <label className="wide">Continuity bible · one rule per line<textarea value={plan.continuityBible.join("\n")} onChange={(event) => onPlan({ ...plan, continuityBible: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} /></label>
     </div>
     <div className="producer-scene-list">{plan.clips.map((clip, index) => <article key={`${clip.id}-${index}`} className="producer-scene-card">
-      <header><span><b>Scene {index + 1}</b><small>{clip.durationSeconds}s planned · {clip.usePreviousFrame ? "continuous frame handoff" : "independent visual start"}</small></span><div><button disabled={index === 0} onClick={() => moveClip(index, -1)}>Move up</button><button disabled={index === plan.clips.length - 1} onClick={() => moveClip(index, 1)}>Move down</button><button onClick={() => onPlan({ ...plan, clips: plan.clips.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button></div></header>
-      <PlannedClipFields clip={clip} references={project.references} onClip={(next) => updateClip(index, next)} />
+      <header><span><b>Scene {index + 1}</b><small>{clip.durationSeconds}s planned · {clip.usePreviousFrame ? "previous final frame" : clip.referenceIds.length ? `${clip.referenceIds.length} native reference${clip.referenceIds.length === 1 ? "" : "s"}` : "independent visual start"}</small></span><div><button disabled={plan.clips.length >= project.settings.maxClips} onClick={() => insertClip(index)}>Insert before</button><button disabled={index === 0} onClick={() => moveClip(index, -1)}>Move up</button><button disabled={index === plan.clips.length - 1} onClick={() => moveClip(index, 1)}>Move down</button><button onClick={() => removeClip(index)}>Remove</button></div></header>
+      <PlannedClipFields clip={clip} references={project.references} canUsePreviousFrame={index > 0} onClip={(next) => updateClip(index, next)} />
     </article>)}</div>
-    <button className="producer-add-scene" disabled={plan.clips.length >= project.settings.maxClips} onClick={() => onPlan({ ...plan, clips: [...plan.clips, emptyPlannedClip(plan.clips.length)] })}><Plus /> Add scene</button>
-    <div className="producer-feedback"><label>Notes for Bonsai<textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Keep the flashback isolated to scene 5; strengthen the visual bridge between scenes 2 and 3; rewrite scene 8's H3 direction with more precise camera and audio beats…" /></label><button disabled={busy || feedback.trim().length < 3} onClick={() => void sendFeedback()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Send full plan back to Bonsai</button></div>
+    <button className="producer-add-scene" disabled={plan.clips.length >= project.settings.maxClips} onClick={() => insertClip(plan.clips.length)}><Plus /> Add scene at end</button>
+    <div className="producer-feedback"><label><span>Optional Bonsai help</span><small>The same planning agent is available in both standard and advanced views. It receives your complete current plan and only proposes a revision.</small><textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Keep the flashback isolated to scene 5; strengthen the visual bridge between scenes 2 and 3; rewrite scene 8's H3 direction with more precise camera and audio beats…" /></label><button disabled={busy || feedback.trim().length < 3} onClick={() => void sendFeedback()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Ask Bonsai to revise this plan</button></div>
   </section>;
 }
 
-function PlannedClipFields({ clip, references, onClip }: { clip: PlannedClip; references: MovieProject["references"]; onClip: (clip: PlannedClip) => void }) {
+function PlannedClipFields({ clip, references, canUsePreviousFrame = true, onClip }: { clip: PlannedClip; references: MovieProject["references"]; canUsePreviousFrame?: boolean; onClip: (clip: PlannedClip) => void }) {
   const field = <K extends keyof PlannedClip>(name: K, value: PlannedClip[K]) => onClip({ ...clip, [name]: value });
   return <div className="planned-clip-fields">
     <label>Scene title<input value={clip.title} onChange={(event) => field("title", event.target.value)} /></label>
@@ -1064,8 +1096,8 @@ function PlannedClipFields({ clip, references, onClip }: { clip: PlannedClip; re
     <label>Transition<input value={clip.transition} onChange={(event) => field("transition", event.target.value)} /></label>
     <label>Continuity in<input value={clip.continuityIn} onChange={(event) => field("continuityIn", event.target.value)} /></label>
     <label>Continuity out<input value={clip.continuityOut} onChange={(event) => field("continuityOut", event.target.value)} /></label>
-    <label className="previous-frame-toggle"><span><input type="checkbox" checked={clip.usePreviousFrame} onChange={(event) => field("usePreviousFrame", event.target.checked)} /> Continue from previous scene’s last frame</span></label>
-    {references.length > 0 && <fieldset className="wide"><legend>Native references for this scene</legend>{references.map((reference) => <label key={reference.assetId}><input type="checkbox" checked={clip.referenceIds.includes(reference.assetId)} disabled={clip.usePreviousFrame && !clip.referenceIds.includes(reference.assetId)} onChange={(event) => field("referenceIds", event.target.checked ? [...clip.referenceIds, reference.assetId] : clip.referenceIds.filter((id) => id !== reference.assetId))} /><span>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</span></label>)}</fieldset>}
+    <label className="previous-frame-toggle"><span><input type="checkbox" disabled={!canUsePreviousFrame} checked={canUsePreviousFrame && clip.usePreviousFrame} onChange={(event) => onClip({ ...clip, usePreviousFrame: event.target.checked, referenceIds: event.target.checked ? [] : clip.referenceIds })} /> Use previous scene’s final frame as this scene’s first-frame continuation</span><small>{canUsePreviousFrame ? "H3 continuation cannot be combined with native picture, video, or audio references." : "The opening scene has no previous frame; leave it independent or select project references below."}</small></label>
+    {references.length > 0 && <fieldset className="wide"><legend>Native picture, video, and audio references for this scene</legend><small>Select or remove any project reference. Selecting one turns off previous-frame continuation because H3 exposes these as separate generation paths.</small>{references.map((reference) => <label key={reference.assetId}><input type="checkbox" checked={clip.referenceIds.includes(reference.assetId)} onChange={(event) => onClip({ ...clip, usePreviousFrame: event.target.checked ? false : clip.usePreviousFrame, referenceIds: event.target.checked ? [...clip.referenceIds, reference.assetId] : clip.referenceIds.filter((id) => id !== reference.assetId) })} /><span>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</span></label>)}</fieldset>}
     <label className="wide renderer-direction">H3 renderer direction<textarea value={clip.prompt} onChange={(event) => field("prompt", event.target.value)} /></label>
   </div>;
 }
