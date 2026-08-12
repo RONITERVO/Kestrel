@@ -266,6 +266,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_research_settings_gain_safe_defaults_for_new_setup_fields() {
+        let legacy = serde_json::json!({
+            "advancedMode": true,
+            "bonsaiRoot": r"D:\LocalAI\Bonsai27B",
+            "contextWindow": 98_304,
+            "maxOutputTokens": 32_768,
+            "researchLanes": 7,
+            "resultsPerLane": 6,
+            "sourceTarget": 12,
+            "toolTurns": 24,
+            "thinkingBudget": 4_096,
+            "maxSourceChars": 20_000
+        });
+
+        let settings: ResearchSettings = serde_json::from_value(legacy).unwrap();
+
+        assert_eq!(settings.bonsai_root, r"D:\LocalAI\Bonsai27B");
+        assert!(!settings.install_root.is_empty());
+        assert!(!settings.wikipedia_zim_path.is_empty());
+        assert!(!settings.kiwix_server_path.is_empty());
+        assert!(!settings.comfy_root.is_empty());
+        assert_eq!(settings.research_lanes, 7);
+    }
+
+    #[test]
     fn persists_uncapped_advanced_values() {
         let directory = tempfile::tempdir().unwrap();
         let store = SettingsStore::new(directory.path());
