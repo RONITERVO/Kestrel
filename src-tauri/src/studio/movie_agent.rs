@@ -100,6 +100,48 @@ impl MovieAgentWorkspace {
         &self.root
     }
 
+    pub(super) fn authoritative_story_memory(&self) -> Result<String, StudioError> {
+        let mut paths = vec!["BRIEF.md".to_string(), "REFERENCES.md".into()];
+        if self.root.join("PRODUCER-NOTES.md").is_file() {
+            paths.push("PRODUCER-NOTES.md".into());
+        }
+        if self.root.join("movie.json").is_file() {
+            paths.push("movie.json".into());
+        }
+        let mut scene_paths = fs::read_dir(self.root.join("scenes"))?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .filter_map(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| format!("scenes/{name}"))
+            })
+            .collect::<Vec<_>>();
+        scene_paths.sort();
+        paths.extend(scene_paths);
+
+        let mut snapshot = String::from(
+            "AUTHORITATIVE CURRENT STORY MEMORY\n\
+             This exact durable snapshot is supplied fresh on every model turn. BRIEF.md and the newest producer notes are authoritative. movie.json and every scene below are the complete current story; never replace them with an unrelated premise, character, location, genre, or ending. Reconcile any draft conflict against the brief and notes before editing.\n",
+        );
+        for path in paths {
+            let section = format!("\n===== {path} =====\n{}\n", self.read_file(&path)?);
+            if snapshot
+                .len()
+                .checked_add(section.len())
+                .is_none_or(|size| size > MAX_READ_MANY_BYTES)
+            {
+                return Err(StudioError::Invalid(
+                    "the complete current movie exceeds the 256 KiB authoritative-memory limit; shorten scene prompts or split the production before continuing"
+                        .into(),
+                ));
+            }
+            snapshot.push_str(&section);
+        }
+        Ok(snapshot)
+    }
+
     pub(super) fn open(
         root: PathBuf,
         prompt: &str,
@@ -829,6 +871,57 @@ mod tests {
             .read_file("BRIEF.md")
             .unwrap()
             .contains("Keep the opening"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authoritative_memory_reanchors_the_complete_current_story() {
+        let root = temp_workspace();
+        let plan = MoviePlan {
+            title: "The Red Suitcase".into(),
+            logline: "A porter carries one red suitcase through a flooded station before dawn."
+                .into(),
+            audience: "Independent-film producers".into(),
+            creative_direction: "A restrained, rain-soaked live-action mystery with patient cuts."
+                .into(),
+            continuity_bible: vec![
+                "The same scratched red suitcase remains the story's visual anchor.".into(),
+            ],
+            source_credits: Vec::new(),
+            quality_review: MovieQualityReview::default(),
+            clips: vec![PlannedClip {
+                id: "clip-001".into(),
+                title: "Flooded platform".into(),
+                purpose: "The porter finds the red suitcase.".into(),
+                duration_seconds: 10.0,
+                prompt:
+                    "The porter discovers the scratched red suitcase beside the flooded platform."
+                        .into(),
+                continuity_in: "Rain before dawn.".into(),
+                continuity_out: "The porter grips the red handle.".into(),
+                transition: "Hard cut.".into(),
+                use_previous_frame: false,
+                source_refs: Vec::new(),
+                reference_ids: Vec::new(),
+            }],
+        };
+        let workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "A porter must return a red suitcase before sunrise.",
+            "",
+            &MovieSettings::default(),
+            &[],
+            Some(&plan),
+            Some("Never replace the suitcase with a different object."),
+        )
+        .unwrap();
+
+        let memory = workspace.authoritative_story_memory().unwrap();
+        assert!(memory.contains("A porter must return a red suitcase before sunrise."));
+        assert!(memory.contains("Never replace the suitcase with a different object."));
+        assert!(memory.contains("===== movie.json ====="));
+        assert!(memory.contains("===== scenes/001.json ====="));
+        assert!(memory.contains("Flooded platform"));
         fs::remove_dir_all(root).unwrap();
     }
 

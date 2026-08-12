@@ -1610,6 +1610,7 @@ impl MovieStudio {
         let tools = MovieAgentWorkspace::tools();
         let mut session = 1_u32;
         let mut absolute_step = 0_u32;
+        let mut independent_review_round = 0_u32;
         'agent_sessions: loop {
             check_cancel(cancel)?;
             if session > MAX_MOVIE_AGENT_SESSIONS {
@@ -1676,9 +1677,14 @@ impl MovieStudio {
                     (session, absolute_step),
                     app,
                 );
+                let mut request_messages = messages.clone();
+                request_messages.push(json!({
+                    "role":"user",
+                    "content":workspace.authoritative_story_memory()?,
+                }));
                 let request = self.complete_agent_stream(
                     connection,
-                    &messages,
+                    &request_messages,
                     &tools,
                     settings,
                     research,
@@ -1807,14 +1813,70 @@ impl MovieStudio {
                         "content":result.message,
                     }));
                     persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
-                    if let Some(plan) = submitted {
+                    if let Some(mut plan) = submitted {
                         project.phase = "agent-submitted".into();
                         project.detail = format!(
-                            "Bonsai submitted a checked {}-scene movie plan from its durable workspace.",
+                            "Bonsai submitted a checked {}-scene plan. A fresh-context reviewer is comparing every scene with the producer brief.",
                             plan.clips.len()
                         );
                         self.persist_emit(project, app)?;
-                        return Ok(MovieAgentOutcome::Submitted(plan));
+                        let review = tokio::select! {
+                            result = self.independently_review_movie_plan(
+                                &project.id,
+                                prompt,
+                                &project.references,
+                                &plan,
+                                connection,
+                                settings,
+                                research,
+                            ) => result?,
+                            _ = cancel.cancelled() => return Err(StudioError::Cancelled),
+                        };
+                        let blocking = review
+                            .issues
+                            .into_iter()
+                            .filter(|issue| {
+                                issue.clip_number as usize <= plan.clips.len()
+                                    && has_meaningful_prose(&issue.finding, 3)
+                                    && has_meaningful_prose(&issue.required_fix, 3)
+                            })
+                            .collect::<Vec<_>>();
+                        if blocking.is_empty() {
+                            plan.quality_review.verdict = "Bonsai completed the durable workspace build, two clean native checks, a whole-codebase self-review, and a separate fresh-context fidelity review against the exact producer brief and references.".into();
+                            project.detail = format!(
+                                "Bonsai's {}-scene plan passed native lint, self-review, and an independent whole-film review.",
+                                plan.clips.len()
+                            );
+                            self.persist_emit(project, app)?;
+                            return Ok(MovieAgentOutcome::Submitted(plan));
+                        }
+                        independent_review_round = independent_review_round.saturating_add(1);
+                        if independent_review_round >= 3 {
+                            return Err(StudioError::Planning(format!(
+                                "the independent whole-film reviewer still found {} blocking issue(s) after three repair rounds; the durable workspace and review input are preserved",
+                                blocking.len()
+                            )));
+                        }
+                        let review_feedback = json!({
+                            "summary": review.summary,
+                            "blockingIssues": blocking,
+                        });
+                        messages.push(json!({
+                            "role":"user",
+                            "content":format!(
+                                "Independent whole-film review rejected the submitted plan. Treat these findings as blocking, re-read the fresh authoritative story memory, patch only the affected movie/scene files, then repeat both clean checks and submit again:\n{}",
+                                review_feedback
+                            ),
+                        }));
+                        persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
+                        project.phase = "agent-workspace".into();
+                        project.detail = format!(
+                            "The independent reviewer found {} blocking issue(s). Bonsai is repairing the durable plan before H3 can render.",
+                            review_feedback["blockingIssues"]
+                                .as_array()
+                                .map_or(0, Vec::len)
+                        );
+                        self.persist_emit(project, app)?;
                     }
                 }
             }
@@ -2170,6 +2232,7 @@ impl MovieStudio {
                 &project.settings,
                 research,
                 "movie scene suggestion",
+                None,
             )
             .await?;
         suggestion.clip_id = clip_id.into();
@@ -2198,6 +2261,7 @@ impl MovieStudio {
         settings: &MovieSettings,
         research: &ResearchSettings,
         label: &str,
+        audit_path: Option<&Path>,
     ) -> Result<T, StudioError> {
         let schema = response_format
             .pointer("/json_schema/schema")
@@ -2214,6 +2278,18 @@ impl MovieStudio {
         let mut messages = initial_messages.to_vec();
         let mut last_error = String::new();
         for _ in 0..3 {
+            if let Some(path) = audit_path {
+                write_json_atomic(
+                    path,
+                    &movie_agent_request(
+                        &connection.model_id,
+                        &messages,
+                        &tools,
+                        settings,
+                        research.max_output_tokens,
+                    ),
+                )?;
+            }
             let response = self
                 .complete_agent(connection, &messages, &tools, settings, research)
                 .await?;
@@ -2256,6 +2332,67 @@ impl MovieStudio {
         Err(StudioError::Planning(format!(
             "{label} remained invalid after three attempts: {last_error}"
         )))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn independently_review_movie_plan(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        references: &[MovieReference],
+        plan: &MoviePlan,
+        connection: &ModelConnection,
+        settings: &MovieSettings,
+        research: &ResearchSettings,
+    ) -> Result<MovieCodeReview, StudioError> {
+        let payload = json!({
+            "exactProducerBrief": prompt,
+            "producerReferences": references.iter().map(|reference| json!({
+                "assetId": reference.asset_id,
+                "kind": reference.kind,
+                "description": reference.description,
+                "useEmbeddedAudio": reference.use_embedded_audio,
+                "embeddedAudioDescription": reference.embedded_audio_description,
+            })).collect::<Vec<_>>(),
+            "completeSubmittedPlan": plan,
+        });
+        let messages = vec![
+            json!({"role":"system","content":prompts::INDEPENDENT_REVIEWER_SYSTEM}),
+            json!({"role":"user","content":payload.to_string()}),
+        ];
+        write_json_atomic(
+            &self
+                .project_dir(project_id)
+                .join("agent-workspace")
+                .join("independent-review-input.json"),
+            &json!({
+                "messages": sanitize_chat_messages(&messages),
+                "toolName": "submit_movie_code_review",
+                "schema": code_review_schema(),
+            }),
+        )?;
+        let mut review_settings = settings.clone();
+        review_settings.temperature = 0.1;
+        review_settings.top_p = 0.9;
+        review_settings.top_k = 20;
+        review_settings.max_output_tokens = 32_768;
+        self.complete_tool_submission(
+            connection,
+            &messages,
+            "submit_movie_code_review",
+            "Submit only the independent whole-film review after comparing every scene with the exact producer brief and references.",
+            code_review_schema(),
+            &review_settings,
+            research,
+            "independent movie code review",
+            Some(
+                &self
+                    .project_dir(project_id)
+                    .join("agent-workspace")
+                    .join("agent-last-request.json"),
+            ),
+        )
+        .await
     }
 
     pub async fn render(
@@ -3919,10 +4056,7 @@ fn producer_intent_issues(
     }
     for reference in references.iter().filter(|reference| {
         matches!(reference.kind.as_str(), "image" | "video")
-            && reference
-                .description
-                .to_ascii_lowercase()
-                .contains("identity reference")
+            && is_identity_reference_description(&reference.description)
     }) {
         let Some(subject) = identity_reference_subject(&reference.description) else {
             continue;
@@ -4058,30 +4192,90 @@ fn producer_intent_issues(
     issues
 }
 
+fn is_identity_reference_description(description: &str) -> bool {
+    let lower = description.to_ascii_lowercase();
+    [
+        "identity reference",
+        "identity and wardrobe reference",
+        "identity/wardrobe reference",
+        "character identity reference",
+        "character reference",
+        "appearance reference",
+        "face reference",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+        || ((lower.contains("preserve the same face") || lower.contains("keep the same face"))
+            && (lower.contains("whenever ") || lower.contains("when ")))
+}
+
 fn identity_reference_subject(description: &str) -> Option<String> {
     let lower = description.to_ascii_lowercase();
-    let marker = "identity reference";
-    let index = lower.find(marker)?;
-    let before = lower[..index].trim_end_matches(|character: char| {
-        character.is_whitespace() || matches!(character, '.' | ',' | ':' | ';')
-    });
-    let candidate = before
-        .split(|character: char| !character.is_alphanumeric() && character != '\'')
-        .rfind(|token| !token.is_empty())
-        .unwrap_or_default()
-        .trim_end_matches("'s");
-    if !matches!(candidate, "" | "a" | "an" | "the" | "this" | "is") {
-        return Some(candidate.to_owned());
+    if let Some(index) = lower.find("identity reference") {
+        let owner = lower[..index]
+            .trim_end_matches(|character: char| {
+                character.is_whitespace() || matches!(character, '.' | ',' | ':' | ';')
+            })
+            .split(|character: char| !character.is_alphanumeric() && character != '\'')
+            .rfind(|token| token.ends_with("'s"));
+        if let Some(owner) = owner {
+            return Some(owner.trim_end_matches("'s").to_owned());
+        }
     }
-    lower[index + marker.len()..]
-        .strip_prefix(" for ")
-        .map(|value| value.trim_start_matches("the "))
-        .and_then(|value| {
-            value
-                .split(|character: char| !character.is_alphanumeric())
-                .find(|token| !token.is_empty())
-        })
-        .map(str::to_owned)
+    for marker in [
+        "identity and wardrobe reference for ",
+        "identity/wardrobe reference for ",
+        "character identity reference for ",
+        "identity reference for ",
+        "character reference for ",
+        "appearance reference for ",
+        "face reference for ",
+    ] {
+        if let Some(after) = lower.split_once(marker).map(|(_, after)| after) {
+            let candidate = after
+                .trim_start_matches([',', ':', ';', ' '])
+                .trim_start_matches("the ")
+                .split([',', '.', ';', ':', '\n'])
+                .next()
+                .unwrap_or_default()
+                .trim();
+            if has_meaningful_prose(candidate, 1) {
+                return Some(candidate.to_owned());
+            }
+        }
+    }
+    for marker in [
+        "identity reference",
+        "identity and wardrobe reference",
+        "identity/wardrobe reference",
+        "character identity reference",
+        "character reference",
+        "appearance reference",
+        "face reference",
+    ] {
+        if let Some(index) = lower.find(marker) {
+            let before = lower[..index].trim_end_matches(|character: char| {
+                character.is_whitespace() || matches!(character, '.' | ',' | ':' | ';')
+            });
+            let candidate = before
+                .split(|character: char| !character.is_alphanumeric() && character != '\'')
+                .rfind(|token| !token.is_empty())
+                .unwrap_or_default()
+                .trim_end_matches("'s");
+            if !matches!(candidate, "" | "a" | "an" | "the" | "this" | "is") {
+                return Some(candidate.to_owned());
+            }
+        }
+    }
+    ["whenever ", "when "].iter().find_map(|marker| {
+        let after = lower.split_once(marker)?.1;
+        let candidate = after
+            .split_once(" is ")?
+            .0
+            .trim_start_matches("the ")
+            .trim();
+        has_meaningful_prose(candidate, 1).then(|| candidate.to_owned())
+    })
 }
 
 fn legacy_alias(fact: &str, subject: &str) -> Option<String> {
@@ -5769,6 +5963,35 @@ mod tests {
             identity_reference_subject(&reference.description).as_deref(),
             Some("vlogger")
         );
+    }
+
+    #[test]
+    fn identity_gate_understands_producer_facing_reference_language() {
+        let mut reference = identity_reference();
+        reference.asset_id = "elias-picture".into();
+        reference.description = "This is the immutable identity and wardrobe reference for Elias Vance, the adult football player. Whenever Elias is visibly present, preserve the same face, short dark hair, athletic build, navy number-one practice jersey, charcoal shorts, white socks, black football boots, and taped left forearm.".into();
+        assert!(is_identity_reference_description(&reference.description));
+        assert_eq!(
+            identity_reference_subject(&reference.description).as_deref(),
+            Some("elias vance")
+        );
+        let mut plan = identity_plan();
+        plan.continuity_bible = vec![
+            "Elias Vance is the football player in the navy number-one practice jersey.".into(),
+        ];
+        plan.clips = vec![
+            identity_clip("Elias enters", "Elias Vance looks down at his boots"),
+            identity_clip("Grand reveal", "Elias Vance watches the construction site"),
+        ];
+        plan.clips[0].reference_ids = vec![reference.asset_id.clone()];
+
+        let issues = producer_intent_issues(
+            "Make a two-minute film about Elias Vance.",
+            &plan,
+            std::slice::from_ref(&reference),
+        )
+        .join(" ");
+        assert!(issues.contains("scene(s) 2"));
     }
 
     #[test]

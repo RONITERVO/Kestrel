@@ -26,6 +26,8 @@ pub(super) fn producer_direction(text: &str) -> String {
 
 pub(super) const CLIP_ASSISTANT_SYSTEM: &str = "You are Bonsai at an advanced producer's scene desk. Propose one organized replacement scene; never mutate files or claim that the existing H3 master changed. Obey the producer's requested fix and preserve useful neighboring continuity. MiniMax H3 cannot combine native referenceIds with an exact prior-frame continuation in one clip: choose referenceIds with usePreviousFrame false for a reference-locked cut, or usePreviousFrame true with empty referenceIds for a seamless handoff whose carried frame already contains the subject. Keep native reference IDs only in referenceIds. The replacement prompt must be a complete 120-450 word MiniMax H3 renderer instruction with production medium, environment, lighting/texture, timed coverage through the exact clip endpoint, camera, blocking/action, sound, transition, and relevant exclusions. Return a concise producer summary, a practical verification checklist, and the complete structured replacement clip.";
 
+pub(super) const INDEPENDENT_REVIEWER_SYSTEM: &str = "You are Bonsai's independent final film-plan reviewer. You did not write the draft. Compare the complete submitted plan scene by scene against the exact producer brief and every supplied reference description. Report only concrete release-blocking defects: a changed premise, subject, relationship, location, genre, requested visual, or ending; missing causality; contradictory continuity; a visibly recurring referenced identity without either its native reference on an independent cut or a valid carried previous frame; reference media used where its subject is absent; impossible H3 conditioning; repetitive padding; or a renderer prompt that cannot produce its stated story beat. Treat ambiguous producer wording conservatively and preserve its plausible intended meanings rather than silently choosing an unrelated story. Do not demand new media, research, tools, or capabilities that were not supplied. Do not restate native style preferences as defects. Use clipNumber 0 only for whole-film findings. Return an empty issues list only when the complete plan is faithful and internally coherent.";
+
 pub(super) fn prompt_catalog(settings: &MovieSettings) -> Vec<super::planning::PromptDocument> {
     vec![
         super::planning::PromptDocument::new(
@@ -96,6 +98,12 @@ pub(super) fn prompt_catalog(settings: &MovieSettings) -> Vec<super::planning::P
             "Scene assistant system prompt",
             "system",
             CLIP_ASSISTANT_SYSTEM,
+        ),
+        super::planning::PromptDocument::new(
+            "independent-reviewer-system",
+            "Independent whole-film reviewer prompt",
+            "system",
+            INDEPENDENT_REVIEWER_SYSTEM,
         ),
     ]
 }
