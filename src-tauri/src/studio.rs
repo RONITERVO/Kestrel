@@ -1,9 +1,5 @@
-use crate::{
-    models::ResearchSettings,
-    runtime::{authorized, ModelConnection},
-};
+use crate::{models::ResearchSettings, runtime::ModelConnection};
 use chrono::Utc;
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -25,6 +21,8 @@ use thiserror::Error;
 use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
+mod agent_flow;
+mod agent_protocol;
 mod copilot;
 mod image_assets;
 mod live_preview;
@@ -33,6 +31,10 @@ mod planning;
 mod prompt_collaboration;
 mod prompts;
 
+use agent_flow::{MovieAgentOutcome, MovieAgentProgress, MovieAgentRequest};
+#[cfg(test)]
+use agent_protocol::movie_agent_request;
+use agent_protocol::{sanitize_chat_messages, ToolSubmissionRequest};
 pub use copilot::{
     emit_error as emit_copilot_error, emit_settled as emit_copilot_settled,
     validate_request as validate_copilot_request, MovieCopilotJob, MovieCopilotReceipt,
@@ -45,7 +47,7 @@ pub use image_assets::{
 use live_preview::{
     emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget, PREVIEW_NODE_ID,
 };
-use movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult};
+use movie_agent::MovieAgentWorkspace;
 pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot};
 pub use prompt_collaboration::{
     emit_error as emit_prompt_draft_error, emit_settled as emit_prompt_draft_settled,
@@ -69,9 +71,14 @@ const MAX_MOVIE_AGENT_SESSIONS: u32 = 8;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
-enum MovieAgentOutcome {
-    Submitted(MoviePlan),
-    Checkpointed,
+struct IndependentReviewRequest<'a> {
+    project_id: &'a str,
+    prompt: &'a str,
+    references: &'a [MovieReference],
+    plan: &'a MoviePlan,
+    connection: &'a ModelConnection,
+    settings: &'a MovieSettings,
+    research: &'a ResearchSettings,
 }
 
 fn media_program(name: &str) -> PathBuf {
@@ -1797,549 +1804,22 @@ impl MovieStudio {
             "Bonsai is working in its durable movie codebase and running native H3 checks.".into();
         self.persist_emit(project, app)?;
         let manifest = reference_manifest(&project.references);
-        let plan = self
-            .run_movie_agent(
-                prompt, &manifest, None, None, settings, connection, research, cancel, project, app,
-            )
-            .await?;
+        let plan = agent_flow::run(
+            self,
+            MovieAgentRequest {
+                prompt,
+                manifest: &manifest,
+                seed: None,
+                producer_feedback: None,
+                settings,
+                connection,
+                research,
+                cancel,
+            },
+            MovieAgentProgress { project, app },
+        )
+        .await?;
         Ok((plan, Vec::new()))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn run_movie_agent(
-        &self,
-        prompt: &str,
-        manifest: &str,
-        seed: Option<&MoviePlan>,
-        producer_feedback: Option<&str>,
-        settings: &MovieSettings,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
-        cancel: &CancellationToken,
-        project: &mut MovieProject,
-        app: Option<&AppHandle>,
-    ) -> Result<MovieAgentOutcome, StudioError> {
-        let workspace_root = self.project_dir(&project.id).join("agent-workspace");
-        let resuming_existing_workspace = workspace_root.join("movie.json").is_file();
-        let transcript_path = workspace_root.join("agent-transcript.json");
-        let mut workspace = MovieAgentWorkspace::open(
-            workspace_root,
-            prompt,
-            manifest,
-            settings,
-            &project.references,
-            seed,
-            producer_feedback,
-        )?;
-        let tools = MovieAgentWorkspace::tools();
-        let mut session = 1_u32;
-        let mut absolute_step = 0_u32;
-        let mut independent_review_round = 0_u32;
-        'agent_sessions: loop {
-            check_cancel(cancel)?;
-            if session > MAX_MOVIE_AGENT_SESSIONS {
-                return Err(StudioError::Planning(format!(
-                    "Bonsai did not submit a valid movie after {MAX_MOVIE_AGENT_SESSIONS} context sessions; the durable workspace is intact for a later retry"
-                )));
-            }
-            if session > 1 && transcript_path.is_file() {
-                fs::copy(
-                    &transcript_path,
-                    workspace
-                        .root()
-                        .join(format!("agent-transcript-session-{:03}.json", session - 1)),
-                )?;
-            }
-            let instruction = if session == 1 && !resuming_existing_workspace {
-                prompts::INITIAL_INSTRUCTION
-            } else {
-                prompts::RESUME_INSTRUCTION
-            };
-            let mut messages = vec![
-                json!({"role":"system","content":movie_agent_prompt()}),
-                json!({"role":"user","content":instruction}),
-            ];
-            persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
-            let mut no_tool_streak = 0_u32;
-
-            for _ in 0..MOVIE_AGENT_SESSION_STEPS {
-                check_cancel(cancel)?;
-                let control = self.consume_planning_control(&project.id, |control| {
-                    if control.pending_directions.is_empty() && !control.checkpoint_requested {
-                        return Ok(());
-                    }
-                    if !control.pending_directions.is_empty() {
-                        workspace.record_producer_directions(&control.pending_directions)?;
-                        for direction in &control.pending_directions {
-                            messages.push(json!({
-                                "role":"user",
-                                "content":prompts::producer_direction(&direction.text),
-                            }));
-                        }
-                    }
-                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
-                    Ok(())
-                })?;
-                if !control.pending_directions.is_empty() {
-                    for direction in control.pending_directions {
-                        project.producer_feedback.push(ProducerFeedbackRecord {
-                            created_at: direction.created_at,
-                            scope: "live-planning".into(),
-                            clip_id: String::new(),
-                            feedback: direction.text,
-                        });
-                    }
-                    project.detail = "Bonsai received the producer's latest direction and is revising the durable plan.".into();
-                    self.persist_emit(project, app)?;
-                }
-                if control.checkpoint_requested {
-                    return Ok(MovieAgentOutcome::Checkpointed);
-                }
-                absolute_step = absolute_step.saturating_add(1);
-                project.phase = "agent-workspace".into();
-                project.detail = format!(
-                    "Bonsai is editing and checking the durable movie codebase (agent step {absolute_step}, context session {session})."
-                );
-                self.persist_emit(project, app)?;
-                self.emit_planning(
-                    &project.id,
-                    "turn-start",
-                    "planning",
-                    format!("Bonsai is planning turn {absolute_step}."),
-                    (session, absolute_step),
-                    app,
-                );
-                let mut request_messages = messages.clone();
-                request_messages.push(json!({
-                    "role":"user",
-                    "content":workspace.authoritative_story_memory()?,
-                }));
-                let request = self.complete_agent_stream(
-                    connection,
-                    &request_messages,
-                    &tools,
-                    settings,
-                    research,
-                    cancel,
-                    &project.id,
-                    session,
-                    absolute_step,
-                    app,
-                );
-                let response_result = tokio::select! {
-                    result = request => result,
-                    _ = cancel.cancelled() => return Err(StudioError::Cancelled),
-                };
-                let response = match response_result {
-                    Ok(response) => response,
-                    Err(error) => {
-                        messages.push(json!({
-                            "role":"user",
-                            "content":prompts::response_checkpoint(&error.to_string())
-                        }));
-                        persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
-                        project.detail = format!(
-                            "Bonsai response failed safely at agent step {absolute_step}; Kestrel is checkpointing and resuming in a fresh context."
-                        );
-                        self.persist_emit(project, app)?;
-                        session = session.saturating_add(1);
-                        cancellable_agent_restart_delay(cancel).await?;
-                        continue 'agent_sessions;
-                    }
-                };
-                let message = response_message(&response)?;
-                let tool_calls = message
-                    .get("tool_calls")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let mut history_message = message;
-                if let Some(object) = history_message.as_object_mut() {
-                    object.remove("reasoning");
-                    object.remove("reasoning_content");
-                }
-                messages.push(history_message);
-                persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
-                if tool_calls.is_empty() {
-                    no_tool_streak = no_tool_streak.saturating_add(1);
-                    messages.push(json!({"role":"user","content":prompts::CONTINUE_WITH_TOOLS}));
-                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
-                    if no_tool_streak >= 3 {
-                        project.detail = format!(
-                            "Bonsai stopped using its workspace for three turns at agent step {absolute_step}; Kestrel is checkpointing and resuming in a fresh context."
-                        );
-                        self.persist_emit(project, app)?;
-                        session = session.saturating_add(1);
-                        cancellable_agent_restart_delay(cancel).await?;
-                        continue 'agent_sessions;
-                    }
-                    continue;
-                }
-                no_tool_streak = 0;
-                for call in tool_calls {
-                    check_cancel(cancel)?;
-                    let call_id = call
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("movie-tool");
-                    let name = call
-                        .pointer("/function/name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let result = if name != "movie_workspace" {
-                        WorkspaceToolResult {
-                            message: format!("ERROR: unknown tool {name}"),
-                            submitted: None,
-                        }
-                    } else {
-                        match call.pointer("/function/arguments") {
-                            Some(arguments) => {
-                                let parsed = if let Some(text) = arguments.as_str() {
-                                    serde_json::from_str::<WorkspaceToolRequest>(text)
-                                } else {
-                                    serde_json::from_value::<WorkspaceToolRequest>(
-                                        arguments.clone(),
-                                    )
-                                };
-                                match parsed {
-                                    Ok(request) => {
-                                        self.emit_planning(
-                                            &project.id,
-                                            "activity",
-                                            &request.action,
-                                            producer_activity(&request),
-                                            (session, absolute_step),
-                                            app,
-                                        );
-                                        let result = workspace.execute(request);
-                                        self.emit_planning(
-                                            &project.id,
-                                            "tool-result",
-                                            "native-check",
-                                            producer_tool_result(&result.message),
-                                            (session, absolute_step),
-                                            app,
-                                        );
-                                        result
-                                    }
-                                    Err(error) => WorkspaceToolResult {
-                                        message: format!(
-                                            "ERROR: invalid movie_workspace arguments: {error}"
-                                        ),
-                                        submitted: None,
-                                    },
-                                }
-                            }
-                            None => WorkspaceToolResult {
-                                message:
-                                    "ERROR: invalid movie_workspace arguments: missing arguments"
-                                        .into(),
-                                submitted: None,
-                            },
-                        }
-                    };
-                    let submitted = result.submitted;
-                    messages.push(json!({
-                        "role":"tool",
-                        "tool_call_id":call_id,
-                        "content":result.message,
-                    }));
-                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
-                    if let Some(mut plan) = submitted {
-                        project.phase = "agent-submitted".into();
-                        project.detail = format!(
-                            "Bonsai submitted a checked {}-scene plan. A fresh-context reviewer is comparing every scene with the producer brief.",
-                            plan.clips.len()
-                        );
-                        self.persist_emit(project, app)?;
-                        let review = tokio::select! {
-                            result = self.independently_review_movie_plan(
-                                &project.id,
-                                prompt,
-                                &project.references,
-                                &plan,
-                                connection,
-                                settings,
-                                research,
-                            ) => result?,
-                            _ = cancel.cancelled() => return Err(StudioError::Cancelled),
-                        };
-                        let blocking = review
-                            .issues
-                            .into_iter()
-                            .filter(|issue| {
-                                issue.clip_number as usize <= plan.clips.len()
-                                    && has_meaningful_prose(&issue.finding, 3)
-                                    && has_meaningful_prose(&issue.required_fix, 3)
-                            })
-                            .collect::<Vec<_>>();
-                        if blocking.is_empty() {
-                            plan.quality_review.verdict = "Bonsai completed the durable workspace build, two clean native checks, a whole-codebase self-review, and a separate fresh-context fidelity review against the exact producer brief and references.".into();
-                            project.detail = format!(
-                                "Bonsai's {}-scene plan passed native lint, self-review, and an independent whole-film review.",
-                                plan.clips.len()
-                            );
-                            self.persist_emit(project, app)?;
-                            return Ok(MovieAgentOutcome::Submitted(plan));
-                        }
-                        independent_review_round = independent_review_round.saturating_add(1);
-                        if independent_review_round >= 3 {
-                            return Err(StudioError::Planning(format!(
-                                "the independent whole-film reviewer still found {} blocking issue(s) after three repair rounds; the durable workspace and review input are preserved",
-                                blocking.len()
-                            )));
-                        }
-                        let review_feedback = json!({
-                            "summary": review.summary,
-                            "blockingIssues": blocking,
-                        });
-                        messages.push(json!({
-                            "role":"user",
-                            "content":format!(
-                                "Independent whole-film review rejected the submitted plan. Treat these findings as blocking, re-read the fresh authoritative story memory, patch only the affected movie/scene files, then repeat both clean checks and submit again:\n{}",
-                                review_feedback
-                            ),
-                        }));
-                        persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
-                        project.phase = "agent-workspace".into();
-                        project.detail = format!(
-                            "The independent reviewer found {} blocking issue(s). Bonsai is repairing the durable plan before H3 can render.",
-                            review_feedback["blockingIssues"]
-                                .as_array()
-                                .map_or(0, Vec::len)
-                        );
-                        self.persist_emit(project, app)?;
-                    }
-                }
-            }
-            session = session.saturating_add(1);
-        }
-    }
-
-    async fn complete_agent(
-        &self,
-        connection: &ModelConnection,
-        messages: &[Value],
-        tools: &Value,
-        settings: &MovieSettings,
-        research: &ResearchSettings,
-    ) -> Result<Value, StudioError> {
-        let body = movie_agent_request(
-            &connection.model_id,
-            messages,
-            tools,
-            settings,
-            research.max_output_tokens,
-        );
-        let response = authorized(
-            self.http
-                .post(format!("{}/chat/completions", connection.endpoint)),
-            connection,
-        )
-        .json(&body)
-        .send()
-        .await?;
-        let status = response.status();
-        let text = response.text().await?;
-        if !status.is_success() {
-            return Err(StudioError::Planning(format!(
-                "movie agent HTTP {status}: {}",
-                truncate(&text, 500)
-            )));
-        }
-        serde_json::from_str(&text).map_err(StudioError::from)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn complete_agent_stream(
-        &self,
-        connection: &ModelConnection,
-        messages: &[Value],
-        tools: &Value,
-        settings: &MovieSettings,
-        research: &ResearchSettings,
-        cancel: &CancellationToken,
-        project_id: &str,
-        session: u32,
-        step: u32,
-        app: Option<&AppHandle>,
-    ) -> Result<Value, StudioError> {
-        let mut body = movie_agent_request(
-            &connection.model_id,
-            messages,
-            tools,
-            settings,
-            research.max_output_tokens,
-        );
-        body["stream"] = json!(true);
-        body["stream_options"] = json!({"include_usage": true});
-        write_json_atomic(
-            &self
-                .project_dir(project_id)
-                .join("agent-workspace")
-                .join("agent-last-request.json"),
-            &body,
-        )?;
-        let response = authorized(
-            self.http
-                .post(format!("{}/chat/completions", connection.endpoint)),
-            connection,
-        )
-        .json(&body)
-        .send()
-        .await?;
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(StudioError::Planning(format!(
-                "movie agent HTTP {status}: {}",
-                truncate(&text, 500)
-            )));
-        }
-
-        let mut stream = response.bytes_stream();
-        let mut buffer = Vec::<u8>::new();
-        let mut content = String::new();
-        let mut tool_calls = Vec::<StreamedMovieToolCall>::new();
-        let mut completed = false;
-        let mut reasoning_announced = false;
-        loop {
-            let next = tokio::select! {
-                value = stream.next() => value,
-                _ = cancel.cancelled() => return Err(StudioError::Cancelled),
-            };
-            let Some(chunk) = next else { break };
-            buffer.extend_from_slice(&chunk?);
-            while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
-                let line = buffer.drain(..=end).collect::<Vec<_>>();
-                let line = String::from_utf8_lossy(&line);
-                let Some(data) = line.trim().strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
-                if data == "[DONE]" {
-                    completed = true;
-                    continue;
-                }
-                let Ok(value) = serde_json::from_str::<Value>(data) else {
-                    continue;
-                };
-                if let Some(token) = value
-                    .pointer("/choices/0/delta/content")
-                    .and_then(Value::as_str)
-                {
-                    content.push_str(token);
-                    self.emit_planning(
-                        project_id,
-                        "token",
-                        "model-text",
-                        token,
-                        (session, step),
-                        app,
-                    );
-                }
-                if !reasoning_announced
-                    && value
-                        .pointer("/choices/0/delta/reasoning_content")
-                        .or_else(|| value.pointer("/choices/0/delta/reasoning"))
-                        .and_then(Value::as_str)
-                        .is_some()
-                {
-                    reasoning_announced = true;
-                    self.emit_planning(
-                        project_id,
-                        "reasoning",
-                        "thinking",
-                        "Bonsai is reasoning locally before its next production action.",
-                        (session, step),
-                        app,
-                    );
-                }
-                if let Some(deltas) = value
-                    .pointer("/choices/0/delta/tool_calls")
-                    .and_then(Value::as_array)
-                {
-                    for delta in deltas {
-                        let index = delta
-                            .get("index")
-                            .and_then(Value::as_u64)
-                            .unwrap_or_default() as usize;
-                        while tool_calls.len() <= index {
-                            tool_calls.push(StreamedMovieToolCall::default());
-                        }
-                        let call = &mut tool_calls[index];
-                        if let Some(fragment) = delta.get("id").and_then(Value::as_str) {
-                            call.id.push_str(fragment);
-                        }
-                        if let Some(fragment) =
-                            delta.pointer("/function/name").and_then(Value::as_str)
-                        {
-                            call.name.push_str(fragment);
-                        }
-                        if let Some(fragment) =
-                            delta.pointer("/function/arguments").and_then(Value::as_str)
-                        {
-                            if !call.activity_announced {
-                                call.activity_announced = true;
-                                self.emit_planning(
-                                    project_id,
-                                    "activity",
-                                    "planning",
-                                    "Bonsai is streaming its next structured production action.",
-                                    (session, step),
-                                    app,
-                                );
-                            }
-                            call.arguments.push_str(fragment);
-                            self.emit_planning(
-                                project_id,
-                                "advanced-token",
-                                "tool-arguments",
-                                fragment,
-                                (session, step),
-                                app,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        if !completed {
-            return Err(StudioError::Planning(
-                "movie agent stream ended before its completion marker; the durable workspace and previous accepted turns are intact"
-                    .into(),
-            ));
-        }
-        let tool_calls = tool_calls
-            .into_iter()
-            .enumerate()
-            .filter(|(_, call)| !call.name.is_empty() || !call.arguments.is_empty())
-            .map(|(index, call)| {
-                json!({
-                    "id": if call.id.is_empty() { format!("movie-tool-{step}-{index}") } else { call.id },
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": call.arguments},
-                })
-            })
-            .collect::<Vec<_>>();
-        let assistant_content = if content.is_empty() {
-            Value::Null
-        } else {
-            Value::String(content)
-        };
-        self.emit_planning(
-            project_id,
-            "turn-complete",
-            "planning",
-            "Bonsai completed the model turn and is applying its production action.",
-            (session, step),
-            app,
-        );
-        Ok(json!({"choices":[{"message":{
-            "role":"assistant",
-            "content":assistant_content,
-            "tool_calls":tool_calls,
-        }}]}))
     }
 
     pub async fn revise_with_producer_feedback(
@@ -2372,20 +1852,24 @@ impl MovieStudio {
         let manifest = reference_manifest(&project.references);
         let settings = project.settings.clone();
         let prompt = project.prompt.clone();
-        let reviewed = self
-            .run_movie_agent(
-                &prompt,
-                &manifest,
-                Some(&current),
-                Some(feedback),
-                &settings,
+        let reviewed = agent_flow::run(
+            self,
+            MovieAgentRequest {
+                prompt: &prompt,
+                manifest: &manifest,
+                seed: Some(&current),
+                producer_feedback: Some(feedback),
+                settings: &settings,
                 connection,
                 research,
                 cancel,
-                &mut project,
+            },
+            MovieAgentProgress {
+                project: &mut project,
                 app,
-            )
-            .await?;
+            },
+        )
+        .await?;
         let MovieAgentOutcome::Submitted(mut reviewed) = reviewed else {
             project.status = "planning-checkpoint".into();
             project.phase = "planning-checkpoint".into();
@@ -2454,19 +1938,21 @@ impl MovieStudio {
             json!({"role":"system","content":clip_assistant_prompt()}),
             json!({"role":"user","content":payload.to_string()}),
         ];
-        let mut suggestion: MovieClipSuggestion = self
-            .complete_tool_submission(
+        let mut suggestion: MovieClipSuggestion = agent_protocol::complete_tool_submission(
+            &self.http,
+            ToolSubmissionRequest {
                 connection,
-                &messages,
-                "submit_scene_suggestion",
-                "Submit the organized replacement scene only after checking the producer feedback and neighboring continuity.",
-                clip_suggestion_schema(),
-                &project.settings,
-                research,
-                "movie scene suggestion",
-                None,
-            )
-            .await?;
+                initial_messages: &messages,
+                tool_name: "submit_scene_suggestion",
+                tool_description: "Submit the organized replacement scene only after checking the producer feedback and neighboring continuity.",
+                response_format: clip_suggestion_schema(),
+                settings: &project.settings,
+                runtime_max_output_tokens: research.max_output_tokens,
+                label: "movie scene suggestion",
+                audit_path: None,
+            },
+        )
+        .await?;
         suggestion.clip_id = clip_id.into();
         suggestion.clip.id = clip_id.into();
         let mut candidate = plan.clone();
@@ -2482,111 +1968,20 @@ impl MovieStudio {
         Ok(suggestion)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn complete_tool_submission<T: for<'de> Deserialize<'de>>(
-        &self,
-        connection: &ModelConnection,
-        initial_messages: &[Value],
-        tool_name: &str,
-        tool_description: &str,
-        response_format: Value,
-        settings: &MovieSettings,
-        research: &ResearchSettings,
-        label: &str,
-        audit_path: Option<&Path>,
-    ) -> Result<T, StudioError> {
-        let schema = response_format
-            .pointer("/json_schema/schema")
-            .cloned()
-            .unwrap_or(response_format);
-        let tools = json!([{
-            "type":"function",
-            "function":{
-                "name":tool_name,
-                "description":tool_description,
-                "parameters":schema,
-            }
-        }]);
-        let mut messages = initial_messages.to_vec();
-        let mut last_error = String::new();
-        for _ in 0..3 {
-            if let Some(path) = audit_path {
-                write_json_atomic(
-                    path,
-                    &movie_agent_request(
-                        &connection.model_id,
-                        &messages,
-                        &tools,
-                        settings,
-                        research.max_output_tokens,
-                    ),
-                )?;
-            }
-            let response = self
-                .complete_agent(connection, &messages, &tools, settings, research)
-                .await?;
-            let message = response_message(&response)?;
-            let tool_call = message
-                .get("tool_calls")
-                .and_then(Value::as_array)
-                .and_then(|calls| {
-                    calls.iter().find(|call| {
-                        call.pointer("/function/name").and_then(Value::as_str) == Some(tool_name)
-                    })
-                });
-            if let Some(call) = tool_call {
-                let arguments = call
-                    .pointer("/function/arguments")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                let parsed = if let Some(text) = arguments.as_str() {
-                    serde_json::from_str::<T>(text)
-                } else {
-                    serde_json::from_value::<T>(arguments)
-                };
-                match parsed {
-                    Ok(value) => return Ok(value),
-                    Err(error) => last_error = error.to_string(),
-                }
-            } else {
-                last_error = format!("Bonsai did not call {tool_name}");
-            }
-            let mut history_message = message;
-            if let Some(object) = history_message.as_object_mut() {
-                object.remove("reasoning");
-                object.remove("reasoning_content");
-            }
-            messages.push(history_message);
-            messages.push(json!({"role":"user","content":format!(
-                "The {label} submission failed validation: {last_error}. Correct it and call {tool_name}; do not answer in prose."
-            )}));
-        }
-        Err(StudioError::Planning(format!(
-            "{label} remained invalid after three attempts: {last_error}"
-        )))
-    }
-
-    #[allow(clippy::too_many_arguments)]
     async fn independently_review_movie_plan(
         &self,
-        project_id: &str,
-        prompt: &str,
-        references: &[MovieReference],
-        plan: &MoviePlan,
-        connection: &ModelConnection,
-        settings: &MovieSettings,
-        research: &ResearchSettings,
+        request: IndependentReviewRequest<'_>,
     ) -> Result<MovieCodeReview, StudioError> {
         let payload = json!({
-            "exactProducerBrief": prompt,
-            "producerReferences": references.iter().map(|reference| json!({
+            "exactProducerBrief": request.prompt,
+            "producerReferences": request.references.iter().map(|reference| json!({
                 "assetId": reference.asset_id,
                 "kind": reference.kind,
                 "description": reference.description,
                 "useEmbeddedAudio": reference.use_embedded_audio,
                 "embeddedAudioDescription": reference.embedded_audio_description,
             })).collect::<Vec<_>>(),
-            "completeSubmittedPlan": plan,
+            "completeSubmittedPlan": request.plan,
         });
         let messages = vec![
             json!({"role":"system","content":prompts::INDEPENDENT_REVIEWER_SYSTEM}),
@@ -2594,7 +1989,7 @@ impl MovieStudio {
         ];
         write_json_atomic(
             &self
-                .project_dir(project_id)
+                .project_dir(request.project_id)
                 .join("agent-workspace")
                 .join("independent-review-input.json"),
             &json!({
@@ -2603,26 +1998,28 @@ impl MovieStudio {
                 "schema": code_review_schema(),
             }),
         )?;
-        let mut review_settings = settings.clone();
+        let mut review_settings = request.settings.clone();
         review_settings.temperature = 0.1;
         review_settings.top_p = 0.9;
         review_settings.top_k = 20;
         review_settings.max_output_tokens = 32_768;
-        self.complete_tool_submission(
-            connection,
-            &messages,
-            "submit_movie_code_review",
-            "Submit only the independent whole-film review after comparing every scene with the exact producer brief and references.",
-            code_review_schema(),
-            &review_settings,
-            research,
-            "independent movie code review",
-            Some(
-                &self
-                    .project_dir(project_id)
-                    .join("agent-workspace")
-                    .join("agent-last-request.json"),
-            ),
+        let audit_path = self
+            .project_dir(request.project_id)
+            .join("agent-workspace")
+            .join("agent-last-request.json");
+        agent_protocol::complete_tool_submission(
+            &self.http,
+            ToolSubmissionRequest {
+                connection: request.connection,
+                initial_messages: &messages,
+                tool_name: "submit_movie_code_review",
+                tool_description: "Submit only the independent whole-film review after comparing every scene with the exact producer brief and references.",
+                response_format: code_review_schema(),
+                settings: &review_settings,
+                runtime_max_output_tokens: request.research.max_output_tokens,
+                label: "independent movie code review",
+                audit_path: Some(&audit_path),
+            },
         )
         .await
     }
@@ -3667,40 +3064,6 @@ fn safe_export_stem(title: &str) -> String {
     }
 }
 
-fn sanitize_chat_messages(messages: &[Value]) -> Vec<Value> {
-    messages
-        .iter()
-        .cloned()
-        .map(|mut message| {
-            if let Some(content) = message.get_mut("content") {
-                if let Some(text) = content.as_str() {
-                    *content = Value::String(
-                        text.replace("```", "''' ")
-                            .replace("<think>", "[reasoning omitted]")
-                            .replace("</think>", "[end reasoning]"),
-                    );
-                }
-            }
-            message
-        })
-        .collect()
-}
-
-fn persist_movie_agent_transcript(
-    path: &Path,
-    step: u32,
-    messages: &[Value],
-) -> Result<(), StudioError> {
-    write_json_atomic(
-        path,
-        &json!({
-            "updatedAt": Utc::now().to_rfc3339(),
-            "step": step,
-            "messages": sanitize_chat_messages(messages),
-        }),
-    )
-}
-
 fn ensure_plan_is_unrendered(project: &MovieProject) -> Result<(), StudioError> {
     if project.clips.iter().any(|clip| {
         clip.status == "rendering" || clip.status == "complete" || !clip.path.is_empty()
@@ -3882,70 +3245,7 @@ fn check_cancel(cancel: &CancellationToken) -> Result<(), StudioError> {
     }
 }
 
-async fn cancellable_agent_restart_delay(cancel: &CancellationToken) -> Result<(), StudioError> {
-    tokio::select! {
-        _ = tokio::time::sleep(Duration::from_secs(2)) => Ok(()),
-        _ = cancel.cancelled() => Err(StudioError::Cancelled),
-    }
-}
-
-fn response_message(response: &Value) -> Result<Value, StudioError> {
-    response
-        .pointer("/choices/0/message")
-        .cloned()
-        .ok_or_else(|| {
-            StudioError::Planning(format!(
-                "missing model message: {}",
-                truncate(&response.to_string(), 500)
-            ))
-        })
-}
-
-#[derive(Default)]
-struct StreamedMovieToolCall {
-    id: String,
-    name: String,
-    arguments: String,
-    activity_announced: bool,
-}
-
-fn producer_activity(request: &WorkspaceToolRequest) -> String {
-    match request.action.as_str() {
-        "list" => "Bonsai is reviewing the durable production workspace.".into(),
-        "read" | "read_many" => {
-            if request.path.is_empty() {
-                "Bonsai is reviewing the brief and current scene work.".into()
-            } else {
-                format!("Bonsai is reviewing {}.", request.path)
-            }
-        }
-        "write" | "write_batch" => "Bonsai is updating the screenplay and scene directions.".into(),
-        "delete" => "Bonsai is removing an obsolete draft scene.".into(),
-        "check" => "Bonsai is running native H3 lint and the full production review.".into(),
-        "submit" => "Bonsai is submitting the checked plan for producer review.".into(),
-        _ => "Bonsai is applying a production action.".into(),
-    }
-}
-
-fn producer_tool_result(message: &str) -> String {
-    if message.starts_with("CHECK PASS") {
-        "Native checks passed. Bonsai is completing the required whole-film review.".into()
-    } else if message.starts_with("CHECK FAIL") {
-        let issues = message.lines().filter(|line| line.starts_with('-')).count();
-        format!(
-            "Native review found {} issue{}; Bonsai is repairing the affected scenes.",
-            issues.max(1),
-            if issues == 1 { "" } else { "s" }
-        )
-    } else if message.starts_with("SUBMITTED") {
-        "The checked plan was submitted successfully.".into()
-    } else if message.starts_with("ERROR") || message.starts_with("SUBMIT BLOCKED") {
-        "The production action was rejected safely; Bonsai received the exact diagnostic and will repair it.".into()
-    } else {
-        "The durable workspace accepted Bonsai's production action.".into()
-    }
-}
-
+#[cfg(test)]
 fn movie_agent_prompt() -> &'static str {
     prompts::MOVIE_AGENT_SYSTEM
 }
@@ -5303,28 +4603,6 @@ fn movie_schema(max_clips: u32) -> Value {
     }}})
 }
 
-fn movie_agent_request(
-    model_id: &str,
-    messages: &[Value],
-    tools: &Value,
-    settings: &MovieSettings,
-    runtime_max_output_tokens: u32,
-) -> Value {
-    json!({
-        "model": model_id,
-        "messages": sanitize_chat_messages(messages),
-        "tools": tools,
-        "tool_choice": "required",
-        "parallel_tool_calls": false,
-        "stream": false,
-        "temperature": settings.temperature,
-        "top_p": settings.top_p,
-        "top_k": settings.top_k,
-        "max_tokens": settings.max_output_tokens.min(runtime_max_output_tokens),
-        "thinking_budget_tokens": MOVIE_THINKING_BUDGET,
-    })
-}
-
 struct H3GraphRequest<'a> {
     prompt: &'a str,
     width: u32,
@@ -6311,7 +5589,7 @@ mod tests {
                 .timeout(Duration::from_secs(3_600))
                 .build()
                 .map_err(|error| error.to_string())?;
-            let response = authorized(
+            let response = crate::runtime::authorized(
                 client.post(format!("{}/chat/completions", lease.connection.endpoint)),
                 &lease.connection,
             )
