@@ -276,17 +276,39 @@ export interface MovieClipRenderRequest {
 }
 
 export interface ClipEdit {
+  id: string;
   clipId: string;
   enabled: boolean;
   order: number;
   trimStart: number;
   trimEnd: number;
   audioGain: number;
+  sourceVersionId: string;
+  speed: number;
+  fadeIn: number;
+  fadeOut: number;
+  audioFadeIn: number;
+  audioFadeOut: number;
 }
 
 export interface MovieEdit {
   clips: ClipEdit[];
   exportTitle: string;
+  exportPreset: "archive" | "publish" | "review";
+  normalizeAudio: boolean;
+  targetLufs: number;
+}
+
+export interface MovieExport {
+  id: string;
+  createdAt: string;
+  title: string;
+  preset: "archive" | "publish" | "review" | string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  durationSeconds: number;
+  clipCount: number;
 }
 
 export interface MovieProject {
@@ -308,6 +330,7 @@ export interface MovieProject {
   clips: RenderedClip[];
   edit: MovieEdit;
   finalPath: string;
+  exports: MovieExport[];
   error: string;
   producerReviewRequired: boolean;
   producerApprovedAt: string;

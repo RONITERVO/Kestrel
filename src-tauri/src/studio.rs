@@ -25,7 +25,7 @@ mod movie_agent;
 
 use movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult};
 
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
@@ -514,6 +514,8 @@ pub struct ClipVersion {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipEdit {
+    #[serde(default)]
+    pub id: String,
     pub clip_id: String,
     pub enabled: bool,
     pub order: u32,
@@ -521,9 +523,25 @@ pub struct ClipEdit {
     pub trim_end: f32,
     #[serde(default = "default_gain")]
     pub audio_gain: f32,
+    #[serde(default)]
+    pub source_version_id: String,
+    #[serde(default = "default_speed")]
+    pub speed: f32,
+    #[serde(default)]
+    pub fade_in: f32,
+    #[serde(default)]
+    pub fade_out: f32,
+    #[serde(default)]
+    pub audio_fade_in: f32,
+    #[serde(default)]
+    pub audio_fade_out: f32,
 }
 
 fn default_gain() -> f32 {
+    1.0
+}
+
+fn default_speed() -> f32 {
     1.0
 }
 
@@ -534,10 +552,38 @@ pub struct MovieEdit {
     pub clips: Vec<ClipEdit>,
     #[serde(default = "default_export_title")]
     pub export_title: String,
+    #[serde(default = "default_export_preset")]
+    pub export_preset: String,
+    #[serde(default)]
+    pub normalize_audio: bool,
+    #[serde(default = "default_target_lufs")]
+    pub target_lufs: f32,
 }
 
 fn default_export_title() -> String {
     "Kestrel Movie".into()
+}
+
+fn default_export_preset() -> String {
+    "publish".into()
+}
+
+fn default_target_lufs() -> f32 {
+    -14.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieExport {
+    pub id: String,
+    pub created_at: String,
+    pub title: String,
+    pub preset: String,
+    pub path: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub duration_seconds: f32,
+    pub clip_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -566,6 +612,8 @@ pub struct MovieProject {
     pub edit: MovieEdit,
     #[serde(default)]
     pub final_path: String,
+    #[serde(default)]
+    pub exports: Vec<MovieExport>,
     #[serde(default)]
     pub error: String,
     #[serde(default)]
@@ -734,8 +782,12 @@ impl MovieStudio {
             edit: MovieEdit {
                 clips: Vec::new(),
                 export_title: "Kestrel Movie".into(),
+                export_preset: default_export_preset(),
+                normalize_audio: false,
+                target_lufs: default_target_lufs(),
             },
             final_path: String::new(),
+            exports: Vec::new(),
             error: String::new(),
             producer_review_required: pause_after_plan,
             producer_approved_at: String::new(),
@@ -1030,12 +1082,19 @@ impl MovieStudio {
             .clips
             .iter()
             .map(|clip| ClipEdit {
+                id: format!("edit-{}", clip.id),
                 clip_id: clip.id.clone(),
                 enabled: true,
                 order: clip.index,
                 trim_start: 0.0,
                 trim_end: 0.0,
                 audio_gain: 1.0,
+                source_version_id: String::new(),
+                speed: default_speed(),
+                fade_in: 0.0,
+                fade_out: 0.0,
+                audio_fade_in: 0.0,
+                audio_fade_out: 0.0,
             })
             .collect();
         project.plan = Some(plan.clone());
@@ -1048,28 +1107,17 @@ impl MovieStudio {
         Ok(())
     }
 
-    pub async fn save_edits(&self, id: &str, edit: MovieEdit) -> Result<MovieProject, StudioError> {
+    pub async fn save_edits(
+        &self,
+        id: &str,
+        mut edit: MovieEdit,
+    ) -> Result<MovieProject, StudioError> {
         let lock = self.project_lock(id)?;
         let _guard = lock.lock().await;
         let mut project = self.get(id)?;
-        for item in &edit.clips {
-            if !project.clips.iter().any(|clip| clip.id == item.clip_id) {
-                return Err(StudioError::Invalid(format!(
-                    "unknown clip in edit: {}",
-                    item.clip_id
-                )));
-            }
-            if item.trim_start < 0.0
-                || item.trim_end < 0.0
-                || item.audio_gain < 0.0
-                || item.audio_gain > 4.0
-            {
-                return Err(StudioError::Invalid(
-                    "clip trims and audio gain are outside supported bounds".into(),
-                ));
-            }
-        }
+        validate_movie_edit(&project, &mut edit)?;
         project.edit = edit;
+        project.schema_version = SCHEMA_VERSION;
         project.updated_at = Utc::now().to_rfc3339();
         self.save(&project)?;
         Ok(project)
@@ -1202,12 +1250,19 @@ impl MovieStudio {
             .clips
             .iter()
             .map(|clip| ClipEdit {
+                id: format!("edit-{}", clip.id),
                 clip_id: clip.id.clone(),
                 enabled: true,
                 order: clip.index,
                 trim_start: 0.0,
                 trim_end: 0.0,
                 audio_gain: 1.0,
+                source_version_id: String::new(),
+                speed: default_speed(),
+                fade_in: 0.0,
+                fade_out: 0.0,
+                audio_fade_in: 0.0,
+                audio_fade_out: 0.0,
             })
             .collect();
         project.plan = Some(plan.clone());
@@ -2186,6 +2241,9 @@ impl MovieStudio {
         let lock = self.project_lock(id)?;
         let _guard = lock.lock().await;
         let mut project = self.get(id)?;
+        let mut edit = project.edit.clone();
+        validate_movie_edit(&project, &mut edit)?;
+        project.edit = edit;
         let mut edits = project
             .edit
             .clips
@@ -2202,24 +2260,84 @@ impl MovieStudio {
         let mut command = tokio::process::Command::new(media_program("ffmpeg"));
         command.args(["-y", "-hide_banner", "-loglevel", "error"]);
         let mut filters = Vec::new();
+        let mut duration_seconds = 0.0_f32;
         for (index, edit) in edits.iter().enumerate() {
-            let clip = project
-                .clips
-                .iter()
-                .find(|clip| clip.id == edit.clip_id)
-                .ok_or_else(|| StudioError::Invalid("edit references a missing clip".into()))?;
-            command.arg("-i").arg(&clip.path);
-            let end = (clip.duration_seconds - edit.trim_end).max(edit.trim_start + 0.1);
-            filters.push(format!("[{index}:v]trim=start={}:end={},setpts=PTS-STARTPTS[v{index}];[{index}:a]atrim=start={}:end={},asetpts=PTS-STARTPTS,volume={}[a{index}]", edit.trim_start, end, edit.trim_start, end, edit.audio_gain));
+            let source = selected_clip_source(&project, edit)?;
+            if !Path::new(source.path).is_file() {
+                return Err(StudioError::Invalid(format!(
+                    "timeline item {} cannot be exported because its preserved source is missing: {}",
+                    edit.id, source.path
+                )));
+            }
+            command.arg("-i").arg(source.path);
+            let end = source.duration_seconds - edit.trim_end;
+            let output_duration = (end - edit.trim_start) / edit.speed;
+            duration_seconds += output_duration;
+
+            let mut video = format!(
+                "[{index}:v]trim=start={}:end={},setpts=(PTS-STARTPTS)/{}",
+                edit.trim_start, end, edit.speed
+            );
+            if edit.fade_in > 0.0 {
+                video.push_str(&format!(",fade=t=in:st=0:d={}", edit.fade_in));
+            }
+            if edit.fade_out > 0.0 {
+                video.push_str(&format!(
+                    ",fade=t=out:st={}:d={}",
+                    (output_duration - edit.fade_out).max(0.0),
+                    edit.fade_out
+                ));
+            }
+            video.push_str(&format!(",format=yuv420p[v{index}]"));
+
+            let mut audio = format!(
+                "[{index}:a]atrim=start={}:end={},asetpts=PTS-STARTPTS",
+                edit.trim_start, end
+            );
+            for stage in atempo_filters(edit.speed) {
+                audio.push_str(&format!(",atempo={stage}"));
+            }
+            audio.push_str(&format!(",volume={}", edit.audio_gain));
+            if edit.audio_fade_in > 0.0 {
+                audio.push_str(&format!(",afade=t=in:st=0:d={}", edit.audio_fade_in));
+            }
+            if edit.audio_fade_out > 0.0 {
+                audio.push_str(&format!(
+                    ",afade=t=out:st={}:d={}",
+                    (output_duration - edit.audio_fade_out).max(0.0),
+                    edit.audio_fade_out
+                ));
+            }
+            audio.push_str(&format!(",aresample=async=1:first_pts=0[a{index}]"));
+            filters.push(format!("{video};{audio}"));
         }
         let streams = (0..edits.len())
             .map(|index| format!("[v{index}][a{index}]"))
             .collect::<String>();
-        filters.push(format!("{streams}concat=n={}:v=1:a=1[v][a]", edits.len()));
-        let target = self
-            .project_dir(id)
-            .join("exports")
-            .join(format!("edit-{}.mp4", Utc::now().format("%Y%m%d-%H%M%S")));
+        if project.edit.normalize_audio {
+            filters.push(format!(
+                "{streams}concat=n={}:v=1:a=1[v][mixed];[mixed]loudnorm=I={}:TP=-1.5:LRA=11[a]",
+                edits.len(),
+                project.edit.target_lufs
+            ));
+        } else {
+            filters.push(format!("{streams}concat=n={}:v=1:a=1[v][a]", edits.len()));
+        }
+        let export_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+        let file_stem = format!(
+            "{}-{}-{export_id}",
+            safe_export_stem(&project.edit.export_title),
+            Utc::now().format("%Y%m%d-%H%M%S")
+        );
+        let exports = self.project_dir(id).join("exports");
+        fs::create_dir_all(&exports)?;
+        let target = exports.join(format!("{file_stem}.mp4"));
+        let temporary = exports.join(format!("{file_stem}.partial.mp4"));
+        let (preset, crf, audio_bitrate) = match project.edit.export_preset.as_str() {
+            "archive" => ("slow", "14", "320k"),
+            "review" => ("veryfast", "24", "128k"),
+            _ => ("medium", "18", "192k"),
+        };
         command
             .arg("-filter_complex")
             .arg(filters.join(";"))
@@ -2231,27 +2349,55 @@ impl MovieStudio {
                 "-c:v",
                 "libx264",
                 "-preset",
-                "medium",
+                preset,
                 "-crf",
-                "18",
+                crf,
                 "-c:a",
                 "aac",
                 "-b:a",
-                "192k",
+                audio_bitrate,
+                "-map_metadata",
+                "-1",
                 "-movflags",
                 "+faststart",
             ])
-            .arg(&target);
+            .arg("-metadata")
+            .arg(format!("title={}", project.edit.export_title))
+            .arg(&temporary);
         let output = command.output().await?;
         if !output.status.success() {
+            let _ = fs::remove_file(&temporary);
             return Err(StudioError::Render(format!(
                 "edit export failed: {}",
                 truncate(&String::from_utf8_lossy(&output.stderr), 1_000)
             )));
         }
+        fs::rename(&temporary, &target)?;
+        let export = MovieExport {
+            id: export_id,
+            created_at: Utc::now().to_rfc3339(),
+            title: project.edit.export_title.clone(),
+            preset: project.edit.export_preset.clone(),
+            path: target.to_string_lossy().into_owned(),
+            bytes: target.metadata()?.len(),
+            sha256: hash_reference(&target)?,
+            duration_seconds,
+            clip_count: edits.len(),
+        };
+        write_json_atomic(
+            &exports.join(format!("{file_stem}.json")),
+            &json!({
+                "schemaVersion": SCHEMA_VERSION,
+                "projectId": project.id,
+                "export": export,
+                "edit": project.edit,
+            }),
+        )?;
         project.final_path = target.to_string_lossy().into_owned();
+        project.exports.push(export);
+        project.schema_version = SCHEMA_VERSION;
         project.updated_at = Utc::now().to_rfc3339();
-        project.detail = "A new non-destructive edit is ready.".into();
+        project.detail = "A new immutable, non-destructive timeline export is ready.".into();
         self.save(&project)?;
         Ok(project)
     }
@@ -2278,7 +2424,9 @@ impl MovieStudio {
     }
 
     fn load_path(&self, path: &Path) -> Result<MovieProject, StudioError> {
-        Ok(serde_json::from_slice(&fs::read(path)?)?)
+        let mut project: MovieProject = serde_json::from_slice(&fs::read(path)?)?;
+        normalize_movie_project(&mut project);
+        Ok(project)
     }
 
     fn recover_interrupted(&self) -> Result<(), StudioError> {
@@ -2296,6 +2444,197 @@ impl MovieStudio {
             }
         }
         Ok(())
+    }
+}
+
+struct SelectedClipSource<'a> {
+    path: &'a str,
+    duration_seconds: f32,
+}
+
+fn selected_clip_source<'a>(
+    project: &'a MovieProject,
+    edit: &ClipEdit,
+) -> Result<SelectedClipSource<'a>, StudioError> {
+    let clip = project
+        .clips
+        .iter()
+        .find(|clip| clip.id == edit.clip_id)
+        .ok_or_else(|| {
+            StudioError::Invalid(format!(
+                "timeline item {} references unknown clip {}",
+                edit.id, edit.clip_id
+            ))
+        })?;
+    if edit.source_version_id.is_empty() {
+        return Ok(SelectedClipSource {
+            path: &clip.path,
+            duration_seconds: clip.duration_seconds,
+        });
+    }
+    let version = clip
+        .versions
+        .iter()
+        .find(|version| version.id == edit.source_version_id)
+        .ok_or_else(|| {
+            StudioError::Invalid(format!(
+                "timeline item {} references missing preserved version {}",
+                edit.id, edit.source_version_id
+            ))
+        })?;
+    Ok(SelectedClipSource {
+        path: &version.path,
+        duration_seconds: version.duration_seconds,
+    })
+}
+
+fn normalize_movie_project(project: &mut MovieProject) {
+    project.schema_version = SCHEMA_VERSION;
+    if project.edit.export_preset.is_empty() {
+        project.edit.export_preset = default_export_preset();
+    }
+    let mut known = HashSet::new();
+    for (index, edit) in project.edit.clips.iter_mut().enumerate() {
+        if edit.id.is_empty() || !known.insert(edit.id.clone()) {
+            let base = format!("edit-{}-{}", edit.clip_id, index + 1);
+            let mut candidate = base.clone();
+            let mut suffix = 2_u32;
+            while known.contains(&candidate) {
+                candidate = format!("{base}-{suffix}");
+                suffix += 1;
+            }
+            edit.id = candidate.clone();
+            known.insert(candidate);
+        }
+    }
+}
+
+fn validate_movie_edit(project: &MovieProject, edit: &mut MovieEdit) -> Result<(), StudioError> {
+    if edit.clips.len() > 512 {
+        return Err(StudioError::Invalid(
+            "a movie timeline can contain at most 512 items".into(),
+        ));
+    }
+    let title = edit.export_title.trim();
+    if title.is_empty() || title.chars().count() > 120 || title.chars().any(char::is_control) {
+        return Err(StudioError::Invalid(
+            "export title must contain 1 to 120 printable characters".into(),
+        ));
+    }
+    edit.export_title = title.into();
+    if !matches!(
+        edit.export_preset.as_str(),
+        "archive" | "publish" | "review"
+    ) {
+        return Err(StudioError::Invalid(
+            "export preset must be archive, publish, or review".into(),
+        ));
+    }
+    if !edit.target_lufs.is_finite() || !(-24.0..=-9.0).contains(&edit.target_lufs) {
+        return Err(StudioError::Invalid(
+            "audio normalization target must be between -24 and -9 LUFS".into(),
+        ));
+    }
+    edit.clips.sort_by_key(|item| item.order);
+    let mut ids = HashSet::new();
+    for (index, item) in edit.clips.iter_mut().enumerate() {
+        if item.id.is_empty() {
+            item.id = format!("edit-{}-{}", item.clip_id, index + 1);
+        }
+        if item.id.len() > 128
+            || item.id.chars().any(char::is_control)
+            || !ids.insert(item.id.clone())
+        {
+            return Err(StudioError::Invalid(format!(
+                "timeline item id must be unique and printable: {}",
+                item.id
+            )));
+        }
+        item.order = index as u32;
+        let source = selected_clip_source(project, item)?;
+        let values = [
+            item.trim_start,
+            item.trim_end,
+            item.audio_gain,
+            item.speed,
+            item.fade_in,
+            item.fade_out,
+            item.audio_fade_in,
+            item.audio_fade_out,
+        ];
+        if values.iter().any(|value| !value.is_finite())
+            || item.trim_start < 0.0
+            || item.trim_end < 0.0
+            || item.audio_gain < 0.0
+            || item.audio_gain > 4.0
+            || !(0.25..=4.0).contains(&item.speed)
+            || item.fade_in < 0.0
+            || item.fade_out < 0.0
+            || item.audio_fade_in < 0.0
+            || item.audio_fade_out < 0.0
+        {
+            return Err(StudioError::Invalid(format!(
+                "timeline item {} has trims, speed, fades, or audio gain outside supported bounds",
+                item.id
+            )));
+        }
+        let source_duration = source.duration_seconds;
+        if item.trim_start + item.trim_end > source_duration - 0.1 {
+            return Err(StudioError::Invalid(format!(
+                "timeline item {} trims away the entire preserved source",
+                item.id
+            )));
+        }
+        let output_duration = (source_duration - item.trim_start - item.trim_end) / item.speed;
+        if item.fade_in + item.fade_out > output_duration + 0.001
+            || item.audio_fade_in + item.audio_fade_out > output_duration + 0.001
+        {
+            return Err(StudioError::Invalid(format!(
+                "timeline item {} fades overlap beyond its {:.2}-second edited duration",
+                item.id, output_duration
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn atempo_filters(speed: f32) -> Vec<f32> {
+    let mut remaining = speed;
+    let mut filters = Vec::new();
+    while remaining < 0.5 - f32::EPSILON {
+        filters.push(0.5);
+        remaining /= 0.5;
+    }
+    while remaining > 2.0 + f32::EPSILON {
+        filters.push(2.0);
+        remaining /= 2.0;
+    }
+    if (remaining - 1.0).abs() > f32::EPSILON {
+        filters.push(remaining);
+    }
+    filters
+}
+
+fn safe_export_stem(title: &str) -> String {
+    let mut result = String::new();
+    let mut previous_dash = false;
+    for character in title.chars().take(96) {
+        if character.is_ascii_alphanumeric() {
+            result.push(character.to_ascii_lowercase());
+            previous_dash = false;
+        } else if !previous_dash && !result.is_empty() {
+            result.push('-');
+            previous_dash = true;
+        }
+        if result.len() >= 64 {
+            break;
+        }
+    }
+    let result = result.trim_matches('-');
+    if result.is_empty() {
+        "kestrel-movie".into()
+    } else {
+        result.into()
     }
 }
 
@@ -4336,6 +4675,99 @@ mod tests {
         );
     }
 
+    #[test]
+    fn legacy_edit_decisions_gain_safe_timeline_defaults() {
+        let mut project: MovieProject = serde_json::from_value(json!({
+            "schemaVersion": 4,
+            "id": "e3e9e619-7e6a-4eed-a433-53c9e01ad99f",
+            "prompt": "test", "title": "Legacy", "status": "complete",
+            "phase": "complete", "detail": "ready",
+            "createdAt": "2026-08-12T00:00:00Z", "updatedAt": "2026-08-12T00:00:00Z",
+            "model": "test", "renderer": "test", "settings": {},
+            "clips": [{
+                "id": "clip-001", "index": 0, "title": "One", "prompt": "prompt",
+                "durationSeconds": 5.0, "seed": 1, "status": "complete", "path": "one.mp4"
+            }],
+            "edit": { "clips": [{
+                "clipId": "clip-001", "enabled": true, "order": 0,
+                "trimStart": 0.0, "trimEnd": 0.0, "audioGain": 1.0
+            }], "exportTitle": "Legacy" },
+            "finalPath": "", "error": "", "producerReviewRequired": false,
+            "producerApprovedAt": ""
+        }))
+        .unwrap();
+        normalize_movie_project(&mut project);
+        let decision = &project.edit.clips[0];
+        assert_eq!(project.schema_version, SCHEMA_VERSION);
+        assert_eq!(decision.speed, 1.0);
+        assert_eq!(decision.id, "edit-clip-001-1");
+        assert_eq!(project.edit.export_preset, "publish");
+        assert_eq!(project.edit.target_lufs, -14.0);
+        assert!(project.exports.is_empty());
+    }
+
+    #[test]
+    fn timeline_validation_supports_repeated_sources_and_rejects_overlapping_fades() {
+        let mut project: MovieProject = serde_json::from_value(json!({
+            "schemaVersion": 5,
+            "id": "e3e9e619-7e6a-4eed-a433-53c9e01ad99f",
+            "prompt": "test", "title": "Timeline", "status": "complete",
+            "phase": "complete", "detail": "ready",
+            "createdAt": "2026-08-12T00:00:00Z", "updatedAt": "2026-08-12T00:00:00Z",
+            "model": "test", "renderer": "test", "settings": {},
+            "clips": [{
+                "id": "clip-001", "index": 0, "title": "One", "prompt": "prompt",
+                "durationSeconds": 5.0, "seed": 1, "status": "complete", "path": "one.mp4"
+            }],
+            "edit": { "clips": [], "exportTitle": "Timeline" },
+            "finalPath": "", "error": "", "producerReviewRequired": false,
+            "producerApprovedAt": ""
+        }))
+        .unwrap();
+        normalize_movie_project(&mut project);
+        let decision = |id: &str, order: u32| ClipEdit {
+            id: id.into(),
+            clip_id: "clip-001".into(),
+            enabled: true,
+            order,
+            trim_start: 0.0,
+            trim_end: 0.0,
+            audio_gain: 1.0,
+            source_version_id: String::new(),
+            speed: 1.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            audio_fade_in: 0.0,
+            audio_fade_out: 0.0,
+        };
+        let mut edit = MovieEdit {
+            clips: vec![decision("second", 8), decision("first", 2)],
+            export_title: "Timeline".into(),
+            export_preset: "archive".into(),
+            normalize_audio: true,
+            target_lufs: -16.0,
+        };
+        validate_movie_edit(&project, &mut edit).unwrap();
+        assert_eq!(edit.clips[0].id, "first");
+        assert_eq!(edit.clips[1].order, 1);
+
+        edit.clips[0].fade_in = 3.0;
+        edit.clips[0].fade_out = 3.0;
+        assert!(validate_movie_edit(&project, &mut edit).is_err());
+    }
+
+    #[test]
+    fn retiming_filters_and_export_names_are_bounded() {
+        assert_eq!(atempo_filters(1.0), Vec::<f32>::new());
+        assert_eq!(atempo_filters(0.25), vec![0.5, 0.5]);
+        assert_eq!(atempo_filters(4.0), vec![2.0, 2.0]);
+        assert_eq!(
+            safe_export_stem("  My Offline Cut: 01  "),
+            "my-offline-cut-01"
+        );
+        assert_eq!(safe_export_stem("🎬"), "kestrel-movie");
+    }
+
     #[tokio::test]
     async fn project_mutations_serialize_only_matching_project_ids() {
         let root = tempfile::tempdir().unwrap();
@@ -6068,5 +6500,54 @@ mod tests {
         let streams = String::from_utf8_lossy(&streams.stdout);
         assert!(streams.contains("video"));
         assert!(streams.contains("audio"));
+
+        project.edit = MovieEdit {
+            clips: vec![
+                ClipEdit {
+                    id: "timeline-fast".into(),
+                    clip_id: "clip-0".into(),
+                    enabled: true,
+                    order: 0,
+                    trim_start: 0.1,
+                    trim_end: 0.1,
+                    audio_gain: 0.8,
+                    source_version_id: String::new(),
+                    speed: 2.0,
+                    fade_in: 0.1,
+                    fade_out: 0.1,
+                    audio_fade_in: 0.1,
+                    audio_fade_out: 0.1,
+                },
+                ClipEdit {
+                    id: "timeline-second".into(),
+                    clip_id: "clip-1".into(),
+                    enabled: true,
+                    order: 1,
+                    trim_start: 0.0,
+                    trim_end: 0.0,
+                    audio_gain: 1.0,
+                    source_version_id: String::new(),
+                    speed: 1.0,
+                    fade_in: 0.0,
+                    fade_out: 0.0,
+                    audio_fade_in: 0.0,
+                    audio_fade_out: 0.0,
+                },
+            ],
+            export_title: "Offline Timeline Regression".into(),
+            export_preset: "review".into(),
+            normalize_audio: true,
+            target_lufs: -16.0,
+        };
+        studio.save(&project).unwrap();
+        let edited = studio.render_edit(&project.id).await.unwrap();
+        let export = edited.exports.last().unwrap();
+        assert_eq!(export.title, "Offline Timeline Regression");
+        assert_eq!(export.preset, "review");
+        assert_eq!(export.clip_count, 2);
+        assert!((export.duration_seconds - 1.4).abs() < 0.01);
+        assert_eq!(export.sha256.len(), 64);
+        assert!(Path::new(&export.path).is_file());
+        assert!(Path::new(&export.path).with_extension("json").is_file());
     }
 }

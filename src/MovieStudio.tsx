@@ -1,16 +1,17 @@
 import {
   AudioLines, Check, ChevronDown, CircleStop, Clapperboard, Clock3, Download,
-  Film, FolderOpen, GripVertical, ImageIcon, Library, LoaderCircle, Paperclip, Play, Plus,
+  Film, FolderOpen, ImageIcon, Library, LoaderCircle, Paperclip, Play, Plus,
   RotateCcw, Save, Settings2, Sparkles, Video, X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   approveMoviePlan, askBonsaiMovieClip, cancelMovie, getMovie, listMovies, movieMediaUrl,
   onMovieProject, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
   resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startMovie,
 } from "./api";
+import { MovieTimeline } from "./MovieTimeline";
 import type {
-  ClipEdit, MovieClipSuggestion, MoviePlan, MovieProject, MovieSettings, MovieSummary,
+  MovieClipSuggestion, MovieEdit, MoviePlan, MovieProject, MovieSettings, MovieSummary,
   PendingMovieReference, PlannedClip, RenderedClip,
 } from "./types";
 
@@ -39,8 +40,9 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
   const [advanced, setAdvanced] = useState(false);
   const [pauseAfterPlan, setPauseAfterPlan] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [edits, setEdits] = useState<ClipEdit[]>([]);
+  const [edit, setEdit] = useState<MovieEdit>({ clips: [], exportTitle: "Kestrel Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14 });
   const [references, setReferences] = useState<PendingMovieReference[]>([]);
+  const activeProjectId = useRef<string | undefined>(undefined);
 
   const refreshList = useCallback(async () => {
     try { setMovies(await listMovies()); } catch (error) { onError(String(error)); }
@@ -50,8 +52,10 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
     void refreshList();
     let dispose: (() => void) | undefined;
     void onMovieProject((next) => {
-      setProject((current) => !current || current.id === next.id ? next : current);
-      setEdits(next.edit.clips);
+      if (activeProjectId.current && activeProjectId.current !== next.id) return;
+      activeProjectId.current = next.id;
+      setProject(next);
+      setEdit(next.edit);
       void refreshList();
     }).then((unlisten) => { dispose = unlisten; });
     return () => dispose?.();
@@ -62,7 +66,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
     let active = true;
     const timer = window.setInterval(() => void getMovie(project.id).then((next) => {
       if (!active) return;
-      setProject(next); setEdits(next.edit.clips);
+      setProject(next); setEdit(next.edit);
     }).catch(() => undefined), 2500);
     return () => {
       active = false;
@@ -71,10 +75,12 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
   }, [project?.id, project?.status]);
 
   const openProject = async (id: string) => {
+    const previousId = activeProjectId.current;
+    activeProjectId.current = id;
     try {
       const next = await getMovie(id);
-      setProject(next); setEdits(next.edit.clips); setCreating(false);
-    } catch (error) { onError(String(error)); }
+      setProject(next); setEdit(next.edit); setCreating(false);
+    } catch (error) { activeProjectId.current = previousId; onError(String(error)); }
   };
 
   const makeMovie = async () => {
@@ -89,7 +95,8 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
         })),
         pauseAfterPlan: advancedEnabled && pauseAfterPlan,
       });
-      setProject(next); setEdits(next.edit.clips); setCreating(false); await refreshList();
+      activeProjectId.current = next.id;
+      setProject(next); setEdit(next.edit); setCreating(false); await refreshList();
     } catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
@@ -113,24 +120,20 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
     } catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
-  const updateEdit = (clipId: string, change: Partial<ClipEdit>) => {
-    setEdits((items) => items.map((item) => item.clipId === clipId ? { ...item, ...change } : item));
-  };
-
   const saveEdits = async (exportNow: boolean) => {
     if (!project) return;
     setBusy(true);
     try {
-      let next = await saveMovieEdits(project.id, { ...project.edit, clips: edits });
+      let next = await saveMovieEdits(project.id, edit);
       if (exportNow) next = await renderMovieEdit(project.id);
-      setProject(next); setEdits(next.edit.clips);
+      setProject(next); setEdit(next.edit);
     } catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
   return (
     <div className="movie-studio">
       <aside className="movie-library">
-        <div className="movie-library-title"><span>Private movie library</span><button onClick={() => { setCreating(true); setProject(null); }}><Plus size={15} /></button></div>
+        <div className="movie-library-title"><span>Private movie library</span><button onClick={() => { activeProjectId.current = undefined; setCreating(true); setProject(null); }}><Plus size={15} /></button></div>
         <div className="movie-list">
           {movies.map((movie) => <button key={movie.id} className={project?.id === movie.id ? "active" : ""} onClick={() => void openProject(movie.id)}>
             <Film size={15} /><span><strong>{movie.title}</strong><small>{movie.phase} · {movie.clipCount} clips</small></span>
@@ -144,9 +147,9 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
             pauseAfterPlan={pauseAfterPlan} onPauseAfterPlan={setPauseAfterPlan}
             onPrompt={setPrompt} onSettings={setSettings} onReferences={setReferences} onAttach={() => void attachReferences()} onAdvanced={setAdvanced} onMake={() => void makeMovie()} />
         ) : (
-          <MovieProjectView project={project} edits={edits} busy={busy} advancedEnabled={advancedEnabled} onError={onError} onEdit={updateEdit}
-            onProject={(next) => { setProject(next); setEdits(next.edit.clips); void refreshList(); }}
-            onNew={() => { setCreating(true); setProject(null); }}
+          <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} onError={onError} onEdit={setEdit}
+            onProject={(next) => { activeProjectId.current = next.id; setProject(next); setEdit(next.edit); void refreshList(); }}
+            onNew={() => { activeProjectId.current = undefined; setCreating(true); setProject(null); }}
             onCancel={() => void cancelMovie(project.id).then(setProject).catch((error) => onError(String(error)))}
             onResume={() => void resumeMovie(project.id).then(setProject).catch((error) => onError(String(error)))}
             onReveal={() => void revealMovie(project.id)}
@@ -211,9 +214,9 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
   </div>;
 }
 
-function MovieProjectView({ project, edits, busy, advancedEnabled, onError, onProject, onEdit, onNew, onCancel, onResume, onReveal, onSave, onExport }: {
-  project: MovieProject; edits: ClipEdit[]; busy: boolean; advancedEnabled: boolean; onError: (message: string) => void;
-  onProject: (project: MovieProject) => void; onEdit: (id: string, change: Partial<ClipEdit>) => void;
+function MovieProjectView({ project, edit, busy, advancedEnabled, onError, onProject, onEdit, onNew, onCancel, onResume, onReveal, onSave, onExport }: {
+  project: MovieProject; edit: MovieEdit; busy: boolean; advancedEnabled: boolean; onError: (message: string) => void;
+  onProject: (project: MovieProject) => void; onEdit: (edit: MovieEdit) => void;
   onNew: () => void; onCancel: () => void; onResume: () => void; onReveal: () => void; onSave: () => void; onExport: () => void;
 }) {
   const [draftPlan, setDraftPlan] = useState<MoviePlan | undefined>(project.plan);
@@ -222,6 +225,7 @@ function MovieProjectView({ project, edits, busy, advancedEnabled, onError, onPr
   const complete = project.clips.filter((clip) => clip.status === "complete").length;
   const progress = project.clips.length ? Math.round((complete / project.clips.length) * 100) : project.plan ? 10 : 3;
   const canResume = ["failed", "cancelled", "interrupted"].includes(project.status) && Boolean(project.plan);
+  const latestExport = project.exports?.at(-1);
   const runProjectAction = async (action: () => Promise<MovieProject>): Promise<boolean> => {
     setWorking(true);
     try {
@@ -244,7 +248,7 @@ function MovieProjectView({ project, edits, busy, advancedEnabled, onError, onPr
       <div className="movie-progress"><i style={{ width: `${progress}%` }} /></div>
       {project.error && <pre>{project.error}</pre>}
     </div>
-    {project.finalPath && <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">Assembled file</span><h2>Untouched H3 review cut</h2><small>Native clip duration and audio are preserved. Only an explicit editor export creates an altered cut.</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section>}
+    {project.finalPath && <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">{latestExport ? "Latest immutable timeline export" : "Assembled file"}</span><h2>{latestExport?.title ?? "Untouched H3 review cut"}</h2><small>{latestExport ? `${latestExport.preset} preset · ${latestExport.clipCount} timeline items · SHA-256 recorded` : "Native clip duration and audio are preserved. Only an explicit editor export creates an altered cut."}</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section>}
     {project.references.length > 0 && <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}</span></article>)}</div></section>}
     {advancedEnabled && project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={working} onPlan={setDraftPlan}
       onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
@@ -258,21 +262,23 @@ function MovieProjectView({ project, edits, busy, advancedEnabled, onError, onPr
       })} />}
     {project.plan && project.status !== "awaiting-review" && <section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Bonsai acceptance</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "attempt" : "attempts"}. {project.plan.qualityReview.verdict}</p></article></section>}
     {project.clips.length > 0 && <section className="movie-timeline-section">
-      <div className="movie-section-heading"><div><span className="eyebrow">Preserved scene masters</span><h2>Scenes & sound</h2>{advancedEnabled && <small>Editor decisions are opt-in. Saving does not touch media; exporting creates a separate cut.</small>}</div>{advancedEnabled && <div><button disabled={busy} onClick={onSave}><Save /> Save decisions</button><button className="accent" disabled={busy || complete === 0 || project.status === "running"} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export edited cut</button></div>}</div>
-      <div className="movie-clip-grid">{project.clips.map((clip) => {
-        const edit = edits.find((item) => item.clipId === clip.id) ?? { clipId: clip.id, enabled: true, order: clip.index, trimStart: 0, trimEnd: 0, audioGain: 1 };
-        const planned = project.plan?.clips.find((item) => item.id === clip.id);
-        return <article key={clip.id} className={`movie-clip ${clip.status} ${edit.enabled ? "" : "disabled"}`}>
-          <div className="clip-preview">{clip.path ? <video controls preload="metadata" src={movieMediaUrl(clip.path)} /> : <div><LoaderCircle className={clip.status === "rendering" ? "spin" : ""} /><span>{clip.status}</span></div>}<span className="clip-number">{clip.index + 1}</span></div>
-          <div className="clip-copy"><div><GripVertical /><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {clip.seed}{clip.versions.length ? ` · ${clip.versions.length} preserved versions` : ""}</small></span>{advancedEnabled && <label className="clip-enable"><input type="checkbox" checked={edit.enabled} onChange={(event) => onEdit(clip.id, { enabled: event.target.checked })} /> Use in export</label>}</div>
-            {planned && <div className="clip-organization"><span><b>Story job</b>{planned.purpose}</span><span><b>Transition</b>{planned.transition}</span><span><b>Continuity in</b>{planned.continuityIn}</span><span><b>Continuity out</b>{planned.continuityOut}</span>{planned.referenceIds.length > 0 && <span><b>References</b>{planned.referenceIds.map((id) => project.references.find((reference) => reference.assetId === id)?.name ?? id).join(", ")}</span>}</div>}
-            <details><summary>H3 renderer direction</summary><p>{clip.prompt}</p></details>
-            {advancedEnabled && <><div className="clip-controls"><NumberField label="Export order" value={edit.order + 1} min={1} max={project.clips.length} step={1} onChange={(value) => onEdit(clip.id, { order: value - 1 })} /><NumberField label="Trim in on export" value={edit.trimStart} min={0} max={Math.max(0, clip.durationSeconds - 0.1)} step={0.1} onChange={(value) => onEdit(clip.id, { trimStart: value })} /><NumberField label="Trim out on export" value={edit.trimEnd} min={0} max={Math.max(0, clip.durationSeconds - 0.1)} step={0.1} onChange={(value) => onEdit(clip.id, { trimEnd: value })} /><NumberField label="Export audio gain" value={edit.audioGain} min={0} max={4} step={0.05} onChange={(value) => onEdit(clip.id, { audioGain: value })} /></div>
-            {clip.status === "complete" && planned && <SceneAssistant project={project} clip={clip} planned={planned} onProject={onProject} onError={onError} />}</>}
-          </div>{clip.error && <pre>{clip.error}</pre>}
-        </article>;
-      })}</div>
+      <div className="movie-section-heading"><div><span className="eyebrow">Non-destructive edit</span><h2>Timeline & program monitor</h2><small>Split, repeat, reorder, retime, fade, and audition any preserved scene version. Masters remain immutable.</small></div><div><button disabled={busy} onClick={onSave}><Save /> Save timeline</button><button className="accent" disabled={busy || complete === 0 || project.status === "running" || !edit.clips.some((item) => item.enabled)} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export new cut</button></div></div>
+      <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} />
+      <details className="movie-master-bin"><summary><span><Film /> Preserved master bin</span><small>{project.clips.length} original scenes · open for story notes, prompts, and Bonsai versioning</small></summary>
+        <div className="movie-clip-grid">{project.clips.map((clip) => {
+          const planned = project.plan?.clips.find((item) => item.id === clip.id);
+          return <article key={clip.id} className={`movie-clip ${clip.status}`}>
+            <div className="clip-preview">{clip.path ? <video controls preload="metadata" src={movieMediaUrl(clip.path)} /> : <div><LoaderCircle className={clip.status === "rendering" ? "spin" : ""} /><span>{clip.status}</span></div>}<span className="clip-number">{clip.index + 1}</span></div>
+            <div className="clip-copy"><div><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {clip.seed}{clip.versions.length ? ` · ${clip.versions.length} preserved versions` : ""}</small></span></div>
+              {planned && <div className="clip-organization"><span><b>Story job</b>{planned.purpose}</span><span><b>Transition</b>{planned.transition}</span><span><b>Continuity in</b>{planned.continuityIn}</span><span><b>Continuity out</b>{planned.continuityOut}</span>{planned.referenceIds.length > 0 && <span><b>References</b>{planned.referenceIds.map((id) => project.references.find((reference) => reference.assetId === id)?.name ?? id).join(", ")}</span>}</div>}
+              <details><summary>H3 renderer direction</summary><p>{clip.prompt}</p></details>
+              {advancedEnabled && clip.status === "complete" && planned && <SceneAssistant project={project} clip={clip} planned={planned} onProject={onProject} onError={onError} />}
+            </div>{clip.error && <pre>{clip.error}</pre>}
+          </article>;
+        })}</div>
+      </details>
     </section>}
+    {project.exports?.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2><small>Every cut remains addressable with its decision-list sidecar and SHA-256 identity.</small></div></div><div>{[...project.exports].reverse().map((item) => <article key={item.id}><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s · {readableSize(item.bytes)}</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>)}</div></section>}
   </div>;
 }
 
@@ -391,4 +397,10 @@ function NumberField({ label, value, min, max, step, onChange }: { label: string
 
 function SelectField({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
   return <label>{label}<select value={value} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option}>{option}</option>)}</select></label>;
+}
+
+function readableSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
 }

@@ -8,8 +8,8 @@ Kestrel should keep improving while preserving its small model-specific harness,
 - [x] Minimal two-tool, sequential offline research access with opened-source ledger.
 - [x] Direct MiniMax H3 Comfy graph with native stereo audio and optional continuity-frame chaining.
 - [x] Durable per-clip recovery, safe cancellation/resume, and immutable masters.
-- [x] Live scene review plus non-destructive order, trim, inclusion, and audio-gain editing.
-- [x] First-cut and edited MP4 export with ordinary FFmpeg.
+- [x] Non-linear timeline with split/repeat/reorder, preserved-version selection, trim, 0.25-4× retiming, picture/audio fades, gain, sequence preview, keyboard editing, and undo/redo.
+- [x] Immutable archive/publish/review MP4 exports with optional LUFS normalization, atomic finalize, SHA-256 ledger, and exact JSON decision-list sidecars.
 - [x] Add user-supplied H3 image/video/audio references behind a bounded immutable producer-media store.
 - [x] Add native ref2va identity, motion, style, camera, voice, and audio conditioning with a live compatibility fixture.
 - [ ] Add local captions, title cards, and accessibility tracks without changing H3 masters.
