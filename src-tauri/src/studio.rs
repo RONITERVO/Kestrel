@@ -7074,6 +7074,217 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires KESTREL_ACCEPTANCE_LIBRARY, KESTREL_ACCEPTANCE_PICTURE, installed Bonsai, MiniMax H3, ComfyUI, FFmpeg, and several hours"]
+    async fn live_long_football_circus_reference_movie() {
+        let library = std::env::var_os("KESTREL_ACCEPTANCE_LIBRARY")
+            .map(PathBuf::from)
+            .expect("KESTREL_ACCEPTANCE_LIBRARY must point to the durable Kestrel library");
+        let picture = std::env::var_os("KESTREL_ACCEPTANCE_PICTURE")
+            .map(PathBuf::from)
+            .expect("KESTREL_ACCEPTANCE_PICTURE must point to the generated footballer image");
+        assert!(picture.is_file(), "missing picture: {}", picture.display());
+
+        let studio = MovieStudio::new(&library).unwrap();
+        let picture_asset = studio.import_reference_path(&picture).unwrap();
+        let picture_id = picture_asset.id.clone();
+        let research = ResearchSettings::default();
+        let runtime = Arc::new(RuntimeManager::new());
+        let cancel = CancellationToken::new();
+        let producer_prompt = "A football player looks at his feet in a shimmering, misty morning, completely amazed by a beautiful view of the constructer circus. the reference image is the football player. Make the finished film about 2 to 3 minutes.";
+        let existing_project_id = std::env::var("KESTREL_ACCEPTANCE_PROJECT_ID").ok();
+
+        let result: Result<(MovieProject, MoviePlan), String> = async {
+            eprintln!("FOOTBALL CIRCUS ACCEPTANCE: releasing ComfyUI memory before unattended Bonsai planning");
+            studio.release_comfy_memory().await;
+            let project = if let Some(id) = existing_project_id.as_deref() {
+                studio
+                    .begin_resume(id, None)
+                    .map_err(|error| error.to_string())?
+            } else {
+                studio
+                    .create(
+                        StartMovieRequest {
+                            prompt: producer_prompt.into(),
+                            settings: MovieSettings {
+                                width: 864,
+                                height: 480,
+                                clip_seconds: 10.0,
+                                steps: 20,
+                                max_clips: 18,
+                                seed: 20_260_812,
+                                ..MovieSettings::default()
+                            },
+                            references: vec![ProducerReferenceRequest {
+                                asset_id: picture_id.clone(),
+                                description: "This is the immutable identity and wardrobe reference for Elias Vance, the adult football player. Whenever Elias is visibly present, preserve the same face, short dark hair, athletic build, navy number-one practice jersey, charcoal shorts, white socks, black football boots, and taped left forearm. Use this reference only when Elias is actually visible; do not force it into circus inserts, environment views, object details, or other protagonist-free scenes.".into(),
+                                use_embedded_audio: false,
+                                embedded_audio_description: String::new(),
+                            }],
+                            pause_after_plan: false,
+                        },
+                        true,
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            eprintln!(
+                "FOOTBALL CIRCUS PROJECT: {}\nFOOTBALL CIRCUS PATH: {}\nREFERENCE ASSET: {}\nNO IMPORTED AUDIO REFERENCE",
+                project.id,
+                studio.project_dir(&project.id).display(),
+                picture_id
+            );
+            let lease = runtime
+                .lease_research(&research)
+                .await
+                .map_err(|error| error.to_string())?;
+            eprintln!("FOOTBALL CIRCUS ACCEPTANCE: Bonsai is writing, linting, and reviewing the plan without producer redirection");
+            let planned = match studio
+                .plan(&project.id, &lease.connection, &research, &cancel, None)
+                .await
+            {
+                Ok(planned) => planned,
+                Err(error) => {
+                    studio.fail(&project.id, &error, None);
+                    return Err(error.to_string());
+                }
+            };
+            let plan = planned
+                .plan
+                .clone()
+                .ok_or("Bonsai committed no movie plan")?;
+            let planned_seconds = plan
+                .clips
+                .iter()
+                .map(|clip| clip.duration_seconds)
+                .sum::<f32>();
+            let picture_clips = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| clip.reference_ids.contains(&picture_id))
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
+            let continuations = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| clip.use_previous_frame)
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
+            let aliases = identity_subject_aliases(&plan, "football player");
+            let subject_free_clips = plan
+                .clips
+                .iter()
+                .enumerate()
+                .filter(|(_, clip)| {
+                    !clip.use_previous_frame
+                        && !clip.reference_ids.contains(&picture_id)
+                        && clip_is_independent_subject_free(clip, &aliases)
+                })
+                .map(|(index, _)| index + 1)
+                .collect::<Vec<_>>();
+            let planning_gate_issues = prompt_quality_issues(&plan, &planned.references);
+            eprintln!(
+                "FOOTBALL CIRCUS PLAN: {} clips, {:.1}s planned, quality {}/100 after {} attempt(s)\nIdentity-reference clips: {:?}\nPrevious-frame continuations: {:?}\nIndependent protagonist-free clips: {:?}\nNative gate issues after planning: {}",
+                plan.clips.len(),
+                planned_seconds,
+                plan.quality_review.score,
+                plan.quality_review.attempts,
+                picture_clips,
+                continuations,
+                subject_free_clips,
+                planning_gate_issues.len()
+            );
+            for (index, clip) in plan.clips.iter().enumerate() {
+                eprintln!(
+                    "\n===== SCENE {}: {} ({:.1}s) =====\nPurpose: {}\nTransition: {}\nPrevious frame: {}\nReferences: {:?}\nContinuity in: {}\nContinuity out: {}\n{}",
+                    index + 1,
+                    clip.title,
+                    clip.duration_seconds,
+                    clip.purpose,
+                    clip.transition,
+                    clip.use_previous_frame,
+                    clip.reference_ids,
+                    clip.continuity_in,
+                    clip.continuity_out,
+                    clip.prompt
+                );
+            }
+            let evaluation_issues = [
+                (!(120.0..=180.0).contains(&planned_seconds))
+                    .then(|| format!("planned runtime is {planned_seconds:.1}s, not 120-180s")),
+                picture_clips
+                    .is_empty()
+                    .then(|| "footballer identity reference is assigned to no scene".to_string()),
+                continuations
+                    .is_empty()
+                    .then(|| "plan contains no exact previous-frame continuation".to_string()),
+                subject_free_clips
+                    .is_empty()
+                    .then(|| "no independently cut protagonist-free scene exists".to_string()),
+                (!planning_gate_issues.is_empty())
+                    .then(|| format!("native planning gate still reports {} issue(s)", planning_gate_issues.len())),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            write_json_atomic(
+                &studio.project_dir(&project.id).join("acceptance-summary.json"),
+                &json!({
+                    "scenario": "quick evening idea to unattended morning sales-material review cut",
+                    "producerPrompt": producer_prompt,
+                    "generatedReferenceAssetId": picture_id,
+                    "generatedReferencePath": picture,
+                    "importedAudioReferences": 0,
+                    "plannedSeconds": planned_seconds,
+                    "clipCount": plan.clips.len(),
+                    "qualityScore": plan.quality_review.score,
+                    "qualityAttempts": plan.quality_review.attempts,
+                    "pictureClips": picture_clips,
+                    "previousFrameContinuations": continuations,
+                    "subjectFreeClips": subject_free_clips,
+                    "planningGateIssues": planning_gate_issues,
+                    "evaluationIssues": evaluation_issues,
+                    "imageAssistObservation": "The first 1400-token LLM assist returned reasoning only; the Studio-realistic 8192-token allowance returned the visible prompt.",
+                    "referenceImageObservation": "Six stable candidates were produced; frame 11 was selected. The face is strongly shadowed and the image contains invented sportswear-style marks."
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            drop(lease);
+            runtime
+                .stop_managed()
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::services::stop_bonsai(&research.bonsai_root)
+                .await
+                .map_err(|error| error.to_string())?;
+            eprintln!("FOOTBALL CIRCUS ACCEPTANCE: unattended plan accepted; MiniMax H3 rendering begins");
+            let rendered = studio
+                .render(&project.id, &cancel, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok((rendered, plan))
+        }
+        .await;
+        let _ = runtime.stop_managed().await;
+        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let (project, plan) = result.unwrap();
+        let planned_seconds = plan
+            .clips
+            .iter()
+            .map(|clip| clip.duration_seconds)
+            .sum::<f32>();
+        assert_eq!(project.status, "complete");
+        assert!(Path::new(&project.final_path).is_file());
+        assert!((120.0..=180.0).contains(&planned_seconds));
+        assert!(plan.clips.iter().any(|clip| clip.use_previous_frame));
+        assert!(plan.clips.iter().any(|clip| !clip.use_previous_frame));
+        eprintln!(
+            "FOOTBALL CIRCUS ACCEPTANCE COMPLETE: {}",
+            project.final_path
+        );
+    }
+
+    #[tokio::test]
     async fn default_review_cut_preserves_native_clip_duration_and_audio() {
         let ffmpeg_available = std::process::Command::new(media_program("ffmpeg"))
             .arg("-version")

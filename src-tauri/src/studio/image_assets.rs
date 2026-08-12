@@ -777,4 +777,48 @@ mod tests {
             assert_eq!(provenance.exact_graph, generation.exact_graph);
         }
     }
+
+    #[tokio::test]
+    #[ignore = "requires KESTREL_ACCEPTANCE_LIBRARY and the installed MiniMax H3 ComfyUI stack"]
+    async fn live_football_circus_reference_image_from_llm_assist() {
+        let library = std::env::var_os("KESTREL_ACCEPTANCE_LIBRARY")
+            .map(PathBuf::from)
+            .expect("KESTREL_ACCEPTANCE_LIBRARY must point to the durable Kestrel library");
+        let studio = MovieStudio::new(&library).unwrap();
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let prompt = "A full-body still image of professional American football quarterback Elias Vance, age twenty eight, standing in a wide practice field at dawn. He is captured in a three-quarter front stance, shoulders relaxed, head tilted slightly downward as he stares intently at his cleats, expression one of quiet awe and focus. The camera is positioned at eye level, centered on the figure with a shallow depth of field that keeps him sharply defined while softening the background. Lighting is early morning, diffused through a shimmering, low-lying mist that clings to the grass and catches in the air as fine luminous particles. A cool blue-gray ambient wash dominates the scene, punctuated by soft amber rim light outlining his silhouette. The color palette consists of muted steel blue, charcoal gray, pale mist white, and subtle warm gold tones. Materials are rendered with tactile precision: the damp slightly wrinkled cotton-polyester blend of his navy blue practice jersey with a single white vertical stripe, charcoal gray compression shorts, matte black leather football cleats with white laces, and thin white athletic socks. Faint athletic tape wraps his left forearm, and the fabric shows natural morning condensation. In the distant background, partially obscured by the atmospheric haze, a large constructer circus framework rises with intricate steel trusses, draped canvas canopies, and geometric rigging, rendered as a soft secondary element that never competes with the primary subject. The composition remains tightly focused on the player, establishing a reusable identity reference for consistent character portrayal.";
+        eprintln!(
+            "FOOTBALL IMAGE ACCEPTANCE: LLM-assisted identity prompt\n{prompt}\n\nGeneration ID: {request_id}"
+        );
+        let generation = studio
+            .generate_image_assets(
+                MovieImageAssetRequest {
+                    request_id,
+                    prompt: prompt.into(),
+                    width: 768,
+                    height: 1_024,
+                    steps: 20,
+                    seed: 20_260_812,
+                    comfy_root: std::env::var("KESTREL_LIVE_COMFY_ROOT")
+                        .unwrap_or_else(|_| r"D:\AI\ComfyUI".into()),
+                    stabilize: true,
+                },
+                &CancellationToken::new(),
+                None,
+            )
+            .await
+            .unwrap();
+        eprintln!(
+            "FOOTBALL IMAGE ACCEPTANCE COMPLETE: {} candidate(s)",
+            generation.candidates.len()
+        );
+        for candidate in &generation.candidates {
+            eprintln!(
+                "Frame {}: {}\nAsset ID: {}",
+                candidate.frame_index, candidate.asset.path, candidate.asset.id
+            );
+        }
+        assert_eq!(generation.status, "complete");
+        assert!(!generation.candidates.is_empty());
+    }
 }
