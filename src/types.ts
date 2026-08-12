@@ -389,6 +389,20 @@ export interface StartMovieRequest {
   pauseAfterPlan: boolean;
 }
 
+export interface StoryDraftRequest {
+  requestId: string;
+  modelId: string;
+  existingText: string;
+}
+
+export interface StoryDraftEvent {
+  requestId: string;
+  kind: "queued" | "started" | "token" | "reasoning" | "complete" | "limited" | "cancelled" | "error" | "settled" | string;
+  content?: string;
+  modelName?: string;
+  at: string;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;

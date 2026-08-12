@@ -42,7 +42,7 @@ use store::ResearchStore;
 use studio::{
     MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieEdit, MoviePlan,
     MoviePlanFeedbackRequest, MoviePlanningSnapshot, MovieProject, MovieReferenceImport,
-    MovieStudio, MovieSummary, StartMovieRequest,
+    MovieStudio, MovieSummary, StartMovieRequest, StoryDraftJob, StoryDraftRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -428,6 +428,75 @@ fn checkpoint_movie_planning(
         .studio
         .request_planning_checkpoint(&id, Some(&app))
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn start_movie_story_draft(
+    request: StoryDraftRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    ensure_workspace_idle(&state)?;
+    let models = state.models.read().await.clone();
+    studio::validate_story_draft_request(&request, &models)?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI job is already active.".to_string())?;
+    let cancel = CancellationToken::new();
+    match state.interactive_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(request.request_id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("interactive job registry is unavailable".into());
+        }
+    }
+    let request_id = request.request_id.clone();
+    let event_request_id = request_id.clone();
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let managed = app_for_task.state::<AppState>();
+        let work_guard = WorkGuard(&managed.work_active);
+        let result = match managed.control_settings.load() {
+            Ok(settings) => {
+                StoryDraftJob {
+                    app: app_for_task.clone(),
+                    runtime: managed.runtime.clone(),
+                    models,
+                    settings,
+                    request,
+                    cancel,
+                }
+                .run()
+                .await
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = result {
+            studio::emit_story_draft_error(&app_for_task, &event_request_id, error);
+        }
+        if let Ok(mut jobs) = managed.interactive_jobs.lock() {
+            jobs.remove(&event_request_id);
+        }
+        drop(work_guard);
+        studio::emit_story_draft_settled(&app_for_task, &event_request_id);
+    });
+    Ok(request_id)
+}
+
+#[tauri::command]
+fn cancel_movie_story_draft(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable".to_string())?
+        .get(&request_id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1905,6 +1974,8 @@ pub fn run() {
             get_movie_planning,
             direct_movie_planning,
             checkpoint_movie_planning,
+            start_movie_story_draft,
+            cancel_movie_story_draft,
             save_movie_plan,
             revise_movie_plan,
             approve_movie_plan,

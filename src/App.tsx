@@ -217,7 +217,7 @@ function App() {
               onError={(message) => setError(message)}
             />
           ) : view === "studio" ? (
-            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode || snapshot.settings.advancedMode} onError={(message) => setError(message)} />
+            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode || snapshot.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
           ) : view === "developer" ? (
             <DeveloperConsole
               control={snapshot.control}

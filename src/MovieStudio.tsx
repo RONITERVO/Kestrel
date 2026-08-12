@@ -6,14 +6,16 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   approveMoviePlan, askBonsaiMovieClip, cancelMovie, checkpointMoviePlanning,
-  directMoviePlanning, getMovie, getMoviePlanning, listMovies, movieMediaUrl,
-  onMoviePlanning, onMovieProject, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
+  cancelMovieStoryDraft, directMoviePlanning, getMovie, getMoviePlanning, listMovies, movieMediaUrl,
+  onMoviePlanning, onMovieProject, onMovieStoryDraft, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
   resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startMovie,
+  startMovieStoryDraft,
 } from "./api";
 import { MovieTimeline } from "./MovieTimeline";
 import type {
   MovieClipSuggestion, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
-  MovieProject, MovieSettings, MovieSummary, PendingMovieReference, PlannedClip, RenderedClip,
+  ModelInfo, MovieProject, MovieSettings, MovieSummary, PendingMovieReference, PlannedClip,
+  RenderedClip,
 } from "./types";
 
 const defaultSettings: MovieSettings = {
@@ -32,7 +34,7 @@ const defaultSettings: MovieSettings = {
   refImageSize: "match",
 };
 
-export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { initialComfyRoot?: string; advancedEnabled: boolean; onError: (message: string) => void }) {
+export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], selectedModelId, onError }: { initialComfyRoot?: string; advancedEnabled: boolean; models?: ModelInfo[]; selectedModelId?: string; onError: (message: string) => void }) {
   const [movies, setMovies] = useState<MovieSummary[]>([]);
   const [project, setProject] = useState<MovieProject | null>(null);
   const [creating, setCreating] = useState(true);
@@ -40,10 +42,51 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
   const [settings, setSettings] = useState(() => ({ ...defaultSettings, comfyRoot: initialComfyRoot || defaultSettings.comfyRoot }));
   const [advanced, setAdvanced] = useState(false);
   const [pauseAfterPlan, setPauseAfterPlan] = useState(true);
+  const [storyModelId, setStoryModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
+  const [storyGenerating, setStoryGenerating] = useState(false);
+  const [storyStatus, setStoryStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState<MovieEdit>({ clips: [], exportTitle: "Kestrel Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14 });
   const [references, setReferences] = useState<PendingMovieReference[]>([]);
   const activeProjectId = useRef<string | undefined>(undefined);
+  const storyRequestId = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (models.some((model) => model.id === storyModelId)) return;
+    const selected = selectedModelId && models.some((model) => model.id === selectedModelId)
+      ? selectedModelId
+      : models[0]?.id ?? "";
+    setStoryModelId(selected);
+  }, [models, selectedModelId, storyModelId]);
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void onMovieStoryDraft((event) => {
+      if (event.requestId !== storyRequestId.current) return;
+      if (event.kind === "token" && event.content) {
+        setPrompt((value) => value + event.content);
+      } else if (event.kind === "queued") {
+        setStoryStatus(`Loading ${event.modelName ?? "local model"}…`);
+      } else if (event.kind === "started") {
+        setStoryStatus("Writing the story locally…");
+      } else if (event.kind === "reasoning") {
+        setStoryStatus("Thinking through the story locally…");
+      } else if (event.kind === "limited") {
+        setStoryStatus("Story stopped at Studio’s 64 KiB brief limit.");
+      } else if (event.kind === "complete") {
+        setStoryStatus("Story draft ready—edit anything before making the movie.");
+      } else if (event.kind === "cancelled") {
+        setStoryStatus("Generation stopped. The text produced so far is preserved.");
+      } else if (event.kind === "error") {
+        setStoryStatus("Story generation stopped. Any generated text is preserved.");
+        onError(event.content ?? "Local story generation failed.");
+      } else if (event.kind === "settled") {
+        setStoryGenerating(false);
+        storyRequestId.current = undefined;
+      }
+    }).then((unlisten) => { dispose = unlisten; });
+    return () => dispose?.();
+  }, [onError]);
 
   const refreshList = useCallback(async () => {
     try { setMovies(await listMovies()); } catch (error) { onError(String(error)); }
@@ -101,6 +144,36 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
     } catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
+  const generateStory = async () => {
+    if (!storyModelId || storyGenerating) return;
+    const existingText = prompt.trimEnd();
+    const requestId = crypto.randomUUID();
+    storyRequestId.current = requestId;
+    setStoryGenerating(true);
+    setStoryStatus(existingText ? "Preparing to continue your story…" : "Preparing an original story…");
+    setPrompt(existingText ? `${existingText}\n\n` : "");
+    try {
+      await startMovieStoryDraft({ requestId, modelId: storyModelId, existingText });
+    } catch (error) {
+      storyRequestId.current = undefined;
+      setStoryGenerating(false);
+      setPrompt(existingText);
+      setStoryStatus("");
+      onError(String(error));
+    }
+  };
+
+  const stopStory = async () => {
+    const requestId = storyRequestId.current;
+    if (!requestId) return;
+    setStoryStatus("Stopping after the current local token…");
+    try {
+      await cancelMovieStoryDraft(requestId);
+    } catch (error) {
+      onError(String(error));
+    }
+  };
+
   const attachReferences = async () => {
     setBusy(true);
     try {
@@ -146,6 +219,8 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
         {creating || !project ? (
           <MovieLaunch prompt={prompt} settings={settings} references={references} advanced={advanced} advancedEnabled={advancedEnabled} busy={busy}
             pauseAfterPlan={pauseAfterPlan} onPauseAfterPlan={setPauseAfterPlan}
+            models={models} storyModelId={storyModelId} storyGenerating={storyGenerating} storyStatus={storyStatus}
+            onStoryModel={setStoryModelId} onGenerateStory={() => void generateStory()} onStopStory={() => void stopStory()}
             onPrompt={setPrompt} onSettings={setSettings} onReferences={setReferences} onAttach={() => void attachReferences()} onAdvanced={setAdvanced} onMake={() => void makeMovie()} />
         ) : (
           <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} onError={onError} onEdit={setEdit}
@@ -161,9 +236,11 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
   );
 }
 
-function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake }: {
+function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, models, storyModelId, storyGenerating, storyStatus, onStoryModel, onGenerateStory, onStopStory, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake }: {
   prompt: string; settings: MovieSettings; references: PendingMovieReference[]; advanced: boolean; advancedEnabled: boolean; busy: boolean;
   pauseAfterPlan: boolean; onPauseAfterPlan: (value: boolean) => void;
+  models: ModelInfo[]; storyModelId: string; storyGenerating: boolean; storyStatus: string;
+  onStoryModel: (value: string) => void; onGenerateStory: () => void; onStopStory: () => void;
   onPrompt: (value: string) => void; onSettings: (value: MovieSettings) => void; onReferences: (value: PendingMovieReference[]) => void;
   onAttach: () => void; onAdvanced: (value: boolean) => void; onMake: () => void;
 }) {
@@ -174,8 +251,13 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     <h1>Describe the movie.<br />Kestrel runs the studio.</h1>
     <p>One prompt becomes a reviewed screenplay, continuity bible, native H3 picture-and-sound scenes, and an untouched review cut—entirely on this computer.</p>
     <div className="movie-prompt-box">
-      <textarea autoFocus value={prompt} onChange={(event) => onPrompt(event.target.value)} placeholder="A short educational film explaining why the northern lights happen for a curious ten-year-old…" />
-      <div><span><Check size={14} /> Bonsai drafts, reviews, and repairs every H3 scene prompt</span><button disabled={busy || prompt.trim().length < 3 || !referencesReady(references)} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Make movie</button></div>
+      <textarea autoFocus value={prompt} readOnly={storyGenerating} onChange={(event) => onPrompt(event.target.value)} placeholder="Write or paste your story here—or ask any local model to invent one…" />
+      <div><span><Check size={14} /> Bonsai drafts, reviews, and repairs every H3 scene prompt</span><button disabled={busy || storyGenerating || prompt.trim().length < 3 || !referencesReady(references)} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Make movie</button></div>
+    </div>
+    <div className="story-collaborator">
+      <div><span className="eyebrow">Offline story collaborator</span><strong>{prompt.trim() ? "Continue the story already in the box" : "Invent a story from scratch"}</strong><small>{storyStatus || "Choose any discovered local model. Its tokens stream into the editable movie brief; no tools or network are available."}</small></div>
+      <label>Story model<select aria-label="Story model" value={storyModelId} disabled={storyGenerating || !models.length} onChange={(event) => onStoryModel(event.target.value)}>{!models.length && <option value="">No local models discovered</option>}{models.map((model) => <option key={model.id} value={model.id}>{model.name}{model.quantization ? ` · ${model.quantization}` : ""}</option>)}</select></label>
+      {storyGenerating ? <button className="story-stop" onClick={onStopStory}><CircleStop /> Stop writing</button> : <button disabled={!storyModelId || busy} onClick={onGenerateStory}><Sparkles /> {prompt.trim() ? "Continue story" : "Invent story"}</button>}
     </div>
     <section className="movie-reference-builder">
       <div className="movie-reference-heading"><div><span className="eyebrow">Producer references</span><strong>Show and tell H3 what must carry through</strong><small>Attach the actual media, then describe its job. Kestrel binds it natively per shot.</small></div><button disabled={busy} onClick={onAttach}><Paperclip /> Attach image, video, or audio</button></div>

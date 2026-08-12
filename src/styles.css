@@ -639,11 +639,22 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .movie-prompt-box { margin-top: 30px; overflow: hidden; border: 1px solid #3c4b42; border-radius: 15px; background: #121a15; box-shadow: 0 20px 60px rgba(0,0,0,.24); }
 .movie-prompt-box textarea { width: 100%; min-height: 160px; padding: 21px; resize: vertical; border: 0; outline: 0; color: #e7eee9; background: transparent; font: 13px/1.7 var(--sans); }
 .movie-prompt-box textarea::placeholder { color: #536159; }
+.movie-prompt-box textarea[readonly] { color: #becbc2; background: #0b110d; }
 .movie-prompt-box > div { min-height: 55px; padding: 8px 9px 8px 17px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-top: 1px solid #29352e; }
 .movie-prompt-box span { display: flex; align-items: center; gap: 7px; color: #728278; font: 8px var(--mono); }
 .movie-prompt-box button, .movie-project-actions button, .movie-section-heading button, .movie-section-heading a { min-height: 38px; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid #4f683a; border-radius: 8px; color: #10150f; background: #b7e866; cursor: pointer; font: 750 9px var(--sans); text-decoration: none; }
 .movie-prompt-box button:disabled, .movie-section-heading button:disabled { opacity: .45; cursor: default; }
 .movie-prompt-box button svg, .movie-project-actions button svg, .movie-section-heading button svg, .movie-section-heading a svg { width: 14px; }
+.story-collaborator { margin-top: 10px; padding: 13px 14px; display: grid; grid-template-columns: minmax(0,1fr) minmax(210px,300px) auto; align-items: end; gap: 12px; border: 1px solid #37463c; border-radius: 10px; background: linear-gradient(135deg,#131c16,#0f1511); }
+.story-collaborator > div { min-width: 0; display: grid; gap: 4px; }
+.story-collaborator strong { color: #dce5df; font: 600 12px var(--serif); }
+.story-collaborator small { color: #718078; font: 8px/1.5 var(--sans); }
+.story-collaborator label { min-width: 0; display: grid; gap: 5px; color: #718078; font: 7px var(--mono); text-transform: uppercase; }
+.story-collaborator select { width: 100%; height: 36px; padding: 0 9px; overflow: hidden; border: 1px solid #3a493f; border-radius: 7px; outline: 0; color: #cdd8d0; background: #0a100c; text-overflow: ellipsis; font: 8px var(--sans); }
+.story-collaborator button { min-height: 36px; padding: 0 11px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #607d42; border-radius: 7px; color: #11170f; background: #b7e866; cursor: pointer; font: 750 8px var(--sans); white-space: nowrap; }
+.story-collaborator button.story-stop { color: #efaaa1; border-color: #71443e; background: #251815; }
+.story-collaborator button:disabled { opacity: .42; cursor: default; }
+.story-collaborator button svg { width: 13px; }
 .movie-reference-builder { margin-top: 13px; padding: 16px; border: 1px solid #2e3a33; border-radius: 12px; background: #101612; }
 .movie-reference-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .movie-reference-heading > div { min-width: 0; display: grid; gap: 5px; }
@@ -1021,6 +1032,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   .control-composer { margin-inline: 12px; }
   .dev-actions { align-items: stretch; flex-direction: column; }
   .movie-presets { grid-template-columns: 1fr; }
+  .story-collaborator { grid-template-columns: 1fr; align-items: stretch; }
   .movie-advanced, .clip-controls { grid-template-columns: 1fr 1fr; }
   .movie-prompt-box > div { align-items: flex-start; flex-direction: column; }
   .movie-prompt-box button { width: 100%; }

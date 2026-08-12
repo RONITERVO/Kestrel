@@ -38,6 +38,8 @@ import type {
   MovieReferenceImport,
   MovieSummary,
   StartMovieRequest,
+  StoryDraftEvent,
+  StoryDraftRequest,
 } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -160,6 +162,20 @@ export async function resumeMovie(id: string): Promise<MovieProject> {
 export async function cancelMovie(id: string): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Movie production requires the desktop application.");
   return invoke<MovieProject>("cancel_movie", { id });
+}
+
+export async function startMovieStoryDraft(request: StoryDraftRequest): Promise<string> {
+  if (!isTauri()) throw new Error("Local story generation requires the desktop application.");
+  return invoke<string>("start_movie_story_draft", { request });
+}
+
+export async function cancelMovieStoryDraft(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_story_draft", { requestId });
+}
+
+export async function onMovieStoryDraft(callback: (event: StoryDraftEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<StoryDraftEvent>("movie-story-draft", (event) => callback(event.payload));
+  return () => undefined;
 }
 
 export async function getMoviePlanning(id: string): Promise<MoviePlanningSnapshot> {

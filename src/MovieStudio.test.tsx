@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MovieStudio, referenceDisplayTags } from "./MovieStudio";
-import type { PendingMovieReference } from "./types";
+import type { ModelInfo, PendingMovieReference } from "./types";
 
 afterEach(cleanup);
 
@@ -34,6 +34,23 @@ describe("Kestrel Movie Studio", () => {
     expect(checkpoint).not.toBeChecked();
     expect(screen.getByText(/before any H3 clip is rendered/i)).toBeInTheDocument();
     expect(screen.queryByLabelText("Research")).not.toBeInTheDocument();
+  });
+
+  it("offers every discovered local model for inventing or continuing a story", () => {
+    const models = [
+      { id: "story-small", name: "Small Story Model", quantization: "Q4_K_M" },
+      { id: "story-large", name: "Large Story Model", quantization: "Q6_K" },
+    ].map((model) => ({
+      ...model, path: `${model.id}.gguf`, source: "test", bytes: 1, chatTemplate: true,
+      supportsVision: false, supportsAudio: false, recommendation: "Local test model",
+    })) as ModelInfo[];
+    render(<MovieStudio advancedEnabled models={models} selectedModelId="story-large" onError={vi.fn()} />);
+    expect(screen.getByLabelText("Story model")).toHaveValue("story-large");
+    expect(screen.getByRole("option", { name: /Small Story Model/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Invent story/i })).toBeEnabled();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "A botanist finds a singing seed." } });
+    expect(screen.getByRole("button", { name: /Continue story/i })).toBeEnabled();
+    expect(screen.getByText(/Continue the story already in the box/i)).toBeInTheDocument();
   });
 
   it("numbers native H3 labels by type and puts embedded video audio first", () => {

@@ -28,15 +28,21 @@ use tokio_util::sync::CancellationToken;
 mod movie_agent;
 mod planning;
 mod prompts;
+mod story;
 
 use movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult};
 pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot};
+pub use story::{
+    emit_error as emit_story_draft_error, emit_settled as emit_story_draft_settled,
+    validate_request as validate_story_draft_request, StoryDraftJob, StoryDraftRequest,
+};
 
 const SCHEMA_VERSION: u32 = 5;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
+pub(super) const MAX_MOVIE_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_REFERENCE_SECONDS: f64 = 15.1;
 const MIN_H3_PROMPT_WORDS: usize = 120;
 const MAX_H3_PROMPT_WORDS: usize = 450;
@@ -759,7 +765,7 @@ impl MovieStudio {
             pause_after_plan,
         } = request;
         let meaningful_prompt = prompt.trim();
-        if meaningful_prompt.chars().count() < 3 || prompt.len() > 65_536 {
+        if meaningful_prompt.chars().count() < 3 || prompt.len() > MAX_MOVIE_PROMPT_BYTES {
             return Err(StudioError::Invalid(
                 "movie prompt must be between 3 characters and 64 KiB".into(),
             ));
