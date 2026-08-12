@@ -4931,7 +4931,7 @@ fn contains_non_environmental_vocalization(direction: &str) -> bool {
         {
             continue;
         }
-        let nearby = &words[index.saturating_sub(3)..index];
+        let nearby = &words[index.saturating_sub(3)..(index + 5).min(words.len())];
         if nearby.iter().any(|word| {
             [
                 "actor",
@@ -6916,6 +6916,9 @@ mod tests {
     fn speech_gate_understands_negation_and_environmental_sound() {
         assert!(!directs_unquoted_speech(
             "No dialogue or narration. Environmental audio only: wind whispers through the leaves."
+        ));
+        assert!(!directs_unquoted_speech(
+            "No dialogue or narration. The score fades into the soft, quiet whisper of the morning wind."
         ));
         assert!(!directs_unquoted_speech(
             "Silent/no-dialogue performance; environmental sound only."
