@@ -7,14 +7,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   approveMoviePlan, askBonsaiMovieClip, cancelMovie, cancelMovieImageAsset, checkpointMoviePlanning,
   cancelMoviePromptDraft, directMoviePlanning, getMovie, getMoviePlanning, listMovieImageAssets, listMovies, movieMediaUrl,
-  onMovieImageAsset, onMoviePlanning, onMovieProject, onMoviePromptDraft, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
+  onMovieImageAsset, onMoviePlanning, onMovieProject, onMoviePromptDraft, onMovieRenderPreview, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
   resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startMovie,
   startMovieImageAsset, startMoviePromptDraft,
 } from "./api";
 import { MovieTimeline } from "./MovieTimeline";
 import type {
   MovieClipSuggestion, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
-  ModelInfo, MovieImageAssetGeneration, MovieProject, MovieReferenceAsset, MovieSettings,
+  ModelInfo, MovieImageAssetGeneration, MovieProject, MovieReferenceAsset, MovieRenderPreviewEvent, MovieSettings,
   MovieSummary, PendingMovieReference, PlannedClip, PromptDraftMode, PromptDraftReceipt,
   RenderedClip,
 } from "./types";
@@ -67,6 +67,8 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const [imageGenerating, setImageGenerating] = useState(false);
   const [imageStatus, setImageStatus] = useState("");
   const [imageGenerations, setImageGenerations] = useState<MovieImageAssetGeneration[]>([]);
+  const [imagePreview, setImagePreview] = useState<MovieRenderPreviewEvent>();
+  const [moviePreview, setMoviePreview] = useState<MovieRenderPreviewEvent>();
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState<MovieEdit>({ clips: [], exportTitle: "Kestrel Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14 });
   const [references, setReferences] = useState<PendingMovieReference[]>([]);
@@ -147,6 +149,18 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
     }).then((unlisten) => { dispose = unlisten; });
     return () => dispose?.();
   }, [onError, refreshImageAssets]);
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void onMovieRenderPreview((event) => {
+      if (event.target === "imageAsset" && event.jobId === imageRequestId.current) {
+        setImagePreview((current) => mergePreviewEvent(current, event));
+      } else if (event.target === "movieClip" && event.projectId === activeProjectId.current) {
+        setMoviePreview((current) => mergePreviewEvent(current, event));
+      }
+    }).then((unlisten) => { dispose = unlisten; });
+    return () => dispose?.();
+  }, []);
 
   const refreshList = useCallback(async () => {
     try { setMovies(await listMovies()); } catch (error) { onError(String(error)); }
@@ -261,6 +275,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
     if (imageGenerating || imagePrompt.trim().length < 3) return;
     const requestId = crypto.randomUUID();
     imageRequestId.current = requestId;
+    setImagePreview(undefined);
     setImageGenerating(true);
     setImageStatus("Preparing the private H3 image workflow…");
     try {
@@ -357,13 +372,13 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
             onReferenceDraftMode={(assetId, mode) => setReferenceDraftModes((known) => ({ ...known, [assetId]: mode }))}
             onGeneratePrompt={(field, mode) => void generatePromptDraft(field, mode)} onStopPrompt={() => void stopPromptDraft()}
             imagePrompt={imagePrompt} imageWidth={imageWidth} imageHeight={imageHeight} imageSteps={imageSteps} imageSeed={imageSeed}
-            imageStabilize={imageStabilize} imageGenerating={imageGenerating} imageStatus={imageStatus} imageGenerations={imageGenerations}
+            imageStabilize={imageStabilize} imageGenerating={imageGenerating} imageStatus={imageStatus} imageGenerations={imageGenerations} imagePreview={imagePreview}
             onImagePrompt={setImagePrompt} onImageCanvas={(width, height) => { setImageWidth(width); setImageHeight(height); }}
             onImageSteps={setImageSteps} onImageSeed={setImageSeed} onImageStabilize={setImageStabilize}
             onGenerateImage={() => void generateImageAsset()} onStopImage={() => void stopImageAsset()} onUseGeneratedImage={useGeneratedImage}
             onPrompt={setPrompt} onSettings={setSettings} onReferences={setReferences} onAttach={() => void attachReferences()} onAdvanced={setAdvanced} onMake={() => void makeMovie()} />
         ) : (
-          <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} onError={onError} onEdit={setEdit}
+          <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} preview={moviePreview} onError={onError} onEdit={setEdit}
             onProject={(next) => { activeProjectId.current = next.id; setProject(next); setEdit(next.edit); void refreshList(); }}
             onNew={() => { activeProjectId.current = undefined; setCreating(true); setProject(null); }}
             onCancel={() => void cancelMovie(project.id).then(setProject).catch((error) => onError(String(error)))}
@@ -376,7 +391,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   );
 }
 
-function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, models, promptModelId, promptDraftActive, promptDraftLastField, promptDraftStatus, promptDraftReceipt, storyDraftMode, imageDraftMode, referenceDraftModes, onPromptModel, onStoryDraftMode, onImageDraftMode, onReferenceDraftMode, onGeneratePrompt, onStopPrompt, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake }: {
+function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, models, promptModelId, promptDraftActive, promptDraftLastField, promptDraftStatus, promptDraftReceipt, storyDraftMode, imageDraftMode, referenceDraftModes, onPromptModel, onStoryDraftMode, onImageDraftMode, onReferenceDraftMode, onGeneratePrompt, onStopPrompt, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, imagePreview, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake }: {
   prompt: string; settings: MovieSettings; references: PendingMovieReference[]; advanced: boolean; advancedEnabled: boolean; busy: boolean;
   pauseAfterPlan: boolean; onPauseAfterPlan: (value: boolean) => void;
   models: ModelInfo[]; promptModelId: string; promptDraftActive?: ActivePromptDraft; promptDraftLastField?: PromptField; promptDraftStatus: string; promptDraftReceipt?: PromptDraftReceipt;
@@ -385,7 +400,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
   onReferenceDraftMode: (assetId: string, value: PromptDraftMode) => void;
   onGeneratePrompt: (field: PromptField, mode: PromptDraftMode) => void; onStopPrompt: () => void;
   imagePrompt: string; imageWidth: number; imageHeight: number; imageSteps: number; imageSeed: number; imageStabilize: boolean;
-  imageGenerating: boolean; imageStatus: string; imageGenerations: MovieImageAssetGeneration[];
+  imageGenerating: boolean; imageStatus: string; imageGenerations: MovieImageAssetGeneration[]; imagePreview?: MovieRenderPreviewEvent;
   onImagePrompt: (value: string) => void; onImageCanvas: (width: number, height: number) => void;
   onImageSteps: (value: number) => void; onImageSeed: (value: number) => void; onImageStabilize: (value: boolean) => void;
   onGenerateImage: () => void; onStopImage: () => void; onUseGeneratedImage: (asset: MovieReferenceAsset) => void;
@@ -411,7 +426,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       onModel={onPromptModel} onMode={onStoryDraftMode} onGenerate={() => onGeneratePrompt({ kind: "story" }, storyDraftMode)} onStop={onStopPrompt} />
     <ImageAssetLab
       prompt={imagePrompt} width={imageWidth} height={imageHeight} steps={imageSteps} seed={imageSeed}
-      stabilize={imageStabilize} generating={imageGenerating} status={imageStatus} generations={imageGenerations}
+      stabilize={imageStabilize} generating={imageGenerating} status={imageStatus} generations={imageGenerations} preview={imagePreview}
       references={references} advanced={advanced} expertEnabled={advancedEnabled} disabled={busy || promptBusy}
       models={models} modelId={promptModelId} draftMode={imageDraftMode} draftActive={imageWriting} draftStatus={promptFieldMatches(statusField, { kind: "imageAsset" }) ? promptDraftStatus : ""}
       onModel={onPromptModel} onDraftMode={onImageDraftMode} onDraft={() => onGeneratePrompt({ kind: "imageAsset" }, imageDraftMode)} onStopDraft={onStopPrompt}
@@ -485,9 +500,43 @@ function PromptAssistBar({ label, existing, mode, models, modelId, active, disab
   </div>;
 }
 
-function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, references, advanced, expertEnabled, disabled, models, modelId, draftMode, draftActive, draftStatus, onModel, onDraftMode, onDraft, onStopDraft, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
+function mergePreviewEvent(current: MovieRenderPreviewEvent | undefined, next: MovieRenderPreviewEvent): MovieRenderPreviewEvent {
+  if (next.dataUrl || !current || current.jobId !== next.jobId) return next;
+  return {
+    ...next,
+    dataUrl: current.dataUrl,
+    mimeType: current.mimeType,
+    width: current.width,
+    height: current.height,
+    step: current.step,
+    total: current.total,
+    fps: current.fps,
+    stepMs: current.stepMs,
+    averageStepMs: current.averageStepMs,
+  };
+}
+
+export function LiveH3Preview({ event, advanced }: { event: MovieRenderPreviewEvent; advanced: boolean }) {
+  const progress = event.step !== undefined && event.total ? Math.min(100, Math.round((event.step / event.total) * 100)) : 0;
+  const isVideo = event.mimeType === "video/mp4";
+  return <section className={`live-h3-preview ${event.kind}`} aria-live="polite">
+    <header><span><span className="live-dot" /><strong>Live H3 preview</strong></span><small>{event.step !== undefined && event.total ? `Sample ${event.step} of ${event.total}` : event.kind === "unavailable" ? "Preview unavailable" : "Local renderer"}</small></header>
+    <div className="live-h3-monitor">
+      {event.dataUrl ? (isVideo
+        ? <video key={event.dataUrl.slice(-48)} src={event.dataUrl} autoPlay loop muted playsInline />
+        : <img src={event.dataUrl} alt="Approximate live MiniMax H3 sampling preview" />)
+        : event.kind === "unavailable" ? <div className="live-h3-wait"><ImageIcon /><span>Final rendering can continue safely.</span></div> : <div className="live-h3-wait"><LoaderCircle className="spin" /><span>Waiting for the first decoded sample…</span></div>}
+      <span className="live-h3-watermark">Approximate TAE preview</span>
+    </div>
+    <div className="live-h3-caption"><span>{event.detail}</span><small>The final saved picture uses MiniMax H3’s full VAE and may resolve more detail.</small></div>
+    {event.total && <div className="live-h3-progress"><i style={{ width: `${progress}%` }} /></div>}
+    {advanced && <details><summary>Preview pipeline details</summary><code>ModelPreviewOverrideKJ → taeh3.safetensors → bounded loopback WebSocket</code><small>{event.width && event.height ? `${event.width} × ${event.height}` : "512 px maximum"}{event.averageStepMs ? ` · ${(event.averageStepMs / 1000).toFixed(1)}s average/sample` : ""}{event.fps ? ` · ${event.fps.toFixed(1)} preview fps` : ""}</small><small>Ephemeral preview bytes are not stored. Full-VAE masters and their provenance remain durable.</small></details>}
+  </section>;
+}
+
+function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, preview, references, advanced, expertEnabled, disabled, models, modelId, draftMode, draftActive, draftStatus, onModel, onDraftMode, onDraft, onStopDraft, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
   prompt: string; width: number; height: number; steps: number; seed: number; stabilize: boolean;
-  generating: boolean; status: string; generations: MovieImageAssetGeneration[]; references: PendingMovieReference[];
+  generating: boolean; status: string; generations: MovieImageAssetGeneration[]; preview?: MovieRenderPreviewEvent; references: PendingMovieReference[];
   advanced: boolean; expertEnabled: boolean; disabled: boolean; models: ModelInfo[]; modelId: string; draftMode: PromptDraftMode; draftActive: boolean; draftStatus: string;
   onModel: (value: string) => void; onDraftMode: (value: PromptDraftMode) => void; onDraft: () => void; onStopDraft: () => void;
   onPrompt: (value: string) => void; onCanvas: (width: number, height: number) => void;
@@ -516,6 +565,7 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
       </div>
       {advanced && <div className="image-asset-advanced"><NumberField label="Image sampling steps" value={steps} min={1} max={expertEnabled ? 100 : 40} step={1} onChange={onSteps} /><NumberField label="Image seed (0 = random)" value={seed} min={0} max={Number.MAX_SAFE_INTEGER} step={1} onChange={onSeed} /></div>}
       {(generating || status) && <div className={`image-asset-status ${generating ? "running" : ""}`}>{generating && <LoaderCircle className="spin" />}<span>{status}</span></div>}
+      {preview && (generating || preview.kind === "finished") && <LiveH3Preview event={preview} advanced={advanced} />}
     </div>
     {ready.map((generation) => <article className="image-generation" key={generation.id}>
       <header><span><strong>{generation.width} × {generation.height} candidate strip</strong><small>{generation.candidates.length} preserved choices · seed {generation.seed} · {generation.steps} steps</small></span><small>{new Date(generation.completedAt || generation.createdAt).toLocaleString()}</small></header>
@@ -526,15 +576,15 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
           <figcaption><span>Frame {frameIndex}{frameIndex === 8 ? " · workflow pick" : ""}</span><button disabled={selected} onClick={() => onUse(asset)}>{selected ? <Check /> : <Plus />}{selected ? "Added" : "Use image"}</button></figcaption>
         </figure>;
       })}</div>
-      {advanced && <details className="image-generation-receipt"><summary>Exact H3 prompt, models, seed, and ComfyUI graph</summary><div><span>Workflow</span><code>{generation.workflow}</code><span>Fixed source</span><code>{generation.workflowSource}@{generation.workflowRevision}</code><span>Rendered prompt</span><pre>{generation.renderedPrompt}</pre><span>Exact API graph</span><pre>{JSON.stringify(generation.exactGraph, null, 2)}</pre></div></details>}
+      {advanced && <details className="image-generation-receipt"><summary>Exact H3 prompt, models, seed, and ComfyUI graph</summary><div><span>Live preview decoder</span><code>taeh3.safetensors · pinned tiny autoencoder · approximate only</code><span>Final decoder</span><code>{generation.candidates[0]?.asset.generation?.vae ?? "minimax_h3_video_vae_fp16.safetensors"} · preserved master</code><span>Workflow</span><code>{generation.workflow}</code><span>Fixed source</span><code>{generation.workflowSource}@{generation.workflowRevision}</code><span>Rendered prompt</span><pre>{generation.renderedPrompt}</pre><span>Exact API graph</span><pre>{JSON.stringify(generation.exactGraph, null, 2)}</pre></div></details>}
     </article>)}
     {recentIssue && !generating && <div className="image-generation-issue"><strong>{recentIssue.status === "interrupted" ? "Previous image pass was interrupted" : "Previous image pass did not finish"}</strong><span>{recentIssue.detail}</span>{recentIssue.error && <small>{recentIssue.error}</small>}</div>}
     {!ready.length && !generating && <div className="image-asset-empty"><ImageIcon /><span>Your generated candidates will stay in this private library across restarts. Only the image you choose is attached to the movie.</span></div>}
   </section>;
 }
 
-function MovieProjectView({ project, edit, busy, advancedEnabled, onError, onProject, onEdit, onNew, onCancel, onResume, onReveal, onSave, onExport }: {
-  project: MovieProject; edit: MovieEdit; busy: boolean; advancedEnabled: boolean; onError: (message: string) => void;
+function MovieProjectView({ project, edit, busy, advancedEnabled, preview, onError, onProject, onEdit, onNew, onCancel, onResume, onReveal, onSave, onExport }: {
+  project: MovieProject; edit: MovieEdit; busy: boolean; advancedEnabled: boolean; preview?: MovieRenderPreviewEvent; onError: (message: string) => void;
   onProject: (project: MovieProject) => void; onEdit: (edit: MovieEdit) => void;
   onNew: () => void; onCancel: () => void; onResume: () => void; onReveal: () => void; onSave: () => void; onExport: () => void;
 }) {
@@ -568,6 +618,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, onError, onPro
       <div className="movie-progress"><i style={{ width: `${progress}%` }} /></div>
       {project.error && <pre>{project.error}</pre>}
     </div>
+    {preview && project.status === "running" && <LiveH3Preview event={preview} advanced={advancedEnabled} />}
     {(project.status === "planning-checkpoint" || (project.status === "running" && ["writing", "agent-workspace", "resuming", "producer-revision"].includes(project.phase))) && <ProducerPlanningRoom project={project} advancedEnabled={advancedEnabled} onError={onError} />}
     {project.finalPath && <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">{latestExport ? "Latest immutable timeline export" : "Assembled file"}</span><h2>{latestExport?.title ?? "Untouched H3 review cut"}</h2><small>{latestExport ? `${latestExport.preset} preset · ${latestExport.clipCount} timeline items · SHA-256 recorded` : "Native clip duration and audio are preserved. Only an explicit editor export creates an altered cut."}</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section>}
     {project.references.length > 0 && <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}{reference.generation && <details><summary>Generated-image provenance</summary><small>Frame {reference.generation.frameIndex} · seed {reference.generation.seed} · {reference.generation.steps} steps · {reference.generation.width} × {reference.generation.height}</small><pre>{reference.generation.renderedPrompt}</pre><pre>{JSON.stringify(reference.generation.exactGraph, null, 2)}</pre></details>}</span></article>)}</div></section>}

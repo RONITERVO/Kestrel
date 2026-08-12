@@ -246,6 +246,26 @@ export interface MovieImageAssetEvent {
   generation?: MovieImageAssetGeneration;
 }
 
+export interface MovieRenderPreviewEvent {
+  kind: "connected" | "frame" | "finished" | "unavailable" | string;
+  target: "imageAsset" | "movieClip" | string;
+  jobId: string;
+  projectId?: string;
+  clipId?: string;
+  clipIndex?: number;
+  detail: string;
+  mimeType?: "image/jpeg" | "image/png" | "image/webp" | "video/mp4" | string;
+  dataUrl?: string;
+  width?: number;
+  height?: number;
+  step?: number;
+  total?: number;
+  fps?: number;
+  stepMs?: number;
+  averageStepMs?: number;
+  at: string;
+}
+
 export interface ProducerReferenceRequest {
   assetId: string;
   description: string;

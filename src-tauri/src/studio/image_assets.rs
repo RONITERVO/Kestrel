@@ -1,3 +1,4 @@
+use super::live_preview::{preview_node, LivePreviewSession, PreviewTarget};
 use super::{
     comfy_execution_error, truncate, write_json_atomic, MovieReferenceAsset, MovieStudio,
     StudioError, COMFY_BASE, COMFY_RENDER_TIMEOUT, MAX_MOVIE_PROMPT_BYTES,
@@ -378,12 +379,19 @@ impl MovieStudio {
         generation.updated_at = Utc::now().to_rfc3339();
         self.save_image_generation(generation)?;
         emit_image_event(app, generation, "progress", 10, None);
+        let client_id = format!("kestrel-image-{}", generation.id);
+        let preview = LivePreviewSession::connect(
+            app,
+            &client_id,
+            PreviewTarget::image_asset(&generation.id),
+        )
+        .await;
         let response = self
             .http
             .post(format!("{COMFY_BASE}/prompt"))
             .json(&json!({
                 "prompt": generation.exact_graph,
-                "client_id": format!("kestrel-image-{}", generation.id),
+                "client_id": client_id,
             }))
             .send()
             .await?;
@@ -441,6 +449,9 @@ impl MovieStudio {
                     return Err(StudioError::Render(format!("ComfyUI {detail}")));
                 }
                 if entry.pointer("/status/completed").and_then(Value::as_bool) == Some(true) {
+                    if let Some(preview) = &preview {
+                        preview.finish();
+                    }
                     generation.stage = "preserving".into();
                     generation.detail =
                         "Preserving every candidate in Kestrel's private, content-addressed library."
@@ -549,20 +560,22 @@ fn pseudo_image_graph(
     seed: u64,
     prefix: &str,
 ) -> Value {
-    json!({
+    let mut graph = json!({
         "1":{"class_type":"UNETLoader","inputs":{"unet_name":"minimax_h3_fl2va_pruned_int8_convrot.safetensors","weight_dtype":"default"}},
         "2":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors","type":"minimax","device":"default"}},
         "3":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_video_vae_fp16.safetensors"}},
         "4":{"class_type":"MiniMaxH3ImageToVideo","inputs":{"clip":["2",0],"vae":["3",0],"prompt":prompt,"width":width,"height":height,"length":REQUESTED_LENGTH}},
         "5":{"class_type":"RandomNoise","inputs":{"noise_seed":seed}},
-        "6":{"class_type":"BasicScheduler","inputs":{"model":["1",0],"scheduler":"simple","steps":steps,"denoise":1.0}},
+        "6":{"class_type":"BasicScheduler","inputs":{"model":["90",0],"scheduler":"simple","steps":steps,"denoise":1.0}},
         "7":{"class_type":"KSamplerSelect","inputs":{"sampler_name":"euler"}},
-        "8":{"class_type":"BasicGuider","inputs":{"model":["1",0],"conditioning":["4",0]}},
+        "8":{"class_type":"BasicGuider","inputs":{"model":["90",0],"conditioning":["4",0]}},
         "9":{"class_type":"SamplerCustomAdvanced","inputs":{"noise":["5",0],"guider":["8",0],"sampler":["7",0],"sigmas":["6",0],"latent_image":["4",1]}},
         "10":{"class_type":"VAEDecode","inputs":{"samples":["9",0],"vae":["3",0]}},
         "11":{"class_type":"ImageFromBatch","inputs":{"image":["10",0],"batch_index":CANDIDATE_START,"length":CANDIDATE_COUNT}},
         "12":{"class_type":"SaveImage","inputs":{"images":["11",0],"filename_prefix":prefix}}
-    })
+    });
+    graph["90"] = preview_node("1", 6);
+    graph
 }
 
 fn find_candidate_outputs(entry: &Value) -> Vec<(String, String)> {
@@ -687,6 +700,10 @@ mod tests {
         assert_eq!(graph["11"]["inputs"]["batch_index"], CANDIDATE_START);
         assert_eq!(graph["11"]["inputs"]["length"], CANDIDATE_COUNT);
         assert_eq!(graph["12"]["class_type"], "SaveImage");
+        assert_eq!(graph["90"]["class_type"], "ModelPreviewOverrideKJ");
+        assert_eq!(graph["90"]["inputs"]["tiny_vae"], "taeh3.safetensors");
+        assert_eq!(graph["6"]["inputs"]["model"], json!(["90", 0]));
+        assert_eq!(graph["8"]["inputs"]["model"], json!(["90", 0]));
         assert!(graph.get("CreateVideo").is_none());
     }
 
@@ -702,6 +719,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires the installed MiniMax H3 ComfyUI stack and several minutes"]
     async fn live_h3_image_pass_preserves_selectable_candidates_and_provenance() {
+        use futures_util::StreamExt as _;
+
         let library = tempfile::tempdir().unwrap();
         let studio = MovieStudio::new(library.path()).unwrap();
         let mut value = request();
@@ -710,10 +729,42 @@ mod tests {
         value.width = 512;
         value.height = 512;
         value.prompt = "A single handmade brass compass on a dark green linen field, centered product reference, precise engraved details, soft north-window light, no hands, no labels, no motion.".into();
+        let client_id = format!("kestrel-image-{}", value.request_id);
+        let (socket, _) = tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:8188/ws?clientId={client_id}"
+        ))
+        .await
+        .unwrap();
+        let (_, mut reader) = socket.split();
+        let preview = tokio::spawn(async move {
+            while let Some(message) = reader.next().await {
+                let message = message.unwrap();
+                if !message.is_text() {
+                    continue;
+                }
+                let value: Value = serde_json::from_str(&message.into_text().unwrap()).unwrap();
+                if value.get("type").and_then(Value::as_str) == Some("kj_preview_override") {
+                    return value;
+                }
+            }
+            panic!("ComfyUI closed before emitting a live H3 preview")
+        });
         let generation = studio
             .generate_image_assets(value, &CancellationToken::new(), None)
             .await
             .unwrap();
+        let preview = tokio::time::timeout(Duration::from_secs(30), preview)
+            .await
+            .expect("live preview did not arrive")
+            .unwrap();
+        assert_eq!(
+            preview.pointer("/data/node_id").and_then(Value::as_str),
+            Some("90")
+        );
+        assert!(preview
+            .pointer("/data/image")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.len() > 1_000));
         assert_eq!(generation.status, "complete");
         assert!(!generation.comfy_prompt_id.is_empty());
         assert!(!generation.candidates.is_empty());

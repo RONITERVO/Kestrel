@@ -38,6 +38,7 @@ import type {
   MoviePlanningEvent,
   MoviePlanningSnapshot,
   MovieProject,
+  MovieRenderPreviewEvent,
   MovieReferenceImport,
   MovieSummary,
   StartMovieRequest,
@@ -168,6 +169,11 @@ export async function cancelMovieImageAsset(requestId: string): Promise<void> {
 
 export async function onMovieImageAsset(callback: (event: MovieImageAssetEvent) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MovieImageAssetEvent>("movie-image-asset", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function onMovieRenderPreview(callback: (event: MovieRenderPreviewEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieRenderPreviewEvent>("movie-render-preview", (event) => callback(event.payload));
   return () => undefined;
 }
 

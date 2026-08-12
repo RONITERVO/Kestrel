@@ -689,6 +689,25 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .image-asset-status { min-height: 34px; padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #374239; border-radius: 7px; color: #89968c; background: #0b100c; font: 8px/1.45 var(--sans); }
 .image-asset-status.running { color: #b6cd9a; border-color: #516143; }
 .image-asset-status svg { width: 14px; flex: 0 0 auto; }
+.live-h3-preview { margin: 12px 0; overflow: hidden; border: 1px solid #465a49; border-radius: 10px; background: #080d0a; box-shadow: 0 12px 34px #0008; }
+.live-h3-preview > header { min-height: 38px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #27352b; background: linear-gradient(90deg, #18251b, #101712); }
+.live-h3-preview > header > span { display: flex; align-items: center; gap: 8px; color: #d8e6da; font: 9px var(--sans); text-transform: uppercase; letter-spacing: .08em; }
+.live-h3-preview > header small { color: #91a798; font: 7px var(--mono); }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: #8fe36f; box-shadow: 0 0 9px #8fe36f; animation: pulse 1.4s ease-in-out infinite; }
+.live-h3-preview.unavailable .live-dot { background: #dc9c68; box-shadow: none; animation: none; }
+.live-h3-monitor { min-height: 260px; max-height: 520px; position: relative; display: grid; place-items: center; overflow: hidden; background: radial-gradient(circle at center, #152019, #050806 70%); }
+.live-h3-monitor img, .live-h3-monitor video { width: 100%; max-height: 520px; object-fit: contain; display: block; }
+.live-h3-wait { display: grid; justify-items: center; gap: 10px; color: #829187; font: 8px var(--mono); }
+.live-h3-wait svg { width: 24px; }
+.live-h3-watermark { position: absolute; right: 9px; bottom: 8px; padding: 4px 6px; border-radius: 4px; color: #d9e6da; background: #061009c9; font: 6px var(--mono); text-transform: uppercase; letter-spacing: .1em; }
+.live-h3-caption { padding: 10px 12px; display: grid; gap: 4px; border-top: 1px solid #27352b; }
+.live-h3-caption span { color: #bac9bf; font: 8px/1.4 var(--sans); }
+.live-h3-caption small, .live-h3-preview details small { color: #728178; font: 7px/1.45 var(--sans); }
+.live-h3-progress { height: 3px; background: #19221c; }
+.live-h3-progress i { height: 100%; display: block; background: linear-gradient(90deg, #719d51, #b0e86e); transition: width .2s ease; }
+.live-h3-preview details { padding: 8px 12px 11px; border-top: 1px solid #202b23; }
+.live-h3-preview details summary { color: #8ca091; cursor: pointer; font: 7px var(--mono); }
+.live-h3-preview details code, .live-h3-preview details small { margin-top: 7px; display: block; white-space: normal; overflow-wrap: anywhere; }
 .image-generation { margin-top: 13px; padding: 12px; border: 1px solid #344036; border-radius: 10px; background: #090e0b; }
 .image-generation > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .image-generation > header > span { display: grid; gap: 3px; }

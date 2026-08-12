@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MovieStudio, referenceDisplayTags } from "./MovieStudio";
-import type { ModelInfo, PendingMovieReference } from "./types";
+import { LiveH3Preview, MovieStudio, referenceDisplayTags } from "./MovieStudio";
+import type { ModelInfo, MovieRenderPreviewEvent, PendingMovieReference } from "./types";
 
 afterEach(cleanup);
 
@@ -73,6 +73,33 @@ describe("Kestrel Movie Studio", () => {
     fireEvent.click(screen.getByRole("button", { name: /Advanced production controls/i }));
     expect(screen.getByLabelText("Image sampling steps")).toHaveValue(20);
     expect(screen.getByLabelText("Image seed \(0 = random\)")).toHaveValue(0);
+  });
+
+  it("shows a plain-language live H3 monitor with advanced offline provenance", () => {
+    const event: MovieRenderPreviewEvent = {
+      kind: "frame",
+      target: "movieClip",
+      jobId: "clip-1",
+      projectId: "movie-1",
+      clipId: "scene-1",
+      clipIndex: 0,
+      detail: "Approximate live preview · sample 7 of 20",
+      mimeType: "image/jpeg",
+      dataUrl: "data:image/jpeg;base64,AQID",
+      width: 512,
+      height: 288,
+      step: 7,
+      total: 20,
+      averageStepMs: 1250,
+      at: new Date().toISOString(),
+    };
+    render(<LiveH3Preview event={event} advanced />);
+    expect(screen.getByText("Live H3 preview")).toBeInTheDocument();
+    expect(screen.getByText("Sample 7 of 20")).toBeInTheDocument();
+    expect(screen.getByAltText(/Approximate live MiniMax H3/i)).toHaveAttribute("src", event.dataUrl);
+    fireEvent.click(screen.getByText("Preview pipeline details"));
+    expect(screen.getByText(/taeh3.safetensors/)).toBeInTheDocument();
+    expect(screen.getByText(/Ephemeral preview bytes are not stored/i)).toBeInTheDocument();
   });
 
   it("numbers native H3 labels by type and puts embedded video audio first", () => {
