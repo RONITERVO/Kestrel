@@ -8,16 +8,17 @@ afterEach(cleanup);
 describe("Kestrel Movie Studio", () => {
   it("presents a one-prompt offline production path", async () => {
     render(<MovieStudio advancedEnabled onError={vi.fn()} />);
-    expect(screen.getByText(/Describe the movie/i)).toBeInTheDocument();
+    expect(screen.getByText(/Shape the production brief together/i)).toBeInTheDocument();
     expect(screen.getByText(/drafts, reviews, and repairs/i)).toBeInTheDocument();
     expect(screen.queryByText(/Wikipedia/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Make movie/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Plan this movie/i })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Movie brief"), { target: { value: "A tiny film about a lighthouse keeper" } });
-    expect(screen.getByRole("button", { name: /Make movie/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Plan this movie/i })).toBeEnabled();
   });
 
   it("keeps full-context and expert production controls discoverable", () => {
     render(<MovieStudio advancedEnabled onError={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /SetupQuality and controls/i }));
     expect(screen.getByText("98,304 context")).toBeInTheDocument();
     expect(screen.getByText("32,768 max thinking")).toBeInTheDocument();
     expect(screen.getByText("32,768 output")).toBeInTheDocument();
@@ -46,8 +47,7 @@ describe("Kestrel Movie Studio", () => {
     })) as ModelInfo[];
     render(<MovieStudio advancedEnabled models={models} selectedModelId="story-large" onError={vi.fn()} />);
     expect(screen.getByLabelText("Movie brief model")).toHaveValue("story-large");
-    expect(screen.getByLabelText("Image description model")).toHaveValue("story-large");
-    expect(screen.getAllByRole("option", { name: /Small Story Model/ }).length).toBeGreaterThan(1);
+    expect(screen.getAllByRole("option", { name: /Small Story Model/ })).toHaveLength(1);
     expect(screen.getByRole("button", { name: /Invent story/i })).toBeEnabled();
     fireEvent.change(screen.getByLabelText("Movie brief"), { target: { value: "A botanist finds a singing seed." } });
     expect(screen.getByRole("button", { name: /Develop idea \/ notes/i })).toBeEnabled();
@@ -57,10 +57,13 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByRole("button", { name: /Continue exact draft/i })).toBeEnabled();
     expect(screen.getByText(/Nothing is inferred/i)).toBeInTheDocument();
     expect(screen.getByLabelText("Movie brief")).toHaveAttribute("maxlength", "65536");
+    fireEvent.click(screen.getByRole("button", { name: /ImagesGenerate visual assets/i }));
+    expect(screen.getByLabelText("Image description model")).toHaveValue("story-large");
   });
 
   it("offers a producer-friendly durable H3 image asset workflow", () => {
     render(<MovieStudio advancedEnabled onError={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /ImagesGenerate visual assets/i }));
     expect(screen.getByText(/Offline image asset lab/i)).toBeInTheDocument();
     expect(screen.getByText(/22 internal frames · 6 choices/i)).toBeInTheDocument();
     const generate = screen.getByRole("button", { name: /Generate candidates/i });
@@ -70,9 +73,23 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByLabelText("Image canvas")).toHaveValue("768x1344");
     fireEvent.change(screen.getByLabelText("Image canvas"), { target: { value: "1024x1024" } });
     expect(screen.getByLabelText("Image canvas")).toHaveValue("1024x1024");
+    fireEvent.click(screen.getByRole("button", { name: /SetupQuality and controls/i }));
     fireEvent.click(screen.getByRole("button", { name: /Advanced production controls/i }));
+    fireEvent.click(screen.getByRole("button", { name: /ImagesGenerate visual assets/i }));
     expect(screen.getByLabelText("Image sampling steps")).toHaveValue(20);
     expect(screen.getByLabelText("Image seed \(0 = random\)")).toHaveValue(0);
+  });
+
+  it("keeps the whole creation process in bounded editor workspaces", () => {
+    render(<MovieStudio advancedEnabled onError={vi.fn()} />);
+    const rooms = screen.getByRole("navigation", { name: "New production workspaces" });
+    expect(rooms).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /ReferencesBind media to the story/i }));
+    expect(screen.getByText(/Show and tell H3 what must carry through/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Movie brief")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /SetupQuality and controls/i }));
+    expect(screen.getByText(/Choose the working quality and review boundary/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Plan this movie/i })).toBeDisabled();
   });
 
   it("shows a plain-language live H3 monitor with advanced offline provenance", () => {

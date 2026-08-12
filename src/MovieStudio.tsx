@@ -25,6 +25,12 @@ type PromptField = { kind: "story" } | { kind: "imageAsset" } | {
   part: "description" | "embeddedAudioDescription";
 };
 type ActivePromptDraft = { requestId: string; field: PromptField; mode: PromptDraftMode; originalText: string };
+type LaunchWorkspace = "story" | "images" | "references" | "setup";
+type ProjectWorkspace = "plan" | "generate" | "edit" | "deliver";
+
+function sameMovieEdit(left: MovieEdit, right: MovieEdit): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 const defaultSettings: MovieSettings = {
   width: 1344,
@@ -192,10 +198,47 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
     };
   }, [project?.id, project?.status]);
 
+  useEffect(() => {
+    if (!project || creating || busy || project.status === "running" || sameMovieEdit(edit, project.edit)) return;
+    let active = true;
+    const projectId = project.id;
+    const draft = edit;
+    const timer = window.setTimeout(() => void saveMovieEdits(projectId, draft).then((next) => {
+      if (!active || activeProjectId.current !== projectId) return;
+      setProject(next);
+      setEdit((current) => sameMovieEdit(current, draft) ? next.edit : current);
+    }).catch((error) => {
+      if (active) onError(`Timeline autosave failed: ${String(error)}`);
+    }), 900);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [busy, creating, edit, onError, project]);
+
+  const saveCurrentEditIfNeeded = async () => {
+    if (!project || project.status === "running" || sameMovieEdit(edit, project.edit)) return;
+    const next = await saveMovieEdits(project.id, edit);
+    setProject(next);
+    setEdit(next.edit);
+  };
+
+  const beginNewProduction = async () => {
+    try {
+      await saveCurrentEditIfNeeded();
+      activeProjectId.current = undefined;
+      setCreating(true);
+      setProject(null);
+    } catch (error) {
+      onError(`Kestrel kept this production open because its latest timeline changes could not be saved: ${String(error)}`);
+    }
+  };
+
   const openProject = async (id: string) => {
     const previousId = activeProjectId.current;
-    activeProjectId.current = id;
     try {
+      await saveCurrentEditIfNeeded();
+      activeProjectId.current = id;
       const next = await getMovie(id);
       setProject(next); setEdit(next.edit); setCreating(false);
     } catch (error) { activeProjectId.current = previousId; onError(String(error)); }
@@ -354,7 +397,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   return (
     <div className="movie-studio">
       <aside className="movie-library">
-        <div className="movie-library-title"><span>Private movie library</span><button onClick={() => { activeProjectId.current = undefined; setCreating(true); setProject(null); }}><Plus size={15} /></button></div>
+        <div className="movie-library-title"><span>Private movie library</span><button aria-label="New production" onClick={() => void beginNewProduction()}><Plus size={15} /></button></div>
         <div className="movie-list">
           {movies.map((movie) => <button key={movie.id} className={project?.id === movie.id ? "active" : ""} onClick={() => void openProject(movie.id)}>
             <Film size={15} /><span><strong>{movie.title}</strong><small>{movie.phase} · {movie.clipCount} clips</small></span>
@@ -380,7 +423,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
         ) : (
           <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} preview={moviePreview} onError={onError} onEdit={setEdit}
             onProject={(next) => { activeProjectId.current = next.id; setProject(next); setEdit(next.edit); void refreshList(); }}
-            onNew={() => { activeProjectId.current = undefined; setCreating(true); setProject(null); }}
+            onNew={() => void beginNewProduction()}
             onCancel={() => void cancelMovie(project.id).then(setProject).catch((error) => onError(String(error)))}
             onResume={() => void resumeMovie(project.id).then(setProject).catch((error) => onError(String(error)))}
             onReveal={() => void revealMovie(project.id)}
@@ -412,19 +455,33 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
   const imageWriting = promptFieldMatches(promptDraftActive?.field, { kind: "imageAsset" });
   const promptBusy = Boolean(promptDraftActive);
   const statusField = promptDraftActive?.field ?? promptDraftLastField;
-  return <div className="movie-launch">
-    <div className="movie-launch-mark"><Clapperboard /></div>
-    <span className="eyebrow">Bonsai director · MiniMax H3 picture & sound</span>
-    <h1>Describe the movie.<br />Kestrel runs the studio.</h1>
-    <p>One prompt becomes a reviewed screenplay, continuity bible, native H3 picture-and-sound scenes, and an untouched review cut—entirely on this computer.</p>
+  const [workspace, setWorkspace] = useState<LaunchWorkspace>("story");
+  const referenceReady = referencesReady(references);
+  return <div className="movie-launch movie-production-shell">
+    <header className="studio-window-header">
+      <div className="movie-launch-mark"><Clapperboard /></div>
+      <span><small>Bonsai director · MiniMax H3 picture & sound</small><strong>New offline production</strong></span>
+      <p>Story, assets, direction, picture, and sound stay in one private production window.</p>
+    </header>
+    <nav className="studio-workspace-tabs" aria-label="New production workspaces">
+      <button className={workspace === "story" ? "active" : ""} onClick={() => setWorkspace("story")}><Sparkles /><span><strong>Story</strong><small>Write with a local model</small></span>{prompt.trim() && <Check />}</button>
+      <button className={workspace === "images" ? "active" : ""} onClick={() => setWorkspace("images")}><ImageIcon /><span><strong>Images</strong><small>Generate visual assets</small></span>{imageGenerations.some((item) => item.status === "complete") && <Check />}</button>
+      <button className={workspace === "references" ? "active" : ""} onClick={() => setWorkspace("references")}><Paperclip /><span><strong>References</strong><small>Bind media to the story</small></span>{references.length > 0 && <b>{references.length}</b>}</button>
+      <button className={workspace === "setup" ? "active" : ""} onClick={() => setWorkspace("setup")}><Settings2 /><span><strong>Setup</strong><small>Quality and controls</small></span><Check /></button>
+    </nav>
+    <div className={`studio-workspace-body launch-${workspace}`}>
+    {workspace === "story" && <section className="launch-workspace-panel story-room">
+      <div className="studio-room-heading"><span><small>Producer + local language model</small><strong>Shape the production brief together</strong></span><em>{prompt.length.toLocaleString()} / 65,536 characters</em></div>
     <div className="movie-prompt-box">
       <textarea aria-label="Movie brief" autoFocus maxLength={65536} value={prompt} readOnly={storyWriting} onChange={(event) => onPrompt(event.target.value)} placeholder="Write or paste your story here—even an A4-length brief—or ask any local model to develop an idea…" />
-      <div><span><Check size={14} /> Bonsai drafts, reviews, and repairs every H3 scene prompt</span><button disabled={busy || promptBusy || imageGenerating || prompt.trim().length < 3 || !referencesReady(references)} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Make movie</button></div>
+      <div><span><Check size={14} /> Bonsai drafts, reviews, and repairs every H3 scene prompt</span><small>Existing text can be treated as notes or an exact draft.</small></div>
     </div>
     <PromptAssistBar label="Movie brief" existing={prompt} mode={storyDraftMode} models={models} modelId={promptModelId}
       active={storyWriting} disabled={busy || imageGenerating || (promptBusy && !storyWriting)} status={promptFieldMatches(statusField, { kind: "story" }) ? promptDraftStatus : ""}
       onModel={onPromptModel} onMode={onStoryDraftMode} onGenerate={() => onGeneratePrompt({ kind: "story" }, storyDraftMode)} onStop={onStopPrompt} />
-    <ImageAssetLab
+      <div className="studio-room-assurance"><ShieldCheck /><span><strong>The producer remains in control.</strong><small>Tokens stream into this brief. Stop keeps the current text as an editable checkpoint; no public network or tools are available to the writing model.</small></span></div>
+    </section>}
+    {workspace === "images" && <div className="launch-workspace-panel"><ImageAssetLab
       prompt={imagePrompt} width={imageWidth} height={imageHeight} steps={imageSteps} seed={imageSeed}
       stabilize={imageStabilize} generating={imageGenerating} status={imageStatus} generations={imageGenerations} preview={imagePreview}
       references={references} advanced={advanced} expertEnabled={advancedEnabled} disabled={busy || promptBusy}
@@ -432,8 +489,8 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       onModel={onPromptModel} onDraftMode={onImageDraftMode} onDraft={() => onGeneratePrompt({ kind: "imageAsset" }, imageDraftMode)} onStopDraft={onStopPrompt}
       onPrompt={onImagePrompt} onCanvas={onImageCanvas} onSteps={onImageSteps} onSeed={onImageSeed}
       onStabilize={onImageStabilize} onGenerate={onGenerateImage} onStop={onStopImage} onUse={onUseGeneratedImage}
-    />
-    <section className="movie-reference-builder">
+    /></div>}
+    {workspace === "references" && <section className="movie-reference-builder launch-workspace-panel">
       <div className="movie-reference-heading"><div><span className="eyebrow">Producer references</span><strong>Show and tell H3 what must carry through</strong><small>Attach the actual media, then describe its job. Kestrel binds it natively per shot.</small></div><button disabled={busy || promptBusy} onClick={onAttach}><Paperclip /> Attach image, video, or audio</button></div>
       {references.length > 0 && <div className="movie-reference-grid">{references.map((reference) => {
         const labels = referenceDisplayTags(references, reference.assetId);
@@ -458,7 +515,9 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
         </article>;
       })}</div>}
       {!references.length && <div className="movie-reference-empty"><ImageIcon /><Video /><AudioLines /><span>Optional. Use references when identity, motion, camera, exact clip audio, or a visual language matters.</span></div>}
-    </section>
+    </section>}
+    {workspace === "setup" && <section className="launch-workspace-panel setup-room">
+      <div className="studio-room-heading"><span><small>Production setup</small><strong>Choose the working quality and review boundary</strong></span><em>Saved with the production</em></div>
     <div className="movie-presets">
       <button className={quality === "master" ? "active" : ""} onClick={() => onSettings({ ...settings, width: 1344, height: 768 })}><strong>Publish master</strong><span>1344 × 768 · highest H3 native canvas</span></button>
       <button className={quality === "preview" ? "active" : ""} onClick={() => onSettings({ ...settings, width: 864, height: 480 })}><strong>Faster draft</strong><span>864 × 480 · proven ~2½ min per clip</span></button>
@@ -480,6 +539,12 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     </div>}
     <label className="wide producer-pause-toggle"><span><input type="checkbox" checked={pauseAfterPlan} onChange={(event) => onPauseAfterPlan(event.target.checked)} /> Review the plan before rendering</span><small>Recommended. Edit scenes or redirect Bonsai before any H3 clip is rendered.</small></label>
     <div className="movie-capabilities"><span><Check />98,304 context</span><span><Check />32,768 max thinking</span><span><Check />32,768 output</span><span><Check />Untouched H3 audio</span><span><Check />Crash-safe masters</span></div>
+    </section>}
+    </div>
+    <footer className="studio-launch-footer">
+      <span>{prompt.trim().length < 3 ? "Add a story or ask a local model to propose one." : !referenceReady ? "Finish the descriptions for attached references." : "Ready for Bonsai to plan. You can review before H3 renders anything."}</span>
+      <button disabled={busy || promptBusy || imageGenerating || prompt.trim().length < 3 || !referenceReady} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Plan this movie</button>
+    </footer>
   </div>;
 }
 
@@ -590,7 +655,14 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, preview, onErr
 }) {
   const [draftPlan, setDraftPlan] = useState<MoviePlan | undefined>(project.plan);
   const [working, setWorking] = useState(false);
+  const [workspace, setWorkspace] = useState<ProjectWorkspace>(() => preferredProjectWorkspace(project));
   useEffect(() => setDraftPlan(project.plan), [project.id, project.plan]);
+  useEffect(() => setWorkspace(preferredProjectWorkspace(project)), [project.id]);
+  useEffect(() => {
+    if (project.status === "awaiting-review" || project.status === "planning-checkpoint") setWorkspace("plan");
+    else if (project.status === "running") setWorkspace(project.phase.includes("render") || project.clips.length ? "generate" : "plan");
+    else if (project.status === "complete" && project.clips.length) setWorkspace((current) => current === "plan" || current === "generate" ? "edit" : current);
+  }, [project.clips.length, project.phase, project.status]);
   const complete = project.clips.filter((clip) => clip.status === "complete").length;
   const progress = project.clips.length ? Math.round((complete / project.clips.length) * 100) : project.plan ? 10 : 3;
   const canResume = project.status === "planning-checkpoint" || ["failed", "cancelled", "interrupted"].includes(project.status);
@@ -608,50 +680,76 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, preview, onErr
       setWorking(false);
     }
   };
-  return <div className="movie-project-view">
-    <header className="movie-project-header">
-      <div><span className="eyebrow">{project.status === "complete" ? "Review cut ready" : project.phase}</span><h1>{project.title}</h1><p>{project.plan?.logline ?? project.prompt}</p></div>
-      <div className="movie-project-actions"><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={onCancel}><CircleStop /> Cancel production</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> {resumeLabel}</button>}</div>
+  const planningLive = project.status === "planning-checkpoint" || (project.status === "running" && ["writing", "agent-workspace", "resuming", "producer-revision"].includes(project.phase));
+  return <div className="movie-project-view movie-production-shell">
+    <header className="studio-project-bar">
+      <div><span className={`studio-project-state ${project.status}`}>{project.status === "running" ? <LoaderCircle className="spin" /> : project.status === "complete" ? <Check /> : <Clock3 />}{project.status === "complete" ? "Review cut ready" : project.phase}</span><span><strong>{project.title}</strong><small>{project.plan?.logline ?? project.prompt}</small></span></div>
+      <div className="movie-project-actions"><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={onCancel}><CircleStop /> Stop</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> {resumeLabel}</button>}</div>
     </header>
-    <div className={`movie-status-card ${project.status}`}>
-      <div>{project.status === "running" ? <LoaderCircle className="spin" /> : project.status === "complete" ? <Check /> : <Clock3 />}<span><strong>{project.detail}</strong><small>{complete} of {project.clips.length || "—"} H3 masters preserved · {project.renderer}</small></span></div>
+    <div className={`studio-production-strip ${project.status}`}>
+      <span>{project.status === "running" ? <LoaderCircle className="spin" /> : <ShieldCheck />}<strong>{project.detail}</strong><small>{complete} of {project.clips.length || "—"} H3 masters preserved · {project.renderer}</small></span>
       <div className="movie-progress"><i style={{ width: `${progress}%` }} /></div>
-      {project.error && <pre>{project.error}</pre>}
+      {project.error && <button title={project.error} onClick={() => onError(project.error)}>Production issue</button>}
     </div>
-    {preview && project.status === "running" && <LiveH3Preview event={preview} advanced={advancedEnabled} />}
-    {(project.status === "planning-checkpoint" || (project.status === "running" && ["writing", "agent-workspace", "resuming", "producer-revision"].includes(project.phase))) && <ProducerPlanningRoom project={project} advancedEnabled={advancedEnabled} onError={onError} />}
-    {project.finalPath && <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">{latestExport ? "Latest immutable timeline export" : "Assembled file"}</span><h2>{latestExport?.title ?? "Untouched H3 review cut"}</h2><small>{latestExport ? `${latestExport.preset} preset · ${latestExport.clipCount} timeline items · SHA-256 recorded` : "Native clip duration and audio are preserved. Only an explicit editor export creates an altered cut."}</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section>}
-    {project.references.length > 0 && <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}{reference.generation && <details><summary>Generated-image provenance</summary><small>Frame {reference.generation.frameIndex} · seed {reference.generation.seed} · {reference.generation.steps} steps · {reference.generation.width} × {reference.generation.height}</small><pre>{reference.generation.renderedPrompt}</pre><pre>{JSON.stringify(reference.generation.exactGraph, null, 2)}</pre></details>}</span></article>)}</div></section>}
-    {project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={working} onPlan={setDraftPlan}
-      onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
-      onRevise={(feedback) => runProjectAction(async () => {
-        await saveMoviePlan(project.id, draftPlan);
-        return reviseMoviePlan(project.id, feedback);
-      })}
-      onApprove={() => void runProjectAction(async () => {
-        await saveMoviePlan(project.id, draftPlan);
-        return approveMoviePlan(project.id);
-      })} />}
-    {project.plan && project.status !== "awaiting-review" && <section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Bonsai acceptance</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "attempt" : "attempts"}. {project.plan.qualityReview.verdict}</p></article></section>}
-    {project.clips.length > 0 && <section className="movie-timeline-section">
-      <div className="movie-section-heading"><div><span className="eyebrow">Producer cut room</span><h2>Edit with the whole production in view</h2><small>Audition masters and references, skim and blade the magnetic storyline, leave durable markers and notes, refine picture and native sound, then create an immutable deliverable.</small></div><div><button disabled={busy} onClick={onSave}><Save /> Save changes</button><button className="accent" disabled={busy || complete === 0 || project.status === "running" || !edit.clips.some((item) => item.enabled)} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export new cut</button></div></div>
-      <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} onRequestSave={onSave} />
-      <details className="movie-master-bin"><summary><span><Film /> Preserved master bin</span><small>{project.clips.length} original scenes · open for story notes, prompts, and Bonsai versioning</small></summary>
-        <div className="movie-clip-grid">{project.clips.map((clip) => {
-          const planned = project.plan?.clips.find((item) => item.id === clip.id);
-          return <article key={clip.id} className={`movie-clip ${clip.status}`}>
-            <div className="clip-preview">{clip.path ? <video controls preload="metadata" src={movieMediaUrl(clip.path)} /> : <div><LoaderCircle className={clip.status === "rendering" ? "spin" : ""} /><span>{clip.status}</span></div>}<span className="clip-number">{clip.index + 1}</span></div>
-            <div className="clip-copy"><div><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {clip.seed}{clip.versions.length ? ` · ${clip.versions.length} preserved versions` : ""}</small></span></div>
-              {planned && <div className="clip-organization"><span><b>Story job</b>{planned.purpose}</span><span><b>Transition</b>{planned.transition}</span><span><b>Continuity in</b>{planned.continuityIn}</span><span><b>Continuity out</b>{planned.continuityOut}</span>{planned.referenceIds.length > 0 && <span><b>References</b>{planned.referenceIds.map((id) => project.references.find((reference) => reference.assetId === id)?.name ?? id).join(", ")}</span>}</div>}
-              <details><summary>H3 renderer direction</summary><p>{clip.prompt}</p></details>
-              {advancedEnabled && clip.status === "complete" && planned && <SceneAssistant project={project} clip={clip} planned={planned} onProject={onProject} onError={onError} />}
-            </div>{clip.error && <pre>{clip.error}</pre>}
-          </article>;
-        })}</div>
-      </details>
-    </section>}
-    {project.exports?.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2><small>Every cut remains addressable with its decision-list sidecar and SHA-256 identity.</small></div></div><div>{[...project.exports].reverse().map((item) => <article key={item.id}><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s · {readableSize(item.bytes)}</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>)}</div></section>}
+    <nav className="studio-workspace-tabs project-tabs" aria-label="Production workspaces">
+      <button className={workspace === "plan" ? "active" : ""} onClick={() => setWorkspace("plan")}><Sparkles /><span><strong>Plan</strong><small>Direct and review Bonsai</small></span>{project.plan && <Check />}</button>
+      <button className={workspace === "generate" ? "active" : ""} disabled={!project.plan && !planningLive} onClick={() => setWorkspace("generate")}><Video /><span><strong>Generate</strong><small>H3 picture and sound</small></span>{project.status === "running" ? <LoaderCircle className="spin" /> : project.clips.length > 0 && <b>{complete}/{project.clips.length}</b>}</button>
+      <button className={workspace === "edit" ? "active" : ""} disabled={!project.clips.length} onClick={() => setWorkspace("edit")}><Film /><span><strong>Edit</strong><small>Storyline and native mix</small></span>{edit.clips.length > 0 && <b>{edit.clips.filter((item) => item.enabled).length}</b>}</button>
+      <button className={workspace === "deliver" ? "active" : ""} disabled={!project.clips.length} onClick={() => setWorkspace("deliver")}><Download /><span><strong>Deliver</strong><small>Review and immutable exports</small></span>{project.exports?.length > 0 && <b>{project.exports.length}</b>}</button>
+    </nav>
+    <div className={`studio-workspace-body project-${workspace}`}>
+      {workspace === "plan" && <section className="project-room-scroll">
+        {planningLive && <ProducerPlanningRoom project={project} advancedEnabled={advancedEnabled} onError={onError} />}
+        {project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={working} onPlan={setDraftPlan}
+          onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
+          onRevise={(feedback) => runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return reviseMoviePlan(project.id, feedback); })}
+          onApprove={() => void runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return approveMoviePlan(project.id); })} />}
+        {project.plan && project.status !== "awaiting-review" && !planningLive && <><div className="studio-room-heading"><span><small>Approved production plan</small><strong>Creative contract shared by producer and models</strong></span><em>{project.plan.clips.length} scenes</em></div><section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Bonsai acceptance</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "attempt" : "attempts"}. {project.plan.qualityReview.verdict}</p></article></section></>}
+      </section>}
+      {workspace === "generate" && <section className="project-room-scroll generation-room">
+        <div className="studio-room-heading"><span><small>Producer + MiniMax H3</small><strong>Watch generation and manage preserved masters</strong></span><em>{complete} / {project.clips.length || "—"} complete</em></div>
+        {preview && project.status === "running" && <LiveH3Preview event={preview} advanced={advancedEnabled} />}
+        {project.references.length > 0 && <ProductionReferences project={project} />}
+        <ProductionMasters project={project} advancedEnabled={advancedEnabled} onProject={onProject} onError={onError} />
+      </section>}
+      {workspace === "edit" && project.clips.length > 0 && <section className="project-edit-room">
+        <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} onRequestSave={onSave} />
+      </section>}
+      {workspace === "deliver" && <section className="project-room-scroll delivery-room">
+        <div className="studio-room-heading"><span><small>Producer delivery room</small><strong>Review, export, and recover every approved cut</strong></span><button className="accent" disabled={busy || complete === 0 || project.status === "running" || !edit.clips.some((item) => item.enabled)} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export current cut</button></div>
+        {project.finalPath ? <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">{latestExport ? "Latest immutable timeline export" : "Assembled file"}</span><h2>{latestExport?.title ?? "Untouched H3 review cut"}</h2><small>{latestExport ? `${latestExport.preset} preset · ${latestExport.clipCount} timeline items · SHA-256 recorded` : "Native clip duration and audio are preserved. Only an explicit editor export creates an altered cut."}</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section> : <div className="studio-room-empty"><Download /><strong>No deliverable yet</strong><span>Finish or review the storyline, then export a new immutable cut. Masters and prior decisions remain untouched.</span></div>}
+        {project.exports?.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2><small>Every cut remains addressable with its decision-list sidecar and SHA-256 identity.</small></div></div><div>{[...project.exports].reverse().map((item) => <article key={item.id}><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s · {readableSize(item.bytes)}</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>)}</div></section>}
+      </section>}
+    </div>
   </div>;
+}
+
+function preferredProjectWorkspace(project: MovieProject): ProjectWorkspace {
+  if (project.status === "awaiting-review" || project.status === "planning-checkpoint") return "plan";
+  if (project.status === "running") return project.clips.length || project.phase.includes("render") ? "generate" : "plan";
+  if (project.clips.length) return "edit";
+  return "plan";
+}
+
+function ProductionReferences({ project }: { project: MovieProject }) {
+  return <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}{reference.generation && <details><summary>Generated-image provenance</summary><small>Frame {reference.generation.frameIndex} · seed {reference.generation.seed} · {reference.generation.steps} steps · {reference.generation.width} × {reference.generation.height}</small><pre>{reference.generation.renderedPrompt}</pre><pre>{JSON.stringify(reference.generation.exactGraph, null, 2)}</pre></details>}</span></article>)}</div></section>;
+}
+
+function ProductionMasters({ project, advancedEnabled, onProject, onError }: { project: MovieProject; advancedEnabled: boolean; onProject: (project: MovieProject) => void; onError: (message: string) => void }) {
+  return <section className="production-masters"><div className="movie-section-heading"><div><span className="eyebrow">Preserved master bin</span><h2>Generated scenes</h2><small>Each master remains immutable. Advanced producers can ask the local model for a new scene version here.</small></div></div><div className="movie-clip-grid">{project.clips.map((clip) => <ProductionMasterCard key={clip.id} project={project} clip={clip} advancedEnabled={advancedEnabled} onProject={onProject} onError={onError} />)}</div>{!project.clips.length && <div className="studio-room-empty"><Video /><strong>Waiting for H3 masters</strong><span>Generation status and live approximate frames appear here as soon as the approved plan enters rendering.</span></div>}</section>;
+}
+
+function ProductionMasterCard({ project, clip, advancedEnabled, onProject, onError }: { project: MovieProject; clip: RenderedClip; advancedEnabled: boolean; onProject: (project: MovieProject) => void; onError: (message: string) => void }) {
+  const planned = project.plan?.clips.find((item) => item.id === clip.id);
+  const mediaUrl = movieMediaUrl(clip.path);
+  return <article className={`movie-clip ${clip.status}`}>
+    <div className="clip-preview">{mediaUrl ? <video controls preload="metadata" src={mediaUrl} /> : <div><LoaderCircle className={clip.status === "rendering" ? "spin" : ""} /><span>{clip.status === "complete" ? "Preserved master" : clip.status}</span></div>}<span className="clip-number">{clip.index + 1}</span></div>
+    <div className="clip-copy"><div><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {clip.seed}{clip.versions.length ? ` · ${clip.versions.length} preserved versions` : ""}</small></span></div>
+      {planned && <div className="clip-organization"><span><b>Story job</b>{planned.purpose}</span><span><b>Transition</b>{planned.transition}</span><span><b>Continuity in</b>{planned.continuityIn}</span><span><b>Continuity out</b>{planned.continuityOut}</span>{planned.referenceIds.length > 0 && <span><b>References</b>{planned.referenceIds.map((id) => project.references.find((reference) => reference.assetId === id)?.name ?? id).join(", ")}</span>}</div>}
+      <details><summary>H3 renderer direction</summary><p>{clip.prompt}</p></details>
+      {advancedEnabled && clip.status === "complete" && planned && <SceneAssistant project={project} clip={clip} planned={planned} onProject={onProject} onError={onError} />}
+    </div>{clip.error && <pre>{clip.error}</pre>}
+  </article>;
 }
 
 function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
