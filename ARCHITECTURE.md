@@ -21,7 +21,7 @@ Rust application boundary
   |     `-- native image/audio blocks only for advertised projector capabilities
   |-- MovieStudio: durable orchestration + non-destructive edit decisions
   |     |-- same single Bonsai inference lease for creative direction
-  |     |-- at most two sequential archive tools; no parallel calls
+  |     |-- one project-local movie_workspace tool; no research/archive tools
   |     |-- ComfyUI MiniMax H3 on fixed 127.0.0.1:8188
   |     |-- immutable native-audio MP4 masters + continuity stills
   |     `-- FFmpeg first-cut and edited exports

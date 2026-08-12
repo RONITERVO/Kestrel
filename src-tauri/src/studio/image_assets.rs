@@ -419,7 +419,7 @@ impl MovieStudio {
             &format!("kestrel_images/{}/candidate", generation.id),
             preview_available,
         );
-        write_json_atomic(
+        replace_json_recoverable(
             &self.image_generation_dir(&generation.id).join("graph.json"),
             &generation.exact_graph,
         )?;
@@ -738,6 +738,49 @@ fn emit_image_event(
     );
 }
 
+fn replace_json_recoverable(path: &Path, value: &impl Serialize) -> Result<(), StudioError> {
+    let bytes = serde_json::to_vec_pretty(value)?;
+    let temporary = path.with_extension("json.replacement.tmp");
+    let backup = path.with_extension("previous.json");
+    fs::write(&temporary, bytes)?;
+
+    // Prefer the platform/filesystem's atomic destination replacement. If it is unavailable,
+    // retain a recovery copy before using the remove-then-rename fallback.
+    match fs::rename(&temporary, path) {
+        Ok(()) => Ok(()),
+        Err(_) if path.is_file() => replace_file_with_backup(path, &temporary, &backup),
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            Err(StudioError::Render(format!(
+                "could not atomically replace {}: {error}",
+                path.display()
+            )))
+        }
+    }
+}
+
+fn replace_file_with_backup(
+    path: &Path,
+    temporary: &Path,
+    backup: &Path,
+) -> Result<(), StudioError> {
+    fs::copy(path, backup)?;
+    fs::remove_file(path)?;
+    if let Err(replace_error) = fs::rename(temporary, path) {
+        let restore_result = fs::copy(backup, path);
+        let _ = fs::remove_file(temporary);
+        return match restore_result {
+            Ok(_) => Err(StudioError::Io(replace_error)),
+            Err(restore_error) => Err(StudioError::Render(format!(
+                "could not replace {} ({replace_error}) or restore its recovery copy ({restore_error}); the previous graph remains at {}",
+                path.display(),
+                backup.display()
+            ))),
+        };
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,6 +879,35 @@ mod tests {
             generation.preview_decoder_sha256,
             "unavailable (legacy generation)"
         );
+    }
+
+    #[test]
+    fn finalized_graph_replacement_keeps_a_readable_graph() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("graph.json");
+        fs::write(&path, br#"{"revision":"initial"}"#).unwrap();
+
+        replace_json_recoverable(&path, &json!({"revision":"finalized"})).unwrap();
+
+        let graph: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(graph["revision"], "finalized");
+    }
+
+    #[test]
+    fn replacement_fallback_preserves_the_previous_graph_as_a_backup() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("graph.json");
+        let temporary = folder.path().join("graph.json.replacement.tmp");
+        let backup = folder.path().join("graph.previous.json");
+        fs::write(&path, br#"{"revision":"initial"}"#).unwrap();
+        fs::write(&temporary, br#"{"revision":"finalized"}"#).unwrap();
+
+        replace_file_with_backup(&path, &temporary, &backup).unwrap();
+
+        let graph: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let previous: Value = serde_json::from_slice(&fs::read(&backup).unwrap()).unwrap();
+        assert_eq!(graph["revision"], "finalized");
+        assert_eq!(previous["revision"], "initial");
     }
 
     #[tokio::test]

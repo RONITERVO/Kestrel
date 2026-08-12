@@ -631,12 +631,15 @@ export function LiveH3Preview({ event, advanced }: { event: MovieRenderPreviewEv
   </section>;
 }
 
-function previewProvenanceAvailable(generation: MovieImageAssetGeneration): boolean {
+export function previewProvenanceAvailable(generation: Pick<MovieImageAssetGeneration, "previewNodeRevision" | "previewDecoderRevision" | "previewDecoderSha256">): boolean {
   return [
     generation.previewNodeRevision,
     generation.previewDecoderRevision,
     generation.previewDecoderSha256,
-  ].every((value) => !value.startsWith("unavailable"));
+  ].every((value) => {
+    const normalized = value.trim();
+    return normalized.length > 0 && !normalized.startsWith("unavailable");
+  });
 }
 
 function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, preview, references, advanced, expertEnabled, disabled, models, modelId, draftMode, draftActive, draftStatus, onModel, onDraftMode, onDraft, onStopDraft, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
@@ -668,7 +671,7 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
         <label className="image-stabilize"><input type="checkbox" checked={stabilize} disabled={generating} onChange={(event) => onStabilize(event.target.checked)} /><span><strong>Stabilize as a still image</strong><small>Recommended for consistent faces, geometry, and lettering.</small></span></label>
         {generating ? <button className="image-stop" onClick={onStop}><CircleStop /> Stop image pass</button> : <button disabled={disabled || prompt.trim().length < 3} onClick={onGenerate}><ImageIcon /> Generate candidates</button>}
       </div>
-      {advanced && <div className="image-asset-advanced"><NumberField label="Image sampling steps" value={steps} min={1} max={expertEnabled ? 100 : 40} step={1} onChange={onSteps} /><NumberField label="Image seed (0 = random)" value={seed} min={0} max={Number.MAX_SAFE_INTEGER} step={1} onChange={onSeed} /></div>}
+      {advanced && <div className="image-asset-advanced"><NumberField label="Image sampling steps" value={steps} min={1} max={expertEnabled ? 100 : 40} step={1} disabled={generating} onChange={onSteps} /><NumberField label="Image seed (0 = random)" value={seed} min={0} max={Number.MAX_SAFE_INTEGER} step={1} disabled={generating} onChange={onSeed} /></div>}
       {(generating || status) && <div className={`image-asset-status ${generating ? "running" : ""}`}>{generating && <LoaderCircle className="spin" />}<span>{status}</span></div>}
       {preview && (generating || preview.kind === "finished") && <LiveH3Preview event={preview} advanced={advanced} />}
     </div>
@@ -1255,7 +1258,10 @@ function referencesReady(references: PendingMovieReference[]): boolean {
 }
 
 function NumberField({ label, value, min, max, step, disabled = false, onChange }: { label: string; value: number; min: number; max: number; step: number; disabled?: boolean; onChange: (value: number) => void }) {
-  return <label>{label}<input type="number" disabled={disabled} value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} /></label>;
+  return <label>{label}<input type="number" disabled={disabled} value={value} min={min} max={max} step={step} onChange={(event) => {
+    const next = event.currentTarget.valueAsNumber;
+    if (Number.isFinite(next) && next >= min && next <= max) onChange(next);
+  }} /></label>;
 }
 
 function SelectField({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {

@@ -20,17 +20,36 @@ use super::{
 // before any visible prose arrives. Use its tested ceiling when the configured runtime allows it,
 // while respecting the runtime's explicit output limit.
 const PROMPT_COLLABORATOR_MAX_TOKENS: u32 = 32_768;
-const PROMPT_COLLABORATOR_THINKING_BUDGET: u32 = 32_768;
+const PROMPT_COLLABORATOR_THINKING_BUDGET: u32 = 24_576;
+const PROMPT_COLLABORATOR_VISIBLE_OUTPUT_TOKENS: u32 = 8_192;
 const MAX_REFERENCE_DESCRIPTION_BYTES: usize = 4_000;
 const STORY_SYSTEM_PROMPT: &str = "You are an offline story collaborator for film producers. Write vivid, coherent story prose that can serve directly as a movie-production brief. Preserve concrete characters, causality, locations, visual motifs, tone, dialogue intentions, and the ending. Do not discuss your process, address the producer, use Markdown headings, or add a preamble. Return only story or production-brief prose. You have no tools and cannot take actions.";
 const IMAGE_SYSTEM_PROMPT: &str = "You are an offline visual-development prompt writer for film producers. Write one complete, standalone main prompt for a MiniMax H3 still-image asset: a character identity, location, prop, poster, texture plate, or style frame. Specify the subject, composition, camera viewpoint, lighting, palette, materials, atmosphere, and exact visible lettering when requested. Keep identities and story facts consistent with the supplied movie brief. Do not add a no-motion or stillness suffix because Kestrel applies that separately. Never use reserved runtime tags such as <Picture 1>, <Video 1>, or <Audio 1>. Do not discuss your process, use Markdown, or add a preamble. Return only the image description. You have no tools and cannot take actions or inspect media.";
 const REFERENCE_SYSTEM_PROMPT: &str = "You are an offline producer-reference editor. Write one complete, producer-facing placement description that tells Bonsai exactly what an attached image, video, or audio asset contributes to a movie and where it should or should not be used. Cover identity, wardrobe, composition, motion, camera, timing, voice, music, ambience, or effects only when relevant. Use the movie brief for continuity. Do not claim to have inspected the media; you receive only its name, type, and the producer's text. Never use reserved runtime tags such as <Picture 1>, <Video 1>, or <Audio 1>. Do not discuss your process, use Markdown, or add a preamble. Return only the placement description. You have no tools and cannot take actions.";
 
-fn prompt_inference_allowance(settings: &ControlSettings) -> (u32, u32) {
-    (
-        PROMPT_COLLABORATOR_MAX_TOKENS.min(settings.max_output_tokens),
-        PROMPT_COLLABORATOR_THINKING_BUDGET.min(settings.max_output_tokens),
-    )
+#[derive(Debug, PartialEq, Eq)]
+struct PromptInferenceAllowance {
+    thinking_budget_tokens: u32,
+    visible_output_tokens: u32,
+}
+
+impl PromptInferenceAllowance {
+    fn generation_limit(&self) -> u32 {
+        self.thinking_budget_tokens
+            .saturating_add(self.visible_output_tokens)
+    }
+}
+
+fn prompt_inference_allowance(settings: &ControlSettings) -> PromptInferenceAllowance {
+    let configured_limit = PROMPT_COLLABORATOR_MAX_TOKENS.min(settings.max_output_tokens);
+    let thinking_budget =
+        PROMPT_COLLABORATOR_THINKING_BUDGET.min(configured_limit.saturating_mul(3) / 4);
+    let visible_output_allowance = PROMPT_COLLABORATOR_VISIBLE_OUTPUT_TOKENS
+        .min(configured_limit.saturating_sub(thinking_budget));
+    PromptInferenceAllowance {
+        thinking_budget_tokens: thinking_budget,
+        visible_output_tokens: visible_output_allowance,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -143,7 +162,9 @@ impl PromptDraftJob {
         } else {
             output_limit
         };
-        let (max_tokens, thinking_budget_tokens) = prompt_inference_allowance(&settings);
+        let allowance = prompt_inference_allowance(&settings);
+        let max_tokens = allowance.generation_limit();
+        let thinking_budget_tokens = allowance.thinking_budget_tokens;
         let (temperature, top_p, top_k) = sampling(request.target);
         let body = json!({
             "model": lease.connection.model_id,
@@ -535,13 +556,20 @@ mod tests {
             max_output_tokens: 4_096,
             ..ControlSettings::default()
         };
-        assert_eq!(prompt_inference_allowance(&limited), (4_096, 4_096));
+        let allowance = prompt_inference_allowance(&limited);
+        assert_eq!(allowance.generation_limit(), 4_096);
+        assert_eq!(allowance.thinking_budget_tokens, 3_072);
+        assert_eq!(allowance.visible_output_tokens, 1_024);
 
         let uncapped = ControlSettings {
             max_output_tokens: 65_536,
             ..ControlSettings::default()
         };
-        assert_eq!(prompt_inference_allowance(&uncapped), (32_768, 32_768));
+        let allowance = prompt_inference_allowance(&uncapped);
+        assert_eq!(allowance.generation_limit(), 32_768);
+        assert_eq!(allowance.thinking_budget_tokens, 24_576);
+        assert_eq!(allowance.visible_output_tokens, 8_192);
+        assert!(allowance.generation_limit() <= uncapped.max_output_tokens);
     }
 
     #[test]

@@ -6,6 +6,8 @@
 
 use serde_json::Value;
 
+const MAX_SSE_EVENT_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug, PartialEq)]
 pub(super) enum OpenAiStreamEvent {
     Message(Value),
@@ -22,6 +24,19 @@ impl OpenAiSseDecoder {
     pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<OpenAiStreamEvent>, String> {
         if self.completed && !chunk.iter().all(u8::is_ascii_whitespace) {
             return Err("the model stream sent data after its completion marker".into());
+        }
+        let mut unterminated_line_bytes = self.buffer.len();
+        for byte in chunk {
+            if *byte == b'\n' {
+                unterminated_line_bytes = 0;
+            } else {
+                unterminated_line_bytes = unterminated_line_bytes.saturating_add(1);
+                if unterminated_line_bytes > MAX_SSE_EVENT_BYTES {
+                    return Err(format!(
+                        "the model stream event exceeds the {MAX_SSE_EVENT_BYTES}-byte limit"
+                    ));
+                }
+            }
         }
         self.buffer.extend_from_slice(chunk);
         self.decode_complete_lines()
@@ -143,5 +158,14 @@ mod tests {
         decoder.push(b"data: [DONE]\n").unwrap();
         let error = decoder.push(b"data: {\"choices\":[]}\n").unwrap_err();
         assert!(error.contains("after its completion marker"));
+    }
+
+    #[test]
+    fn decoder_rejects_an_oversized_unterminated_event_before_buffering_it() {
+        let mut decoder = OpenAiSseDecoder::default();
+        let oversized = vec![b'x'; MAX_SSE_EVENT_BYTES + 1];
+        let error = decoder.push(&oversized).unwrap_err();
+        assert!(error.contains("event exceeds"));
+        assert!(decoder.buffer.is_empty());
     }
 }

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emptyPlannedClip, LiveH3Preview, MovieStudio, ProducerCopilot, ProducerPlanDesk, referenceDisplayTags } from "./MovieStudio";
+import { emptyPlannedClip, LiveH3Preview, MovieStudio, previewProvenanceAvailable, ProducerCopilot, ProducerPlanDesk, referenceDisplayTags } from "./MovieStudio";
 import type { ModelInfo, MovieEdit, MoviePlan, MovieProject, MovieRenderPreviewEvent, PendingMovieReference } from "./types";
 
 afterEach(cleanup);
@@ -77,8 +77,37 @@ describe("Kestrel Movie Studio", () => {
     fireEvent.click(screen.getByRole("button", { name: /SetupQuality and controls/i }));
     fireEvent.click(screen.getByRole("button", { name: /Advanced production controls/i }));
     fireEvent.click(screen.getByRole("button", { name: /ImagesGenerate visual assets/i }));
-    expect(screen.getByLabelText("Image sampling steps")).toHaveValue(20);
-    expect(screen.getByLabelText("Image seed \(0 = random\)")).toHaveValue(0);
+    const steps = screen.getByLabelText("Image sampling steps");
+    const seed = screen.getByLabelText("Image seed \(0 = random\)");
+    expect(steps).toHaveValue(20);
+    expect(seed).toHaveValue(0);
+    fireEvent.change(steps, { target: { value: "" } });
+    expect(steps).toHaveValue(20);
+    fireEvent.change(steps, { target: { value: "101" } });
+    expect(steps).toHaveValue(20);
+    fireEvent.change(steps, { target: { value: "21" } });
+    expect(steps).toHaveValue(21);
+    fireEvent.click(screen.getByRole("button", { name: /Generate candidates/i }));
+    expect(steps).toBeDisabled();
+    expect(seed).toBeDisabled();
+  });
+
+  it("treats blank and legacy image-preview provenance as unavailable", () => {
+    expect(previewProvenanceAvailable({
+      previewNodeRevision: "kj-revision",
+      previewDecoderRevision: "taehv-revision",
+      previewDecoderSha256: "decoder-sha256",
+    })).toBe(true);
+    expect(previewProvenanceAvailable({
+      previewNodeRevision: "   ",
+      previewDecoderRevision: "taehv-revision",
+      previewDecoderSha256: "decoder-sha256",
+    })).toBe(false);
+    expect(previewProvenanceAvailable({
+      previewNodeRevision: "kj-revision",
+      previewDecoderRevision: " unavailable (legacy generation)",
+      previewDecoderSha256: "decoder-sha256",
+    })).toBe(false);
   });
 
   it("keeps the whole creation process in bounded editor workspaces", () => {
