@@ -4,7 +4,10 @@
 //! and lossless transcript persistence live here so every Studio model call follows the same
 //! bounded contract.
 
-use super::{write_json_atomic, MovieSettings, StudioError, MOVIE_THINKING_BUDGET};
+use super::{
+    model_stream::{OpenAiSseDecoder, OpenAiStreamEvent},
+    write_json_atomic, MovieSettings, StudioError, MOVIE_THINKING_BUDGET,
+};
 use crate::runtime::{authorized, ModelConnection};
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -268,30 +271,13 @@ pub(super) async fn complete_stream(
     }
 
     let mut stream = response.bytes_stream();
-    let mut buffer = Vec::<u8>::new();
+    let mut decoder = OpenAiSseDecoder::default();
     let mut content = String::new();
     let mut tool_calls = Vec::<StreamedToolCall>::new();
-    let mut completed = false;
     let mut reasoning_announced = false;
-    loop {
-        let next = tokio::select! {
-            value = stream.next() => value,
-            _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
-        };
-        let Some(chunk) = next else { break };
-        buffer.extend_from_slice(&chunk?);
-        while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
-            let line = buffer.drain(..=end).collect::<Vec<_>>();
-            let line = String::from_utf8_lossy(&line);
-            let Some(data) = line.trim().strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data == "[DONE]" {
-                completed = true;
-                continue;
-            }
-            let Ok(value) = serde_json::from_str::<Value>(data) else {
+    let mut accept_events = |events: Vec<OpenAiStreamEvent>| {
+        for event in events {
+            let OpenAiStreamEvent::Message(value) = event else {
                 continue;
             };
             if let Some(token) = value
@@ -318,13 +304,22 @@ pub(super) async fn complete_stream(
                 collect_tool_deltas(&mut tool_calls, deltas, &mut on_event);
             }
         }
+    };
+    loop {
+        let next = tokio::select! {
+            value = stream.next() => value,
+            _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
+        };
+        let Some(chunk) = next else { break };
+        let events = decoder
+            .push(&chunk?)
+            .map_err(|error| StudioError::Planning(format!("movie agent stream error: {error}")))?;
+        accept_events(events);
     }
-    if !completed {
-        return Err(StudioError::Planning(
-            "movie agent stream ended before its completion marker; the durable workspace and previous accepted turns are intact"
-                .into(),
-        ));
-    }
+    let final_events = decoder
+        .finish()
+        .map_err(|error| StudioError::Planning(format!("movie agent stream error: {error}")))?;
+    accept_events(final_events);
     let tool_calls = tool_calls
         .into_iter()
         .enumerate()

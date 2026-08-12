@@ -32,12 +32,70 @@ pub(super) struct PlanningControl {
 pub struct MoviePlanningEvent {
     pub project_id: String,
     pub sequence: u64,
-    pub kind: String,
-    pub stage: String,
+    pub kind: PlanningEventKind,
+    pub stage: PlanningStage,
     pub text: String,
     pub session: u32,
     pub step: u32,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum PlanningEventKind {
+    #[serde(rename = "token")]
+    Token,
+    #[serde(rename = "advanced-token")]
+    AdvancedToken,
+    #[serde(rename = "reasoning")]
+    Reasoning,
+    #[serde(rename = "turn-start")]
+    TurnStart,
+    #[serde(rename = "turn-complete")]
+    TurnComplete,
+    #[serde(rename = "activity")]
+    Activity,
+    #[serde(rename = "tool-result")]
+    ToolResult,
+    #[serde(rename = "direction-queued")]
+    DirectionQueued,
+    #[serde(rename = "checkpoint-requested")]
+    CheckpointRequested,
+    #[serde(rename = "checkpoint-saved")]
+    CheckpointSaved,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum PlanningStage {
+    #[serde(rename = "planning")]
+    Planning,
+    #[serde(rename = "thinking")]
+    Thinking,
+    #[serde(rename = "producer")]
+    Producer,
+    #[serde(rename = "native-check")]
+    NativeCheck,
+    #[serde(rename = "checkpoint")]
+    Checkpoint,
+    #[serde(rename = "model-text")]
+    ModelText,
+    #[serde(rename = "tool-arguments")]
+    ToolArguments,
+    #[serde(rename = "list")]
+    List,
+    #[serde(rename = "read")]
+    Read,
+    #[serde(rename = "read_many")]
+    ReadMany,
+    #[serde(rename = "write")]
+    Write,
+    #[serde(rename = "write_batch")]
+    WriteBatch,
+    #[serde(rename = "delete")]
+    Delete,
+    #[serde(rename = "check")]
+    Check,
+    #[serde(rename = "submit")]
+    Submit,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -273,6 +331,24 @@ mod tests {
             latest_assistant_text(&transcript),
             "current producer-facing text"
         );
+    }
+
+    #[test]
+    fn planning_event_wire_names_are_an_explicit_frontend_contract() {
+        let event = MoviePlanningEvent {
+            project_id: "movie-1".into(),
+            sequence: 7,
+            kind: PlanningEventKind::AdvancedToken,
+            stage: PlanningStage::ToolArguments,
+            text: "{\"action\":".into(),
+            session: 2,
+            step: 9,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["kind"], "advanced-token");
+        assert_eq!(value["stage"], "tool-arguments");
+        assert_eq!(value["projectId"], "movie-1");
     }
 
     #[test]

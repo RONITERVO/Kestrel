@@ -529,8 +529,8 @@ export interface MoviePlanningSnapshot {
 export interface MoviePlanningEvent {
   projectId: string;
   sequence: number;
-  kind: "token" | "advanced-token" | "reasoning" | "turn-start" | "turn-complete" | "activity" | "tool-result" | "direction-queued" | "checkpoint-requested" | "checkpoint-saved" | string;
-  stage: string;
+  kind: "token" | "advanced-token" | "reasoning" | "turn-start" | "turn-complete" | "activity" | "tool-result" | "direction-queued" | "checkpoint-requested" | "checkpoint-saved";
+  stage: "planning" | "thinking" | "producer" | "native-check" | "checkpoint" | "model-text" | "tool-arguments" | "list" | "read" | "read_many" | "write" | "write_batch" | "delete" | "check" | "submit";
   text: string;
   session: number;
   step: number;

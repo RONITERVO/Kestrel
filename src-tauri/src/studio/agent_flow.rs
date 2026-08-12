@@ -4,13 +4,16 @@
 //! dispatch, checkpoints, and independent-review repair rounds. It deliberately does not define
 //! model wire formats or workspace mutation semantics.
 
+use super::agent_lifecycle::{AgentLifecycle, ReviewDecision, TurnDecision};
 use super::agent_protocol::{self, AgentTranscript, AssistantTurn};
-use super::movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult};
-use super::planning::PlanningControl;
+use super::movie_agent::{
+    MovieAgentWorkspace, WorkspaceAction, WorkspaceOutcome, WorkspaceToolRequest,
+    WorkspaceToolResult,
+};
+use super::planning::{PlanningControl, PlanningEventKind, PlanningStage};
 use super::{
     check_cancel, has_meaningful_prose, prompts, IndependentReviewRequest, MoviePlan, MovieProject,
-    MovieSettings, MovieStudio, ProducerFeedbackRecord, StudioError, MAX_MOVIE_AGENT_SESSIONS,
-    MOVIE_AGENT_SESSION_STEPS,
+    MovieSettings, MovieStudio, ProducerFeedbackRecord, StudioError, MOVIE_AGENT_SESSION_STEPS,
 };
 use crate::{models::ResearchSettings, runtime::ModelConnection};
 use serde_json::{json, Value};
@@ -37,35 +40,6 @@ pub(super) struct MovieAgentRequest<'a> {
 pub(super) struct MovieAgentProgress<'a> {
     pub project: &'a mut MovieProject,
     pub app: Option<&'a AppHandle>,
-}
-
-#[derive(Debug, Default)]
-struct AgentCursor {
-    session: u32,
-    absolute_step: u32,
-    independent_review_round: u32,
-}
-
-impl AgentCursor {
-    fn new() -> Self {
-        Self {
-            session: 1,
-            ..Self::default()
-        }
-    }
-
-    fn next_step(&mut self) -> u32 {
-        self.absolute_step = self.absolute_step.saturating_add(1);
-        self.absolute_step
-    }
-
-    fn next_session(&mut self) {
-        self.session = self.session.saturating_add(1);
-    }
-
-    fn position(&self) -> (u32, u32) {
-        (self.session, self.absolute_step)
-    }
 }
 
 enum ReviewDisposition {
@@ -97,25 +71,23 @@ pub(super) async fn run(
         request.producer_feedback,
     )?;
     let tools = MovieAgentWorkspace::tools();
-    let mut cursor = AgentCursor::new();
+    let mut lifecycle = AgentLifecycle::new();
 
     'sessions: loop {
         check_cancel(request.cancel)?;
-        ensure_session_budget(&cursor)?;
-        archive_previous_transcript(&workspace, &transcript_path, cursor.session)?;
-        let instruction = if cursor.session == 1 && !resuming_existing_workspace {
+        lifecycle.ensure_session_budget()?;
+        archive_previous_transcript(&workspace, &transcript_path, lifecycle.session())?;
+        let instruction = if lifecycle.session() == 1 && !resuming_existing_workspace {
             prompts::INITIAL_INSTRUCTION
         } else {
             prompts::RESUME_INSTRUCTION
         };
         let mut transcript = AgentTranscript::begin(
             transcript_path.clone(),
-            cursor.absolute_step,
+            lifecycle.absolute_step(),
             prompts::MOVIE_AGENT_SYSTEM,
             instruction,
         )?;
-        let mut no_tool_streak = 0_u32;
-
         for _ in 0..MOVIE_AGENT_SESSION_STEPS {
             check_cancel(request.cancel)?;
             let control = apply_producer_controls(
@@ -123,15 +95,15 @@ pub(super) async fn run(
                 project,
                 &workspace,
                 &mut transcript,
-                &cursor,
+                &lifecycle,
                 app,
             )?;
             if control.checkpoint_requested {
                 return Ok(MovieAgentOutcome::Checkpointed);
             }
 
-            let step = cursor.next_step();
-            announce_turn(studio, project, &cursor, app)?;
+            let step = lifecycle.begin_step();
+            announce_turn(studio, project, &lifecycle, app)?;
             let request_messages =
                 transcript.request_messages(workspace.authoritative_story_memory()?);
             let stream_request = StreamRequest {
@@ -142,7 +114,7 @@ pub(super) async fn run(
                 research: request.research,
                 cancel: request.cancel,
                 project_id: &project.id,
-                position: cursor.position(),
+                position: lifecycle.position(),
                 app,
             };
             let response = match complete_agent_stream(studio, stream_request).await {
@@ -157,7 +129,7 @@ pub(super) async fn run(
                         "Bonsai response failed safely at agent step {step}; Kestrel is checkpointing and resuming in a fresh context."
                     );
                     studio.persist_emit(project, app)?;
-                    cursor.next_session();
+                    lifecycle.restart_session();
                     restart_delay(request.cancel).await?;
                     continue 'sessions;
                 }
@@ -166,28 +138,27 @@ pub(super) async fn run(
             let turn = AssistantTurn::from_response(&response)?;
             transcript.push(turn.history_message(), step)?;
             if !turn.has_tool_calls() {
-                no_tool_streak = no_tool_streak.saturating_add(1);
                 transcript.push(
                     json!({"role":"user","content":prompts::CONTINUE_WITH_TOOLS}),
                     step,
                 )?;
-                if no_tool_streak >= 3 {
+                if lifecycle.record_model_turn(false) == TurnDecision::RestartSession {
                     project.detail = format!(
                         "Bonsai stopped using its workspace for three turns at agent step {step}; Kestrel is checkpointing and resuming in a fresh context."
                     );
                     studio.persist_emit(project, app)?;
-                    cursor.next_session();
+                    lifecycle.restart_session();
                     restart_delay(request.cancel).await?;
                     continue 'sessions;
                 }
                 continue;
             }
 
-            no_tool_streak = 0;
+            lifecycle.record_model_turn(true);
             for call in turn.tool_calls() {
                 check_cancel(request.cancel)?;
                 let (call_id, result) =
-                    execute_workspace_call(studio, &mut workspace, call, project, &cursor, app);
+                    execute_workspace_call(studio, &mut workspace, call, project, &lifecycle, app);
                 let submitted = result.submitted;
                 transcript.push(
                     json!({
@@ -202,7 +173,7 @@ pub(super) async fn run(
                         studio,
                         project,
                         &mut transcript,
-                        &mut cursor,
+                        &mut lifecycle,
                         plan,
                         SubmissionReview {
                             prompt: request.prompt,
@@ -223,17 +194,8 @@ pub(super) async fn run(
                 }
             }
         }
-        cursor.next_session();
+        lifecycle.restart_session();
     }
-}
-
-fn ensure_session_budget(cursor: &AgentCursor) -> Result<(), StudioError> {
-    if cursor.session > MAX_MOVIE_AGENT_SESSIONS {
-        return Err(StudioError::Planning(format!(
-            "Bonsai did not submit a valid movie after {MAX_MOVIE_AGENT_SESSIONS} context sessions; the durable workspace is intact for a later retry"
-        )));
-    }
-    Ok(())
 }
 
 fn archive_previous_transcript(
@@ -257,7 +219,7 @@ fn apply_producer_controls(
     project: &mut MovieProject,
     workspace: &MovieAgentWorkspace,
     transcript: &mut AgentTranscript,
-    cursor: &AgentCursor,
+    lifecycle: &AgentLifecycle,
     app: Option<&AppHandle>,
 ) -> Result<PlanningControl, StudioError> {
     let control = studio.consume_planning_control(&project.id, |control| {
@@ -273,7 +235,7 @@ fn apply_producer_controls(
                         "content":prompts::producer_direction(&direction.text),
                     })
                 }),
-                cursor.absolute_step,
+                lifecycle.absolute_step(),
             )?;
         } else {
             transcript.persist()?;
@@ -305,21 +267,22 @@ fn apply_producer_controls(
 fn announce_turn(
     studio: &MovieStudio,
     project: &mut MovieProject,
-    cursor: &AgentCursor,
+    lifecycle: &AgentLifecycle,
     app: Option<&AppHandle>,
 ) -> Result<(), StudioError> {
     project.phase = "agent-workspace".into();
     project.detail = format!(
         "Bonsai is editing and checking the durable movie codebase (agent step {}, context session {}).",
-        cursor.absolute_step, cursor.session
+        lifecycle.absolute_step(),
+        lifecycle.session()
     );
     studio.persist_emit(project, app)?;
     studio.emit_planning(
         &project.id,
-        "turn-start",
-        "planning",
-        format!("Bonsai is planning turn {}.", cursor.absolute_step),
-        cursor.position(),
+        PlanningEventKind::TurnStart,
+        PlanningStage::Planning,
+        format!("Bonsai is planning turn {}.", lifecycle.absolute_step()),
+        lifecycle.position(),
         app,
     );
     Ok(())
@@ -330,7 +293,7 @@ fn execute_workspace_call(
     workspace: &mut MovieAgentWorkspace,
     call: &Value,
     project: &MovieProject,
-    cursor: &AgentCursor,
+    lifecycle: &AgentLifecycle,
     app: Option<&AppHandle>,
 ) -> (String, WorkspaceToolResult) {
     let call_id = call
@@ -346,6 +309,7 @@ fn execute_workspace_call(
         return (
             call_id,
             WorkspaceToolResult {
+                outcome: WorkspaceOutcome::Rejected,
                 message: format!("ERROR: unknown tool {name}"),
                 submitted: None,
             },
@@ -356,28 +320,30 @@ fn execute_workspace_call(
             .map(|request| {
                 studio.emit_planning(
                     &project.id,
-                    "activity",
-                    &request.action,
+                    PlanningEventKind::Activity,
+                    request.action.planning_stage(),
                     producer_activity(&request),
-                    cursor.position(),
+                    lifecycle.position(),
                     app,
                 );
                 let result = workspace.execute(request);
                 studio.emit_planning(
                     &project.id,
-                    "tool-result",
-                    "native-check",
-                    producer_tool_result(&result.message),
-                    cursor.position(),
+                    PlanningEventKind::ToolResult,
+                    PlanningStage::NativeCheck,
+                    producer_tool_result(&result),
+                    lifecycle.position(),
                     app,
                 );
                 result
             })
             .unwrap_or_else(|error| WorkspaceToolResult {
+                outcome: WorkspaceOutcome::Rejected,
                 message: format!("ERROR: invalid movie_workspace arguments: {error}"),
                 submitted: None,
             }),
         None => WorkspaceToolResult {
+            outcome: WorkspaceOutcome::Rejected,
             message: "ERROR: invalid movie_workspace arguments: missing arguments".into(),
             submitted: None,
         },
@@ -406,7 +372,7 @@ async fn review_submission(
     studio: &MovieStudio,
     project: &mut MovieProject,
     transcript: &mut AgentTranscript,
-    cursor: &mut AgentCursor,
+    lifecycle: &mut AgentLifecycle,
     mut plan: MoviePlan,
     request: SubmissionReview<'_>,
 ) -> Result<ReviewDisposition, StudioError> {
@@ -447,8 +413,7 @@ async fn review_submission(
         return Ok(ReviewDisposition::Accepted(plan));
     }
 
-    cursor.independent_review_round = cursor.independent_review_round.saturating_add(1);
-    if cursor.independent_review_round >= 3 {
+    if lifecycle.record_review_rejection() == ReviewDecision::Exhausted {
         return Err(StudioError::Planning(format!(
             "the independent whole-film reviewer still found {} blocking issue(s) after three repair rounds; the durable workspace and review input are preserved",
             blocking.len()
@@ -466,7 +431,7 @@ async fn review_submission(
                 review_feedback
             ),
         }),
-        cursor.absolute_step,
+        lifecycle.absolute_step(),
     )?;
     project.phase = "agent-workspace".into();
     project.detail = format!(
@@ -515,32 +480,32 @@ async fn complete_agent_stream(
         |event| match event {
             agent_protocol::StreamEvent::Content(token) => studio.emit_planning(
                 request.project_id,
-                "token",
-                "model-text",
+                PlanningEventKind::Token,
+                PlanningStage::ModelText,
                 token,
                 request.position,
                 request.app,
             ),
             agent_protocol::StreamEvent::ReasoningStarted => studio.emit_planning(
                 request.project_id,
-                "reasoning",
-                "thinking",
+                PlanningEventKind::Reasoning,
+                PlanningStage::Thinking,
                 "Bonsai is reasoning locally before its next production action.",
                 request.position,
                 request.app,
             ),
             agent_protocol::StreamEvent::ToolArgumentsStarted => studio.emit_planning(
                 request.project_id,
-                "activity",
-                "planning",
+                PlanningEventKind::Activity,
+                PlanningStage::Planning,
                 "Bonsai is streaming its next structured production action.",
                 request.position,
                 request.app,
             ),
             agent_protocol::StreamEvent::ToolArguments(fragment) => studio.emit_planning(
                 request.project_id,
-                "advanced-token",
-                "tool-arguments",
+                PlanningEventKind::AdvancedToken,
+                PlanningStage::ToolArguments,
                 fragment,
                 request.position,
                 request.app,
@@ -550,8 +515,8 @@ async fn complete_agent_stream(
     .await?;
     studio.emit_planning(
         request.project_id,
-        "turn-complete",
-        "planning",
+        PlanningEventKind::TurnComplete,
+        PlanningStage::Planning,
         "Bonsai completed the model turn and is applying its production action.",
         request.position,
         request.app,
@@ -566,39 +531,45 @@ async fn restart_delay(cancel: &CancellationToken) -> Result<(), StudioError> {
 }
 
 fn producer_activity(request: &WorkspaceToolRequest) -> String {
-    match request.action.as_str() {
-        "list" => "Bonsai is reviewing the durable production workspace.".into(),
-        "read" | "read_many" => {
+    match request.action {
+        WorkspaceAction::List => "Bonsai is reviewing the durable production workspace.".into(),
+        WorkspaceAction::Read | WorkspaceAction::ReadMany => {
             if request.path.is_empty() {
                 "Bonsai is reviewing the brief and current scene work.".into()
             } else {
                 format!("Bonsai is reviewing {}.", request.path)
             }
         }
-        "write" | "write_batch" => "Bonsai is updating the screenplay and scene directions.".into(),
-        "delete" => "Bonsai is removing an obsolete draft scene.".into(),
-        "check" => "Bonsai is running native H3 lint and the full production review.".into(),
-        "submit" => "Bonsai is submitting the checked plan for producer review.".into(),
-        _ => "Bonsai is applying a production action.".into(),
+        WorkspaceAction::Write | WorkspaceAction::WriteBatch => {
+            "Bonsai is updating the screenplay and scene directions.".into()
+        }
+        WorkspaceAction::Delete => "Bonsai is removing an obsolete draft scene.".into(),
+        WorkspaceAction::Check => {
+            "Bonsai is running native H3 lint and the full production review.".into()
+        }
+        WorkspaceAction::Submit => {
+            "Bonsai is submitting the checked plan for producer review.".into()
+        }
     }
 }
 
-fn producer_tool_result(message: &str) -> String {
-    if message.starts_with("CHECK PASS") {
-        "Native checks passed. Bonsai is completing the required whole-film review.".into()
-    } else if message.starts_with("CHECK FAIL") {
-        let issues = message.lines().filter(|line| line.starts_with('-')).count();
-        format!(
+fn producer_tool_result(result: &WorkspaceToolResult) -> String {
+    match result.outcome {
+        WorkspaceOutcome::CheckPassed => {
+            "Native checks passed. Bonsai is completing the required whole-film review.".into()
+        }
+        WorkspaceOutcome::CheckFailed { issue_count } => format!(
             "Native review found {} issue{}; Bonsai is repairing the affected scenes.",
-            issues.max(1),
-            if issues == 1 { "" } else { "s" }
-        )
-    } else if message.starts_with("SUBMITTED") {
-        "The checked plan was submitted successfully.".into()
-    } else if message.starts_with("ERROR") || message.starts_with("SUBMIT BLOCKED") {
-        "The production action was rejected safely; Bonsai received the exact diagnostic and will repair it.".into()
-    } else {
-        "The durable workspace accepted Bonsai's production action.".into()
+            issue_count.max(1),
+            if issue_count == 1 { "" } else { "s" }
+        ),
+        WorkspaceOutcome::Submitted => "The checked plan was submitted successfully.".into(),
+        WorkspaceOutcome::SubmissionBlocked | WorkspaceOutcome::Rejected => {
+            "The production action was rejected safely; Bonsai received the exact diagnostic and will repair it.".into()
+        }
+        WorkspaceOutcome::Observed | WorkspaceOutcome::Mutated => {
+            "The durable workspace accepted Bonsai's production action.".into()
+        }
     }
 }
 
@@ -610,23 +581,25 @@ mod tests {
     fn workspace_arguments_accept_string_and_object_encodings() {
         let string = json!(r#"{"action":"list"}"#);
         let object = json!({"action":"list"});
-        assert_eq!(parse_workspace_request(&string).unwrap().action, "list");
-        assert_eq!(parse_workspace_request(&object).unwrap().action, "list");
-    }
-
-    #[test]
-    fn cursor_keeps_session_and_absolute_step_separate() {
-        let mut cursor = AgentCursor::new();
-        assert_eq!(cursor.next_step(), 1);
-        cursor.next_session();
-        assert_eq!(cursor.position(), (2, 1));
-        assert_eq!(cursor.next_step(), 2);
+        assert_eq!(
+            parse_workspace_request(&string).unwrap().action,
+            WorkspaceAction::List
+        );
+        assert_eq!(
+            parse_workspace_request(&object).unwrap().action,
+            WorkspaceAction::List
+        );
     }
 
     #[test]
     fn producer_status_copy_is_stable_and_nontechnical() {
         let request = parse_workspace_request(&json!({"action":"check"})).unwrap();
         assert!(producer_activity(&request).contains("native H3 lint"));
-        assert!(producer_tool_result("CHECK FAIL\n- issue").contains("1 issue"));
+        let result = WorkspaceToolResult {
+            outcome: WorkspaceOutcome::CheckFailed { issue_count: 1 },
+            message: "copy may change without affecting control flow".into(),
+            submitted: None,
+        };
+        assert!(producer_tool_result(&result).contains("1 issue"));
     }
 }

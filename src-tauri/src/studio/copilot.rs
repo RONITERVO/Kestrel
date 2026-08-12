@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
 use super::{
+    model_stream::{OpenAiSseDecoder, OpenAiStreamEvent},
     validate_movie_edit, write_json_atomic, MovieCopilotTurn, MovieEdit, MovieProject, MovieStudio,
     StudioError, TimelineMarker,
 };
@@ -237,10 +238,9 @@ impl MovieCopilotJob {
         );
 
         let mut stream = response.bytes_stream();
-        let mut buffer = Vec::<u8>::new();
+        let mut decoder = OpenAiSseDecoder::default();
         let mut response_text = String::new();
         let mut tool_calls = Vec::<StreamedToolCall>::new();
-        let mut completed = false;
         let mut reasoning_announced = false;
         loop {
             let next = tokio::select! {
@@ -252,97 +252,48 @@ impl MovieCopilotJob {
                 }
             };
             let Some(chunk) = next else { break };
-            buffer.extend_from_slice(&chunk.map_err(|error| error.to_string())?);
-            while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
-                let line = buffer.drain(..=end).collect::<Vec<_>>();
-                let line = String::from_utf8_lossy(&line);
-                let Some(data) = line.trim().strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
-                if data == "[DONE]" {
-                    completed = true;
-                    continue;
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    record_turn(&studio, &request, &response_text, "interrupted", "").await?;
+                    return Err(format!(
+                        "producer copilot stream transport failed: {error}; visible partial advice was preserved in project history"
+                    ));
                 }
-                let Ok(value) = serde_json::from_str::<Value>(data) else {
-                    continue;
-                };
-                if let Some(token) = value
-                    .pointer("/choices/0/delta/content")
-                    .and_then(Value::as_str)
-                {
-                    let remaining = MAX_RESPONSE_BYTES.saturating_sub(response_text.len());
-                    let accepted = utf8_prefix(token, remaining);
-                    if !accepted.is_empty() {
-                        response_text.push_str(accepted);
-                        emit(
-                            &app,
-                            &request.request_id,
-                            &request.project_id,
-                            "token",
-                            (Some(accepted), Some(&model.name)),
-                            None,
-                            None,
-                        );
-                    }
+            };
+            let events = match decoder.push(&chunk) {
+                Ok(events) => events,
+                Err(error) => {
+                    record_turn(&studio, &request, &response_text, "interrupted", "").await?;
+                    return Err(format!("producer copilot stream error: {error}; visible partial advice was preserved in project history"));
                 }
-                if !reasoning_announced
-                    && value
-                        .pointer("/choices/0/delta/reasoning_content")
-                        .or_else(|| value.pointer("/choices/0/delta/reasoning"))
-                        .and_then(Value::as_str)
-                        .is_some()
-                {
-                    reasoning_announced = true;
-                    emit(
-                        &app,
-                        &request.request_id,
-                        &request.project_id,
-                        "reasoning",
-                        (None, Some(&model.name)),
-                        None,
-                        None,
-                    );
-                }
-                if let Some(deltas) = value
-                    .pointer("/choices/0/delta/tool_calls")
-                    .and_then(Value::as_array)
-                {
-                    for delta in deltas {
-                        let index = delta
-                            .get("index")
-                            .and_then(Value::as_u64)
-                            .unwrap_or_default() as usize;
-                        while tool_calls.len() <= index {
-                            tool_calls.push(StreamedToolCall::default());
-                        }
-                        if let Some(fragment) =
-                            delta.pointer("/function/name").and_then(Value::as_str)
-                        {
-                            tool_calls[index].name.push_str(fragment);
-                        }
-                        if let Some(fragment) =
-                            delta.pointer("/function/arguments").and_then(Value::as_str)
-                        {
-                            tool_calls[index].arguments.push_str(fragment);
-                            emit(
-                                &app,
-                                &request.request_id,
-                                &request.project_id,
-                                "advanced-token",
-                                (Some(fragment), Some(&model.name)),
-                                None,
-                                None,
-                            );
-                        }
-                    }
-                }
+            };
+            accept_copilot_stream_events(
+                events,
+                &app,
+                &request,
+                &model.name,
+                &mut response_text,
+                &mut tool_calls,
+                &mut reasoning_announced,
+            );
+        }
+        let final_events = match decoder.finish() {
+            Ok(events) => events,
+            Err(error) => {
+                record_turn(&studio, &request, &response_text, "interrupted", "").await?;
+                return Err(format!("producer copilot stream error: {error}; visible partial advice was preserved in project history"));
             }
-        }
-        if !completed {
-            record_turn(&studio, &request, &response_text, "interrupted", "").await?;
-            return Err("producer copilot stream ended before completion; visible partial advice was preserved in project history".into());
-        }
+        };
+        accept_copilot_stream_events(
+            final_events,
+            &app,
+            &request,
+            &model.name,
+            &mut response_text,
+            &mut tool_calls,
+            &mut reasoning_announced,
+        );
 
         let proposal = match parse_proposal(&project, &request.edit, &tool_calls) {
             Ok(value) => value,
@@ -391,6 +342,89 @@ impl MovieCopilotJob {
             proposal,
         );
         Ok(())
+    }
+}
+
+fn accept_copilot_stream_events(
+    events: Vec<OpenAiStreamEvent>,
+    app: &AppHandle,
+    request: &MovieCopilotRequest,
+    model_name: &str,
+    response_text: &mut String,
+    tool_calls: &mut Vec<StreamedToolCall>,
+    reasoning_announced: &mut bool,
+) {
+    for event in events {
+        let OpenAiStreamEvent::Message(value) = event else {
+            continue;
+        };
+        if let Some(token) = value
+            .pointer("/choices/0/delta/content")
+            .and_then(Value::as_str)
+        {
+            let remaining = MAX_RESPONSE_BYTES.saturating_sub(response_text.len());
+            let accepted = utf8_prefix(token, remaining);
+            if !accepted.is_empty() {
+                response_text.push_str(accepted);
+                emit(
+                    app,
+                    &request.request_id,
+                    &request.project_id,
+                    "token",
+                    (Some(accepted), Some(model_name)),
+                    None,
+                    None,
+                );
+            }
+        }
+        if !*reasoning_announced
+            && value
+                .pointer("/choices/0/delta/reasoning_content")
+                .or_else(|| value.pointer("/choices/0/delta/reasoning"))
+                .and_then(Value::as_str)
+                .is_some()
+        {
+            *reasoning_announced = true;
+            emit(
+                app,
+                &request.request_id,
+                &request.project_id,
+                "reasoning",
+                (None, Some(model_name)),
+                None,
+                None,
+            );
+        }
+        if let Some(deltas) = value
+            .pointer("/choices/0/delta/tool_calls")
+            .and_then(Value::as_array)
+        {
+            for delta in deltas {
+                let index = delta
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as usize;
+                while tool_calls.len() <= index {
+                    tool_calls.push(StreamedToolCall::default());
+                }
+                if let Some(fragment) = delta.pointer("/function/name").and_then(Value::as_str) {
+                    tool_calls[index].name.push_str(fragment);
+                }
+                if let Some(fragment) = delta.pointer("/function/arguments").and_then(Value::as_str)
+                {
+                    tool_calls[index].arguments.push_str(fragment);
+                    emit(
+                        app,
+                        &request.request_id,
+                        &request.project_id,
+                        "advanced-token",
+                        (Some(fragment), Some(model_name)),
+                        None,
+                        None,
+                    );
+                }
+            }
+        }
     }
 }
 

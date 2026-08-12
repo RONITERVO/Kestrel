@@ -1,6 +1,6 @@
 use super::{
     producer_intent_issues, prompt_quality_issues, prompts, MoviePlan, MovieQualityReview,
-    MovieReference, MovieSettings, PlannedClip, StudioError,
+    MovieReference, MovieSettings, PlannedClip, PlanningStage, StudioError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -69,13 +69,41 @@ struct WorkspaceState {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WorkspaceToolRequest {
-    pub(super) action: String,
+    pub(super) action: WorkspaceAction,
     #[serde(default)]
     pub(super) path: String,
     #[serde(default)]
     content: String,
     #[serde(default)]
     files: Vec<WorkspaceFileWrite>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum WorkspaceAction {
+    List,
+    Read,
+    ReadMany,
+    Write,
+    WriteBatch,
+    Delete,
+    Check,
+    Submit,
+}
+
+impl WorkspaceAction {
+    pub(super) fn planning_stage(self) -> PlanningStage {
+        match self {
+            Self::List => PlanningStage::List,
+            Self::Read => PlanningStage::Read,
+            Self::ReadMany => PlanningStage::ReadMany,
+            Self::Write => PlanningStage::Write,
+            Self::WriteBatch => PlanningStage::WriteBatch,
+            Self::Delete => PlanningStage::Delete,
+            Self::Check => PlanningStage::Check,
+            Self::Submit => PlanningStage::Submit,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,8 +113,20 @@ struct WorkspaceFileWrite {
 }
 
 pub(super) struct WorkspaceToolResult {
+    pub(super) outcome: WorkspaceOutcome,
     pub(super) message: String,
     pub(super) submitted: Option<MoviePlan>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WorkspaceOutcome {
+    Observed,
+    Mutated,
+    CheckPassed,
+    CheckFailed { issue_count: usize },
+    SubmissionBlocked,
+    Submitted,
+    Rejected,
 }
 
 pub(super) struct MovieAgentWorkspace {
@@ -268,6 +308,7 @@ impl MovieAgentWorkspace {
         match self.try_execute(request) {
             Ok(result) => result,
             Err(error) => WorkspaceToolResult {
+                outcome: WorkspaceOutcome::Rejected,
                 message: format!("ERROR: {error}"),
                 submitted: None,
             },
@@ -278,10 +319,16 @@ impl MovieAgentWorkspace {
         &mut self,
         request: WorkspaceToolRequest,
     ) -> Result<WorkspaceToolResult, StudioError> {
-        match request.action.as_str() {
-            "list" => Ok(self.result(self.list_files()?, None)),
-            "read" => Ok(self.result(self.read_file(&request.path)?, None)),
-            "read_many" => {
+        match request.action {
+            WorkspaceAction::List => {
+                Ok(self.result(WorkspaceOutcome::Observed, self.list_files()?, None))
+            }
+            WorkspaceAction::Read => Ok(self.result(
+                WorkspaceOutcome::Observed,
+                self.read_file(&request.path)?,
+                None,
+            )),
+            WorkspaceAction::ReadMany => {
                 if request.files.is_empty() || request.files.len() > MAX_TOOL_FILES {
                     return Err(StudioError::Invalid(
                         "read_many needs 1 to 8 workspace paths".into(),
@@ -305,13 +352,17 @@ impl MovieAgentWorkspace {
                     }
                     output.push_str(&section);
                 }
-                Ok(self.result(output, None))
+                Ok(self.result(WorkspaceOutcome::Observed, output, None))
             }
-            "write" => {
+            WorkspaceAction::Write => {
                 self.write_file(&request.path, &request.content)?;
-                Ok(self.result(format!("WROTE {}", request.path), None))
+                Ok(self.result(
+                    WorkspaceOutcome::Mutated,
+                    format!("WROTE {}", request.path),
+                    None,
+                ))
             }
-            "write_batch" => {
+            WorkspaceAction::WriteBatch => {
                 let batch_limit = (self.max_clips + 1).min(MAX_TOOL_FILES);
                 if request.files.is_empty() || request.files.len() > batch_limit {
                     return Err(StudioError::Invalid(format!(
@@ -330,9 +381,13 @@ impl MovieAgentWorkspace {
                     self.write_validated_file(&file.path, &file.content)?;
                     paths.push(file.path);
                 }
-                Ok(self.result(format!("WROTE {}", paths.join(", ")), None))
+                Ok(self.result(
+                    WorkspaceOutcome::Mutated,
+                    format!("WROTE {}", paths.join(", ")),
+                    None,
+                ))
             }
-            "delete" => {
+            WorkspaceAction::Delete => {
                 let path = writable_path(&request.path)?;
                 if path == "movie.json" {
                     return Err(StudioError::Invalid(
@@ -345,9 +400,9 @@ impl MovieAgentWorkspace {
                 if target.is_file() {
                     fs::remove_file(target)?;
                 }
-                Ok(self.result(format!("DELETED {path}"), None))
+                Ok(self.result(WorkspaceOutcome::Mutated, format!("DELETED {path}"), None))
             }
-            "check" => {
+            WorkspaceAction::Check => {
                 let (plan, issues) = self.compile_and_check()?;
                 self.state.mutations_since_check = 0;
                 if issues.is_empty() {
@@ -360,6 +415,7 @@ impl MovieAgentWorkspace {
                         prompts::SECOND_CLEAN_CHECK
                     };
                     Ok(self.result(
+                        WorkspaceOutcome::CheckPassed,
                         format!(
                             "CHECK PASS: {} scenes, {:.1} seconds. {next}",
                             plan.clips.len(),
@@ -371,20 +427,36 @@ impl MovieAgentWorkspace {
                     self.state.last_checked_revision = Some(self.state.revision);
                     self.state.clean_check_passes = 0;
                     self.persist_state()?;
-                    Ok(self.result(format_issues(&issues), None))
+                    Ok(self.result(
+                        WorkspaceOutcome::CheckFailed {
+                            issue_count: issues.len(),
+                        },
+                        format_issues(&issues),
+                        None,
+                    ))
                 }
             }
-            "submit" => {
+            WorkspaceAction::Submit => {
                 let (mut plan, issues) = self.compile_and_check()?;
                 if !issues.is_empty() {
                     self.state.clean_check_passes = 0;
                     self.persist_state()?;
-                    return Ok(self.result(format_issues(&issues), None));
+                    return Ok(self.result(
+                        WorkspaceOutcome::CheckFailed {
+                            issue_count: issues.len(),
+                        },
+                        format_issues(&issues),
+                        None,
+                    ));
                 }
                 if self.state.last_checked_revision != Some(self.state.revision)
                     || self.state.clean_check_passes < 2
                 {
-                    return Ok(self.result(prompts::SUBMIT_BLOCKED.into(), None));
+                    return Ok(self.result(
+                        WorkspaceOutcome::SubmissionBlocked,
+                        prompts::SUBMIT_BLOCKED.into(),
+                        None,
+                    ));
                 }
                 plan.quality_review = MovieQualityReview {
                     attempts: self.state.clean_check_passes,
@@ -392,6 +464,7 @@ impl MovieAgentWorkspace {
                     verdict: "Bonsai completed an incremental workspace build, native H3 lint, and full code-review pass.".into(),
                 };
                 Ok(self.result(
+                    WorkspaceOutcome::Submitted,
                     format!(
                         "SUBMITTED: {} scenes, {:.1} seconds. The app will now preserve the canonical plan.",
                         plan.clips.len(),
@@ -400,15 +473,20 @@ impl MovieAgentWorkspace {
                     Some(plan),
                 ))
             }
-            _ => Err(StudioError::Invalid(format!(
-                "unknown movie workspace action: {}",
-                request.action
-            ))),
         }
     }
 
-    fn result(&self, message: String, submitted: Option<MoviePlan>) -> WorkspaceToolResult {
-        WorkspaceToolResult { message, submitted }
+    fn result(
+        &self,
+        outcome: WorkspaceOutcome,
+        message: String,
+        submitted: Option<MoviePlan>,
+    ) -> WorkspaceToolResult {
+        WorkspaceToolResult {
+            outcome,
+            message,
+            submitted,
+        }
     }
 
     fn list_files(&self) -> Result<String, StudioError> {
@@ -1247,7 +1325,7 @@ mod tests {
             .unwrap();
         }
         let result = workspace.execute(WorkspaceToolRequest {
-            action: "read_many".into(),
+            action: WorkspaceAction::ReadMany,
             path: String::new(),
             content: String::new(),
             files: (1..=3)
@@ -1257,6 +1335,7 @@ mod tests {
                 })
                 .collect(),
         });
+        assert_eq!(result.outcome, WorkspaceOutcome::Rejected);
         assert!(result.message.contains("aggregate limit"));
         fs::remove_dir_all(root).unwrap();
     }
@@ -1353,22 +1432,27 @@ mod tests {
         workspace.write_file("movie.json", &metadata).unwrap();
         workspace.write_file("scenes/001.json", &scene).unwrap();
         let blocked = workspace.execute(WorkspaceToolRequest {
-            action: "write".into(),
+            action: WorkspaceAction::Write,
             path: "scenes/001.json".into(),
             content: scene.clone(),
             files: Vec::new(),
         });
+        assert_eq!(blocked.outcome, WorkspaceOutcome::Rejected);
         assert!(blocked.message.contains("CHECK REQUIRED"));
         assert_eq!(workspace.state.revision, 2);
 
         let checked = workspace
             .try_execute(WorkspaceToolRequest {
-                action: "check".into(),
+                action: WorkspaceAction::Check,
                 path: String::new(),
                 content: String::new(),
                 files: Vec::new(),
             })
             .unwrap();
+        assert!(matches!(
+            checked.outcome,
+            WorkspaceOutcome::CheckFailed { issue_count } if issue_count > 0
+        ));
         assert!(checked.message.contains("CHECK FAIL"));
         assert_eq!(workspace.state.mutations_since_check, 0);
         workspace.write_file("scenes/001.json", &scene).unwrap();
@@ -1413,7 +1497,7 @@ mod tests {
         .to_string();
         workspace
             .try_execute(WorkspaceToolRequest {
-                action: "write_batch".into(),
+                action: WorkspaceAction::WriteBatch,
                 path: String::new(),
                 content: String::new(),
                 files: vec![
@@ -1430,12 +1514,16 @@ mod tests {
             .unwrap();
         let failed = workspace
             .try_execute(WorkspaceToolRequest {
-                action: "check".into(),
+                action: WorkspaceAction::Check,
                 path: String::new(),
                 content: String::new(),
                 files: Vec::new(),
             })
             .unwrap();
+        assert!(matches!(
+            failed.outcome,
+            WorkspaceOutcome::CheckFailed { issue_count } if issue_count > 0
+        ));
         assert!(failed.message.contains("prompt has 2 words"));
 
         let mut prompt = String::from(
@@ -1461,7 +1549,7 @@ mod tests {
         .to_string();
         workspace
             .try_execute(WorkspaceToolRequest {
-                action: "write".into(),
+                action: WorkspaceAction::Write,
                 path: "scenes/001.json".into(),
                 content: repaired_scene,
                 files: Vec::new(),
@@ -1470,23 +1558,25 @@ mod tests {
         for expected_pass in 1..=2 {
             let checked = workspace
                 .try_execute(WorkspaceToolRequest {
-                    action: "check".into(),
+                    action: WorkspaceAction::Check,
                     path: String::new(),
                     content: String::new(),
                     files: Vec::new(),
                 })
                 .unwrap();
+            assert_eq!(checked.outcome, WorkspaceOutcome::CheckPassed);
             assert!(checked.message.contains("CHECK PASS"));
             assert_eq!(workspace.state.clean_check_passes, expected_pass);
         }
         let submitted = workspace
             .try_execute(WorkspaceToolRequest {
-                action: "submit".into(),
+                action: WorkspaceAction::Submit,
                 path: String::new(),
                 content: String::new(),
                 files: Vec::new(),
             })
             .unwrap();
+        assert_eq!(submitted.outcome, WorkspaceOutcome::Submitted);
         assert!(submitted.submitted.is_some());
         assert_eq!(submitted.submitted.unwrap().quality_review.score, 100);
         fs::remove_dir_all(root).unwrap();

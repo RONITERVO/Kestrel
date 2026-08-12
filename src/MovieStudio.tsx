@@ -1039,8 +1039,8 @@ function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
   </section>;
 }
 
-function friendlyPlanningStage(stage: string): string {
-  const names: Record<string, string> = {
+function friendlyPlanningStage(stage: MoviePlanningEvent["stage"]): string {
+  const names: Record<MoviePlanningEvent["stage"], string> = {
     planning: "Model turn",
     thinking: "Local reasoning",
     producer: "Producer control",
@@ -1051,10 +1051,13 @@ function friendlyPlanningStage(stage: string): string {
     read_many: "Scene review",
     write: "Scene edit",
     write_batch: "Scene edit",
+    delete: "Scene removal",
     check: "Native checks",
     submit: "Plan submission",
+    "model-text": "Model response",
+    "tool-arguments": "Structured action",
   };
-  return names[stage] ?? "Planning";
+  return names[stage];
 }
 
 export function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise, onApprove }: {

@@ -1,3 +1,8 @@
+//! Durable offline movie Studio facade.
+//!
+//! Maintainers should read `studio/README.md` before changing model-assisted flows or persistence
+//! boundaries. Child modules own protocol, lifecycle, workspace, preview, and copilot concerns.
+
 use crate::{models::ResearchSettings, runtime::ModelConnection};
 use chrono::Utc;
 use reqwest::Client;
@@ -22,10 +27,12 @@ use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
 mod agent_flow;
+mod agent_lifecycle;
 mod agent_protocol;
 mod copilot;
 mod image_assets;
 mod live_preview;
+mod model_stream;
 mod movie_agent;
 mod planning;
 mod prompt_collaboration;
@@ -48,7 +55,7 @@ use live_preview::{
     emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget, PREVIEW_NODE_ID,
 };
 use movie_agent::MovieAgentWorkspace;
-pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot};
+pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningStage};
 pub use prompt_collaboration::{
     emit_error as emit_prompt_draft_error, emit_settled as emit_prompt_draft_settled,
     validate_request as validate_prompt_draft_request, PromptDraftJob, PromptDraftRequest,
@@ -1149,8 +1156,8 @@ impl MovieStudio {
     fn emit_planning(
         &self,
         id: &str,
-        kind: &str,
-        stage: &str,
+        kind: PlanningEventKind,
+        stage: PlanningStage,
         text: impl Into<String>,
         position: (u32, u32),
         app: Option<&AppHandle>,
@@ -1159,8 +1166,8 @@ impl MovieStudio {
         let event = MoviePlanningEvent {
             project_id: id.into(),
             sequence: self.planning_sequence.fetch_add(1, Ordering::Relaxed),
-            kind: kind.into(),
-            stage: stage.into(),
+            kind,
+            stage,
             text: text.into(),
             session: position.0,
             step: position.1,
@@ -1258,8 +1265,8 @@ impl MovieStudio {
         };
         self.emit_planning(
             id,
-            "direction-queued",
-            "producer",
+            PlanningEventKind::DirectionQueued,
+            PlanningStage::Producer,
             direction.text,
             (0, 0),
             app,
@@ -1292,8 +1299,8 @@ impl MovieStudio {
         }
         self.emit_planning(
             id,
-            "checkpoint-requested",
-            "producer",
+            PlanningEventKind::CheckpointRequested,
+            PlanningStage::Producer,
             "Checkpoint requested. Bonsai will stop after the current safe model turn.",
             (0, 0),
             app,
@@ -1689,8 +1696,8 @@ impl MovieStudio {
             self.persist_emit(&mut project, app)?;
             self.emit_planning(
                 id,
-                "checkpoint-saved",
-                "checkpoint",
+                PlanningEventKind::CheckpointSaved,
+                PlanningStage::Checkpoint,
                 "Safe planning checkpoint saved.",
                 (0, 0),
                 app,

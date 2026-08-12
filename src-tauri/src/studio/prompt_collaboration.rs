@@ -11,7 +11,10 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
-use super::MAX_MOVIE_PROMPT_BYTES;
+use super::{
+    model_stream::{OpenAiSseDecoder, OpenAiStreamEvent},
+    MAX_MOVIE_PROMPT_BYTES,
+};
 
 // Prompt collaboration is an explicit producer action and may need a long private reasoning pass
 // before any visible prose arrives. Use its tested ceiling when the configured runtime allows it,
@@ -195,33 +198,13 @@ impl PromptDraftJob {
         );
 
         let mut bytes = response.bytes_stream();
-        let mut buffer = Vec::<u8>::new();
+        let mut decoder = OpenAiSseDecoder::default();
         let mut emitted_bytes = 0usize;
-        let mut completed = false;
         let mut output_limited = false;
         let mut reasoning_announced = false;
-        loop {
-            let next = tokio::select! {
-                value = bytes.next() => value,
-                _ = cancel.cancelled() => {
-                    emit(&app, &request.request_id, "cancelled", None, Some(&model.name), None);
-                    return Ok(());
-                }
-            };
-            let Some(chunk) = next else { break };
-            buffer.extend_from_slice(&chunk.map_err(|error| error.to_string())?);
-            while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
-                let line = buffer.drain(..=end).collect::<Vec<_>>();
-                let line = String::from_utf8_lossy(&line);
-                let Some(data) = line.trim().strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
-                if data == "[DONE]" {
-                    completed = true;
-                    continue;
-                }
-                let Ok(value) = serde_json::from_str::<Value>(data) else {
+        let mut accept_events = |events: Vec<OpenAiStreamEvent>| -> bool {
+            for event in events {
+                let OpenAiStreamEvent::Message(value) = event else {
                     continue;
                 };
                 if let Some(token) = value
@@ -250,7 +233,7 @@ impl PromptDraftJob {
                             Some(&model.name),
                             None,
                         );
-                        return Ok(());
+                        return true;
                     }
                 }
                 if value
@@ -278,9 +261,25 @@ impl PromptDraftJob {
                     );
                 }
             }
+            false
+        };
+        loop {
+            let next = tokio::select! {
+                value = bytes.next() => value,
+                _ = cancel.cancelled() => {
+                    emit(&app, &request.request_id, "cancelled", None, Some(&model.name), None);
+                    return Ok(());
+                }
+            };
+            let Some(chunk) = next else { break };
+            let events = decoder.push(&chunk.map_err(|error| error.to_string())?)?;
+            if accept_events(events) {
+                return Ok(());
+            }
         }
-        if !completed {
-            return Err("prompt stream ended before completion; any visible generated text remains editable".into());
+        let final_events = decoder.finish()?;
+        if accept_events(final_events) {
+            return Ok(());
         }
         emit(
             &app,
