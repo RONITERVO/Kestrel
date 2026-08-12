@@ -6,18 +6,25 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   approveMoviePlan, askBonsaiMovieClip, cancelMovie, cancelMovieImageAsset, checkpointMoviePlanning,
-  cancelMovieStoryDraft, directMoviePlanning, getMovie, getMoviePlanning, listMovieImageAssets, listMovies, movieMediaUrl,
-  onMovieImageAsset, onMoviePlanning, onMovieProject, onMovieStoryDraft, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
+  cancelMoviePromptDraft, directMoviePlanning, getMovie, getMoviePlanning, listMovieImageAssets, listMovies, movieMediaUrl,
+  onMovieImageAsset, onMoviePlanning, onMovieProject, onMoviePromptDraft, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
   resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startMovie,
-  startMovieImageAsset, startMovieStoryDraft,
+  startMovieImageAsset, startMoviePromptDraft,
 } from "./api";
 import { MovieTimeline } from "./MovieTimeline";
 import type {
   MovieClipSuggestion, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
   ModelInfo, MovieImageAssetGeneration, MovieProject, MovieReferenceAsset, MovieSettings,
-  MovieSummary, PendingMovieReference, PlannedClip,
+  MovieSummary, PendingMovieReference, PlannedClip, PromptDraftMode, PromptDraftReceipt,
   RenderedClip,
 } from "./types";
+
+type PromptField = { kind: "story" } | { kind: "imageAsset" } | {
+  kind: "referenceDescription";
+  assetId: string;
+  part: "description" | "embeddedAudioDescription";
+};
+type ActivePromptDraft = { requestId: string; field: PromptField; mode: PromptDraftMode; originalText: string };
 
 const defaultSettings: MovieSettings = {
   width: 1344,
@@ -43,9 +50,14 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const [settings, setSettings] = useState(() => ({ ...defaultSettings, comfyRoot: initialComfyRoot || defaultSettings.comfyRoot }));
   const [advanced, setAdvanced] = useState(false);
   const [pauseAfterPlan, setPauseAfterPlan] = useState(true);
-  const [storyModelId, setStoryModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
-  const [storyGenerating, setStoryGenerating] = useState(false);
-  const [storyStatus, setStoryStatus] = useState("");
+  const [promptModelId, setPromptModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
+  const [storyDraftMode, setStoryDraftMode] = useState<PromptDraftMode>("develop");
+  const [imageDraftMode, setImageDraftMode] = useState<PromptDraftMode>("develop");
+  const [referenceDraftModes, setReferenceDraftModes] = useState<Record<string, PromptDraftMode>>({});
+  const [promptDraftActive, setPromptDraftActive] = useState<ActivePromptDraft>();
+  const [promptDraftLastField, setPromptDraftLastField] = useState<PromptField>();
+  const [promptDraftStatus, setPromptDraftStatus] = useState("");
+  const [promptDraftReceipt, setPromptDraftReceipt] = useState<PromptDraftReceipt>();
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageWidth, setImageWidth] = useState(768);
   const [imageHeight, setImageHeight] = useState(1344);
@@ -59,41 +71,50 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const [edit, setEdit] = useState<MovieEdit>({ clips: [], exportTitle: "Kestrel Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14 });
   const [references, setReferences] = useState<PendingMovieReference[]>([]);
   const activeProjectId = useRef<string | undefined>(undefined);
-  const storyRequestId = useRef<string | undefined>(undefined);
+  const promptDraftActiveRef = useRef<ActivePromptDraft | undefined>(undefined);
   const imageRequestId = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    if (models.some((model) => model.id === storyModelId)) return;
+    if (models.some((model) => model.id === promptModelId)) return;
     const selected = selectedModelId && models.some((model) => model.id === selectedModelId)
       ? selectedModelId
       : models[0]?.id ?? "";
-    setStoryModelId(selected);
-  }, [models, selectedModelId, storyModelId]);
+    setPromptModelId(selected);
+  }, [models, selectedModelId, promptModelId]);
 
   useEffect(() => {
     let dispose: (() => void) | undefined;
-    void onMovieStoryDraft((event) => {
-      if (event.requestId !== storyRequestId.current) return;
+    void onMoviePromptDraft((event) => {
+      const active = promptDraftActiveRef.current;
+      if (!active || event.requestId !== active.requestId) return;
       if (event.kind === "token" && event.content) {
-        setPrompt((value) => value + event.content);
+        if (active.field.kind === "story") setPrompt((value) => value + event.content);
+        if (active.field.kind === "imageAsset") setImagePrompt((value) => value + event.content);
+        if (active.field.kind === "referenceDescription") {
+          const { assetId, part } = active.field;
+          setReferences((known) => known.map((item) => item.assetId === assetId
+            ? { ...item, [part]: item[part] + event.content }
+            : item));
+        }
       } else if (event.kind === "queued") {
-        setStoryStatus(`Loading ${event.modelName ?? "local model"}…`);
+        setPromptDraftStatus(`Loading ${event.modelName ?? "local model"}…`);
       } else if (event.kind === "started") {
-        setStoryStatus("Writing the story locally…");
+        setPromptDraftStatus("Writing locally… tokens appear as they are produced.");
+        if (event.receipt) setPromptDraftReceipt(event.receipt);
       } else if (event.kind === "reasoning") {
-        setStoryStatus("Thinking through the story locally…");
+        setPromptDraftStatus("The local model is thinking before it writes…");
       } else if (event.kind === "limited") {
-        setStoryStatus("Story stopped at Studio’s 64 KiB brief limit.");
+        setPromptDraftStatus("Stopped at this field’s safe size limit. The partial text is preserved.");
       } else if (event.kind === "complete") {
-        setStoryStatus("Story draft ready—edit anything before making the movie.");
+        setPromptDraftStatus("Draft ready — review or edit anything before continuing.");
       } else if (event.kind === "cancelled") {
-        setStoryStatus("Generation stopped. The text produced so far is preserved.");
+        setPromptDraftStatus("Stopped at a safe checkpoint. The text produced so far is preserved.");
       } else if (event.kind === "error") {
-        setStoryStatus("Story generation stopped. Any generated text is preserved.");
-        onError(event.content ?? "Local story generation failed.");
+        setPromptDraftStatus("Local writing stopped. Any generated text is preserved.");
+        onError(event.content ?? "Local prompt collaboration failed.");
       } else if (event.kind === "settled") {
-        setStoryGenerating(false);
-        storyRequestId.current = undefined;
+        promptDraftActiveRef.current = undefined;
+        setPromptDraftActive(undefined);
       }
     }).then((unlisten) => { dispose = unlisten; });
     return () => dispose?.();
@@ -183,31 +204,54 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
     } catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
-  const generateStory = async () => {
-    if (!storyModelId || storyGenerating) return;
-    const existingText = prompt.trimEnd();
+  const setPromptField = (field: PromptField, value: string) => {
+    if (field.kind === "story") setPrompt(value);
+    if (field.kind === "imageAsset") setImagePrompt(value);
+    if (field.kind === "referenceDescription") {
+      setReferences((known) => known.map((item) => item.assetId === field.assetId ? { ...item, [field.part]: value } : item));
+    }
+  };
+
+  const generatePromptDraft = async (field: PromptField, requestedMode: PromptDraftMode) => {
+    if (!promptModelId || promptDraftActiveRef.current) return;
+    const reference = field.kind === "referenceDescription" ? references.find((item) => item.assetId === field.assetId) : undefined;
+    if (field.kind === "referenceDescription" && !reference) return;
+    const originalText = field.kind === "story" ? prompt : field.kind === "imageAsset" ? imagePrompt : reference![field.part];
+    const existingText = originalText.trimEnd();
+    const mode: PromptDraftMode = existingText ? requestedMode : "develop";
     const requestId = crypto.randomUUID();
-    storyRequestId.current = requestId;
-    setStoryGenerating(true);
-    setStoryStatus(existingText ? "Preparing to continue your story…" : "Preparing an original story…");
-    setPrompt(existingText ? `${existingText}\n\n` : "");
+    const active = { requestId, field, mode, originalText } satisfies ActivePromptDraft;
+    promptDraftActiveRef.current = active;
+    setPromptDraftActive(active);
+    setPromptDraftLastField(field);
+    setPromptDraftStatus(mode === "continue" ? "Preparing to continue the exact draft…" : existingText ? "Preparing to develop the idea and replace this field…" : "Preparing an original draft…");
+    setPromptField(field, mode === "continue" && existingText ? `${existingText}\n\n` : "");
     try {
-      await startMovieStoryDraft({ requestId, modelId: storyModelId, existingText });
+      await startMoviePromptDraft({
+        requestId,
+        modelId: promptModelId,
+        target: field.kind,
+        mode,
+        storyText: field.kind === "story" ? "" : prompt,
+        existingText,
+        assetName: reference ? (field.kind === "referenceDescription" && field.part === "embeddedAudioDescription" ? `embedded audio from ${reference.name}` : reference.name) : "",
+        assetKind: reference ? (field.kind === "referenceDescription" && field.part === "embeddedAudioDescription" ? "audio" : reference.kind) : "",
+      });
     } catch (error) {
-      storyRequestId.current = undefined;
-      setStoryGenerating(false);
-      setPrompt(existingText);
-      setStoryStatus("");
+      promptDraftActiveRef.current = undefined;
+      setPromptDraftActive(undefined);
+      setPromptField(field, originalText);
+      setPromptDraftStatus("");
       onError(String(error));
     }
   };
 
-  const stopStory = async () => {
-    const requestId = storyRequestId.current;
-    if (!requestId) return;
-    setStoryStatus("Stopping after the current local token…");
+  const stopPromptDraft = async () => {
+    const active = promptDraftActiveRef.current;
+    if (!active) return;
+    setPromptDraftStatus("Stopping after the current local token…");
     try {
-      await cancelMovieStoryDraft(requestId);
+      await cancelMoviePromptDraft(active.requestId);
     } catch (error) {
       onError(String(error));
     }
@@ -307,8 +351,11 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
         {creating || !project ? (
           <MovieLaunch prompt={prompt} settings={settings} references={references} advanced={advanced} advancedEnabled={advancedEnabled} busy={busy}
             pauseAfterPlan={pauseAfterPlan} onPauseAfterPlan={setPauseAfterPlan}
-            models={models} storyModelId={storyModelId} storyGenerating={storyGenerating} storyStatus={storyStatus}
-            onStoryModel={setStoryModelId} onGenerateStory={() => void generateStory()} onStopStory={() => void stopStory()}
+            models={models} promptModelId={promptModelId} promptDraftActive={promptDraftActive} promptDraftLastField={promptDraftLastField} promptDraftStatus={promptDraftStatus}
+            promptDraftReceipt={promptDraftReceipt} storyDraftMode={storyDraftMode} imageDraftMode={imageDraftMode} referenceDraftModes={referenceDraftModes}
+            onPromptModel={setPromptModelId} onStoryDraftMode={setStoryDraftMode} onImageDraftMode={setImageDraftMode}
+            onReferenceDraftMode={(assetId, mode) => setReferenceDraftModes((known) => ({ ...known, [assetId]: mode }))}
+            onGeneratePrompt={(field, mode) => void generatePromptDraft(field, mode)} onStopPrompt={() => void stopPromptDraft()}
             imagePrompt={imagePrompt} imageWidth={imageWidth} imageHeight={imageHeight} imageSteps={imageSteps} imageSeed={imageSeed}
             imageStabilize={imageStabilize} imageGenerating={imageGenerating} imageStatus={imageStatus} imageGenerations={imageGenerations}
             onImagePrompt={setImagePrompt} onImageCanvas={(width, height) => { setImageWidth(width); setImageHeight(height); }}
@@ -329,11 +376,14 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   );
 }
 
-function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, models, storyModelId, storyGenerating, storyStatus, onStoryModel, onGenerateStory, onStopStory, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake }: {
+function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, models, promptModelId, promptDraftActive, promptDraftLastField, promptDraftStatus, promptDraftReceipt, storyDraftMode, imageDraftMode, referenceDraftModes, onPromptModel, onStoryDraftMode, onImageDraftMode, onReferenceDraftMode, onGeneratePrompt, onStopPrompt, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake }: {
   prompt: string; settings: MovieSettings; references: PendingMovieReference[]; advanced: boolean; advancedEnabled: boolean; busy: boolean;
   pauseAfterPlan: boolean; onPauseAfterPlan: (value: boolean) => void;
-  models: ModelInfo[]; storyModelId: string; storyGenerating: boolean; storyStatus: string;
-  onStoryModel: (value: string) => void; onGenerateStory: () => void; onStopStory: () => void;
+  models: ModelInfo[]; promptModelId: string; promptDraftActive?: ActivePromptDraft; promptDraftLastField?: PromptField; promptDraftStatus: string; promptDraftReceipt?: PromptDraftReceipt;
+  storyDraftMode: PromptDraftMode; imageDraftMode: PromptDraftMode; referenceDraftModes: Record<string, PromptDraftMode>;
+  onPromptModel: (value: string) => void; onStoryDraftMode: (value: PromptDraftMode) => void; onImageDraftMode: (value: PromptDraftMode) => void;
+  onReferenceDraftMode: (assetId: string, value: PromptDraftMode) => void;
+  onGeneratePrompt: (field: PromptField, mode: PromptDraftMode) => void; onStopPrompt: () => void;
   imagePrompt: string; imageWidth: number; imageHeight: number; imageSteps: number; imageSeed: number; imageStabilize: boolean;
   imageGenerating: boolean; imageStatus: string; imageGenerations: MovieImageAssetGeneration[];
   onImagePrompt: (value: string) => void; onImageCanvas: (width: number, height: number) => void;
@@ -343,37 +393,52 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
   onAttach: () => void; onAdvanced: (value: boolean) => void; onMake: () => void;
 }) {
   const quality = settings.width === 1344 ? "master" : settings.width === 864 ? "preview" : "custom";
+  const storyWriting = promptFieldMatches(promptDraftActive?.field, { kind: "story" });
+  const imageWriting = promptFieldMatches(promptDraftActive?.field, { kind: "imageAsset" });
+  const promptBusy = Boolean(promptDraftActive);
+  const statusField = promptDraftActive?.field ?? promptDraftLastField;
   return <div className="movie-launch">
     <div className="movie-launch-mark"><Clapperboard /></div>
     <span className="eyebrow">Bonsai director · MiniMax H3 picture & sound</span>
     <h1>Describe the movie.<br />Kestrel runs the studio.</h1>
     <p>One prompt becomes a reviewed screenplay, continuity bible, native H3 picture-and-sound scenes, and an untouched review cut—entirely on this computer.</p>
     <div className="movie-prompt-box">
-      <textarea aria-label="Movie brief" autoFocus value={prompt} readOnly={storyGenerating} onChange={(event) => onPrompt(event.target.value)} placeholder="Write or paste your story here—or ask any local model to invent one…" />
-      <div><span><Check size={14} /> Bonsai drafts, reviews, and repairs every H3 scene prompt</span><button disabled={busy || storyGenerating || imageGenerating || prompt.trim().length < 3 || !referencesReady(references)} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Make movie</button></div>
+      <textarea aria-label="Movie brief" autoFocus maxLength={65536} value={prompt} readOnly={storyWriting} onChange={(event) => onPrompt(event.target.value)} placeholder="Write or paste your story here—even an A4-length brief—or ask any local model to develop an idea…" />
+      <div><span><Check size={14} /> Bonsai drafts, reviews, and repairs every H3 scene prompt</span><button disabled={busy || promptBusy || imageGenerating || prompt.trim().length < 3 || !referencesReady(references)} onClick={onMake}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Make movie</button></div>
     </div>
-    <div className="story-collaborator">
-      <div><span className="eyebrow">Offline story collaborator</span><strong>{prompt.trim() ? "Continue the story already in the box" : "Invent a story from scratch"}</strong><small>{storyStatus || "Choose any discovered local model. Its tokens stream into the editable movie brief; no tools or network are available."}</small></div>
-      <label>Story model<select aria-label="Story model" value={storyModelId} disabled={storyGenerating || !models.length} onChange={(event) => onStoryModel(event.target.value)}>{!models.length && <option value="">No local models discovered</option>}{models.map((model) => <option key={model.id} value={model.id}>{model.name}{model.quantization ? ` · ${model.quantization}` : ""}</option>)}</select></label>
-      {storyGenerating ? <button className="story-stop" onClick={onStopStory}><CircleStop /> Stop writing</button> : <button disabled={!storyModelId || busy || imageGenerating} onClick={onGenerateStory}><Sparkles /> {prompt.trim() ? "Continue story" : "Invent story"}</button>}
-    </div>
+    <PromptAssistBar label="Movie brief" existing={prompt} mode={storyDraftMode} models={models} modelId={promptModelId}
+      active={storyWriting} disabled={busy || imageGenerating || (promptBusy && !storyWriting)} status={promptFieldMatches(statusField, { kind: "story" }) ? promptDraftStatus : ""}
+      onModel={onPromptModel} onMode={onStoryDraftMode} onGenerate={() => onGeneratePrompt({ kind: "story" }, storyDraftMode)} onStop={onStopPrompt} />
     <ImageAssetLab
       prompt={imagePrompt} width={imageWidth} height={imageHeight} steps={imageSteps} seed={imageSeed}
       stabilize={imageStabilize} generating={imageGenerating} status={imageStatus} generations={imageGenerations}
-      references={references} advanced={advanced} expertEnabled={advancedEnabled} disabled={busy || storyGenerating}
+      references={references} advanced={advanced} expertEnabled={advancedEnabled} disabled={busy || promptBusy}
+      models={models} modelId={promptModelId} draftMode={imageDraftMode} draftActive={imageWriting} draftStatus={promptFieldMatches(statusField, { kind: "imageAsset" }) ? promptDraftStatus : ""}
+      onModel={onPromptModel} onDraftMode={onImageDraftMode} onDraft={() => onGeneratePrompt({ kind: "imageAsset" }, imageDraftMode)} onStopDraft={onStopPrompt}
       onPrompt={onImagePrompt} onCanvas={onImageCanvas} onSteps={onImageSteps} onSeed={onImageSeed}
       onStabilize={onImageStabilize} onGenerate={onGenerateImage} onStop={onStopImage} onUse={onUseGeneratedImage}
     />
     <section className="movie-reference-builder">
-      <div className="movie-reference-heading"><div><span className="eyebrow">Producer references</span><strong>Show and tell H3 what must carry through</strong><small>Attach the actual media, then describe its job. Kestrel binds it natively per shot.</small></div><button disabled={busy} onClick={onAttach}><Paperclip /> Attach image, video, or audio</button></div>
+      <div className="movie-reference-heading"><div><span className="eyebrow">Producer references</span><strong>Show and tell H3 what must carry through</strong><small>Attach the actual media, then describe its job. Kestrel binds it natively per shot.</small></div><button disabled={busy || promptBusy} onClick={onAttach}><Paperclip /> Attach image, video, or audio</button></div>
       {references.length > 0 && <div className="movie-reference-grid">{references.map((reference) => {
         const labels = referenceDisplayTags(references, reference.assetId);
         return <article className="movie-reference-card" key={reference.assetId}>
           <ReferencePreview reference={reference} />
-          <div className="movie-reference-copy"><div className="movie-reference-meta"><span>{labels.join(" + ")}</span><strong>{reference.name}</strong><button aria-label={`Remove ${reference.name}`} onClick={() => onReferences(references.filter((item) => item.assetId !== reference.assetId))}><X /></button></div>
+          <div className="movie-reference-copy"><div className="movie-reference-meta"><span>{labels.join(" + ")}</span><strong>{reference.name}</strong><button aria-label={`Remove ${reference.name}`} disabled={promptBusy} onClick={() => onReferences(references.filter((item) => item.assetId !== reference.assetId))}><X /></button></div>
             <small>{reference.kind}{reference.durationSeconds > 0 ? ` · ${reference.durationSeconds.toFixed(1)}s` : ` · ${reference.width}×${reference.height}`}</small>
-            <label>How should Bonsai place this?<textarea aria-label={`Describe ${reference.name}`} value={reference.description} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, description: event.target.value } : item))} placeholder={reference.kind === "image" ? "Character identity, costume, palette, composition, or style…" : reference.kind === "video" ? "Motion, camera move, pacing, continuation, or temporal structure…" : "Where this exact clip audio belongs: dialogue performance, music, rhythm, ambience, or effects…"} /></label>
-            {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" checked={reference.useEmbeddedAudio} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Use the video's existing audio as native clip audio</label>{reference.useEmbeddedAudio && <label>Where should this audio be used?<input aria-label={`Describe audio from ${reference.name}`} value={reference.embeddedAudioDescription} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="The scenes or beats where this exact audio belongs…" /></label>}</>}
+            <label>How should Bonsai place this?<textarea aria-label={`Describe ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" })} value={reference.description} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, description: event.target.value } : item))} placeholder={reference.kind === "image" ? "Character identity, costume, palette, composition, or style…" : reference.kind === "video" ? "Motion, camera move, pacing, continuation, or temporal structure…" : "Where this exact clip audio belongs: dialogue performance, music, rhythm, ambience, or effects…"} /></label>
+            <PromptAssistBar compact label={`${reference.kind} reference`} existing={reference.description} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "description")] ?? "develop"} models={models} modelId={promptModelId}
+              active={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" })}
+              disabled={busy || imageGenerating || (promptBusy && !promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" }))}
+              status={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "description" }) ? promptDraftStatus : ""}
+              onModel={onPromptModel} onMode={(mode) => onReferenceDraftMode(referenceDraftKey(reference.assetId, "description"), mode)}
+              onGenerate={() => onGeneratePrompt({ kind: "referenceDescription", assetId: reference.assetId, part: "description" }, referenceDraftModes[referenceDraftKey(reference.assetId, "description")] ?? "develop")} onStop={onStopPrompt} />
+            {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" disabled={promptBusy} checked={reference.useEmbeddedAudio} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Use the video's existing audio as native clip audio</label>{reference.useEmbeddedAudio && <><label>Where should this audio be used?<input aria-label={`Describe audio from ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })} value={reference.embeddedAudioDescription} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="The scenes or beats where this exact audio belongs…" /></label><PromptAssistBar compact label={`audio from ${reference.name}`} existing={reference.embeddedAudioDescription} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop"} models={models} modelId={promptModelId}
+              active={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })}
+              disabled={busy || imageGenerating || (promptBusy && !promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }))}
+              status={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }) ? promptDraftStatus : ""}
+              onModel={onPromptModel} onMode={(mode) => onReferenceDraftMode(referenceDraftKey(reference.assetId, "embeddedAudioDescription"), mode)}
+              onGenerate={() => onGeneratePrompt({ kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }, referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop")} onStop={onStopPrompt} /></>}</>}
           </div>
         </article>;
       })}</div>}
@@ -396,16 +461,36 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       <NumberField label="Output budget" value={settings.maxOutputTokens} min={1024} max={32768} step={1024} onChange={(value) => onSettings({ ...settings, maxOutputTokens: value })} />
       <SelectField label="Reference image fidelity" value={settings.refImageSize} onChange={(value) => onSettings({ ...settings, refImageSize: value as MovieSettings["refImageSize"] })} options={["match", "max"]} />
       <label className="wide">ComfyUI root<input value={settings.comfyRoot} onChange={(event) => onSettings({ ...settings, comfyRoot: event.target.value })} /></label>
+      {promptDraftReceipt && <details className="prompt-draft-receipt wide"><summary>Last prompt collaborator request — everything the model received</summary><div><span>Target / behavior</span><code>{promptDraftReceipt.target} · {promptDraftReceipt.mode}</code><span>Exact local API request</span><pre>{JSON.stringify(promptDraftReceipt.exactRequest, null, 2)}</pre></div></details>}
     </div>}
     <label className="wide producer-pause-toggle"><span><input type="checkbox" checked={pauseAfterPlan} onChange={(event) => onPauseAfterPlan(event.target.checked)} /> Review the plan before rendering</span><small>Recommended. Edit scenes or redirect Bonsai before any H3 clip is rendered.</small></label>
     <div className="movie-capabilities"><span><Check />98,304 context</span><span><Check />32,768 max thinking</span><span><Check />32,768 output</span><span><Check />Untouched H3 audio</span><span><Check />Crash-safe masters</span></div>
   </div>;
 }
 
-function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, references, advanced, expertEnabled, disabled, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
+function PromptAssistBar({ label, existing, mode, models, modelId, active, disabled, status, compact = false, onModel, onMode, onGenerate, onStop }: {
+  label: string; existing: string; mode: PromptDraftMode; models: ModelInfo[]; modelId: string; active: boolean; disabled: boolean; status: string; compact?: boolean;
+  onModel: (value: string) => void; onMode: (value: PromptDraftMode) => void; onGenerate: () => void; onStop: () => void;
+}) {
+  const hasText = Boolean(existing.trim());
+  const effectiveMode = hasText ? mode : "develop";
+  const action = !hasText ? (label === "Movie brief" ? "Invent story" : "Generate description") : effectiveMode === "develop" ? "Develop idea / notes" : "Continue exact draft";
+  return <div className={`prompt-assist-bar ${compact ? "compact" : ""} ${active ? "active" : ""}`}>
+    <div className="prompt-assist-copy"><span className="eyebrow">Offline prompt collaborator</span><strong>{label}</strong><small>{status || (hasText ? "Tell the model whether this text is source material or an exact draft. Nothing is inferred." : "No text yet: the model will create a complete draft from the movie context or invent a useful direction.")}</small></div>
+    <label>Local writing model<select aria-label={`${label} model`} value={modelId} disabled={active || disabled || !models.length} onChange={(event) => onModel(event.target.value)}>{!models.length && <option value="">No local models discovered</option>}{models.map((model) => <option key={model.id} value={model.id}>{model.name}{model.quantization ? ` · ${model.quantization}` : ""}</option>)}</select></label>
+    <label>Existing text means<select aria-label={`${label} existing text meaning`} value={effectiveMode} disabled={active || disabled || !hasText} onChange={(event) => onMode(event.target.value as PromptDraftMode)}><option value="develop">Idea or notes — replace with a complete draft</option><option value="continue">Exact draft — keep it and continue</option></select></label>
+    {active
+      ? <button className="prompt-stop" onClick={onStop}><CircleStop /> Stop & keep text</button>
+      : <button disabled={disabled || !modelId} onClick={onGenerate}><Sparkles /> {action}</button>}
+  </div>;
+}
+
+function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, references, advanced, expertEnabled, disabled, models, modelId, draftMode, draftActive, draftStatus, onModel, onDraftMode, onDraft, onStopDraft, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
   prompt: string; width: number; height: number; steps: number; seed: number; stabilize: boolean;
   generating: boolean; status: string; generations: MovieImageAssetGeneration[]; references: PendingMovieReference[];
-  advanced: boolean; expertEnabled: boolean; disabled: boolean; onPrompt: (value: string) => void; onCanvas: (width: number, height: number) => void;
+  advanced: boolean; expertEnabled: boolean; disabled: boolean; models: ModelInfo[]; modelId: string; draftMode: PromptDraftMode; draftActive: boolean; draftStatus: string;
+  onModel: (value: string) => void; onDraftMode: (value: PromptDraftMode) => void; onDraft: () => void; onStopDraft: () => void;
+  onPrompt: (value: string) => void; onCanvas: (width: number, height: number) => void;
   onSteps: (value: number) => void; onSeed: (value: number) => void; onStabilize: (value: boolean) => void;
   onGenerate: () => void; onStop: () => void; onUse: (asset: MovieReferenceAsset) => void;
 }) {
@@ -418,7 +503,9 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
       <span className="image-workflow-badge">H3 · 22 internal frames · 6 choices</span>
     </div>
     <div className="image-asset-compose">
-      <label>Describe the exact image asset<textarea aria-label="Image asset prompt" maxLength={65536} value={prompt} disabled={generating} onChange={(event) => onPrompt(event.target.value)} placeholder="A precise character identity portrait, recurring location, hero prop, title poster, texture plate, or visual style frame… Include composition, lighting, palette, materials, and any exact text." /></label>
+      <label>Describe the exact image asset<textarea aria-label="Image asset prompt" maxLength={65536} value={prompt} readOnly={draftActive} disabled={generating} onChange={(event) => onPrompt(event.target.value)} placeholder="A precise character identity portrait, recurring location, hero prop, title poster, texture plate, or visual style frame… Include composition, lighting, palette, materials, and any exact text." /></label>
+      <PromptAssistBar compact label="Image description" existing={prompt} mode={draftMode} models={models} modelId={modelId}
+        active={draftActive} disabled={disabled || generating} status={draftStatus} onModel={onModel} onMode={onDraftMode} onGenerate={onDraft} onStop={onStopDraft} />
       <div className="image-asset-controls">
         <label>Canvas<select aria-label="Image canvas" value={canvas} disabled={generating} onChange={(event) => {
           const [nextWidth, nextHeight] = event.target.value.split("x").map(Number);
@@ -722,6 +809,16 @@ function ReferencePreview({ reference }: { reference: { kind: string; path: stri
   if (reference.kind === "image") return <div className="movie-reference-preview"><img src={source} alt={reference.name} /></div>;
   if (reference.kind === "video") return <div className="movie-reference-preview"><video controls muted preload="metadata" src={source} /></div>;
   return <div className="movie-reference-preview audio"><AudioLines /><audio controls preload="metadata" src={source} /></div>;
+}
+
+function promptFieldMatches(left: PromptField | undefined, right: PromptField): boolean {
+  if (!left || left.kind !== right.kind) return false;
+  return left.kind !== "referenceDescription"
+    || (right.kind === "referenceDescription" && left.assetId === right.assetId && left.part === right.part);
+}
+
+function referenceDraftKey(assetId: string, part: "description" | "embeddedAudioDescription"): string {
+  return `${assetId}:${part}`;
 }
 
 export function referenceDisplayTags(references: PendingMovieReference[], id: string): string[] {

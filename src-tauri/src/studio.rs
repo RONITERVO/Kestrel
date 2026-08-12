@@ -28,8 +28,8 @@ use tokio_util::sync::CancellationToken;
 mod image_assets;
 mod movie_agent;
 mod planning;
+mod prompt_collaboration;
 mod prompts;
-mod story;
 
 pub use image_assets::{
     emit_image_asset_error, GeneratedImageProvenance, MovieImageAssetGeneration,
@@ -37,9 +37,9 @@ pub use image_assets::{
 };
 use movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult};
 pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot};
-pub use story::{
-    emit_error as emit_story_draft_error, emit_settled as emit_story_draft_settled,
-    validate_request as validate_story_draft_request, StoryDraftJob, StoryDraftRequest,
+pub use prompt_collaboration::{
+    emit_error as emit_prompt_draft_error, emit_settled as emit_prompt_draft_settled,
+    validate_request as validate_prompt_draft_request, PromptDraftJob, PromptDraftRequest,
 };
 
 const SCHEMA_VERSION: u32 = 5;
@@ -896,6 +896,11 @@ impl MovieStudio {
                     "{} has no embedded audio track to use",
                     asset.name
                 )));
+            }
+            if request.embedded_audio_description.len() > 4_000 {
+                return Err(StudioError::Invalid(
+                    "embedded audio descriptions cannot exceed 4,000 bytes".into(),
+                ));
             }
             if request.use_embedded_audio && request.embedded_audio_description.trim().len() < 3 {
                 return Err(StudioError::Invalid(format!(

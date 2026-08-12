@@ -41,8 +41,8 @@ import type {
   MovieReferenceImport,
   MovieSummary,
   StartMovieRequest,
-  StoryDraftEvent,
-  StoryDraftRequest,
+  PromptDraftEvent,
+  PromptDraftRequest,
 } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -186,17 +186,17 @@ export async function cancelMovie(id: string): Promise<MovieProject> {
   return invoke<MovieProject>("cancel_movie", { id });
 }
 
-export async function startMovieStoryDraft(request: StoryDraftRequest): Promise<string> {
-  if (!isTauri()) throw new Error("Local story generation requires the desktop application.");
-  return invoke<string>("start_movie_story_draft", { request });
+export async function startMoviePromptDraft(request: PromptDraftRequest): Promise<string> {
+  if (!isTauri()) throw new Error("Local prompt collaboration requires the desktop application.");
+  return invoke<string>("start_movie_prompt_draft", { request });
 }
 
-export async function cancelMovieStoryDraft(requestId: string): Promise<void> {
-  if (isTauri()) await invoke("cancel_movie_story_draft", { requestId });
+export async function cancelMoviePromptDraft(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_prompt_draft", { requestId });
 }
 
-export async function onMovieStoryDraft(callback: (event: StoryDraftEvent) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<StoryDraftEvent>("movie-story-draft", (event) => callback(event.payload));
+export async function onMoviePromptDraft(callback: (event: PromptDraftEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<PromptDraftEvent>("movie-prompt-draft", (event) => callback(event.payload));
   return () => undefined;
 }
 

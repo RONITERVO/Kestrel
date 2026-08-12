@@ -469,17 +469,38 @@ export interface StartMovieRequest {
   pauseAfterPlan: boolean;
 }
 
-export interface StoryDraftRequest {
+export type PromptDraftTarget = "story" | "imageAsset" | "referenceDescription";
+export type PromptDraftMode = "develop" | "continue";
+
+export interface PromptDraftRequest {
   requestId: string;
   modelId: string;
+  target: PromptDraftTarget;
+  mode: PromptDraftMode;
+  storyText: string;
   existingText: string;
+  assetName: string;
+  assetKind: string;
 }
 
-export interface StoryDraftEvent {
+export interface PromptDraftReceipt {
+  target: PromptDraftTarget;
+  mode: PromptDraftMode;
+  modelId: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature: number;
+  topP: number;
+  topK: number;
+  maxTokens: number;
+  exactRequest: Record<string, unknown>;
+}
+
+export interface PromptDraftEvent {
   requestId: string;
   kind: "queued" | "started" | "token" | "reasoning" | "complete" | "limited" | "cancelled" | "error" | "settled" | string;
   content?: string;
   modelName?: string;
+  receipt?: PromptDraftReceipt;
   at: string;
 }
 

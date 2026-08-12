@@ -43,7 +43,7 @@ use studio::{
     MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieEdit,
     MovieImageAssetGeneration, MovieImageAssetRequest, MoviePlan, MoviePlanFeedbackRequest,
     MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
-    StartMovieRequest, StoryDraftJob, StoryDraftRequest,
+    PromptDraftJob, PromptDraftRequest, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -519,14 +519,14 @@ fn checkpoint_movie_planning(
 }
 
 #[tauri::command]
-async fn start_movie_story_draft(
-    request: StoryDraftRequest,
+async fn start_movie_prompt_draft(
+    request: PromptDraftRequest,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     ensure_workspace_idle(&state)?;
     let models = state.models.read().await.clone();
-    studio::validate_story_draft_request(&request, &models)?;
+    studio::validate_prompt_draft_request(&request, &models)?;
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -549,7 +549,7 @@ async fn start_movie_story_draft(
         let work_guard = WorkGuard(&managed.work_active);
         let result = match managed.control_settings.load() {
             Ok(settings) => {
-                StoryDraftJob {
+                PromptDraftJob {
                     app: app_for_task.clone(),
                     runtime: managed.runtime.clone(),
                     models,
@@ -563,19 +563,19 @@ async fn start_movie_story_draft(
             Err(error) => Err(error.to_string()),
         };
         if let Err(error) = result {
-            studio::emit_story_draft_error(&app_for_task, &event_request_id, error);
+            studio::emit_prompt_draft_error(&app_for_task, &event_request_id, error);
         }
         if let Ok(mut jobs) = managed.interactive_jobs.lock() {
             jobs.remove(&event_request_id);
         }
         drop(work_guard);
-        studio::emit_story_draft_settled(&app_for_task, &event_request_id);
+        studio::emit_prompt_draft_settled(&app_for_task, &event_request_id);
     });
     Ok(request_id)
 }
 
 #[tauri::command]
-fn cancel_movie_story_draft(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
+fn cancel_movie_prompt_draft(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
     if let Some(cancel) = state
         .interactive_jobs
         .lock()
@@ -2078,8 +2078,8 @@ pub fn run() {
             get_movie_planning,
             direct_movie_planning,
             checkpoint_movie_planning,
-            start_movie_story_draft,
-            cancel_movie_story_draft,
+            start_movie_prompt_draft,
+            cancel_movie_prompt_draft,
             save_movie_plan,
             revise_movie_plan,
             approve_movie_plan,

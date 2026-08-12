@@ -36,7 +36,7 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.queryByLabelText("Research")).not.toBeInTheDocument();
   });
 
-  it("offers every discovered local model for inventing or continuing a story", () => {
+  it("lets producers explicitly develop notes or continue exact text with any local model", () => {
     const models = [
       { id: "story-small", name: "Small Story Model", quantization: "Q4_K_M" },
       { id: "story-large", name: "Large Story Model", quantization: "Q6_K" },
@@ -45,12 +45,18 @@ describe("Kestrel Movie Studio", () => {
       supportsVision: false, supportsAudio: false, recommendation: "Local test model",
     })) as ModelInfo[];
     render(<MovieStudio advancedEnabled models={models} selectedModelId="story-large" onError={vi.fn()} />);
-    expect(screen.getByLabelText("Story model")).toHaveValue("story-large");
-    expect(screen.getByRole("option", { name: /Small Story Model/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("Movie brief model")).toHaveValue("story-large");
+    expect(screen.getByLabelText("Image description model")).toHaveValue("story-large");
+    expect(screen.getAllByRole("option", { name: /Small Story Model/ }).length).toBeGreaterThan(1);
     expect(screen.getByRole("button", { name: /Invent story/i })).toBeEnabled();
     fireEvent.change(screen.getByLabelText("Movie brief"), { target: { value: "A botanist finds a singing seed." } });
-    expect(screen.getByRole("button", { name: /Continue story/i })).toBeEnabled();
-    expect(screen.getByText(/Continue the story already in the box/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Develop idea \/ notes/i })).toBeEnabled();
+    const meaning = screen.getByLabelText("Movie brief existing text meaning");
+    expect(meaning).toHaveValue("develop");
+    fireEvent.change(meaning, { target: { value: "continue" } });
+    expect(screen.getByRole("button", { name: /Continue exact draft/i })).toBeEnabled();
+    expect(screen.getByText(/Nothing is inferred/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Movie brief")).toHaveAttribute("maxlength", "65536");
   });
 
   it("offers a producer-friendly durable H3 image asset workflow", () => {
