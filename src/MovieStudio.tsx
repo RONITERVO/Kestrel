@@ -1,18 +1,19 @@
 import {
   AudioLines, Check, ChevronDown, CircleStop, Clapperboard, Clock3, Download,
   Film, FolderOpen, ImageIcon, Library, LoaderCircle, Paperclip, Play, Plus,
-  RotateCcw, Save, Settings2, Sparkles, Video, X,
+  RotateCcw, Save, Send, Settings2, ShieldCheck, Sparkles, Video, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  approveMoviePlan, askBonsaiMovieClip, cancelMovie, getMovie, listMovies, movieMediaUrl,
-  onMovieProject, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
+  approveMoviePlan, askBonsaiMovieClip, cancelMovie, checkpointMoviePlanning,
+  directMoviePlanning, getMovie, getMoviePlanning, listMovies, movieMediaUrl,
+  onMoviePlanning, onMovieProject, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
   resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startMovie,
 } from "./api";
 import { MovieTimeline } from "./MovieTimeline";
 import type {
-  MovieClipSuggestion, MovieEdit, MoviePlan, MovieProject, MovieSettings, MovieSummary,
-  PendingMovieReference, PlannedClip, RenderedClip,
+  MovieClipSuggestion, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
+  MovieProject, MovieSettings, MovieSummary, PendingMovieReference, PlannedClip, RenderedClip,
 } from "./types";
 
 const defaultSettings: MovieSettings = {
@@ -38,7 +39,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
   const [prompt, setPrompt] = useState("");
   const [settings, setSettings] = useState(() => ({ ...defaultSettings, comfyRoot: initialComfyRoot || defaultSettings.comfyRoot }));
   const [advanced, setAdvanced] = useState(false);
-  const [pauseAfterPlan, setPauseAfterPlan] = useState(false);
+  const [pauseAfterPlan, setPauseAfterPlan] = useState(true);
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState<MovieEdit>({ clips: [], exportTitle: "Kestrel Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14 });
   const [references, setReferences] = useState<PendingMovieReference[]>([]);
@@ -93,7 +94,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, onError }: { in
         references: references.map(({ assetId, description, useEmbeddedAudio, embeddedAudioDescription }) => ({
           assetId, description, useEmbeddedAudio, embeddedAudioDescription,
         })),
-        pauseAfterPlan: advancedEnabled && pauseAfterPlan,
+        pauseAfterPlan,
       });
       activeProjectId.current = next.id;
       setProject(next); setEdit(next.edit); setCreating(false); await refreshList();
@@ -208,8 +209,8 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       <NumberField label="Output budget" value={settings.maxOutputTokens} min={1024} max={32768} step={1024} onChange={(value) => onSettings({ ...settings, maxOutputTokens: value })} />
       <SelectField label="Reference image fidelity" value={settings.refImageSize} onChange={(value) => onSettings({ ...settings, refImageSize: value as MovieSettings["refImageSize"] })} options={["match", "max"]} />
       <label className="wide">ComfyUI root<input value={settings.comfyRoot} onChange={(event) => onSettings({ ...settings, comfyRoot: event.target.value })} /></label>
-      {advancedEnabled && <label className="wide producer-pause-toggle"><span><input type="checkbox" checked={pauseAfterPlan} onChange={(event) => onPauseAfterPlan(event.target.checked)} /> Pause after Bonsai plan</span><small>Review, organize, and send feedback on the structured script before any H3 clip is rendered.</small></label>}
     </div>}
+    <label className="wide producer-pause-toggle"><span><input type="checkbox" checked={pauseAfterPlan} onChange={(event) => onPauseAfterPlan(event.target.checked)} /> Review the plan before rendering</span><small>Recommended. Edit scenes or redirect Bonsai before any H3 clip is rendered.</small></label>
     <div className="movie-capabilities"><span><Check />98,304 context</span><span><Check />32,768 max thinking</span><span><Check />32,768 output</span><span><Check />Untouched H3 audio</span><span><Check />Crash-safe masters</span></div>
   </div>;
 }
@@ -224,7 +225,8 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, onError, onPro
   useEffect(() => setDraftPlan(project.plan), [project.id, project.plan]);
   const complete = project.clips.filter((clip) => clip.status === "complete").length;
   const progress = project.clips.length ? Math.round((complete / project.clips.length) * 100) : project.plan ? 10 : 3;
-  const canResume = ["failed", "cancelled", "interrupted"].includes(project.status) && Boolean(project.plan);
+  const canResume = project.status === "planning-checkpoint" || ["failed", "cancelled", "interrupted"].includes(project.status);
+  const resumeLabel = project.plan && project.status !== "planning-checkpoint" ? "Resume production" : "Resume planning";
   const latestExport = project.exports?.at(-1);
   const runProjectAction = async (action: () => Promise<MovieProject>): Promise<boolean> => {
     setWorking(true);
@@ -241,16 +243,17 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, onError, onPro
   return <div className="movie-project-view">
     <header className="movie-project-header">
       <div><span className="eyebrow">{project.status === "complete" ? "Review cut ready" : project.phase}</span><h1>{project.title}</h1><p>{project.plan?.logline ?? project.prompt}</p></div>
-      <div className="movie-project-actions"><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={onCancel}><CircleStop /> Stop safely</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> Resume</button>}</div>
+      <div className="movie-project-actions"><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={onCancel}><CircleStop /> Cancel production</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> {resumeLabel}</button>}</div>
     </header>
     <div className={`movie-status-card ${project.status}`}>
       <div>{project.status === "running" ? <LoaderCircle className="spin" /> : project.status === "complete" ? <Check /> : <Clock3 />}<span><strong>{project.detail}</strong><small>{complete} of {project.clips.length || "—"} H3 masters preserved · {project.renderer}</small></span></div>
       <div className="movie-progress"><i style={{ width: `${progress}%` }} /></div>
       {project.error && <pre>{project.error}</pre>}
     </div>
+    {(project.status === "planning-checkpoint" || (project.status === "running" && ["writing", "agent-workspace", "resuming", "producer-revision"].includes(project.phase))) && <ProducerPlanningRoom project={project} advancedEnabled={advancedEnabled} onError={onError} />}
     {project.finalPath && <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">{latestExport ? "Latest immutable timeline export" : "Assembled file"}</span><h2>{latestExport?.title ?? "Untouched H3 review cut"}</h2><small>{latestExport ? `${latestExport.preset} preset · ${latestExport.clipCount} timeline items · SHA-256 recorded` : "Native clip duration and audio are preserved. Only an explicit editor export creates an altered cut."}</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section>}
     {project.references.length > 0 && <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}</span></article>)}</div></section>}
-    {advancedEnabled && project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={working} onPlan={setDraftPlan}
+    {project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={working} onPlan={setDraftPlan}
       onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
       onRevise={(feedback) => runProjectAction(async () => {
         await saveMoviePlan(project.id, draftPlan);
@@ -280,6 +283,130 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, onError, onPro
     </section>}
     {project.exports?.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2><small>Every cut remains addressable with its decision-list sidecar and SHA-256 identity.</small></div></div><div>{[...project.exports].reverse().map((item) => <article key={item.id}><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s · {readableSize(item.bytes)}</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>)}</div></section>}
   </div>;
+}
+
+function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
+  project: MovieProject;
+  advancedEnabled: boolean;
+  onError: (message: string) => void;
+}) {
+  const [snapshot, setSnapshot] = useState<MoviePlanningSnapshot>();
+  const [currentText, setCurrentText] = useState("");
+  const [advancedStream, setAdvancedStream] = useState("");
+  const [activities, setActivities] = useState<MoviePlanningEvent[]>([]);
+  const [direction, setDirection] = useState("");
+  const [sending, setSending] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const planning = project.status === "running";
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = await getMoviePlanning(project.id);
+      setSnapshot(next);
+      setCurrentText((value) => value || next.currentText);
+    } catch (error) {
+      onError(String(error));
+    }
+  }, [onError, project.id]);
+
+  useEffect(() => {
+    void refresh();
+    let dispose: (() => void) | undefined;
+    let refreshTimer: number | undefined;
+    void onMoviePlanning((event) => {
+      if (event.projectId !== project.id) return;
+      if (event.kind === "turn-start") {
+        setCurrentText("");
+        setAdvancedStream("");
+      } else if (event.kind === "token") {
+        setCurrentText((value) => value + event.text);
+      } else if (event.kind === "advanced-token") {
+        setAdvancedStream((value) => (value + event.text).slice(-120_000));
+      } else {
+        setActivities((value) => [...value.slice(-11), event]);
+      }
+      if (["turn-complete", "tool-result", "direction-queued", "checkpoint-saved"].includes(event.kind)) {
+        if (refreshTimer) window.clearTimeout(refreshTimer);
+        refreshTimer = window.setTimeout(() => void refresh(), 350);
+      }
+    }).then((unlisten) => { dispose = unlisten; });
+    return () => {
+      dispose?.();
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+    };
+  }, [project.id, refresh]);
+
+  const sendDirection = async () => {
+    if (direction.trim().length < 3) return;
+    setSending(true);
+    try {
+      setSnapshot(await directMoviePlanning(project.id, direction));
+      setDirection("");
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const checkpoint = async () => {
+    setSending(true);
+    try {
+      setSnapshot(await checkpointMoviePlanning(project.id));
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return <section className="producer-planning-room">
+    <div className="movie-section-heading"><div><span className="eyebrow">Live planning room</span><h2>Direct Bonsai while it works</h2><small>Directions enter the durable workspace at the next safe model-turn boundary. Nothing is sent to the public network.</small></div><span className={`planning-room-state ${planning ? "live" : "saved"}`}>{planning ? <LoaderCircle className="spin" /> : <ShieldCheck />}{planning ? "Planning live" : "Checkpoint saved"}</span></div>
+    <div className="planning-room-grid">
+      <article className="planning-current-copy">
+        <header><strong>What Bonsai is saying now</strong><small>Streamed as the local model produces it</small></header>
+        <div className="planning-stream-text">{currentText.trim() || (planning ? "Bonsai is preparing its next structured production action…" : "No unfinished model text. The durable workspace is ready to resume.")}</div>
+        <div className="planning-activity-feed">{activities.length ? activities.map((event) => <div key={`${event.sequence}-${event.kind}`}><span>{event.kind === "reasoning" ? <Sparkles /> : event.kind.includes("checkpoint") ? <ShieldCheck /> : <Check />}</span><p><b>{friendlyPlanningStage(event.stage)}</b>{event.text}</p></div>) : <small>Production actions will appear here as Bonsai reads, edits, and checks scenes.</small>}</div>
+      </article>
+      <article className="planning-direction-card">
+        <header><strong>Change direction</strong><small>Write naturally—no JSON, prompts, or code required</small></header>
+        <textarea value={direction} disabled={!planning || sending} onChange={(event) => setDirection(event.target.value)} placeholder="Example: Make the opening warmer and more intimate. Keep the train-station ending, but reveal the red suitcase two scenes earlier." />
+        {snapshot?.pendingDirections.length ? <small>{snapshot.pendingDirections.length} direction{snapshot.pendingDirections.length === 1 ? "" : "s"} queued for the next safe turn.</small> : <small>Bonsai preserves compatible work and revises only affected scenes.</small>}
+        <div><button className="accent" disabled={!planning || sending || direction.trim().length < 3} onClick={() => void sendDirection()}>{sending ? <LoaderCircle className="spin" /> : <Send />} Send direction</button><button disabled={!planning || sending || snapshot?.checkpointRequested} onClick={() => void checkpoint()}><ShieldCheck /> {snapshot?.checkpointRequested ? "Checkpoint queued" : "Save checkpoint"}</button></div>
+        <p><b>Checkpoint, don’t cancel</b> waits for the current model/tool turn to finish, then preserves the exact transcript, producer notes, screenplay, and scene files. “Cancel production” remains available for an immediate stop.</p>
+      </article>
+    </div>
+    {advancedEnabled && <div className="planning-advanced">
+      <button onClick={() => setShowAdvanced((value) => !value)}><Settings2 /> {showAdvanced ? "Hide" : "Inspect"} exact model context <ChevronDown className={showAdvanced ? "open" : ""} /></button>
+      {showAdvanced && <div className="planning-advanced-content">
+        <p>These are the exact sanitized messages, tool definition, workspace contract, lint policy, brief, references, and live tool-call arguments available to Bonsai. Private reasoning tokens are intentionally not presented as producer text.</p>
+        {advancedStream && <details open><summary>Current streamed tool-call arguments</summary><pre>{advancedStream}</pre></details>}
+        {snapshot?.promptDocuments.map((document) => <details key={document.id}><summary>{document.title} <small>{document.category}</small></summary><pre>{document.content}</pre></details>)}
+        <details><summary>movie_workspace tool schema</summary><pre>{JSON.stringify(snapshot?.toolSchema ?? {}, null, 2)}</pre></details>
+        <details><summary>Exact last request envelope sent to Bonsai</summary><pre>{JSON.stringify(snapshot?.lastRequest ?? {}, null, 2)}</pre></details>
+        <details><summary>Exact accepted model transcript</summary><pre>{JSON.stringify(snapshot?.transcript ?? {}, null, 2)}</pre></details>
+        <button onClick={() => void refresh()}><RotateCcw /> Refresh exact context</button>
+      </div>}
+    </div>}
+  </section>;
+}
+
+function friendlyPlanningStage(stage: string): string {
+  const names: Record<string, string> = {
+    planning: "Model turn",
+    thinking: "Local reasoning",
+    producer: "Producer control",
+    "native-check": "Production check",
+    checkpoint: "Safe checkpoint",
+    list: "Workspace review",
+    read: "Scene review",
+    read_many: "Scene review",
+    write: "Scene edit",
+    write_batch: "Scene edit",
+    check: "Native checks",
+    submit: "Plan submission",
+  };
+  return names[stage] ?? "Planning";
 }
 
 function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise, onApprove }: {

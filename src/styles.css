@@ -687,6 +687,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .movie-advanced label.wide { grid-column: 1/-1; }
 .movie-advanced input, .movie-advanced select, .clip-controls input { width: 100%; height: 34px; padding: 0 9px; border: 1px solid #344139; border-radius: 7px; outline: 0; color: #d9e2dc; background: #0b110d; font: 9px var(--mono); }
 .movie-advanced .producer-pause-toggle { padding: 12px; border: 1px solid #43543f; border-radius: 8px; background: #151e16; text-transform: none; }
+.movie-launch > .producer-pause-toggle { margin-top: 14px; padding: 12px 14px; display: grid; gap: 5px; border: 1px solid #43543f; border-radius: 9px; background: #151e16; }
 .producer-pause-toggle > span { display: flex; align-items: center; gap: 8px; color: #d5e2d1; font: 750 9px var(--sans); }
 .producer-pause-toggle input { width: auto; height: auto; accent-color: #a9dc5a; }
 .producer-pause-toggle small { color: #78877e; font: 8px/1.5 var(--sans); }
@@ -713,6 +714,39 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .movie-status-card pre, .movie-clip > pre { max-height: 180px; overflow: auto; margin: 12px 0 0; padding: 10px; color: #e2a199; border-radius: 7px; background: #201412; white-space: pre-wrap; font: 8px/1.5 var(--mono); }
 .movie-progress { height: 3px; margin-top: 14px; overflow: hidden; border-radius: 3px; background: #263129; }
 .movie-progress i { height: 100%; display: block; border-radius: inherit; background: #a9dc5a; transition: width .4s ease; }
+.producer-planning-room { margin-top: 25px; padding: 21px; border: 1px solid #536947; border-radius: 13px; background: linear-gradient(145deg,#141e16,#0d1410); box-shadow: 0 18px 50px rgba(0,0,0,.2); }
+.planning-room-state { min-height: 31px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid #526842; border-radius: 99px; color: #b8d891; background: #182118; font: 750 8px var(--sans); white-space: nowrap; }
+.planning-room-state.saved { color: #aab9af; border-color: #3a483f; background: #121915; }
+.planning-room-state svg { width: 13px; }
+.planning-room-grid { margin-top: 17px; display: grid; grid-template-columns: minmax(0,1.35fr) minmax(280px,.65fr); gap: 11px; }
+.planning-room-grid > article { min-width: 0; padding: 15px; border: 1px solid #303d35; border-radius: 10px; background: #0c120e; }
+.planning-room-grid article > header { display: grid; gap: 4px; }
+.planning-room-grid article > header strong { color: #dbe5de; font: 600 13px var(--serif); }
+.planning-room-grid article > header small, .planning-direction-card > small { color: #718078; font: 8px/1.5 var(--mono); }
+.planning-stream-text { min-height: 118px; max-height: 300px; margin-top: 12px; padding: 13px; overflow: auto; border: 1px solid #29352e; border-radius: 8px; color: #c3d0c7; background: #080d0a; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.7 var(--sans); }
+.planning-activity-feed { max-height: 210px; margin-top: 10px; display: grid; gap: 5px; overflow: auto; }
+.planning-activity-feed > div { padding: 8px 9px; display: grid; grid-template-columns: 17px minmax(0,1fr); gap: 7px; border-radius: 7px; background: #111914; }
+.planning-activity-feed svg { width: 13px; color: #9bc653; }
+.planning-activity-feed p { margin: 0; display: grid; gap: 3px; color: #91a097; font: 8px/1.45 var(--sans); }
+.planning-activity-feed b { color: #65766b; font: 700 7px var(--mono); text-transform: uppercase; }
+.planning-direction-card { align-content: start; display: grid; gap: 10px; }
+.planning-direction-card textarea { min-height: 130px; padding: 10px; resize: vertical; border: 1px solid #3a493f; border-radius: 8px; outline: 0; color: #dce5df; background: #080d0a; font: 10px/1.55 var(--sans); }
+.planning-direction-card > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.planning-direction-card button, .planning-advanced > button, .planning-advanced-content > button { min-height: 34px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #3b493f; border-radius: 7px; color: #aab8af; background: #151d18; cursor: pointer; font: 750 8px var(--sans); }
+.planning-direction-card button.accent { color: #11170f; border-color: #698849; background: #b7e866; }
+.planning-direction-card button:disabled { opacity: .42; cursor: default; }
+.planning-direction-card button svg, .planning-advanced button svg { width: 13px; }
+.planning-direction-card > p { margin: 3px 0 0; padding-top: 10px; border-top: 1px solid #29352e; color: #718078; font: 8px/1.55 var(--sans); }
+.planning-direction-card > p b { color: #9eac9f; }
+.planning-advanced { margin-top: 12px; padding-top: 12px; border-top: 1px solid #303d35; }
+.planning-advanced > button svg:last-child { transition: transform .2s ease; }
+.planning-advanced > button svg.open { transform: rotate(180deg); }
+.planning-advanced-content { margin-top: 10px; padding: 13px; border: 1px solid #303d35; border-radius: 9px; background: #090e0b; }
+.planning-advanced-content > p { margin: 0 0 10px; color: #7c8b81; font: 8px/1.55 var(--sans); }
+.planning-advanced-content details { border-top: 1px solid #27322c; }
+.planning-advanced-content summary { padding: 9px 2px; color: #aab8af; cursor: pointer; font: 8px var(--mono); }
+.planning-advanced-content summary small { margin-left: 5px; color: #607067; text-transform: uppercase; }
+.planning-advanced-content pre { max-height: 420px; margin: 0 0 10px; padding: 11px; overflow: auto; border-radius: 7px; color: #96a99c; background: #050806; white-space: pre-wrap; overflow-wrap: anywhere; font: 8px/1.5 var(--mono); }
 .movie-final, .movie-timeline-section { margin-top: 30px; }
 .movie-project-references { margin-top: 27px; }
 .movie-project-references > div:last-child { margin-top: 12px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
@@ -948,6 +982,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   .movie-project-header { flex-direction: column; }
   .movie-project-actions { justify-content: flex-start; }
   .movie-plan-overview { grid-template-columns: 1fr; }
+  .planning-room-grid { grid-template-columns: 1fr; }
   .movie-project-references > div:last-child { grid-template-columns: 1fr; }
   .movie-clip { grid-template-columns: 1fr; }
   .movie-editor-workspace { grid-template-columns: 1fr; }

@@ -41,8 +41,8 @@ use std::{
 use store::ResearchStore;
 use studio::{
     MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieEdit, MoviePlan,
-    MoviePlanFeedbackRequest, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
-    StartMovieRequest,
+    MoviePlanFeedbackRequest, MoviePlanningSnapshot, MovieProject, MovieReferenceImport,
+    MovieStudio, MovieSummary, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -286,7 +286,7 @@ fn resume_movie(
                 .into(),
         );
     }
-    let needs_plan = project.plan.is_none();
+    let needs_plan = project.plan.is_none() || project.status == "planning-checkpoint";
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -336,7 +336,10 @@ fn spawn_movie(
                     .await
                     .map_err(|error| error.to_string())?;
                 drop(lease);
-                if planned.status == "awaiting-review" {
+                if matches!(
+                    planned.status.as_str(),
+                    "awaiting-review" | "planning-checkpoint"
+                ) {
                     let _ = managed.runtime.stop_managed().await;
                     let _ = services::stop_bonsai(&research.bonsai_root).await;
                     return Ok(());
@@ -388,6 +391,42 @@ fn cancel_movie(
     state
         .studio
         .stop(&id, Some(&app))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_movie_planning(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<MoviePlanningSnapshot, String> {
+    state
+        .studio
+        .planning_snapshot(&id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn direct_movie_planning(
+    id: String,
+    text: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MoviePlanningSnapshot, String> {
+    state
+        .studio
+        .queue_planning_direction(&id, &text, Some(&app))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn checkpoint_movie_planning(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MoviePlanningSnapshot, String> {
+    state
+        .studio
+        .request_planning_checkpoint(&id, Some(&app))
         .map_err(|error| error.to_string())
 }
 
@@ -1863,6 +1902,9 @@ pub fn run() {
             start_movie,
             resume_movie,
             cancel_movie,
+            get_movie_planning,
+            direct_movie_planning,
+            checkpoint_movie_planning,
             save_movie_plan,
             revise_movie_plan,
             approve_movie_plan,

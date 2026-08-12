@@ -337,6 +337,41 @@ export interface MovieProject {
   producerFeedback: ProducerFeedbackRecord[];
 }
 
+export interface ProducerDirection {
+  id: string;
+  createdAt: string;
+  text: string;
+}
+
+export interface MoviePromptDocument {
+  id: string;
+  title: string;
+  category: string;
+  content: string;
+}
+
+export interface MoviePlanningSnapshot {
+  projectId: string;
+  checkpointRequested: boolean;
+  pendingDirections: ProducerDirection[];
+  promptDocuments: MoviePromptDocument[];
+  toolSchema: unknown;
+  lastRequest: unknown;
+  transcript: unknown;
+  currentText: string;
+}
+
+export interface MoviePlanningEvent {
+  projectId: string;
+  sequence: number;
+  kind: "token" | "advanced-token" | "reasoning" | "turn-start" | "turn-complete" | "activity" | "tool-result" | "direction-queued" | "checkpoint-requested" | "checkpoint-saved" | string;
+  stage: string;
+  text: string;
+  session: number;
+  step: number;
+  createdAt: string;
+}
+
 export interface MovieSummary {
   id: string;
   title: string;

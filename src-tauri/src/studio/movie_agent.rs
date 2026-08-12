@@ -1,6 +1,6 @@
 use super::{
-    producer_intent_issues, prompt_quality_issues, MoviePlan, MovieQualityReview, MovieReference,
-    MovieSettings, PlannedClip, StudioError,
+    producer_intent_issues, prompt_quality_issues, prompts, MoviePlan, MovieQualityReview,
+    MovieReference, MovieSettings, PlannedClip, StudioError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -67,9 +67,9 @@ struct WorkspaceState {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WorkspaceToolRequest {
-    action: String,
+    pub(super) action: String,
     #[serde(default)]
-    path: String,
+    pub(super) path: String,
     #[serde(default)]
     content: String,
     #[serde(default)]
@@ -160,6 +160,37 @@ impl MovieAgentWorkspace {
                 }
             }
         }])
+    }
+
+    pub(super) fn record_producer_directions(
+        &self,
+        directions: &[super::planning::ProducerDirection],
+    ) -> Result<(), StudioError> {
+        if directions.is_empty() {
+            return Ok(());
+        }
+        let path = self.root.join("PRODUCER-NOTES.md");
+        let mut notes = match fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                "# Live producer direction\n\nThese dated notes are authoritative and were added through Kestrel's planning room.\n".into()
+            }
+            Err(error) => return Err(error.into()),
+        };
+        for direction in directions {
+            notes.push_str(&format!(
+                "\n## {}\n\n{}\n",
+                direction.created_at,
+                direction.text.trim()
+            ));
+        }
+        if notes.len() > MAX_WORKSPACE_FILE_BYTES {
+            return Err(StudioError::Invalid(
+                "producer notes exceed the 96 KiB workspace limit; checkpoint and consolidate the direction before continuing"
+                    .into(),
+            ));
+        }
+        write_text_atomic(&path, &notes)
     }
 
     pub(super) fn execute(&mut self, request: WorkspaceToolRequest) -> WorkspaceToolResult {
@@ -253,9 +284,9 @@ impl MovieAgentWorkspace {
                     self.state.clean_check_passes = self.state.clean_check_passes.saturating_add(1);
                     self.persist_state()?;
                     let next = if self.state.clean_check_passes == 1 {
-                        "Native H3 checks pass. Now perform a CodeRabbit-style review: inspect movie.json and every scene for story causality, continuity, reference placement, shot specificity, production feasibility, and fidelity to BRIEF.md. Patch any weakness, then run check again."
+                        prompts::FIRST_CLEAN_CHECK
                     } else {
-                        "Native checks and the review pass are clean. Call submit without changing files."
+                        prompts::SECOND_CLEAN_CHECK
                     };
                     Ok(self.result(
                         format!(
@@ -282,11 +313,7 @@ impl MovieAgentWorkspace {
                 if self.state.last_checked_revision != Some(self.state.revision)
                     || self.state.clean_check_passes < 2
                 {
-                    return Ok(self.result(
-                        "SUBMIT BLOCKED: run check on the current revision. After the first clean check, inspect the complete codebase as a film/code reviewer and run a second clean check before submit."
-                            .into(),
-                        None,
-                    ));
+                    return Ok(self.result(prompts::SUBMIT_BLOCKED.into(), None));
                 }
                 plan.quality_review = MovieQualityReview {
                     attempts: self.state.clean_check_passes,
@@ -319,6 +346,9 @@ impl MovieAgentWorkspace {
             "BRIEF.md".into(),
             "REFERENCES.md".into(),
         ];
+        if self.root.join("PRODUCER-NOTES.md").is_file() {
+            files.push("PRODUCER-NOTES.md".into());
+        }
         if self.root.join("movie.json").is_file() {
             files.push("movie.json".into());
         }
@@ -634,13 +664,13 @@ fn readable_path(path: &str) -> Result<String, StudioError> {
     let path = path.trim().replace('\\', "/");
     if matches!(
         path.as_str(),
-        "README.md" | "BRIEF.md" | "REFERENCES.md" | "movie.json"
+        "README.md" | "BRIEF.md" | "REFERENCES.md" | "PRODUCER-NOTES.md" | "movie.json"
     ) || scene_path_is_valid(&path)
     {
         Ok(path)
     } else {
         Err(StudioError::Invalid(
-            "path must be README.md, BRIEF.md, REFERENCES.md, movie.json, or scenes/NNN.json"
+            "path must be README.md, BRIEF.md, REFERENCES.md, PRODUCER-NOTES.md, movie.json, or scenes/NNN.json"
                 .into(),
         ))
     }
@@ -724,6 +754,37 @@ mod tests {
         assert!(writable_path("C:\\Windows\\win.ini").is_err());
         assert!(writable_path("README.md").is_err());
         assert_eq!(writable_path("scenes/001.json").unwrap(), "scenes/001.json");
+    }
+
+    #[test]
+    fn producer_notes_are_durable_and_model_readable() {
+        let root = temp_workspace();
+        let workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a quiet observational film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        workspace
+            .record_producer_directions(&[super::super::planning::ProducerDirection {
+                id: "direction-1".into(),
+                created_at: "2026-08-12T10:00:00Z".into(),
+                text: "Reveal the red suitcase earlier without changing the ending.".into(),
+            }])
+            .unwrap();
+        assert!(workspace
+            .list_files()
+            .unwrap()
+            .contains("PRODUCER-NOTES.md"));
+        assert!(workspace
+            .read_file("PRODUCER-NOTES.md")
+            .unwrap()
+            .contains("red suitcase"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

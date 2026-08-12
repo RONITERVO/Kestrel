@@ -32,6 +32,8 @@ import type {
   MovieClipSuggestion,
   MovieEdit,
   MoviePlan,
+  MoviePlanningEvent,
+  MoviePlanningSnapshot,
   MovieProject,
   MovieReferenceImport,
   MovieSummary,
@@ -160,6 +162,21 @@ export async function cancelMovie(id: string): Promise<MovieProject> {
   return invoke<MovieProject>("cancel_movie", { id });
 }
 
+export async function getMoviePlanning(id: string): Promise<MoviePlanningSnapshot> {
+  if (!isTauri()) throw new Error("Movie planning requires the desktop application.");
+  return invoke<MoviePlanningSnapshot>("get_movie_planning", { id });
+}
+
+export async function directMoviePlanning(id: string, text: string): Promise<MoviePlanningSnapshot> {
+  if (!isTauri()) throw new Error("Live producer direction requires the desktop application.");
+  return invoke<MoviePlanningSnapshot>("direct_movie_planning", { id, text });
+}
+
+export async function checkpointMoviePlanning(id: string): Promise<MoviePlanningSnapshot> {
+  if (!isTauri()) throw new Error("Planning checkpoints require the desktop application.");
+  return invoke<MoviePlanningSnapshot>("checkpoint_movie_planning", { id });
+}
+
 export async function saveMoviePlan(id: string, plan: MoviePlan): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Producer plan editing requires the desktop application.");
   return invoke<MovieProject>("save_movie_plan", { id, plan });
@@ -201,6 +218,11 @@ export async function revealMovie(id: string): Promise<void> {
 
 export async function onMovieProject(callback: (project: MovieProject) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MovieProject>("movie-project", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function onMoviePlanning(callback: (event: MoviePlanningEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MoviePlanningEvent>("movie-planning", (event) => callback(event.payload));
   return () => undefined;
 }
 

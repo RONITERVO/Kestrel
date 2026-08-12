@@ -3,6 +3,7 @@ use crate::{
     runtime::{authorized, ModelConnection},
 };
 use chrono::Utc;
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,7 +14,10 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::Duration,
 };
 use tauri::{AppHandle, Emitter};
@@ -22,8 +26,11 @@ use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
 mod movie_agent;
+mod planning;
+mod prompts;
 
 use movie_agent::{MovieAgentWorkspace, WorkspaceToolRequest, WorkspaceToolResult};
+pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot};
 
 const SCHEMA_VERSION: u32 = 5;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
@@ -37,6 +44,11 @@ const MOVIE_AGENT_SESSION_STEPS: u32 = 96;
 const MAX_MOVIE_AGENT_SESSIONS: u32 = 8;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+enum MovieAgentOutcome {
+    Submitted(MoviePlan),
+    Checkpointed,
+}
 
 fn media_program(name: &str) -> PathBuf {
     let key = if name == "ffprobe" {
@@ -656,6 +668,8 @@ pub struct MovieStudio {
     http: Client,
     comfy_child: Arc<AsyncMutex<Option<Child>>>,
     project_locks: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
+    planning_control: Arc<StdMutex<()>>,
+    planning_sequence: Arc<AtomicU64>,
 }
 
 impl MovieStudio {
@@ -672,6 +686,8 @@ impl MovieStudio {
                 .build()?,
             comfy_child: Arc::new(AsyncMutex::new(None)),
             project_locks: Arc::new(StdMutex::new(HashMap::new())),
+            planning_control: Arc::new(StdMutex::new(())),
+            planning_sequence: Arc::new(AtomicU64::new(1)),
         };
         studio.recover_interrupted()?;
         Ok(studio)
@@ -980,6 +996,169 @@ impl MovieStudio {
             .map_err(|error| if matches!(error, StudioError::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound) { StudioError::NotFound(id.into()) } else { error })
     }
 
+    fn planning_control_path(&self, id: &str) -> PathBuf {
+        self.project_dir(id).join("planning-control.json")
+    }
+
+    fn emit_planning(
+        &self,
+        id: &str,
+        kind: &str,
+        stage: &str,
+        text: impl Into<String>,
+        position: (u32, u32),
+        app: Option<&AppHandle>,
+    ) {
+        let Some(app) = app else { return };
+        let event = MoviePlanningEvent {
+            project_id: id.into(),
+            sequence: self.planning_sequence.fetch_add(1, Ordering::Relaxed),
+            kind: kind.into(),
+            stage: stage.into(),
+            text: text.into(),
+            session: position.0,
+            step: position.1,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let _ = app.emit("movie-planning", event);
+    }
+
+    pub fn planning_snapshot(&self, id: &str) -> Result<MoviePlanningSnapshot, StudioError> {
+        validate_id(id)?;
+        let project = self.get(id)?;
+        let folder = self.project_dir(id).join("agent-workspace");
+        let transcript = planning::read_advanced_json(&folder.join("agent-transcript.json"))?;
+        let last_request = planning::read_advanced_json(&folder.join("agent-last-request.json"))?;
+        let control = {
+            let _guard = self.planning_control.lock().map_err(|_| {
+                StudioError::Invalid("movie planning controls are unavailable".into())
+            })?;
+            planning::load_control(&self.planning_control_path(id))?
+        };
+        let mut documents = prompts::prompt_catalog(&project.settings);
+        for (name, id, title, category) in [
+            (
+                "README.md",
+                "workspace-contract",
+                "Durable workspace contract",
+                "system",
+            ),
+            (
+                "BRIEF.md",
+                "producer-brief",
+                "Producer brief sent to Bonsai",
+                "input",
+            ),
+            (
+                "REFERENCES.md",
+                "producer-references",
+                "Producer reference manifest",
+                "input",
+            ),
+            (
+                "PRODUCER-NOTES.md",
+                "producer-notes",
+                "Live producer directions",
+                "input",
+            ),
+        ] {
+            if let Some(document) =
+                planning::read_prompt_document(&folder.join(name), id, title, category)?
+            {
+                documents.push(document);
+            }
+        }
+        Ok(MoviePlanningSnapshot {
+            project_id: id.into(),
+            checkpoint_requested: control.checkpoint_requested,
+            pending_directions: control.pending_directions,
+            prompt_documents: documents,
+            tool_schema: MovieAgentWorkspace::tools(),
+            last_request,
+            current_text: planning::latest_assistant_text(&transcript),
+            transcript,
+        })
+    }
+
+    pub fn queue_planning_direction(
+        &self,
+        id: &str,
+        text: &str,
+        app: Option<&AppHandle>,
+    ) -> Result<MoviePlanningSnapshot, StudioError> {
+        validate_id(id)?;
+        let project = self.get(id)?;
+        if project.status != "running"
+            || !matches!(
+                project.phase.as_str(),
+                "writing" | "agent-workspace" | "resuming" | "producer-revision"
+            )
+        {
+            return Err(StudioError::Invalid(
+                "live direction is available while Bonsai is planning; resume a planning checkpoint first"
+                    .into(),
+            ));
+        }
+        let direction = {
+            let _guard = self.planning_control.lock().map_err(|_| {
+                StudioError::Invalid("movie planning controls are unavailable".into())
+            })?;
+            let (_, direction) = planning::add_direction(&self.planning_control_path(id), text)?;
+            direction
+        };
+        self.emit_planning(
+            id,
+            "direction-queued",
+            "producer",
+            direction.text,
+            (0, 0),
+            app,
+        );
+        self.planning_snapshot(id)
+    }
+
+    pub fn request_planning_checkpoint(
+        &self,
+        id: &str,
+        app: Option<&AppHandle>,
+    ) -> Result<MoviePlanningSnapshot, StudioError> {
+        validate_id(id)?;
+        let project = self.get(id)?;
+        if project.status != "running"
+            || !matches!(
+                project.phase.as_str(),
+                "writing" | "agent-workspace" | "resuming" | "producer-revision"
+            )
+        {
+            return Err(StudioError::Invalid(
+                "a planning checkpoint can only be requested while Bonsai is planning".into(),
+            ));
+        }
+        {
+            let _guard = self.planning_control.lock().map_err(|_| {
+                StudioError::Invalid("movie planning controls are unavailable".into())
+            })?;
+            planning::request_checkpoint(&self.planning_control_path(id))?;
+        }
+        self.emit_planning(
+            id,
+            "checkpoint-requested",
+            "producer",
+            "Checkpoint requested. Bonsai will stop after the current safe model turn.",
+            (0, 0),
+            app,
+        );
+        self.planning_snapshot(id)
+    }
+
+    fn take_planning_control(&self, id: &str) -> Result<planning::PlanningControl, StudioError> {
+        let _guard = self
+            .planning_control
+            .lock()
+            .map_err(|_| StudioError::Invalid("movie planning controls are unavailable".into()))?;
+        planning::take_pending(&self.planning_control_path(id))
+    }
+
     fn project_lock(&self, id: &str) -> Result<Arc<AsyncMutex<()>>, StudioError> {
         validate_id(id)?;
         let mut locks = self.project_locks.lock().map_err(|_| {
@@ -1149,13 +1328,14 @@ impl MovieStudio {
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
         let mut project = self.get(id)?;
+        let resuming_planning = project.status == "planning-checkpoint" || project.plan.is_none();
         project.status = "running".into();
         project.phase = "resuming".into();
         project.error.clear();
-        project.detail = if project.plan.is_some() {
-            "Resuming from the last preserved H3 master.".into()
-        } else {
+        project.detail = if resuming_planning {
             "Resuming Bonsai from the durable movie workspace.".into()
+        } else {
+            "Resuming from the last preserved H3 master.".into()
         };
         self.persist_emit(&mut project, app)?;
         Ok(project)
@@ -1184,7 +1364,7 @@ impl MovieStudio {
         let mut project = self.get(id)?;
         let user_prompt = project.prompt.clone();
         let movie_settings = project.settings.clone();
-        let (mut plan, sources) = self
+        let (outcome, sources) = self
             .direct(
                 &user_prompt,
                 &movie_settings,
@@ -1194,6 +1374,21 @@ impl MovieStudio {
                 (&mut project, app),
             )
             .await?;
+        let MovieAgentOutcome::Submitted(mut plan) = outcome else {
+            project.status = "planning-checkpoint".into();
+            project.phase = "planning-checkpoint".into();
+            project.detail = "Bonsai stopped at a safe producer checkpoint. The workspace, exact model transcript, and unfinished scene files are preserved; resume whenever you are ready.".into();
+            self.persist_emit(&mut project, app)?;
+            self.emit_planning(
+                id,
+                "checkpoint-saved",
+                "checkpoint",
+                "Safe planning checkpoint saved.",
+                (0, 0),
+                app,
+            );
+            return Ok(project);
+        };
         if plan.clips.is_empty() {
             return Err(StudioError::Planning(
                 "the returned plan contained no clips".into(),
@@ -1295,7 +1490,7 @@ impl MovieStudio {
         research: &ResearchSettings,
         cancel: &CancellationToken,
         progress: (&mut MovieProject, Option<&AppHandle>),
-    ) -> Result<(MoviePlan, Vec<MovieSource>), StudioError> {
+    ) -> Result<(MovieAgentOutcome, Vec<MovieSource>), StudioError> {
         let (project, app) = progress;
         check_cancel(cancel)?;
         project.phase = "writing".into();
@@ -1324,7 +1519,7 @@ impl MovieStudio {
         cancel: &CancellationToken,
         project: &mut MovieProject,
         app: Option<&AppHandle>,
-    ) -> Result<MoviePlan, StudioError> {
+    ) -> Result<MovieAgentOutcome, StudioError> {
         let workspace_root = self.project_dir(&project.id).join("agent-workspace");
         let resuming_existing_workspace = workspace_root.join("movie.json").is_file();
         let transcript_path = workspace_root.join("agent-transcript.json");
@@ -1356,9 +1551,9 @@ impl MovieStudio {
                 )?;
             }
             let instruction = if session == 1 && !resuming_existing_workspace {
-                "Open the movie workspace, read its contract and producer brief, then build, lint, code-review, and submit the complete movie. Work autonomously until the workspace accepts submit."
+                prompts::INITIAL_INSTRUCTION
             } else {
-                "Resume the existing durable movie workspace after a context checkpoint. List and inspect its current files, then run check first. If check says the review is clean and instructs you to submit without changing files, submit immediately. Otherwise repair only affected files, preserve sound work already present, perform the full review, run the required clean checks, and submit."
+                prompts::RESUME_INSTRUCTION
             };
             let mut messages = vec![
                 json!({"role":"system","content":movie_agent_prompt()}),
@@ -1369,14 +1564,55 @@ impl MovieStudio {
 
             for _ in 0..MOVIE_AGENT_SESSION_STEPS {
                 check_cancel(cancel)?;
+                let control = self.take_planning_control(&project.id)?;
+                if !control.pending_directions.is_empty() {
+                    workspace.record_producer_directions(&control.pending_directions)?;
+                    for direction in control.pending_directions {
+                        messages.push(json!({
+                            "role":"user",
+                            "content":prompts::producer_direction(&direction.text),
+                        }));
+                        project.producer_feedback.push(ProducerFeedbackRecord {
+                            created_at: direction.created_at,
+                            scope: "live-planning".into(),
+                            clip_id: String::new(),
+                            feedback: direction.text,
+                        });
+                    }
+                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
+                    project.detail = "Bonsai received the producer's latest direction and is revising the durable plan.".into();
+                    self.persist_emit(project, app)?;
+                }
+                if control.checkpoint_requested {
+                    persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
+                    return Ok(MovieAgentOutcome::Checkpointed);
+                }
                 absolute_step = absolute_step.saturating_add(1);
                 project.phase = "agent-workspace".into();
                 project.detail = format!(
                     "Bonsai is editing and checking the durable movie codebase (agent step {absolute_step}, context session {session})."
                 );
                 self.persist_emit(project, app)?;
-                let request =
-                    self.complete_agent(connection, &messages, &tools, settings, research);
+                self.emit_planning(
+                    &project.id,
+                    "turn-start",
+                    "planning",
+                    format!("Bonsai is planning turn {absolute_step}."),
+                    (session, absolute_step),
+                    app,
+                );
+                let request = self.complete_agent_stream(
+                    connection,
+                    &messages,
+                    &tools,
+                    settings,
+                    research,
+                    cancel,
+                    &project.id,
+                    session,
+                    absolute_step,
+                    app,
+                );
                 let response_result = tokio::select! {
                     result = request => result,
                     _ = cancel.cancelled() => return Err(StudioError::Cancelled),
@@ -1386,9 +1622,7 @@ impl MovieStudio {
                     Err(error) => {
                         messages.push(json!({
                             "role":"user",
-                            "content":format!(
-                                "Kestrel context checkpoint: the previous model response could not be accepted ({error}). The durable workspace files are intact. On resume, run check and use small individual writes or batches of at most eight files."
-                            )
+                            "content":prompts::response_checkpoint(&error.to_string())
                         }));
                         persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
                         project.detail = format!(
@@ -1415,7 +1649,7 @@ impl MovieStudio {
                 persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
                 if tool_calls.is_empty() {
                     no_tool_streak = no_tool_streak.saturating_add(1);
-                    messages.push(json!({"role":"user","content":"Do not stop with prose. Continue through the movie_workspace tool until check passes twice and submit succeeds."}));
+                    messages.push(json!({"role":"user","content":prompts::CONTINUE_WITH_TOOLS}));
                     persist_movie_agent_transcript(&transcript_path, absolute_step, &messages)?;
                     if no_tool_streak >= 3 {
                         project.detail = format!(
@@ -1455,7 +1689,26 @@ impl MovieStudio {
                                     )
                                 };
                                 match parsed {
-                                    Ok(request) => workspace.execute(request),
+                                    Ok(request) => {
+                                        self.emit_planning(
+                                            &project.id,
+                                            "activity",
+                                            &request.action,
+                                            producer_activity(&request),
+                                            (session, absolute_step),
+                                            app,
+                                        );
+                                        let result = workspace.execute(request);
+                                        self.emit_planning(
+                                            &project.id,
+                                            "tool-result",
+                                            "native-check",
+                                            producer_tool_result(&result.message),
+                                            (session, absolute_step),
+                                            app,
+                                        );
+                                        result
+                                    }
                                     Err(error) => WorkspaceToolResult {
                                         message: format!(
                                             "ERROR: invalid movie_workspace arguments: {error}"
@@ -1486,7 +1739,7 @@ impl MovieStudio {
                             plan.clips.len()
                         );
                         self.persist_emit(project, app)?;
-                        return Ok(plan);
+                        return Ok(MovieAgentOutcome::Submitted(plan));
                     }
                 }
             }
@@ -1526,6 +1779,198 @@ impl MovieStudio {
             )));
         }
         serde_json::from_str(&text).map_err(StudioError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_agent_stream(
+        &self,
+        connection: &ModelConnection,
+        messages: &[Value],
+        tools: &Value,
+        settings: &MovieSettings,
+        research: &ResearchSettings,
+        cancel: &CancellationToken,
+        project_id: &str,
+        session: u32,
+        step: u32,
+        app: Option<&AppHandle>,
+    ) -> Result<Value, StudioError> {
+        let mut body = movie_agent_request(
+            &connection.model_id,
+            messages,
+            tools,
+            settings,
+            research.max_output_tokens,
+        );
+        body["stream"] = json!(true);
+        body["stream_options"] = json!({"include_usage": true});
+        write_json_atomic(
+            &self
+                .project_dir(project_id)
+                .join("agent-workspace")
+                .join("agent-last-request.json"),
+            &body,
+        )?;
+        let response = authorized(
+            self.http
+                .post(format!("{}/chat/completions", connection.endpoint)),
+            connection,
+        )
+        .json(&body)
+        .send()
+        .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(StudioError::Planning(format!(
+                "movie agent HTTP {status}: {}",
+                truncate(&text, 500)
+            )));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = Vec::<u8>::new();
+        let mut content = String::new();
+        let mut tool_calls = Vec::<StreamedMovieToolCall>::new();
+        let mut completed = false;
+        let mut reasoning_announced = false;
+        loop {
+            let next = tokio::select! {
+                value = stream.next() => value,
+                _ = cancel.cancelled() => return Err(StudioError::Cancelled),
+            };
+            let Some(chunk) = next else { break };
+            buffer.extend_from_slice(&chunk?);
+            while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
+                let line = buffer.drain(..=end).collect::<Vec<_>>();
+                let line = String::from_utf8_lossy(&line);
+                let Some(data) = line.trim().strip_prefix("data:") else {
+                    continue;
+                };
+                let data = data.trim();
+                if data == "[DONE]" {
+                    completed = true;
+                    continue;
+                }
+                let Ok(value) = serde_json::from_str::<Value>(data) else {
+                    continue;
+                };
+                if let Some(token) = value
+                    .pointer("/choices/0/delta/content")
+                    .and_then(Value::as_str)
+                {
+                    content.push_str(token);
+                    self.emit_planning(
+                        project_id,
+                        "token",
+                        "model-text",
+                        token,
+                        (session, step),
+                        app,
+                    );
+                }
+                if !reasoning_announced
+                    && value
+                        .pointer("/choices/0/delta/reasoning_content")
+                        .or_else(|| value.pointer("/choices/0/delta/reasoning"))
+                        .and_then(Value::as_str)
+                        .is_some()
+                {
+                    reasoning_announced = true;
+                    self.emit_planning(
+                        project_id,
+                        "reasoning",
+                        "thinking",
+                        "Bonsai is reasoning locally before its next production action.",
+                        (session, step),
+                        app,
+                    );
+                }
+                if let Some(deltas) = value
+                    .pointer("/choices/0/delta/tool_calls")
+                    .and_then(Value::as_array)
+                {
+                    for delta in deltas {
+                        let index = delta
+                            .get("index")
+                            .and_then(Value::as_u64)
+                            .unwrap_or_default() as usize;
+                        while tool_calls.len() <= index {
+                            tool_calls.push(StreamedMovieToolCall::default());
+                        }
+                        let call = &mut tool_calls[index];
+                        if let Some(fragment) = delta.get("id").and_then(Value::as_str) {
+                            call.id.push_str(fragment);
+                        }
+                        if let Some(fragment) =
+                            delta.pointer("/function/name").and_then(Value::as_str)
+                        {
+                            call.name.push_str(fragment);
+                        }
+                        if let Some(fragment) =
+                            delta.pointer("/function/arguments").and_then(Value::as_str)
+                        {
+                            if !call.activity_announced {
+                                call.activity_announced = true;
+                                self.emit_planning(
+                                    project_id,
+                                    "activity",
+                                    "planning",
+                                    "Bonsai is streaming its next structured production action.",
+                                    (session, step),
+                                    app,
+                                );
+                            }
+                            call.arguments.push_str(fragment);
+                            self.emit_planning(
+                                project_id,
+                                "advanced-token",
+                                "tool-arguments",
+                                fragment,
+                                (session, step),
+                                app,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if !completed {
+            return Err(StudioError::Planning(
+                "movie agent stream ended before its completion marker; the durable workspace and previous accepted turns are intact"
+                    .into(),
+            ));
+        }
+        let tool_calls = tool_calls
+            .into_iter()
+            .enumerate()
+            .filter(|(_, call)| !call.name.is_empty() || !call.arguments.is_empty())
+            .map(|(index, call)| {
+                json!({
+                    "id": if call.id.is_empty() { format!("movie-tool-{step}-{index}") } else { call.id },
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                })
+            })
+            .collect::<Vec<_>>();
+        let assistant_content = if content.is_empty() {
+            Value::Null
+        } else {
+            Value::String(content)
+        };
+        self.emit_planning(
+            project_id,
+            "turn-complete",
+            "planning",
+            "Bonsai completed the model turn and is applying its production action.",
+            (session, step),
+            app,
+        );
+        Ok(json!({"choices":[{"message":{
+            "role":"assistant",
+            "content":assistant_content,
+            "tool_calls":tool_calls,
+        }}]}))
     }
 
     pub async fn revise_with_producer_feedback(
@@ -1572,7 +2017,19 @@ impl MovieStudio {
                 app,
             )
             .await?;
-        let mut reviewed = reviewed;
+        let MovieAgentOutcome::Submitted(mut reviewed) = reviewed else {
+            project.status = "planning-checkpoint".into();
+            project.phase = "planning-checkpoint".into();
+            project.detail = "Bonsai saved the producer revision at a safe checkpoint. The previous approved draft and the unfinished workspace are both preserved.".into();
+            project.producer_feedback.push(ProducerFeedbackRecord {
+                created_at: Utc::now().to_rfc3339(),
+                scope: "full-plan-checkpoint".into(),
+                clip_id: String::new(),
+                feedback: feedback.into(),
+            });
+            self.persist_emit(&mut project, app)?;
+            return Ok(project);
+        };
         prepare_producer_plan(&project, &mut reviewed)?;
         project.producer_feedback.push(ProducerFeedbackRecord {
             created_at: Utc::now().to_rfc3339(),
@@ -2667,7 +3124,7 @@ fn persist_movie_agent_transcript(
         &json!({
             "updatedAt": Utc::now().to_rfc3339(),
             "step": step,
-            "messages": messages,
+            "messages": sanitize_chat_messages(messages),
         }),
     )
 }
@@ -2779,8 +3236,53 @@ fn response_message(response: &Value) -> Result<Value, StudioError> {
         })
 }
 
+#[derive(Default)]
+struct StreamedMovieToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+    activity_announced: bool,
+}
+
+fn producer_activity(request: &WorkspaceToolRequest) -> String {
+    match request.action.as_str() {
+        "list" => "Bonsai is reviewing the durable production workspace.".into(),
+        "read" | "read_many" => {
+            if request.path.is_empty() {
+                "Bonsai is reviewing the brief and current scene work.".into()
+            } else {
+                format!("Bonsai is reviewing {}.", request.path)
+            }
+        }
+        "write" | "write_batch" => "Bonsai is updating the screenplay and scene directions.".into(),
+        "delete" => "Bonsai is removing an obsolete draft scene.".into(),
+        "check" => "Bonsai is running native H3 lint and the full production review.".into(),
+        "submit" => "Bonsai is submitting the checked plan for producer review.".into(),
+        _ => "Bonsai is applying a production action.".into(),
+    }
+}
+
+fn producer_tool_result(message: &str) -> String {
+    if message.starts_with("CHECK PASS") {
+        "Native checks passed. Bonsai is completing the required whole-film review.".into()
+    } else if message.starts_with("CHECK FAIL") {
+        let issues = message.lines().filter(|line| line.starts_with('-')).count();
+        format!(
+            "Native review found {} issue{}; Bonsai is repairing the affected scenes.",
+            issues.max(1),
+            if issues == 1 { "" } else { "s" }
+        )
+    } else if message.starts_with("SUBMITTED") {
+        "The checked plan was submitted successfully.".into()
+    } else if message.starts_with("ERROR") || message.starts_with("SUBMIT BLOCKED") {
+        "The production action was rejected safely; Bonsai received the exact diagnostic and will repair it.".into()
+    } else {
+        "The durable workspace accepted Bonsai's production action.".into()
+    }
+}
+
 fn movie_agent_prompt() -> &'static str {
-    "You are Bonsai operating as the autonomous coding agent you were trained to be. The movie is a small durable codebase, not one giant chat response. Use only the movie_workspace tool. Read its README.md, BRIEF.md, and REFERENCES.md; create or patch typed project files; treat check output like compiler/test diagnostics; inspect the whole result like a demanding code and film reviewer; and continue until submit succeeds. Preserve unaffected files when repairing a finding. Never ask the producer to resolve choices you can make, never emit a replacement plan in chat, and never claim completion before the tool accepts submit. You have no shell, network, arbitrary filesystem, or render authority."
+    prompts::MOVIE_AGENT_SYSTEM
 }
 
 fn reference_manifest(references: &[MovieReference]) -> String {
@@ -2839,7 +3341,7 @@ struct MovieAssessment {
 }
 
 fn clip_assistant_prompt() -> &'static str {
-    "You are Bonsai at an advanced producer's scene desk. Propose one organized replacement scene; never mutate files or claim that the existing H3 master changed. Obey the producer's requested fix and preserve useful neighboring continuity. MiniMax H3 cannot combine native referenceIds with an exact prior-frame continuation in one clip: choose referenceIds with usePreviousFrame false for a reference-locked cut, or usePreviousFrame true with empty referenceIds for a seamless handoff whose carried frame already contains the subject. Keep native reference IDs only in referenceIds. The replacement prompt must be a complete 120-450 word MiniMax H3 renderer instruction with production medium, environment, lighting/texture, timed coverage through the exact clip endpoint, camera, blocking/action, sound, transition, and relevant exclusions. Return a concise producer summary, a practical verification checklist, and the complete structured replacement clip."
+    prompts::CLIP_ASSISTANT_SYSTEM
 }
 
 fn clip_suggestion_schema() -> Value {
