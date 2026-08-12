@@ -6,14 +6,14 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   approveMoviePlan, askBonsaiMovieClip, cancelMovie, cancelMovieImageAsset, checkpointMoviePlanning,
-  cancelMoviePromptDraft, directMoviePlanning, getMovie, getMoviePlanning, listMovieImageAssets, listMovies, movieMediaUrl,
-  onMovieImageAsset, onMoviePlanning, onMovieProject, onMoviePromptDraft, onMovieRenderPreview, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
+  cancelMovieCopilot, cancelMoviePromptDraft, directMoviePlanning, getMovie, getMovieCopilotReceipt, getMoviePlanning, listMovieImageAssets, listMovies, movieMediaUrl,
+  onMovieCopilot, onMovieImageAsset, onMoviePlanning, onMovieProject, onMoviePromptDraft, onMovieRenderPreview, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
   resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startMovie,
-  startMovieImageAsset, startMoviePromptDraft,
+  startMovieCopilot, startMovieImageAsset, startMoviePromptDraft,
 } from "./api";
 import { MovieTimeline } from "./MovieTimeline";
 import type {
-  MovieClipSuggestion, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
+  MovieClipSuggestion, MovieCopilotEvent, MovieCopilotProposal, MovieCopilotReceipt, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
   ModelInfo, MovieImageAssetGeneration, MovieProject, MovieReferenceAsset, MovieRenderPreviewEvent, MovieSettings,
   MovieSummary, PendingMovieReference, PlannedClip, PromptDraftMode, PromptDraftReceipt,
   RenderedClip,
@@ -81,6 +81,9 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const activeProjectId = useRef<string | undefined>(undefined);
   const promptDraftActiveRef = useRef<ActivePromptDraft | undefined>(undefined);
   const imageRequestId = useRef<string | undefined>(undefined);
+  const handleCopilotHistory = useCallback((history: MovieProject["copilotHistory"]) => {
+    setProject((current) => current ? { ...current, copilotHistory: history } : current);
+  }, []);
 
   useEffect(() => {
     if (models.some((model) => model.id === promptModelId)) return;
@@ -421,7 +424,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
             onGenerateImage={() => void generateImageAsset()} onStopImage={() => void stopImageAsset()} onUseGeneratedImage={useGeneratedImage}
             onPrompt={setPrompt} onSettings={setSettings} onReferences={setReferences} onAttach={() => void attachReferences()} onAdvanced={setAdvanced} onMake={() => void makeMovie()} />
         ) : (
-          <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} preview={moviePreview} onError={onError} onEdit={setEdit}
+          <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} models={models} selectedModelId={promptModelId} preview={moviePreview} onError={onError} onEdit={setEdit} onCopilotHistory={handleCopilotHistory}
             onProject={(next) => { activeProjectId.current = next.id; setProject(next); setEdit(next.edit); void refreshList(); }}
             onNew={() => void beginNewProduction()}
             onCancel={() => void cancelMovie(project.id).then(setProject).catch((error) => onError(String(error)))}
@@ -648,14 +651,16 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
   </section>;
 }
 
-function MovieProjectView({ project, edit, busy, advancedEnabled, preview, onError, onProject, onEdit, onNew, onCancel, onResume, onReveal, onSave, onExport }: {
-  project: MovieProject; edit: MovieEdit; busy: boolean; advancedEnabled: boolean; preview?: MovieRenderPreviewEvent; onError: (message: string) => void;
+function MovieProjectView({ project, edit, busy, advancedEnabled, models, selectedModelId, preview, onError, onProject, onEdit, onCopilotHistory, onNew, onCancel, onResume, onReveal, onSave, onExport }: {
+  project: MovieProject; edit: MovieEdit; busy: boolean; advancedEnabled: boolean; models: ModelInfo[]; selectedModelId: string; preview?: MovieRenderPreviewEvent; onError: (message: string) => void;
   onProject: (project: MovieProject) => void; onEdit: (edit: MovieEdit) => void;
+  onCopilotHistory: (history: MovieProject["copilotHistory"]) => void;
   onNew: () => void; onCancel: () => void; onResume: () => void; onReveal: () => void; onSave: () => void; onExport: () => void;
 }) {
   const [draftPlan, setDraftPlan] = useState<MoviePlan | undefined>(project.plan);
   const [working, setWorking] = useState(false);
   const [workspace, setWorkspace] = useState<ProjectWorkspace>(() => preferredProjectWorkspace(project));
+  const [copilotOpen, setCopilotOpen] = useState(false);
   useEffect(() => setDraftPlan(project.plan), [project.id, project.plan]);
   useEffect(() => setWorkspace(preferredProjectWorkspace(project)), [project.id]);
   useEffect(() => {
@@ -684,7 +689,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, preview, onErr
   return <div className="movie-project-view movie-production-shell">
     <header className="studio-project-bar">
       <div><span className={`studio-project-state ${project.status}`}>{project.status === "running" ? <LoaderCircle className="spin" /> : project.status === "complete" ? <Check /> : <Clock3 />}{project.status === "complete" ? "Review cut ready" : project.phase}</span><span><strong>{project.title}</strong><small>{project.plan?.logline ?? project.prompt}</small></span></div>
-      <div className="movie-project-actions"><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={onCancel}><CircleStop /> Stop</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> {resumeLabel}</button>}</div>
+      <div className="movie-project-actions"><button className={copilotOpen ? "active" : ""} disabled={workspace === "plan"} onClick={() => setCopilotOpen((value) => !value)}><Sparkles /> Copilot</button><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={onCancel}><CircleStop /> Stop</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> {resumeLabel}</button>}</div>
     </header>
     <div className={`studio-production-strip ${project.status}`}>
       <span>{project.status === "running" ? <LoaderCircle className="spin" /> : <ShieldCheck />}<strong>{project.detail}</strong><small>{complete} of {project.clips.length || "—"} H3 masters preserved · {project.renderer}</small></span>
@@ -710,7 +715,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, preview, onErr
         <div className="studio-room-heading"><span><small>Producer + MiniMax H3</small><strong>Watch generation and manage preserved masters</strong></span><em>{complete} / {project.clips.length || "—"} complete</em></div>
         {preview && project.status === "running" && <LiveH3Preview event={preview} advanced={advancedEnabled} />}
         {project.references.length > 0 && <ProductionReferences project={project} />}
-        <ProductionMasters project={project} advancedEnabled={advancedEnabled} onProject={onProject} onError={onError} />
+        <ProductionMasters project={project} onProject={onProject} onError={onError} />
       </section>}
       {workspace === "edit" && project.clips.length > 0 && <section className="project-edit-room">
         <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} onRequestSave={onSave} />
@@ -721,6 +726,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, preview, onErr
         {project.exports?.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2><small>Every cut remains addressable with its decision-list sidecar and SHA-256 identity.</small></div></div><div>{[...project.exports].reverse().map((item) => <article key={item.id}><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s · {readableSize(item.bytes)}</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>)}</div></section>}
       </section>}
     </div>
+    {copilotOpen && workspace !== "plan" && <ProducerCopilot project={project} edit={edit} workspace={workspace} models={models} selectedModelId={selectedModelId} advancedEnabled={advancedEnabled} onEdit={onEdit} onHistory={onCopilotHistory} onClose={() => setCopilotOpen(false)} onError={onError} />}
   </div>;
 }
 
@@ -731,15 +737,153 @@ function preferredProjectWorkspace(project: MovieProject): ProjectWorkspace {
   return "plan";
 }
 
+export function ProducerCopilot({ project, edit, workspace, models, selectedModelId, advancedEnabled, onEdit, onHistory, onClose, onError }: {
+  project: MovieProject; edit: MovieEdit; workspace: Exclude<ProjectWorkspace, "plan">; models: ModelInfo[]; selectedModelId: string; advancedEnabled: boolean;
+  onEdit: (edit: MovieEdit) => void; onHistory?: (history: MovieProject["copilotHistory"]) => void; onClose: () => void; onError: (message: string) => void;
+}) {
+  const [modelId, setModelId] = useState(() => models.some((model) => model.id === selectedModelId) ? selectedModelId : models[0]?.id ?? "");
+  const [instruction, setInstruction] = useState("");
+  const [requestId, setRequestId] = useState<string>();
+  const [response, setResponse] = useState("");
+  const [status, setStatus] = useState("Ready for direction");
+  const [receipt, setReceipt] = useState<MovieCopilotReceipt>();
+  const [receiptLabel, setReceiptLabel] = useState("Current copilot turn");
+  const [advancedTokens, setAdvancedTokens] = useState("");
+  const [proposal, setProposal] = useState<MovieCopilotProposal>();
+  const [applied, setApplied] = useState(false);
+  const [beforeApply, setBeforeApply] = useState<MovieEdit>();
+  const [proposalLint, setProposalLint] = useState("");
+  const requestIdRef = useRef<string | undefined>(undefined);
+  const active = Boolean(requestId);
+
+  useEffect(() => {
+    if (models.some((model) => model.id === modelId)) return;
+    setModelId(models[0]?.id ?? "");
+  }, [modelId, models]);
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void onMovieCopilot((event: MovieCopilotEvent) => {
+      if (event.projectId !== project.id || event.requestId !== requestIdRef.current) return;
+      if (event.kind === "queued") setStatus(`Loading ${event.modelName ?? "local model"}…`);
+      if (event.kind === "started") {
+        setStatus("Thinking with the current production…");
+        if (event.receipt) {
+          setReceipt(event.receipt);
+          setReceiptLabel("Current copilot turn");
+        }
+      }
+      if (event.kind === "reasoning") setStatus("Reasoning locally before answering…");
+      if (event.kind === "token" && event.content) {
+        setResponse((value) => value + event.content);
+        setStatus("Collaborating live…");
+      }
+      if (event.kind === "advanced-token" && event.content) setAdvancedTokens((value) => value + event.content);
+      if (event.kind === "complete") {
+        setProposal(event.proposal);
+        setStatus((current) => event.proposal ? "Suggestion ready — review before applying" : current.includes("withheld") ? current : "Advice complete");
+      }
+      if (event.kind === "proposal-rejected") {
+        setProposalLint(event.content ?? "The suggested action did not pass native linting.");
+        setStatus("Advice complete — unsafe or malformed changes were withheld");
+      }
+      if (event.kind === "cancelled") setStatus("Stopped at a producer checkpoint — partial advice is preserved");
+      if (event.kind === "error") {
+        setStatus("Copilot could not finish");
+        if (event.content) onError(event.content);
+      }
+      if (["settled", "cancelled", "error"].includes(event.kind)) {
+        requestIdRef.current = undefined;
+        setRequestId(undefined);
+      }
+      if (event.kind === "settled" && onHistory) {
+        void getMovie(project.id).then((next) => onHistory(next.copilotHistory ?? [])).catch(() => undefined);
+      }
+      if (event.kind === "settled") {
+        void getMovieCopilotReceipt(project.id, event.requestId).then((audit) => setReceipt(audit)).catch(() => undefined);
+      }
+    }).then((unlisten) => { dispose = unlisten; });
+    return () => dispose?.();
+  }, [onError, onHistory, project.id]);
+
+  const ask = async () => {
+    const id = crypto.randomUUID();
+    requestIdRef.current = id;
+    setRequestId(id);
+    setResponse("");
+    setReceipt(undefined);
+    setReceiptLabel("Current copilot turn");
+    setAdvancedTokens("");
+    setProposal(undefined);
+    setApplied(false);
+    setBeforeApply(undefined);
+    setProposalLint("");
+    setStatus("Queuing on Kestrel’s single local inference lane…");
+    try {
+      await startMovieCopilot({ requestId: id, projectId: project.id, modelId, workspace, instruction, edit });
+    } catch (error) {
+      requestIdRef.current = undefined;
+      setRequestId(undefined);
+      setStatus("Copilot could not start");
+      onError(String(error));
+    }
+  };
+  const stop = async () => {
+    if (requestIdRef.current) await cancelMovieCopilot(requestIdRef.current);
+  };
+  const apply = () => {
+    if (!proposal) return;
+    setBeforeApply(edit);
+    onEdit(proposal.edit);
+    setApplied(true);
+    setStatus("Applied to the working cut — autosave is active and this copilot edit can be reverted below");
+  };
+  const revert = () => {
+    if (!beforeApply) return;
+    onEdit(beforeApply);
+    setApplied(false);
+    setBeforeApply(undefined);
+    setStatus("Copilot edit reverted from the working cut");
+  };
+  const history = (project.copilotHistory ?? []).slice(-4).reverse();
+  const inspectTurn = (turnId: string, label: string) => {
+    void getMovieCopilotReceipt(project.id, turnId).then((audit) => {
+      setReceipt(audit);
+      setReceiptLabel(label);
+    }).catch((error) => onError(`Could not open the durable copilot audit: ${String(error)}`));
+  };
+  const contextLabel = workspace === "generate"
+    ? "Story, plan, references, masters, versions, and current cut"
+    : workspace === "edit"
+      ? "Story intent, masters, current timeline, markers, mix, and delivery settings"
+      : "Current approved cut, markers, mix, presets, and immutable export history";
+
+  return <aside className="producer-copilot" aria-label="Producer copilot">
+    <header><span><Sparkles /><b>Producer copilot</b><small>{workspace} room · local and private</small></span><button aria-label="Close copilot" title={active ? "Stop at a checkpoint before closing" : "Close copilot"} disabled={active} onClick={onClose}><X /></button></header>
+    <div className="producer-copilot-scroll">
+      <section className="copilot-context"><strong>Shared context</strong><span>{contextLabel}</span><small>The model cannot watch media or change the project. Native linting checks every proposed cut.</small></section>
+      {history.length > 0 && !response && <details className="copilot-history"><summary>Recent durable conversations ({history.length})</summary>{history.map((turn) => <article key={turn.id}><small>{turn.workspace} · {new Date(turn.createdAt).toLocaleString()}</small><b>{turn.producerRequest}</b><ProducerText text={turn.response || `Stopped: ${turn.status}`} />{advancedEnabled && <button disabled={active} onClick={() => inspectTurn(turn.id, `${turn.workspace} · ${new Date(turn.createdAt).toLocaleString()}`)}>Inspect exact model receipt</button>}</article>)}</details>}
+      {(response || active) && <section className="copilot-response"><span><i className={active ? "live" : ""} />{status}</span>{response ? <ProducerText text={response} /> : <div className="copilot-wait"><LoaderCircle className="spin" /> Waiting for the first streamed words…</div>}</section>}
+      {proposal && <section className="copilot-proposal"><span className="eyebrow">Producer approval required</span><h3>{proposal.summary}</h3><ul>{proposal.changes.map((change, index) => <li key={`${change}-${index}`}><Check />{change}</li>)}</ul><div>{applied && beforeApply ? <button onClick={revert}><RotateCcw /> Revert copilot edit</button> : <button onClick={() => setProposal(undefined)}>Dismiss</button>}<button className="accent" disabled={applied} onClick={apply}>{applied ? <Check /> : <Film />}{applied ? "Applied to cut" : "Apply as one edit"}</button></div></section>}
+      {proposalLint && <section className="copilot-lint"><ShieldCheck /><span><strong>Native safety check withheld the action</strong><small>{proposalLint}</small></span></section>}
+      {advancedEnabled && receipt && <details className="copilot-advanced"><summary>Exact model context, system prompt, tool schema, and streamed arguments</summary><label>Receipt<pre>{receiptLabel}</pre></label><label>System prompt<pre>{receipt.systemPrompt}</pre></label><label>Messages received<pre>{JSON.stringify(receipt.messages, null, 2)}</pre></label><label>Native action schema<pre>{JSON.stringify(receipt.toolSchema, null, 2)}</pre></label><label>Exact request<pre>{JSON.stringify(receipt.exactRequest, null, 2)}</pre></label>{receipt.lintResult && <label>Native lint result<pre>{receipt.lintResult}</pre></label>}{advancedTokens && <label>Raw streamed tool arguments<pre>{advancedTokens}</pre></label>}</details>}
+    </div>
+    <footer><label>Local collaborator<select value={modelId} disabled={active} onChange={(event) => setModelId(event.target.value)}>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label><textarea value={instruction} disabled={active} onChange={(event) => setInstruction(event.target.value)} placeholder={workspace === "generate" ? "What should we protect or improve in these scene masters?" : workspace === "edit" ? "Make the middle move faster without losing the quiet ending…" : "Review this cut for a client review export and flag unresolved issues…"} />{active ? <button className="danger" onClick={() => void stop()}><CircleStop /> Stop + checkpoint</button> : <button className="accent" disabled={!modelId || instruction.trim().length < 3} onClick={() => void ask()}><Send /> Collaborate</button>}</footer>
+  </aside>;
+}
+
+function ProducerText({ text }: { text: string }) {
+  return <div className="producer-formatted-text">{text.split(/\n{2,}/).filter(Boolean).map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>;
+}
+
 function ProductionReferences({ project }: { project: MovieProject }) {
   return <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}{reference.generation && <details><summary>Generated-image provenance</summary><small>Frame {reference.generation.frameIndex} · seed {reference.generation.seed} · {reference.generation.steps} steps · {reference.generation.width} × {reference.generation.height}</small><pre>{reference.generation.renderedPrompt}</pre><pre>{JSON.stringify(reference.generation.exactGraph, null, 2)}</pre></details>}</span></article>)}</div></section>;
 }
 
-function ProductionMasters({ project, advancedEnabled, onProject, onError }: { project: MovieProject; advancedEnabled: boolean; onProject: (project: MovieProject) => void; onError: (message: string) => void }) {
-  return <section className="production-masters"><div className="movie-section-heading"><div><span className="eyebrow">Preserved master bin</span><h2>Generated scenes</h2><small>Each master remains immutable. Advanced producers can ask the local model for a new scene version here.</small></div></div><div className="movie-clip-grid">{project.clips.map((clip) => <ProductionMasterCard key={clip.id} project={project} clip={clip} advancedEnabled={advancedEnabled} onProject={onProject} onError={onError} />)}</div>{!project.clips.length && <div className="studio-room-empty"><Video /><strong>Waiting for H3 masters</strong><span>Generation status and live approximate frames appear here as soon as the approved plan enters rendering.</span></div>}</section>;
+function ProductionMasters({ project, onProject, onError }: { project: MovieProject; onProject: (project: MovieProject) => void; onError: (message: string) => void }) {
+  return <section className="production-masters"><div className="movie-section-heading"><div><span className="eyebrow">Preserved master bin</span><h2>Generated scenes</h2><small>Each master remains immutable. Any producer can ask the local model for a reviewed new scene version.</small></div></div><div className="movie-clip-grid">{project.clips.map((clip) => <ProductionMasterCard key={clip.id} project={project} clip={clip} onProject={onProject} onError={onError} />)}</div>{!project.clips.length && <div className="studio-room-empty"><Video /><strong>Waiting for H3 masters</strong><span>Generation status and live approximate frames appear here as soon as the approved plan enters rendering.</span></div>}</section>;
 }
 
-function ProductionMasterCard({ project, clip, advancedEnabled, onProject, onError }: { project: MovieProject; clip: RenderedClip; advancedEnabled: boolean; onProject: (project: MovieProject) => void; onError: (message: string) => void }) {
+function ProductionMasterCard({ project, clip, onProject, onError }: { project: MovieProject; clip: RenderedClip; onProject: (project: MovieProject) => void; onError: (message: string) => void }) {
   const planned = project.plan?.clips.find((item) => item.id === clip.id);
   const mediaUrl = movieMediaUrl(clip.path);
   return <article className={`movie-clip ${clip.status}`}>
@@ -747,7 +891,7 @@ function ProductionMasterCard({ project, clip, advancedEnabled, onProject, onErr
     <div className="clip-copy"><div><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {clip.seed}{clip.versions.length ? ` · ${clip.versions.length} preserved versions` : ""}</small></span></div>
       {planned && <div className="clip-organization"><span><b>Story job</b>{planned.purpose}</span><span><b>Transition</b>{planned.transition}</span><span><b>Continuity in</b>{planned.continuityIn}</span><span><b>Continuity out</b>{planned.continuityOut}</span>{planned.referenceIds.length > 0 && <span><b>References</b>{planned.referenceIds.map((id) => project.references.find((reference) => reference.assetId === id)?.name ?? id).join(", ")}</span>}</div>}
       <details><summary>H3 renderer direction</summary><p>{clip.prompt}</p></details>
-      {advancedEnabled && clip.status === "complete" && planned && <SceneAssistant project={project} clip={clip} planned={planned} onProject={onProject} onError={onError} />}
+      {clip.status === "complete" && planned && <SceneAssistant project={project} clip={clip} planned={planned} onProject={onProject} onError={onError} />}
     </div>{clip.error && <pre>{clip.error}</pre>}
   </article>;
 }

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LiveH3Preview, MovieStudio, referenceDisplayTags } from "./MovieStudio";
-import type { ModelInfo, MovieRenderPreviewEvent, PendingMovieReference } from "./types";
+import { LiveH3Preview, MovieStudio, ProducerCopilot, referenceDisplayTags } from "./MovieStudio";
+import type { ModelInfo, MovieEdit, MovieProject, MovieRenderPreviewEvent, PendingMovieReference } from "./types";
 
 afterEach(cleanup);
 
@@ -134,5 +134,26 @@ describe("Kestrel Movie Studio", () => {
     expect(referenceDisplayTags(references, "image-b")).toEqual(["<Picture 2>"]);
     expect(referenceDisplayTags(references, "video-a")).toEqual(["<Video 1>", "<Audio 1>"]);
     expect(referenceDisplayTags(references, "audio-a")).toEqual(["<Audio 2>"]);
+  });
+
+  it("keeps model cooperation inside the editor and producer-approved", () => {
+    const edit: MovieEdit = { clips: [], exportTitle: "Reunion", exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [] };
+    const project = {
+      schemaVersion: 6, id: "movie-1", title: "Reunion", prompt: "Two friends meet beside the sea.", status: "complete", phase: "review", detail: "Review cut ready",
+      createdAt: "2026-08-12T00:00:00Z", updatedAt: "2026-08-12T00:00:00Z", model: "Local Director", renderer: "H3",
+      settings: { width: 1344, height: 768, clipSeconds: 5, steps: 20, maxClips: 12, seed: 0, temperature: .7, topP: .95, topK: 20, thinkingBudget: 32768, maxOutputTokens: 32768, comfyRoot: "D:\\AI\\ComfyUI", refImageSize: "match" },
+      copilotHistory: [{ id: "turn-1", createdAt: new Date().toISOString(), workspace: "edit", producerRequest: "Protect the ending.", modelId: "local-1", response: "Keep the final hold and tighten the entrance.", status: "complete", proposalSummary: "" }],
+      clips: [], references: [], exports: [], sources: [], edit, finalPath: "", error: "", producerReviewRequired: false, producerApprovedAt: "", producerFeedback: [],
+    } satisfies MovieProject;
+    const models = [{ id: "local-1", name: "Local Director" }] as ModelInfo[];
+    render(<ProducerCopilot project={project} edit={edit} workspace="edit" models={models} selectedModelId="local-1" advancedEnabled onEdit={vi.fn()} onClose={vi.fn()} onError={vi.fn()} />);
+
+    expect(screen.getByRole("complementary", { name: "Producer copilot" })).toBeInTheDocument();
+    expect(screen.getByText(/model cannot watch media or change the project/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Collaborate/i })).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText(/Make the middle move faster/i), { target: { value: "Tighten the entrance but preserve the last reaction." } });
+    expect(screen.getByRole("button", { name: /Collaborate/i })).toBeEnabled();
+    fireEvent.click(screen.getByText(/Recent durable conversations/i));
+    expect(screen.getByText("Protect the ending.")).toBeInTheDocument();
   });
 });

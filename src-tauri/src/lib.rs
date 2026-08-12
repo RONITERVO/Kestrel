@@ -40,10 +40,11 @@ use std::{
 };
 use store::ResearchStore;
 use studio::{
-    MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieEdit,
-    MovieImageAssetGeneration, MovieImageAssetRequest, MoviePlan, MoviePlanFeedbackRequest,
-    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
-    PromptDraftJob, PromptDraftRequest, StartMovieRequest,
+    MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieCopilotJob,
+    MovieCopilotReceipt, MovieCopilotRequest, MovieEdit, MovieImageAssetGeneration,
+    MovieImageAssetRequest, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot,
+    MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, PromptDraftJob,
+    PromptDraftRequest, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -572,6 +573,94 @@ async fn start_movie_prompt_draft(
         studio::emit_prompt_draft_settled(&app_for_task, &event_request_id);
     });
     Ok(request_id)
+}
+
+#[tauri::command]
+async fn start_movie_copilot(
+    request: MovieCopilotRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    ensure_workspace_idle(&state)?;
+    let models = state.models.read().await.clone();
+    let project = state
+        .studio
+        .get(&request.project_id)
+        .map_err(|error| error.to_string())?;
+    studio::validate_copilot_request(&request, &models, &project)?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI job is already active.".to_string())?;
+    let cancel = CancellationToken::new();
+    match state.interactive_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(request.request_id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("interactive job registry is unavailable".into());
+        }
+    }
+    let request_id = request.request_id.clone();
+    let project_id = request.project_id.clone();
+    let event_request_id = request_id.clone();
+    let event_project_id = project_id.clone();
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let managed = app_for_task.state::<AppState>();
+        let work_guard = WorkGuard(&managed.work_active);
+        let result = match managed.control_settings.load() {
+            Ok(settings) => {
+                MovieCopilotJob {
+                    app: app_for_task.clone(),
+                    studio: managed.studio.clone(),
+                    runtime: managed.runtime.clone(),
+                    models,
+                    settings,
+                    request,
+                    cancel,
+                }
+                .run()
+                .await
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = result {
+            studio::emit_copilot_error(&app_for_task, &event_request_id, &event_project_id, error);
+        }
+        if let Ok(mut jobs) = managed.interactive_jobs.lock() {
+            jobs.remove(&event_request_id);
+        }
+        drop(work_guard);
+        studio::emit_copilot_settled(&app_for_task, &event_request_id, &event_project_id);
+    });
+    Ok(request_id)
+}
+
+#[tauri::command]
+fn cancel_movie_copilot(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable".to_string())?
+        .get(&request_id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_movie_copilot_receipt(
+    project_id: String,
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<MovieCopilotReceipt, String> {
+    state
+        .studio
+        .copilot_receipt(&project_id, &request_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2080,6 +2169,9 @@ pub fn run() {
             checkpoint_movie_planning,
             start_movie_prompt_draft,
             cancel_movie_prompt_draft,
+            start_movie_copilot,
+            cancel_movie_copilot,
+            get_movie_copilot_receipt,
             save_movie_plan,
             revise_movie_plan,
             approve_movie_plan,

@@ -25,6 +25,7 @@ use thiserror::Error;
 use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
+mod copilot;
 mod image_assets;
 mod live_preview;
 mod movie_agent;
@@ -32,6 +33,11 @@ mod planning;
 mod prompt_collaboration;
 mod prompts;
 
+pub use copilot::{
+    emit_error as emit_copilot_error, emit_settled as emit_copilot_settled,
+    validate_request as validate_copilot_request, MovieCopilotJob, MovieCopilotReceipt,
+    MovieCopilotRequest,
+};
 pub use image_assets::{
     emit_image_asset_error, GeneratedImageProvenance, MovieImageAssetGeneration,
     MovieImageAssetRequest,
@@ -540,7 +546,7 @@ pub struct ClipVersion {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipEdit {
     #[serde(default)]
@@ -578,7 +584,7 @@ fn default_speed() -> f32 {
     1.0
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MovieEdit {
     #[serde(default)]
@@ -595,7 +601,7 @@ pub struct MovieEdit {
     pub markers: Vec<TimelineMarker>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineMarker {
     pub id: String,
@@ -673,6 +679,22 @@ pub struct MovieProject {
     pub producer_approved_at: String,
     #[serde(default)]
     pub producer_feedback: Vec<ProducerFeedbackRecord>,
+    #[serde(default)]
+    pub copilot_history: Vec<MovieCopilotTurn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieCopilotTurn {
+    pub id: String,
+    pub created_at: String,
+    pub workspace: String,
+    pub producer_request: String,
+    pub model_id: String,
+    pub response: String,
+    pub status: String,
+    #[serde(default)]
+    pub proposal_summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -850,6 +872,7 @@ impl MovieStudio {
             producer_review_required: pause_after_plan,
             producer_approved_at: String::new(),
             producer_feedback: Vec::new(),
+            copilot_history: Vec::new(),
         };
         write_json_atomic(
             &folder.join("request.json"),

@@ -410,6 +410,53 @@ export interface MovieEdit {
   markers: TimelineMarker[];
 }
 
+export type MovieCopilotWorkspace = "generate" | "edit" | "deliver";
+
+export interface MovieCopilotTurn {
+  id: string;
+  createdAt: string;
+  workspace: MovieCopilotWorkspace;
+  producerRequest: string;
+  modelId: string;
+  response: string;
+  status: string;
+  proposalSummary: string;
+}
+
+export interface MovieCopilotRequest {
+  requestId: string;
+  projectId: string;
+  modelId: string;
+  workspace: MovieCopilotWorkspace;
+  instruction: string;
+  edit: MovieEdit;
+}
+
+export interface MovieCopilotReceipt {
+  systemPrompt: string;
+  messages: unknown[];
+  toolSchema: unknown;
+  exactRequest: unknown;
+  lintResult: string;
+}
+
+export interface MovieCopilotProposal {
+  summary: string;
+  changes: string[];
+  edit: MovieEdit;
+}
+
+export interface MovieCopilotEvent {
+  requestId: string;
+  projectId: string;
+  kind: "queued" | "started" | "reasoning" | "token" | "advanced-token" | "complete" | "cancelled" | "error" | "settled" | string;
+  content?: string;
+  modelName?: string;
+  receipt?: MovieCopilotReceipt;
+  proposal?: MovieCopilotProposal;
+  at: string;
+}
+
 export interface MovieExport {
   id: string;
   createdAt: string;
@@ -446,6 +493,7 @@ export interface MovieProject {
   producerReviewRequired: boolean;
   producerApprovedAt: string;
   producerFeedback: ProducerFeedbackRecord[];
+  copilotHistory: MovieCopilotTurn[];
 }
 
 export interface ProducerDirection {

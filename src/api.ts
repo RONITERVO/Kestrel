@@ -30,6 +30,9 @@ import type {
   SetupSnapshot,
   MovieClipRenderRequest,
   MovieClipSuggestion,
+  MovieCopilotEvent,
+  MovieCopilotReceipt,
+  MovieCopilotRequest,
   MovieEdit,
   MovieImageAssetEvent,
   MovieImageAssetGeneration,
@@ -204,6 +207,25 @@ export async function cancelMoviePromptDraft(requestId: string): Promise<void> {
 export async function onMoviePromptDraft(callback: (event: PromptDraftEvent) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<PromptDraftEvent>("movie-prompt-draft", (event) => callback(event.payload));
   return () => undefined;
+}
+
+export async function startMovieCopilot(request: MovieCopilotRequest): Promise<string> {
+  if (!isTauri()) throw new Error("The producer copilot requires the desktop application.");
+  return invoke<string>("start_movie_copilot", { request });
+}
+
+export async function cancelMovieCopilot(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_copilot", { requestId });
+}
+
+export async function onMovieCopilot(callback: (event: MovieCopilotEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieCopilotEvent>("movie-copilot", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function getMovieCopilotReceipt(projectId: string, requestId: string): Promise<MovieCopilotReceipt> {
+  if (!isTauri()) throw new Error("Copilot audit inspection requires the desktop application.");
+  return invoke<MovieCopilotReceipt>("get_movie_copilot_receipt", { projectId, requestId });
 }
 
 export async function getMoviePlanning(id: string): Promise<MoviePlanningSnapshot> {
