@@ -1,14 +1,14 @@
 import {
-  AudioLines, Check, ChevronDown, CircleStop, Clapperboard, Clock3, Download,
-  Film, FolderOpen, ImageIcon, Library, LoaderCircle, Paperclip, Play, Plus,
+  AudioLines, Check, ChevronDown, CircleStop, Clapperboard, Clock3, Copy, Download,
+  FileUp, Film, FolderOpen, ImageIcon, Library, LoaderCircle, Paperclip, Play, Plus,
   RotateCcw, Save, Send, Settings2, ShieldCheck, Sparkles, Video, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   approveMoviePlan, askBonsaiMovieClip, cancelMovie, cancelMovieImageAsset, checkpointMoviePlanning,
-  cancelMovieCopilot, cancelMoviePromptDraft, directMoviePlanning, getMovie, getMovieCopilotReceipt, getMoviePlanning, listMovieImageAssets, listMovies, movieMediaUrl,
+  cancelMovieCopilot, cancelMoviePromptDraft, directMoviePlanning, getMovie, getMovieCopilotReceipt, getMoviePlanExchangePrompt, getMoviePlanning, listMovieImageAssets, listMovies, movieMediaUrl,
   onMovieCopilot, onMovieImageAsset, onMoviePlanning, onMovieProject, onMoviePromptDraft, onMovieRenderPreview, pickMovieReferenceFiles, renderMovieClipVersion, renderMovieEdit,
-  resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startManualMovie, startMovie,
+  parseMoviePlanExchange, resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startManualMovie, startMovie,
   startMovieCopilot, startMovieImageAsset, startMoviePromptDraft,
 } from "./api";
 import { MovieTimeline } from "./MovieTimeline";
@@ -1078,6 +1078,7 @@ function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise, onApp
       <label className="wide">Creative direction<textarea value={plan.creativeDirection} onChange={(event) => onPlan({ ...plan, creativeDirection: event.target.value })} /></label>
       <label className="wide">Continuity bible · one rule per line<textarea value={plan.continuityBible.join("\n")} onChange={(event) => onPlan({ ...plan, continuityBible: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} /></label>
     </div>
+    <ExternalPlanExchange projectId={project.id} onPlan={onPlan} />
     <div className="producer-scene-list">{plan.clips.map((clip, index) => <article key={`${clip.id}-${index}`} className="producer-scene-card">
       <header><span><b>Scene {index + 1}</b><small>{clip.durationSeconds}s planned · {clip.usePreviousFrame ? "previous final frame" : clip.referenceIds.length ? `${clip.referenceIds.length} native reference${clip.referenceIds.length === 1 ? "" : "s"}` : "independent visual start"}</small></span><div><button disabled={plan.clips.length >= project.settings.maxClips} onClick={() => insertClip(index)}>Insert before</button><button disabled={index === 0} onClick={() => moveClip(index, -1)}>Move up</button><button disabled={index === plan.clips.length - 1} onClick={() => moveClip(index, 1)}>Move down</button><button onClick={() => removeClip(index)}>Remove</button></div></header>
       <PlannedClipFields clip={clip} references={project.references} canUsePreviousFrame={index > 0} onClip={(next) => updateClip(index, next)} />
@@ -1085,6 +1086,60 @@ function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise, onApp
     <button className="producer-add-scene" disabled={plan.clips.length >= project.settings.maxClips} onClick={() => insertClip(plan.clips.length)}><Plus /> Add scene at end</button>
     <div className="producer-feedback"><label><span>Optional Bonsai help</span><small>The same planning agent is available in both standard and advanced views. It receives your complete current plan and only proposes a revision.</small><textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Keep the flashback isolated to scene 5; strengthen the visual bridge between scenes 2 and 3; rewrite scene 8's H3 direction with more precise camera and audio beats…" /></label><button disabled={busy || feedback.trim().length < 3} onClick={() => void sendFeedback()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Ask Bonsai to revise this plan</button></div>
   </section>;
+}
+
+function ExternalPlanExchange({ projectId, onPlan }: { projectId: string; onPlan: (plan: MoviePlan) => void }) {
+  const [brief, setBrief] = useState("");
+  const [response, setResponse] = useState("");
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const prepareBrief = async () => {
+    setBusy(true);
+    setStatus("Building a private, versioned plan brief…");
+    try {
+      const next = await getMoviePlanExchangePrompt(projectId);
+      setBrief(next);
+      try {
+        await navigator.clipboard.writeText(next);
+        setStatus("Copied. Paste it into any external LLM chat, then bring its JSON response back here.");
+      } catch {
+        setStatus("The brief is ready below. Select and copy it manually if clipboard access is unavailable.");
+      }
+    } catch (error) { setStatus(String(error)); } finally { setBusy(false); }
+  };
+  const loadResponse = async () => {
+    if (!response.trim()) return;
+    setBusy(true);
+    setStatus("Checking the exchange format, scene fields, durations, and reference handles…");
+    try {
+      const plan = await parseMoviePlanExchange(projectId, response);
+      onPlan(plan);
+      setStatus(`Loaded ${plan.clips.length} ${plan.clips.length === 1 ? "scene" : "scenes"} into the editable draft. Review it, then save or approve it yourself.`);
+    } catch (error) { setStatus(String(error)); } finally { setBusy(false); }
+  };
+  const readFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setStatus("That response is larger than the 2 MiB plan-exchange limit.");
+      return;
+    }
+    try {
+      setResponse(await file.text());
+      setStatus(`Loaded ${file.name}. Validate it to place the plan into the editable draft.`);
+    } catch (error) { setStatus(`Kestrel could not read ${file.name}: ${String(error)}`); }
+  };
+  return <details className="external-plan-exchange">
+    <summary><span><Copy /> External LLM plan exchange</span><small>Copy a complete brief to ChatGPT, Gemini, or another chat; paste or drop its JSON result back here.</small></summary>
+    <div className="external-plan-body">
+      <div className="external-plan-step"><span><b>1</b><strong>Give the external chat the exact Kestrel contract</strong><small>The copied text contains this story, safe reference handles, the current draft, H3 timing rules, and a versioned JSON schema. Kestrel makes no network request.</small></span><button disabled={busy} onClick={() => void prepareBrief()}>{busy ? <LoaderCircle className="spin" /> : <Copy />} Copy model brief</button></div>
+      {brief && <label>Copy fallback<textarea aria-label="External model brief" readOnly value={brief} onFocus={(event) => event.currentTarget.select()} /></label>}
+      <div className="external-plan-step"><span><b>2</b><strong>Bring back only the model’s plan response</strong><small>Plain JSON and fenced JSON are accepted. It is parsed as data, never executed, and only becomes an unsaved editable draft.</small></span><label className="external-plan-file"><FileUp /> Choose JSON or text<input aria-label="Choose external plan response" type="file" accept=".json,.txt,application/json,text/plain" onChange={(event) => void readFile(event.target.files?.[0])} /></label></div>
+      <div className="external-plan-drop" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void readFile(event.dataTransfer.files?.[0]); }}>
+        <textarea aria-label="External plan JSON" maxLength={2 * 1024 * 1024} value={response} onChange={(event) => setResponse(event.target.value)} placeholder="Paste the external model’s Kestrel JSON response here, or drop a .json/.txt file…" />
+      </div>
+      <div className="external-plan-actions"><span role="status">{status}</span><button className="accent" disabled={busy || !response.trim()} onClick={() => void loadResponse()}>{busy ? <LoaderCircle className="spin" /> : <Check />} Validate & load editable draft</button></div>
+    </div>
+  </details>;
 }
 
 function PlannedClipFields({ clip, references, canUsePreviousFrame = true, onClip }: { clip: PlannedClip; references: MovieProject["references"]; canUsePreviousFrame?: boolean; onClip: (clip: PlannedClip) => void }) {

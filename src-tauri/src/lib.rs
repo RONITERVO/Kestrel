@@ -721,6 +721,29 @@ async fn save_movie_plan(
 }
 
 #[tauri::command]
+fn get_movie_plan_exchange_prompt(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state
+        .studio
+        .movie_plan_exchange_prompt(&id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn parse_movie_plan_exchange(
+    id: String,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<MoviePlan, String> {
+    state
+        .studio
+        .parse_movie_plan_exchange(&id, &text)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn revise_movie_plan(
     request: MoviePlanFeedbackRequest,
     app: AppHandle,
@@ -2189,6 +2212,8 @@ pub fn run() {
             start_movie_copilot,
             cancel_movie_copilot,
             get_movie_copilot_receipt,
+            get_movie_plan_exchange_prompt,
+            parse_movie_plan_exchange,
             save_movie_plan,
             revise_movie_plan,
             approve_movie_plan,

@@ -895,6 +895,28 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .producer-plan-desk button:disabled, .scene-assistant button:disabled { opacity: .42; cursor: default; }
 .producer-plan-desk button.accent, .scene-version-action button { color: #11170f; border-color: #698849; background: #b7e866; }
 .producer-plan-desk button svg, .scene-assistant button svg { width: 14px; }
+.external-plan-exchange { margin: 16px 0; border: 1px solid #37443b; border-radius: 9px; background: #121915; }
+.external-plan-exchange > summary { min-height: 48px; padding: 9px 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; list-style: none; }
+.external-plan-exchange > summary::-webkit-details-marker { display: none; }
+.external-plan-exchange > summary span { display: inline-flex; align-items: center; gap: 7px; color: #b4c2b8; font: 750 10px var(--sans); }
+.external-plan-exchange > summary span svg { width: 14px; color: #a9dc5a; }
+.external-plan-exchange > summary small { color: #748178; text-align: right; font: 8px/1.4 var(--sans); }
+.external-plan-body { padding: 13px; display: grid; gap: 12px; border-top: 1px solid #2d3931; }
+.external-plan-step { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.external-plan-step > span { min-width: 0; display: grid; grid-template-columns: 22px 1fr; gap: 2px 7px; }
+.external-plan-step b { grid-row: 1 / 3; width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid #53634f; border-radius: 50%; color: #b7e866; font: 8px var(--mono); }
+.external-plan-step strong { color: #aebcb2; font: 750 9px var(--sans); }
+.external-plan-step small { color: #6f7d74; font: 8px/1.45 var(--sans); }
+.external-plan-body > label { color: #738077; font: 7px var(--mono); text-transform: uppercase; }
+.external-plan-body > label textarea { min-height: 128px; margin-top: 5px; font: 8px/1.45 var(--mono); }
+.external-plan-file { min-height: 33px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid #3b493f; border-radius: 7px; color: #aab8af; background: #151d18; cursor: pointer; white-space: nowrap; font: 750 8px var(--sans); }
+.external-plan-file svg { width: 14px; }
+.external-plan-file input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.external-plan-drop { padding: 7px; border: 1px dashed #46564b; border-radius: 8px; background: #0f1511; }
+.external-plan-drop:focus-within { border-color: #7c9a59; }
+.external-plan-drop textarea { min-height: 150px; border: 0; background: transparent; font: 8px/1.5 var(--mono); }
+.external-plan-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.external-plan-actions span { min-width: 0; color: #829086; font: 8px/1.45 var(--sans); }
 .planned-clip-fields .previous-frame-toggle { align-content: end; text-transform: none; }
 .previous-frame-toggle span { min-height: 35px; display: flex; align-items: center; gap: 7px; color: #9aa9a0; font: 8px var(--sans); }
 .previous-frame-toggle small, .planned-clip-fields fieldset > small, .producer-feedback label > small { display: block; color: #6f7d74; font: 8px/1.45 var(--sans); text-transform: none; }

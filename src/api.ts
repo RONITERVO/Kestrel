@@ -292,6 +292,16 @@ export async function onMovieProject(callback: (project: MovieProject) => void):
   return () => undefined;
 }
 
+export async function getMoviePlanExchangePrompt(id: string): Promise<string> {
+  if (!isTauri()) throw new Error("External plan exchange requires the desktop application.");
+  return invoke<string>("get_movie_plan_exchange_prompt", { id });
+}
+
+export async function parseMoviePlanExchange(id: string, text: string): Promise<MoviePlan> {
+  if (!isTauri()) throw new Error("External plan exchange requires the desktop application.");
+  return invoke<MoviePlan>("parse_movie_plan_exchange", { id, text });
+}
+
 export async function onMoviePlanning(callback: (event: MoviePlanningEvent) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MoviePlanningEvent>("movie-planning", (event) => callback(event.payload));
   return () => undefined;

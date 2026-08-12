@@ -56,6 +56,9 @@ const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 pub(super) const MAX_MOVIE_PROMPT_BYTES: usize = 64 * 1024;
+const MAX_PLAN_EXCHANGE_BYTES: usize = 2 * 1024 * 1024;
+const PLAN_EXCHANGE_FORMAT: &str = "kestrel.movie-plan";
+const PLAN_EXCHANGE_VERSION: u32 = 1;
 const MAX_REFERENCE_SECONDS: f64 = 15.1;
 const MIN_H3_PROMPT_WORDS: usize = 120;
 const MAX_H3_PROMPT_WORDS: usize = 450;
@@ -1300,6 +1303,135 @@ impl MovieStudio {
             .entry(id.to_owned())
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone())
+    }
+
+    pub fn movie_plan_exchange_prompt(&self, id: &str) -> Result<String, StudioError> {
+        let project = self.get(id)?;
+        ensure_plan_is_unrendered(&project)?;
+        let references = project
+            .references
+            .iter()
+            .enumerate()
+            .map(|(index, reference)| {
+                json!({
+                    "handle": exchange_reference_handle(index),
+                    "name": reference.name,
+                    "kind": reference.kind,
+                    "description": reference.description,
+                    "hasEmbeddedAudio": reference.use_embedded_audio,
+                    "embeddedAudioDescription": reference.embedded_audio_description,
+                })
+            })
+            .collect::<Vec<_>>();
+        let current_plan = project
+            .plan
+            .as_ref()
+            .map(|plan| plan_for_exchange(plan, &project.references))
+            .transpose()?;
+        let context = json!({
+            "storyPrompt": project.prompt,
+            "renderWidth": project.settings.width,
+            "renderHeight": project.settings.height,
+            "maximumScenes": project.settings.max_clips,
+            "references": references,
+            "currentPlan": current_plan,
+        });
+        let output_template = json!({
+            "format": PLAN_EXCHANGE_FORMAT,
+            "version": PLAN_EXCHANGE_VERSION,
+            "plan": {
+                "title": "Movie title",
+                "logline": "One concise sentence",
+                "audience": "Intended audience",
+                "creativeDirection": "Overall visual, performance, editorial, and sound direction",
+                "continuityBible": ["Concrete identity, wardrobe, world, geography, or time rule"],
+                "sourceCredits": [],
+                "clips": [{
+                    "id": "scene-001",
+                    "title": "Scene title",
+                    "purpose": "The story job of this scene",
+                    "durationSeconds": 5,
+                    "prompt": "A complete 120-450 word MiniMax H3 direction with timed beats covering the exact duration, camera, lighting or visual texture, action, and sound.",
+                    "continuityIn": "Truthful visible state at the first frame",
+                    "continuityOut": "Truthful visible state at the final frame",
+                    "transition": "hard cut",
+                    "usePreviousFrame": false,
+                    "sourceRefs": [],
+                    "referenceIds": ["reference-1"]
+                }]
+            }
+        });
+        let prompt = format!(
+            "You are preparing a production plan for Kestrel's offline MiniMax H3 video studio. You are a planning collaborator, not an agent: do not call tools, claim to render media, or invent file paths. Return exactly one JSON object and no Markdown commentary.\n\nYour output must use this versioned envelope and field spelling:\n{}\n\nRules:\n- Preserve the producer's story intent. If currentPlan contains useful work, revise or complete it rather than discarding it without reason.\n- Use 5-15 seconds per scene and no more than maximumScenes. Put scenes in final editorial order.\n- Every clip prompt must be 120-450 words and include explicit timed beats covering the exact clip endpoint, camera or lens/framing, lighting or visual texture, visible action, and sound. Include exact quoted words for any speech; otherwise explicitly direct no dialogue or narration.\n- continuityIn and continuityOut must describe concrete visible handoff states. usePreviousFrame may only be true after scene 1 and then referenceIds must be empty.\n- referenceIds may contain only the safe handles listed in references, such as reference-1. Never write a reference handle, native tag, or hidden asset ID inside renderer prose.\n- Use a reference on every independently generated appearance where its described identity, wardrobe, product, motion, audio, or style must be preserved. Do not attach character references to subject-free scenes.\n- sourceCredits must remain empty unless the producer context provides real sources.\n- JSON strings must be validly escaped. Do not add fields containing analysis or reasoning.\n\nComplete project context:\n{}",
+            serde_json::to_string_pretty(&output_template)?,
+            serde_json::to_string_pretty(&context)?,
+        );
+        if prompt.len() > MAX_PLAN_EXCHANGE_BYTES {
+            return Err(StudioError::Invalid(
+                "the current plan is too large for a single external-model exchange; shorten oversized renderer directions or exchange smaller revisions".into(),
+            ));
+        }
+        Ok(prompt)
+    }
+
+    pub fn parse_movie_plan_exchange(
+        &self,
+        id: &str,
+        text: &str,
+    ) -> Result<MoviePlan, StudioError> {
+        let project = self.get(id)?;
+        ensure_plan_is_unrendered(&project)?;
+        let root = parse_plan_exchange_json(text)?;
+        if let Some(format) = root.get("format") {
+            if format.as_str() != Some(PLAN_EXCHANGE_FORMAT) {
+                return Err(StudioError::Invalid(format!(
+                    "unsupported plan exchange format {}; expected {PLAN_EXCHANGE_FORMAT}",
+                    format
+                )));
+            }
+        }
+        if let Some(version) = root.get("version") {
+            if version.as_u64() != Some(u64::from(PLAN_EXCHANGE_VERSION)) {
+                return Err(StudioError::Invalid(format!(
+                    "unsupported plan exchange version {}; expected {PLAN_EXCHANGE_VERSION}",
+                    version
+                )));
+            }
+        }
+        let plan_value = root.get("plan").cloned().unwrap_or(root);
+        let mut plan: MoviePlan = serde_json::from_value(plan_value).map_err(|error| {
+            StudioError::Invalid(format!(
+                "the pasted JSON does not match the Kestrel plan schema: {error}"
+            ))
+        })?;
+        let reference_handles = project
+            .references
+            .iter()
+            .enumerate()
+            .map(|(index, reference)| {
+                (exchange_reference_handle(index), reference.asset_id.clone())
+            })
+            .collect::<HashMap<_, _>>();
+        let known_asset_ids = project
+            .references
+            .iter()
+            .map(|reference| reference.asset_id.as_str())
+            .collect::<HashSet<_>>();
+        for (index, clip) in plan.clips.iter_mut().enumerate() {
+            for reference_id in &mut clip.reference_ids {
+                if let Some(asset_id) = reference_handles.get(reference_id) {
+                    reference_id.clone_from(asset_id);
+                } else if !known_asset_ids.contains(reference_id.as_str()) {
+                    return Err(StudioError::Invalid(format!(
+                        "scene {} uses unknown reference handle '{}'; copy a fresh external-model brief so the model receives the current reference list",
+                        index + 1,
+                        reference_id
+                    )));
+                }
+            }
+        }
+        prepare_producer_draft(&project, &mut plan)?;
+        Ok(plan)
     }
 
     pub async fn save_producer_plan(
@@ -3524,6 +3656,72 @@ fn ensure_producer_render_approval(project: &MovieProject) -> Result<(), StudioE
         ));
     }
     Ok(())
+}
+
+fn exchange_reference_handle(index: usize) -> String {
+    format!("reference-{}", index + 1)
+}
+
+fn plan_for_exchange(
+    plan: &MoviePlan,
+    references: &[MovieReference],
+) -> Result<Value, StudioError> {
+    let handles = references
+        .iter()
+        .enumerate()
+        .map(|(index, reference)| {
+            (
+                reference.asset_id.as_str(),
+                exchange_reference_handle(index),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut plan = plan.clone();
+    for (index, clip) in plan.clips.iter_mut().enumerate() {
+        for reference_id in &mut clip.reference_ids {
+            let handle = handles.get(reference_id.as_str()).ok_or_else(|| {
+                StudioError::Invalid(format!(
+                    "scene {} contains a reference that is no longer in this project",
+                    index + 1
+                ))
+            })?;
+            reference_id.clone_from(handle);
+        }
+    }
+    Ok(serde_json::to_value(plan)?)
+}
+
+fn parse_plan_exchange_json(text: &str) -> Result<Value, StudioError> {
+    if text.trim().is_empty() || text.len() > MAX_PLAN_EXCHANGE_BYTES {
+        return Err(StudioError::Invalid(
+            "pasted plan JSON must be between 1 byte and 2 MiB".into(),
+        ));
+    }
+    let trimmed = text.trim();
+    if let Ok(value) = serde_json::from_str(trimmed) {
+        return Ok(value);
+    }
+    if let Some(fence_start) = trimmed.find("```") {
+        let fenced = &trimmed[fence_start + 3..];
+        if let Some(line_end) = fenced.find('\n') {
+            let body = &fenced[line_end + 1..];
+            if let Some(fence_end) = body.find("```") {
+                if let Ok(value) = serde_json::from_str(body[..fence_end].trim()) {
+                    return Ok(value);
+                }
+            }
+        }
+    }
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if start < end {
+            if let Ok(value) = serde_json::from_str(&trimmed[start..=end]) {
+                return Ok(value);
+            }
+        }
+    }
+    Err(StudioError::Invalid(
+        "could not find one valid JSON object in the pasted response; ask the external model to return only the Kestrel JSON envelope".into(),
+    ))
 }
 
 fn prepare_producer_plan(project: &MovieProject, plan: &mut MoviePlan) -> Result<(), StudioError> {
@@ -5884,6 +6082,91 @@ mod tests {
             .quality_review
             .verdict
             .contains("without an agent review"));
+    }
+
+    #[test]
+    fn external_chat_plan_exchange_is_versioned_bounded_and_reference_safe() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let story = "A football player discovers a misty construction circus.";
+        let mut project = studio
+            .create_manual(
+                StartMovieRequest {
+                    prompt: story.into(),
+                    settings: MovieSettings::default(),
+                    references: vec![],
+                    pause_after_plan: true,
+                },
+                false,
+            )
+            .unwrap();
+        project.references.push(MovieReference {
+            asset_id: "private-asset-id".into(),
+            tag: "<Picture 1>".into(),
+            audio_tag: String::new(),
+            name: "player.png".into(),
+            kind: "image".into(),
+            mime_type: "image/png".into(),
+            bytes: 10,
+            duration_seconds: 0.0,
+            width: 768,
+            height: 1344,
+            has_audio: false,
+            path: "D:\\private\\player.png".into(),
+            description: "Identity and wardrobe reference for the football player.".into(),
+            use_embedded_audio: false,
+            embedded_audio_description: String::new(),
+            generation: None,
+        });
+        studio.save(&project).unwrap();
+
+        let brief = studio.movie_plan_exchange_prompt(&project.id).unwrap();
+        assert!(brief.contains(PLAN_EXCHANGE_FORMAT));
+        assert!(brief.contains(story));
+        assert!(brief.contains("reference-1"));
+        assert!(!brief.contains("private-asset-id"));
+        assert!(!brief.contains("D:\\private"));
+
+        let response = format!(
+            "Here is the result:\n```json\n{}\n```",
+            json!({
+                "format": PLAN_EXCHANGE_FORMAT,
+                "version": PLAN_EXCHANGE_VERSION,
+                "plan": {
+                    "title": "The Circus Player",
+                    "logline": "A player enters an impossible circus.",
+                    "audience": "Film buyers",
+                    "creativeDirection": "Misty live-action wonder.",
+                    "continuityBible": ["The player retains the reference identity and red kit."],
+                    "sourceCredits": [],
+                    "clips": [{
+                        "id": "external-1",
+                        "title": "Arrival",
+                        "purpose": "Introduce the player and circus.",
+                        "durationSeconds": 5,
+                        "prompt": "",
+                        "continuityIn": "Independent morning entrance.",
+                        "continuityOut": "Player stands beneath the circus arch.",
+                        "transition": "hard cut",
+                        "usePreviousFrame": false,
+                        "sourceRefs": [],
+                        "referenceIds": ["reference-1"]
+                    }]
+                }
+            })
+        );
+        let plan = studio
+            .parse_movie_plan_exchange(&project.id, &response)
+            .unwrap();
+        assert_eq!(plan.clips[0].id, "clip-001");
+        assert_eq!(plan.clips[0].reference_ids, ["private-asset-id"]);
+
+        let unknown = response.replace("reference-1", "reference-99");
+        let error = studio
+            .parse_movie_plan_exchange(&project.id, &unknown)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown reference handle 'reference-99'"));
     }
 
     #[test]
