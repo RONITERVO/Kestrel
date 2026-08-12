@@ -1377,7 +1377,7 @@ impl MovieStudio {
             }
         });
         let prompt = format!(
-            "You are preparing a production plan for Kestrel's offline MiniMax H3 video studio. You are a planning collaborator, not an agent: do not call tools, claim to render media, or invent file paths. Return exactly one JSON object and no Markdown commentary.\n\nYour output must use this versioned envelope and field spelling:\n{}\n\nRules:\n- Preserve the producer's story intent. If currentPlan contains useful work, revise or complete it rather than discarding it without reason.\n- Use 5-15 seconds per scene and no more than maximumScenes. Put scenes in final editorial order.\n- Every clip prompt must be 120-450 words and include explicit timed beats covering the exact clip endpoint, camera or lens/framing, lighting or visual texture, visible action, and sound. Include exact quoted words for any speech; otherwise explicitly direct no dialogue or narration.\n- continuityIn and continuityOut must describe concrete visible handoff states. usePreviousFrame may only be true after scene 1 and then referenceIds must be empty.\n- referenceIds may contain only the safe handles listed in references, such as reference-1. Never write a reference handle, native tag, or hidden asset ID inside renderer prose.\n- Use a reference on every independently generated appearance where its described identity, wardrobe, product, motion, audio, or style must be preserved. Do not attach character references to subject-free scenes.\n- sourceCredits must remain empty unless the producer context provides real sources.\n- JSON strings must be validly escaped. Do not add fields containing analysis or reasoning.\n\nComplete project context:\n{}",
+            "You are preparing a production plan for Kestrel's offline MiniMax H3 video studio. You are a planning collaborator, not an agent: do not call tools, claim to render media, or invent file paths. Return exactly one JSON object and no Markdown commentary.\n\nYour output must use this versioned envelope and field spelling:\n{}\n\nRules:\n- Preserve the producer's story intent. If currentPlan contains useful work, revise or complete it rather than discarding it without reason.\n- Use 5-15 seconds per scene and no more than maximumScenes. Put scenes in final editorial order.\n- Every clip prompt must be 120-450 words and include explicit timed beats covering the exact clip endpoint, camera or lens/framing, lighting or visual texture, visible action, and sound. Each clip has its own local timeline beginning at 0 seconds: label beats with parseable local ranges such as [0s-2s], [2s-4s], and [4s-5s]. End the final range at that clip's durationSeconds; never continue film-global timestamps across clips. Include exact quoted words for any speech; otherwise explicitly direct no dialogue or narration.\n- continuityIn and continuityOut must describe concrete visible handoff states. usePreviousFrame may only be true after scene 1 and then referenceIds must be empty.\n- referenceIds may contain only the safe handles listed in references, such as reference-1. Never write a reference handle, native tag, or hidden asset ID inside renderer prose.\n- Use a reference on every independently generated appearance where its described identity, wardrobe, product, motion, audio, or style must be preserved. Do not attach character references to subject-free scenes.\n- sourceCredits must remain empty unless the producer context provides real sources.\n- JSON strings must be validly escaped. Do not add fields containing analysis or reasoning.\n\nComplete project context:\n{}",
             serde_json::to_string_pretty(&output_template)?,
             serde_json::to_string_pretty(&context)?,
         );
@@ -6262,6 +6262,99 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("unknown reference handle 'reference-99'"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the installed local Bonsai model and several minutes"]
+    async fn live_bonsai_ordinary_chat_returns_a_lint_clean_plan_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let project = studio
+            .create_manual(
+                StartMovieRequest {
+                    prompt: "Create a 15-second surreal sales teaser. At misty dawn, an exhausted football player discovers a construction-site circus where cranes perform like trapeze artists. Keep it visually coherent, use no dialogue or narration, and end on the player smiling beneath a swinging work light.".into(),
+                    settings: MovieSettings {
+                        max_clips: 3,
+                        clip_seconds: 8.0,
+                        ..MovieSettings::default()
+                    },
+                    references: Vec::new(),
+                    pause_after_plan: true,
+                },
+                false,
+            )
+            .unwrap();
+        let exchange_prompt = studio.movie_plan_exchange_prompt(&project.id).unwrap();
+        let runtime = Arc::new(RuntimeManager::new());
+        let research = ResearchSettings::default();
+        studio.release_comfy_memory().await;
+
+        let result: Result<MoviePlan, String> = async {
+            let lease = runtime
+                .lease_research(&research)
+                .await
+                .map_err(|error| error.to_string())?;
+            let body = json!({
+                "model": lease.connection.model_id,
+                "messages": [
+                    {"role":"system","content":"You are the producer's local ordinary chat model. Follow the user's requested output format exactly. You have no tools and must return only the requested answer."},
+                    {"role":"user","content":exchange_prompt}
+                ],
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "top_k": 20,
+                "max_tokens": 32_768,
+                "stream": false
+            });
+            let client = Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(3_600))
+                .build()
+                .map_err(|error| error.to_string())?;
+            let response = authorized(
+                client.post(format!("{}/chat/completions", lease.connection.endpoint)),
+                &lease.connection,
+            )
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+            let status = response.status();
+            let value: Value = response.json().await.map_err(|error| error.to_string())?;
+            if !status.is_success() {
+                return Err(format!(
+                    "Bonsai ordinary chat returned {status}: {}",
+                    truncate(&value.to_string(), 1_000)
+                ));
+            }
+            let content = value
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str)
+                .filter(|content| !content.trim().is_empty())
+                .ok_or_else(|| format!("Bonsai ordinary chat returned no visible JSON: {value}"))?;
+            eprintln!("BONSAI CHAT PLAN EXCHANGE RESPONSE:\n{content}");
+            let plan = studio
+                .parse_movie_plan_exchange(&project.id, content)
+                .map_err(|error| error.to_string())?;
+            let issues = prompt_quality_issues(&plan, &project.references);
+            if !issues.is_empty() {
+                return Err(format!(
+                    "Bonsai chat JSON parsed but failed Kestrel lint: {}",
+                    issues.join("; ")
+                ));
+            }
+            Ok(plan)
+        }
+        .await;
+        let _ = runtime.stop_managed().await;
+
+        let plan = result.unwrap();
+        assert!(!plan.clips.is_empty());
+        assert!(plan.clips.len() <= 3);
+        assert!(plan
+            .clips
+            .iter()
+            .all(|clip| (5.0..=15.0).contains(&clip.duration_seconds)));
     }
 
     #[test]
