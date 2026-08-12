@@ -12,6 +12,7 @@ use std::{
 
 const MAX_WORKSPACE_FILE_BYTES: usize = 96 * 1024;
 const PRODUCER_NOTES_HEADER: &str = "# Live producer direction\n\nThese dated notes are authoritative and were added through Kestrel's planning room.\n";
+const PRODUCER_DIRECTION_MARKER_PREFIX: &str = "\n<!-- kestrel-direction:";
 const MAX_READ_MANY_BYTES: usize = 256 * 1024;
 const MAX_TOOL_FILES: usize = 8;
 
@@ -233,20 +234,32 @@ impl MovieAgentWorkspace {
             ));
         }
         while notes.len() > MAX_WORKSPACE_FILE_BYTES {
-            let Some(first) = notes.find("\n## ") else {
+            let Some(marker_start) = notes.find(PRODUCER_DIRECTION_MARKER_PREFIX) else {
                 return Err(StudioError::Invalid(
                     "a single producer direction exceeds the 96 KiB workspace-file limit".into(),
                 ));
             };
-            let Some(next) = notes[first + 1..]
-                .find("\n## ")
-                .map(|offset| first + 1 + offset)
+            let Some(marker_end) = notes[marker_start..]
+                .find("-->")
+                .map(|offset| marker_start + offset + 3)
             else {
                 return Err(StudioError::Invalid(
                     "a single producer direction exceeds the 96 KiB workspace-file limit".into(),
                 ));
             };
-            notes.replace_range(first..next, "");
+            if !notes.starts_with(PRODUCER_NOTES_HEADER)
+                || marker_end <= PRODUCER_NOTES_HEADER.len()
+            {
+                return Err(StudioError::Invalid(
+                    "producer direction notes are missing their durable entry boundary".into(),
+                ));
+            }
+            let entry_end = marker_end
+                + notes.as_bytes()[marker_end..]
+                    .iter()
+                    .take_while(|byte| **byte == b'\n' || **byte == b'\r')
+                    .count();
+            notes.replace_range(PRODUCER_NOTES_HEADER.len()..entry_end, "");
         }
         write_text_atomic(&path, &notes)
     }
@@ -871,6 +884,55 @@ mod tests {
         assert!(notes.len() <= MAX_WORKSPACE_FILE_BYTES);
         assert!(!notes.contains("Direction 0:"));
         assert!(notes.contains("Direction 7:"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn producer_note_rotation_uses_direction_markers_not_producer_headings() {
+        let root = temp_workspace();
+        let workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a quiet observational film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let embedded_heading = format!(
+            "Keep this direction intact.\n## This is producer prose, not an entry boundary\n{}",
+            "y".repeat(25_000)
+        );
+        let direction = super::super::planning::ProducerDirection {
+            id: "heading-direction".into(),
+            created_at: "2026-08-12T11:00:00Z".into(),
+            text: embedded_heading.clone(),
+        };
+        workspace
+            .record_producer_directions(&[
+                super::super::planning::ProducerDirection {
+                    id: "old-large-direction".into(),
+                    created_at: "2026-08-12T10:00:00Z".into(),
+                    text: "x".repeat(80_000),
+                },
+                direction.clone(),
+            ])
+            .unwrap();
+        workspace
+            .record_producer_directions(std::slice::from_ref(&direction))
+            .unwrap();
+
+        let notes = workspace.read_file("PRODUCER-NOTES.md").unwrap();
+        assert!(notes.len() <= MAX_WORKSPACE_FILE_BYTES);
+        assert!(!notes.contains("old-large-direction"));
+        assert!(notes.contains(&embedded_heading));
+        assert_eq!(
+            notes
+                .matches("<!-- kestrel-direction:heading-direction -->")
+                .count(),
+            1
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

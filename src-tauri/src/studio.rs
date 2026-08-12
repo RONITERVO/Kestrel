@@ -34,7 +34,7 @@ mod prompts;
 use agent_flow::{MovieAgentOutcome, MovieAgentProgress, MovieAgentRequest};
 #[cfg(test)]
 use agent_protocol::movie_agent_request;
-use agent_protocol::{sanitize_chat_messages, ToolSubmissionRequest};
+use agent_protocol::{redacted_transcript_view, sanitize_chat_messages, ToolSubmissionRequest};
 pub use copilot::{
     emit_error as emit_copilot_error, emit_settled as emit_copilot_settled,
     validate_request as validate_copilot_request, MovieCopilotJob, MovieCopilotReceipt,
@@ -1173,8 +1173,12 @@ impl MovieStudio {
         validate_id(id)?;
         let project = self.get(id)?;
         let folder = self.project_dir(id).join("agent-workspace");
-        let transcript = planning::read_advanced_json(&folder.join("agent-transcript.json"))?;
-        let last_request = planning::read_advanced_json(&folder.join("agent-last-request.json"))?;
+        let durable_transcript =
+            planning::read_advanced_json(&folder.join("agent-transcript.json"))?;
+        let transcript = redacted_transcript_view(&durable_transcript);
+        let durable_last_request =
+            planning::read_advanced_json(&folder.join("agent-last-request.json"))?;
+        let last_request = redacted_transcript_view(&durable_last_request);
         let control = {
             let _guard = self.planning_control.lock().map_err(|_| {
                 StudioError::Invalid("movie planning controls are unavailable".into())

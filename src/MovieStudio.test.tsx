@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LiveH3Preview, MovieStudio, ProducerCopilot, referenceDisplayTags } from "./MovieStudio";
-import type { ModelInfo, MovieEdit, MovieProject, MovieRenderPreviewEvent, PendingMovieReference } from "./types";
+import { emptyPlannedClip, LiveH3Preview, MovieStudio, ProducerCopilot, ProducerPlanDesk, referenceDisplayTags } from "./MovieStudio";
+import type { ModelInfo, MovieEdit, MoviePlan, MovieProject, MovieRenderPreviewEvent, PendingMovieReference } from "./types";
 
 afterEach(cleanup);
 
@@ -163,5 +163,44 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByRole("button", { name: /Collaborate/i })).toBeEnabled();
     fireEvent.click(screen.getByText(/Recent durable conversations/i));
     expect(screen.getByText("Protect the ending.")).toBeInTheDocument();
+  });
+
+  it("locks the complete producer plan desk while an action is busy", () => {
+    const plan: MoviePlan = {
+      title: "Night Crossing", logline: "A courier crosses a flooded city before dawn.", audience: "Film buyers",
+      creativeDirection: "Tactile live action with restrained camera movement.", continuityBible: ["The courier keeps the same red coat."], sourceCredits: [],
+      qualityReview: { score: 100, attempts: 1, verdict: "Ready" },
+      clips: [{ id: "clip-stable", title: "Departure", purpose: "Begin the journey", durationSeconds: 5, prompt: "A timed cinematic departure.", continuityIn: "Night", continuityOut: "Street", transition: "hard cut", usePreviousFrame: false, sourceRefs: [], referenceIds: [] }],
+    };
+    const project = {
+      schemaVersion: 6, id: "movie-review", title: plan.title, prompt: plan.logline, status: "awaiting-review", phase: "awaiting-producer", detail: "Review",
+      createdAt: "2026-08-12T00:00:00Z", updatedAt: "2026-08-12T00:00:00Z", model: "Local Director", renderer: "H3",
+      settings: { width: 1344, height: 768, clipSeconds: 5, steps: 20, maxClips: 12, seed: 0, temperature: .7, topP: .95, topK: 20, thinkingBudget: 32768, maxOutputTokens: 32768, comfyRoot: "D:\\AI\\ComfyUI", refImageSize: "match" },
+      clips: [], references: [], exports: [], sources: [], edit: { clips: [], exportTitle: plan.title, exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [] }, finalPath: "", error: "", plan,
+      producerReviewRequired: true, producerApprovedAt: "", producerFeedback: [], copilotHistory: [],
+    } as MovieProject;
+    render(<ProducerPlanDesk project={project} plan={plan} busy onPlan={vi.fn()} onSave={vi.fn()} onRevise={vi.fn()} onApprove={vi.fn()} />);
+
+    expect(screen.getByLabelText("Title")).toBeDisabled();
+    expect(screen.getByLabelText("Scene title")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Insert before/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Add scene at end/i })).toBeDisabled();
+    expect(screen.getByPlaceholderText(/Keep the flashback isolated/i)).toBeDisabled();
+    fireEvent.click(screen.getByText(/External LLM plan exchange/i));
+    expect(screen.getByRole("button", { name: /Copy model brief/i })).toBeDisabled();
+    expect(screen.getByLabelText("Choose external plan response")).toBeDisabled();
+    expect(screen.getByLabelText("External plan JSON")).toBeDisabled();
+  });
+
+  it("creates scene IDs independently of insertion index and retries collisions", () => {
+    const collision = "00000000-0000-4000-8000-000000000001";
+    const unique = "00000000-0000-4000-8000-000000000002";
+    const random = vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce(collision)
+      .mockReturnValueOnce(unique);
+
+    expect(emptyPlannedClip(3, new Set([`producer-scene-${collision}`])).id)
+      .toBe(`producer-scene-${unique}`);
+    random.mockRestore();
   });
 });

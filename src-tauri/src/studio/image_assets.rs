@@ -101,11 +101,11 @@ pub struct MovieImageAssetGeneration {
     pub workflow: String,
     pub workflow_source: String,
     pub workflow_revision: String,
-    #[serde(default = "preview_node_revision")]
+    #[serde(default = "legacy_preview_provenance")]
     pub preview_node_revision: String,
-    #[serde(default = "preview_decoder_revision")]
+    #[serde(default = "legacy_preview_provenance")]
     pub preview_decoder_revision: String,
-    #[serde(default = "preview_decoder_sha256")]
+    #[serde(default = "legacy_preview_provenance")]
     pub preview_decoder_sha256: String,
     pub requested_length: u32,
     pub resolved_frame_count: u32,
@@ -124,16 +124,8 @@ pub struct MovieImageAssetGeneration {
     pub exact_graph: Value,
 }
 
-fn preview_node_revision() -> String {
-    PREVIEW_NODE_REVISION.into()
-}
-
-fn preview_decoder_revision() -> String {
-    PREVIEW_DECODER_REVISION.into()
-}
-
-fn preview_decoder_sha256() -> String {
-    PREVIEW_DECODER_SHA256.into()
+fn legacy_preview_provenance() -> String {
+    "unavailable (legacy generation)".into()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -314,9 +306,9 @@ impl MovieStudio {
             workflow: WORKFLOW_NAME.into(),
             workflow_source: WORKFLOW_SOURCE.into(),
             workflow_revision: WORKFLOW_REVISION.into(),
-            preview_node_revision: preview_node_revision(),
-            preview_decoder_revision: preview_decoder_revision(),
-            preview_decoder_sha256: preview_decoder_sha256(),
+            preview_node_revision: PREVIEW_NODE_REVISION.into(),
+            preview_decoder_revision: PREVIEW_DECODER_REVISION.into(),
+            preview_decoder_sha256: PREVIEW_DECODER_SHA256.into(),
             requested_length: REQUESTED_LENGTH,
             resolved_frame_count: RESOLVED_FRAME_COUNT,
             candidate_start: CANDIDATE_START,
@@ -427,6 +419,10 @@ impl MovieStudio {
             &format!("kestrel_images/{}/candidate", generation.id),
             preview_available,
         );
+        write_json_atomic(
+            &self.image_generation_dir(&generation.id).join("graph.json"),
+            &generation.exact_graph,
+        )?;
         self.save_image_generation(generation)?;
         let response = self
             .http
@@ -584,8 +580,8 @@ impl MovieStudio {
             if !seen.insert(asset.id.clone()) {
                 continue;
             }
-            asset.name = format!("Generated H3 image - frame {frame_index:02}");
             if asset.generation.is_none() {
+                asset.name = format!("Generated H3 image - frame {frame_index:02}");
                 asset.generation = Some(provenance);
                 write_json_atomic(
                     &self
@@ -799,6 +795,47 @@ mod tests {
         value.validate(false).unwrap();
         value.prompt.push('x');
         assert!(value.validate(false).is_err());
+    }
+
+    #[test]
+    fn legacy_generation_manifest_does_not_claim_current_preview_provenance() {
+        let generation: MovieImageAssetGeneration = serde_json::from_value(json!({
+            "id": "legacy-generation",
+            "status": "complete",
+            "stage": "ready",
+            "detail": "Legacy receipt",
+            "prompt": "A compass",
+            "renderedPrompt": "A compass",
+            "width": 768,
+            "height": 768,
+            "steps": 20,
+            "seed": 7,
+            "stabilize": true,
+            "workflow": WORKFLOW_NAME,
+            "workflowSource": WORKFLOW_SOURCE,
+            "workflowRevision": WORKFLOW_REVISION,
+            "requestedLength": REQUESTED_LENGTH,
+            "resolvedFrameCount": RESOLVED_FRAME_COUNT,
+            "candidateStart": CANDIDATE_START,
+            "candidateCount": CANDIDATE_COUNT,
+            "comfyPromptId": "legacy-prompt",
+            "createdAt": "2026-08-01T00:00:00Z",
+            "updatedAt": "2026-08-01T00:00:00Z"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            generation.preview_node_revision,
+            "unavailable (legacy generation)"
+        );
+        assert_eq!(
+            generation.preview_decoder_revision,
+            "unavailable (legacy generation)"
+        );
+        assert_eq!(
+            generation.preview_decoder_sha256,
+            "unavailable (legacy generation)"
+        );
     }
 
     #[tokio::test]

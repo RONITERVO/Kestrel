@@ -631,6 +631,14 @@ export function LiveH3Preview({ event, advanced }: { event: MovieRenderPreviewEv
   </section>;
 }
 
+function previewProvenanceAvailable(generation: MovieImageAssetGeneration): boolean {
+  return [
+    generation.previewNodeRevision,
+    generation.previewDecoderRevision,
+    generation.previewDecoderSha256,
+  ].every((value) => !value.startsWith("unavailable"));
+}
+
 function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, preview, references, advanced, expertEnabled, disabled, models, modelId, draftMode, draftActive, draftStatus, onModel, onDraftMode, onDraft, onStopDraft, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
   prompt: string; width: number; height: number; steps: number; seed: number; stabilize: boolean;
   generating: boolean; status: string; generations: MovieImageAssetGeneration[]; preview?: MovieRenderPreviewEvent; references: PendingMovieReference[];
@@ -673,7 +681,7 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
           <figcaption><span>Frame {frameIndex}{frameIndex === generation.candidateStart ? " · workflow pick" : ""}</span><button disabled={selected} onClick={() => onUse(asset)}>{selected ? <Check /> : <Plus />}{selected ? "Added" : "Use image"}</button></figcaption>
         </figure>;
       })}</div>
-      {advanced && <details className="image-generation-receipt"><summary>Exact H3 prompt, models, seed, and ComfyUI graph</summary><div><span>Live preview decoder</span><code>taeh3.safetensors · taehv@{generation.previewDecoderRevision} · SHA-256 {generation.previewDecoderSha256} · approximate only</code><span>Preview node</span><code>ModelPreviewOverrideKJ · KJNodes@{generation.previewNodeRevision}</code><span>Frame pass</span><code>{generation.resolvedFrameCount} resolved frames · {generation.candidateCount} candidate frames from {generation.candidateStart}</code><span>Final decoder</span><code>{generation.candidates[0]?.asset.generation?.vae ?? "minimax_h3_video_vae_fp16.safetensors"} · preserved master</code><span>Workflow</span><code>{generation.workflow}</code><span>Fixed source</span><code>{generation.workflowSource}@{generation.workflowRevision}</code><span>Rendered prompt</span><pre>{generation.renderedPrompt}</pre><span>Exact API graph</span><pre>{JSON.stringify(generation.exactGraph, null, 2)}</pre></div></details>}
+      {advanced && <details className="image-generation-receipt"><summary>Exact H3 prompt, models, seed, and ComfyUI graph</summary><div>{previewProvenanceAvailable(generation) ? <><span>Live preview decoder</span><code>taeh3.safetensors · taehv@{generation.previewDecoderRevision} · SHA-256 {generation.previewDecoderSha256} · approximate only</code><span>Preview node</span><code>ModelPreviewOverrideKJ · KJNodes@{generation.previewNodeRevision}</code></> : <><span>Live preview provenance</span><code>Unavailable for this legacy generation receipt</code></>}<span>Frame pass</span><code>{generation.resolvedFrameCount} resolved frames · {generation.candidateCount} candidate frames from {generation.candidateStart}</code><span>Final decoder</span><code>{generation.candidates[0]?.asset.generation?.vae ?? "minimax_h3_video_vae_fp16.safetensors"} · preserved master</code><span>Workflow</span><code>{generation.workflow}</code><span>Fixed source</span><code>{generation.workflowSource}@{generation.workflowRevision}</code><span>Rendered prompt</span><pre>{generation.renderedPrompt}</pre><span>Exact API graph</span><pre>{JSON.stringify(generation.exactGraph, null, 2)}</pre></div></details>}
     </article>)}
     {recentIssue && !generating && <div className="image-generation-issue"><strong>{recentIssue.status === "interrupted" ? "Previous image pass was interrupted" : "Previous image pass did not finish"}</strong><span>{recentIssue.detail}</span>{recentIssue.error && <small>{recentIssue.error}</small>}</div>}
     {!ready.length && !generating && <div className="image-asset-empty"><ImageIcon /><span>Your generated candidates will stay in this private library across restarts. Only the image you choose is attached to the movie.</span></div>}
@@ -734,7 +742,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
     <div className={`studio-workspace-body project-${workspace}`}>
       {workspace === "plan" && <section className="project-room-scroll">
         {planningLive && <ProducerPlanningRoom project={project} advancedEnabled={advancedEnabled} onError={onError} />}
-        {project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={working} onPlan={setDraftPlan}
+        {project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={busy || working} onPlan={setDraftPlan}
           onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
           onRevise={(feedback) => runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return reviseMoviePlan(project.id, feedback); })}
           onApprove={() => void runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return approveMoviePlan(project.id); })} />}
@@ -1049,14 +1057,17 @@ function friendlyPlanningStage(stage: string): string {
   return names[stage] ?? "Planning";
 }
 
-function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise, onApprove }: {
+export function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise, onApprove }: {
   project: MovieProject; plan: MoviePlan; busy: boolean; onPlan: (plan: MoviePlan) => void;
   onSave: () => void; onRevise: (feedback: string) => Promise<boolean>; onApprove: () => void;
 }) {
   const [feedback, setFeedback] = useState("");
-  const updateClip = (index: number, clip: PlannedClip) => onPlan({ ...plan, clips: plan.clips.map((item, itemIndex) => itemIndex === index ? clip : item) });
+  const updateClip = (index: number, clip: PlannedClip) => {
+    if (!busy) onPlan({ ...plan, clips: plan.clips.map((item, itemIndex) => itemIndex === index ? clip : item) });
+  };
   const keepFirstSceneIndependent = (clips: PlannedClip[]) => clips.map((clip, index) => index === 0 && clip.usePreviousFrame ? { ...clip, usePreviousFrame: false } : clip);
   const moveClip = (index: number, direction: number) => {
+    if (busy) return;
     const target = index + direction;
     if (target < 0 || target >= plan.clips.length) return;
     const clips = [...plan.clips];
@@ -1064,45 +1075,49 @@ function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise, onApp
     onPlan({ ...plan, clips: keepFirstSceneIndependent(clips) });
   };
   const insertClip = (index: number) => {
-    if (plan.clips.length >= project.settings.maxClips) return;
+    if (busy || plan.clips.length >= project.settings.maxClips) return;
     const clips = [...plan.clips];
-    clips.splice(index, 0, emptyPlannedClip(index));
+    clips.splice(index, 0, emptyPlannedClip(index, new Set(clips.map((clip) => clip.id))));
     onPlan({ ...plan, clips: keepFirstSceneIndependent(clips) });
   };
-  const removeClip = (index: number) => onPlan({
-    ...plan,
-    clips: keepFirstSceneIndependent(plan.clips.filter((_, itemIndex) => itemIndex !== index)),
-  });
+  const removeClip = (index: number) => {
+    if (!busy) onPlan({
+      ...plan,
+      clips: keepFirstSceneIndependent(plan.clips.filter((_, itemIndex) => itemIndex !== index)),
+    });
+  };
   const sendFeedback = async () => {
-    if (feedback.trim().length < 3) return;
+    if (busy || feedback.trim().length < 3) return;
     if (await onRevise(feedback)) setFeedback("");
   };
   return <section className="producer-plan-desk">
     <div className="movie-section-heading"><div><span className="eyebrow">Producer-owned checkpoint · no H3 render has started</span><h2>Write and sequence the production plan</h2><small>Author every field yourself. Bonsai is optional help and never owns approval.</small></div><div><button disabled={busy} onClick={onSave}><Save /> Save draft checkpoint</button><button className="accent" disabled={busy || plan.clips.length === 0} onClick={onApprove}>{busy ? <LoaderCircle className="spin" /> : <Play />} Approve & render H3</button></div></div>
     <div className="producer-plan-basics">
-      <label>Title<input value={plan.title} onChange={(event) => onPlan({ ...plan, title: event.target.value })} /></label>
-      <label>Audience<input value={plan.audience} onChange={(event) => onPlan({ ...plan, audience: event.target.value })} /></label>
-      <label className="wide">Logline<textarea value={plan.logline} onChange={(event) => onPlan({ ...plan, logline: event.target.value })} /></label>
-      <label className="wide">Creative direction<textarea value={plan.creativeDirection} onChange={(event) => onPlan({ ...plan, creativeDirection: event.target.value })} /></label>
-      <label className="wide">Continuity bible · one rule per line<textarea value={plan.continuityBible.join("\n")} onChange={(event) => onPlan({ ...plan, continuityBible: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} /></label>
+      <label>Title<input disabled={busy} value={plan.title} onChange={(event) => onPlan({ ...plan, title: event.target.value })} /></label>
+      <label>Audience<input disabled={busy} value={plan.audience} onChange={(event) => onPlan({ ...plan, audience: event.target.value })} /></label>
+      <label className="wide">Logline<textarea disabled={busy} value={plan.logline} onChange={(event) => onPlan({ ...plan, logline: event.target.value })} /></label>
+      <label className="wide">Creative direction<textarea disabled={busy} value={plan.creativeDirection} onChange={(event) => onPlan({ ...plan, creativeDirection: event.target.value })} /></label>
+      <label className="wide">Continuity bible · one rule per line<textarea disabled={busy} value={plan.continuityBible.join("\n")} onChange={(event) => onPlan({ ...plan, continuityBible: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} /></label>
     </div>
-    <ExternalPlanExchange projectId={project.id} onPlan={onPlan} />
-    <div className="producer-scene-list">{plan.clips.map((clip, index) => <article key={`${clip.id}-${index}`} className="producer-scene-card">
-      <header><span><b>Scene {index + 1}</b><small>{clip.durationSeconds}s planned · {clip.usePreviousFrame ? "previous final frame" : clip.referenceIds.length ? `${clip.referenceIds.length} native reference${clip.referenceIds.length === 1 ? "" : "s"}` : "independent visual start"}</small></span><div><button disabled={plan.clips.length >= project.settings.maxClips} onClick={() => insertClip(index)}>Insert before</button><button disabled={index === 0} onClick={() => moveClip(index, -1)}>Move up</button><button disabled={index === plan.clips.length - 1} onClick={() => moveClip(index, 1)}>Move down</button><button onClick={() => removeClip(index)}>Remove</button></div></header>
-      <PlannedClipFields clip={clip} references={project.references} canUsePreviousFrame={index > 0} onClip={(next) => updateClip(index, next)} />
+    <ExternalPlanExchange projectId={project.id} busy={busy} onPlan={onPlan} />
+    <div className="producer-scene-list">{plan.clips.map((clip, index) => <article key={clip.id} className="producer-scene-card">
+      <header><span><b>Scene {index + 1}</b><small>{clip.durationSeconds}s planned · {clip.usePreviousFrame ? "previous final frame" : clip.referenceIds.length ? `${clip.referenceIds.length} native reference${clip.referenceIds.length === 1 ? "" : "s"}` : "independent visual start"}</small></span><div><button disabled={busy || plan.clips.length >= project.settings.maxClips} onClick={() => insertClip(index)}>Insert before</button><button disabled={busy || index === 0} onClick={() => moveClip(index, -1)}>Move up</button><button disabled={busy || index === plan.clips.length - 1} onClick={() => moveClip(index, 1)}>Move down</button><button disabled={busy} onClick={() => removeClip(index)}>Remove</button></div></header>
+      <PlannedClipFields clip={clip} references={project.references} canUsePreviousFrame={index > 0} disabled={busy} onClip={(next) => updateClip(index, next)} />
     </article>)}</div>
-    <button className="producer-add-scene" disabled={plan.clips.length >= project.settings.maxClips} onClick={() => insertClip(plan.clips.length)}><Plus /> Add scene at end</button>
-    <div className="producer-feedback"><label><span>Optional Bonsai help</span><small>The same planning agent is available in both standard and advanced views. It receives your complete current plan and only proposes a revision.</small><textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Keep the flashback isolated to scene 5; strengthen the visual bridge between scenes 2 and 3; rewrite scene 8's H3 direction with more precise camera and audio beats…" /></label><button disabled={busy || feedback.trim().length < 3} onClick={() => void sendFeedback()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Ask Bonsai to revise this plan</button></div>
+    <button className="producer-add-scene" disabled={busy || plan.clips.length >= project.settings.maxClips} onClick={() => insertClip(plan.clips.length)}><Plus /> Add scene at end</button>
+    <div className="producer-feedback"><label><span>Optional Bonsai help</span><small>The same planning agent is available in both standard and advanced views. It receives your complete current plan and only proposes a revision.</small><textarea disabled={busy} value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Keep the flashback isolated to scene 5; strengthen the visual bridge between scenes 2 and 3; rewrite scene 8's H3 direction with more precise camera and audio beats…" /></label><button disabled={busy || feedback.trim().length < 3} onClick={() => void sendFeedback()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Ask Bonsai to revise this plan</button></div>
   </section>;
 }
 
-function ExternalPlanExchange({ projectId, onPlan }: { projectId: string; onPlan: (plan: MoviePlan) => void }) {
+function ExternalPlanExchange({ projectId, busy, onPlan }: { projectId: string; busy: boolean; onPlan: (plan: MoviePlan) => void }) {
   const [brief, setBrief] = useState("");
   const [response, setResponse] = useState("");
   const [status, setStatus] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [requestBusy, setRequestBusy] = useState(false);
+  const disabled = busy || requestBusy;
   const prepareBrief = async () => {
-    setBusy(true);
+    if (disabled) return;
+    setRequestBusy(true);
     setStatus("Building a private, versioned plan brief…");
     try {
       const next = await getMoviePlanExchangePrompt(projectId);
@@ -1113,20 +1128,20 @@ function ExternalPlanExchange({ projectId, onPlan }: { projectId: string; onPlan
       } catch {
         setStatus("The brief is ready below. Select and copy it manually if clipboard access is unavailable.");
       }
-    } catch (error) { setStatus(String(error)); } finally { setBusy(false); }
+    } catch (error) { setStatus(String(error)); } finally { setRequestBusy(false); }
   };
   const loadResponse = async () => {
-    if (!response.trim()) return;
-    setBusy(true);
+    if (disabled || !response.trim()) return;
+    setRequestBusy(true);
     setStatus("Checking the exchange format, scene fields, durations, and reference handles…");
     try {
       const plan = await parseMoviePlanExchange(projectId, response);
       onPlan(plan);
       setStatus(`Loaded ${plan.clips.length} ${plan.clips.length === 1 ? "scene" : "scenes"} into the editable draft. Review it, then save or approve it yourself.`);
-    } catch (error) { setStatus(String(error)); } finally { setBusy(false); }
+    } catch (error) { setStatus(String(error)); } finally { setRequestBusy(false); }
   };
   const readFile = async (file: File | undefined) => {
-    if (!file) return;
+    if (disabled || !file) return;
     if (file.size > 2 * 1024 * 1024) {
       setStatus("That response is larger than the 2 MiB plan-exchange limit.");
       return;
@@ -1136,32 +1151,32 @@ function ExternalPlanExchange({ projectId, onPlan }: { projectId: string; onPlan
       setStatus(`Loaded ${file.name}. Validate it to place the plan into the editable draft.`);
     } catch (error) { setStatus(`Kestrel could not read ${file.name}: ${String(error)}`); }
   };
-  return <details className="external-plan-exchange">
+  return <details className="external-plan-exchange" aria-busy={disabled}>
     <summary><span><Copy /> External LLM plan exchange</span><small>Copy a complete brief to ChatGPT, Gemini, or another chat; paste or drop its JSON result back here.</small></summary>
     <div className="external-plan-body">
-      <div className="external-plan-step"><span><b>1</b><strong>Give the external chat the exact Kestrel contract</strong><small>The copied text contains this story, current draft, reference names/descriptions, safe handles, H3 rules, and the JSON schema—but no media or local paths. Kestrel makes no network request; pasting it into a cloud chat shares that text under the provider’s privacy terms.</small></span><button disabled={busy} onClick={() => void prepareBrief()}>{busy ? <LoaderCircle className="spin" /> : <Copy />} Copy model brief</button></div>
-      {brief && <label>Copy fallback<textarea aria-label="External model brief" readOnly value={brief} onFocus={(event) => event.currentTarget.select()} /></label>}
-      <div className="external-plan-step"><span><b>2</b><strong>Bring back only the model’s plan response</strong><small>Plain JSON and fenced JSON are accepted. It is parsed as data, never executed, and only becomes an unsaved editable draft.</small></span><label className="external-plan-file"><FileUp /> Choose JSON or text<input aria-label="Choose external plan response" type="file" accept=".json,.txt,application/json,text/plain" onChange={(event) => void readFile(event.target.files?.[0])} /></label></div>
-      <div className="external-plan-drop" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void readFile(event.dataTransfer.files?.[0]); }}>
-        <textarea aria-label="External plan JSON" maxLength={2 * 1024 * 1024} value={response} onChange={(event) => setResponse(event.target.value)} placeholder="Paste the external model’s Kestrel JSON response here, or drop a .json/.txt file…" />
+      <div className="external-plan-step"><span><b>1</b><strong>Give the external chat the exact Kestrel contract</strong><small>The copied text contains this story, current draft, reference names/descriptions, safe handles, H3 rules, and the JSON schema—but no media or local paths. Kestrel makes no network request; pasting it into a cloud chat shares that text under the provider’s privacy terms.</small></span><button disabled={disabled} onClick={() => void prepareBrief()}>{requestBusy ? <LoaderCircle className="spin" /> : <Copy />} Copy model brief</button></div>
+      {brief && <label>Copy fallback<textarea aria-label="External model brief" readOnly disabled={disabled} value={brief} onFocus={(event) => event.currentTarget.select()} /></label>}
+      <div className="external-plan-step"><span><b>2</b><strong>Bring back only the model’s plan response</strong><small>Plain JSON and fenced JSON are accepted. It is parsed as data, never executed, and only becomes an unsaved editable draft.</small></span><label className="external-plan-file"><FileUp /> Choose JSON or text<input disabled={disabled} aria-label="Choose external plan response" type="file" accept=".json,.txt,application/json,text/plain" onChange={(event) => void readFile(event.target.files?.[0])} /></label></div>
+      <div className="external-plan-drop" onDragOver={(event) => { if (!disabled) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (!disabled) void readFile(event.dataTransfer.files?.[0]); }}>
+        <textarea disabled={disabled} aria-label="External plan JSON" maxLength={2 * 1024 * 1024} value={response} onChange={(event) => setResponse(event.target.value)} placeholder="Paste the external model’s Kestrel JSON response here, or drop a .json/.txt file…" />
       </div>
-      <div className="external-plan-actions"><span role="status">{status}</span><button className="accent" disabled={busy || !response.trim()} onClick={() => void loadResponse()}>{busy ? <LoaderCircle className="spin" /> : <Check />} Validate & load editable draft</button></div>
+      <div className="external-plan-actions"><span role="status">{status}</span><button className="accent" disabled={disabled || !response.trim()} onClick={() => void loadResponse()}>{requestBusy ? <LoaderCircle className="spin" /> : <Check />} Validate & load editable draft</button></div>
     </div>
   </details>;
 }
 
-function PlannedClipFields({ clip, references, canUsePreviousFrame = true, onClip }: { clip: PlannedClip; references: MovieProject["references"]; canUsePreviousFrame?: boolean; onClip: (clip: PlannedClip) => void }) {
+function PlannedClipFields({ clip, references, canUsePreviousFrame = true, disabled = false, onClip }: { clip: PlannedClip; references: MovieProject["references"]; canUsePreviousFrame?: boolean; disabled?: boolean; onClip: (clip: PlannedClip) => void }) {
   const field = <K extends keyof PlannedClip>(name: K, value: PlannedClip[K]) => onClip({ ...clip, [name]: value });
   return <div className="planned-clip-fields">
-    <label>Scene title<input value={clip.title} onChange={(event) => field("title", event.target.value)} /></label>
-    <NumberField label="Planned H3 seconds" value={clip.durationSeconds} min={5} max={15} step={1} onChange={(value) => field("durationSeconds", value)} />
-    <label className="wide">Story purpose<textarea value={clip.purpose} onChange={(event) => field("purpose", event.target.value)} /></label>
-    <label>Transition<input value={clip.transition} onChange={(event) => field("transition", event.target.value)} /></label>
-    <label>Continuity in<input value={clip.continuityIn} onChange={(event) => field("continuityIn", event.target.value)} /></label>
-    <label>Continuity out<input value={clip.continuityOut} onChange={(event) => field("continuityOut", event.target.value)} /></label>
-    <label className="previous-frame-toggle"><span><input type="checkbox" disabled={!canUsePreviousFrame} checked={canUsePreviousFrame && clip.usePreviousFrame} onChange={(event) => onClip({ ...clip, usePreviousFrame: event.target.checked, referenceIds: event.target.checked ? [] : clip.referenceIds })} /> Use previous scene’s final frame as this scene’s first-frame continuation</span><small>{canUsePreviousFrame ? "H3 continuation cannot be combined with native picture, video, or audio references." : "The opening scene has no previous frame; leave it independent or select project references below."}</small></label>
-    {references.length > 0 && <fieldset className="wide"><legend>Native picture, video, and audio references for this scene</legend><small>Select or remove any project reference. Selecting one turns off previous-frame continuation because H3 exposes these as separate generation paths.</small>{references.map((reference) => <label key={reference.assetId}><input type="checkbox" checked={clip.referenceIds.includes(reference.assetId)} onChange={(event) => onClip({ ...clip, usePreviousFrame: event.target.checked ? false : clip.usePreviousFrame, referenceIds: event.target.checked ? [...clip.referenceIds, reference.assetId] : clip.referenceIds.filter((id) => id !== reference.assetId) })} /><span>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</span></label>)}</fieldset>}
-    <label className="wide renderer-direction">H3 renderer direction<textarea value={clip.prompt} onChange={(event) => field("prompt", event.target.value)} /></label>
+    <label>Scene title<input disabled={disabled} value={clip.title} onChange={(event) => field("title", event.target.value)} /></label>
+    <NumberField label="Planned H3 seconds" value={clip.durationSeconds} min={5} max={15} step={1} disabled={disabled} onChange={(value) => field("durationSeconds", value)} />
+    <label className="wide">Story purpose<textarea disabled={disabled} value={clip.purpose} onChange={(event) => field("purpose", event.target.value)} /></label>
+    <label>Transition<input disabled={disabled} value={clip.transition} onChange={(event) => field("transition", event.target.value)} /></label>
+    <label>Continuity in<input disabled={disabled} value={clip.continuityIn} onChange={(event) => field("continuityIn", event.target.value)} /></label>
+    <label>Continuity out<input disabled={disabled} value={clip.continuityOut} onChange={(event) => field("continuityOut", event.target.value)} /></label>
+    <label className="previous-frame-toggle"><span><input type="checkbox" disabled={disabled || !canUsePreviousFrame} checked={canUsePreviousFrame && clip.usePreviousFrame} onChange={(event) => onClip({ ...clip, usePreviousFrame: event.target.checked, referenceIds: event.target.checked ? [] : clip.referenceIds })} /> Use previous scene’s final frame as this scene’s first-frame continuation</span><small>{canUsePreviousFrame ? "H3 continuation cannot be combined with native picture, video, or audio references." : "The opening scene has no previous frame; leave it independent or select project references below."}</small></label>
+    {references.length > 0 && <fieldset className="wide" disabled={disabled}><legend>Native picture, video, and audio references for this scene</legend><small>Select or remove any project reference. Selecting one turns off previous-frame continuation because H3 exposes these as separate generation paths.</small>{references.map((reference) => <label key={reference.assetId}><input type="checkbox" checked={clip.referenceIds.includes(reference.assetId)} onChange={(event) => onClip({ ...clip, usePreviousFrame: event.target.checked ? false : clip.usePreviousFrame, referenceIds: event.target.checked ? [...clip.referenceIds, reference.assetId] : clip.referenceIds.filter((id) => id !== reference.assetId) })} /><span>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</span></label>)}</fieldset>}
+    <label className="wide renderer-direction">H3 renderer direction<textarea disabled={disabled} value={clip.prompt} onChange={(event) => field("prompt", event.target.value)} /></label>
   </div>;
 }
 
@@ -1188,8 +1203,10 @@ function SceneAssistant({ project, clip, planned: _planned, onProject, onError }
   </div>}</div>;
 }
 
-function emptyPlannedClip(index: number): PlannedClip {
-  return { id: `producer-scene-${Date.now()}-${index}`, title: `Scene ${index + 1}`, purpose: "", durationSeconds: 5, prompt: "", continuityIn: "", continuityOut: "", transition: "hard cut", usePreviousFrame: false, sourceRefs: [], referenceIds: [] };
+export function emptyPlannedClip(index: number, existingIds: ReadonlySet<string>): PlannedClip {
+  let id = "";
+  do id = `producer-scene-${crypto.randomUUID()}`; while (existingIds.has(id));
+  return { id, title: `Scene ${index + 1}`, purpose: "", durationSeconds: 5, prompt: "", continuityIn: "", continuityOut: "", transition: "hard cut", usePreviousFrame: false, sourceRefs: [], referenceIds: [] };
 }
 
 function ReferencePreview({ reference }: { reference: { kind: string; path: string; name: string } }) {
@@ -1234,8 +1251,8 @@ function referencesReady(references: PendingMovieReference[]): boolean {
       && !reserved.test(reference.embeddedAudioDescription))));
 }
 
-function NumberField({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (value: number) => void }) {
-  return <label>{label}<input type="number" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} /></label>;
+function NumberField({ label, value, min, max, step, disabled = false, onChange }: { label: string; value: number; min: number; max: number; step: number; disabled?: boolean; onChange: (value: number) => void }) {
+  return <label>{label}<input type="number" disabled={disabled} value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} /></label>;
 }
 
 function SelectField({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {

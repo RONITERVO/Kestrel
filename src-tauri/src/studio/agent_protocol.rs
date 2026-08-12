@@ -1,7 +1,8 @@
 //! Bonsai planning protocol and durable conversation primitives.
 //!
-//! Model request construction, SSE assembly, typed tool-only retries, reasoning redaction, and
-//! transcript persistence live here so every Studio model call follows the same bounded contract.
+//! Model request construction, SSE assembly, typed tool-only retries, explicit redacted views,
+//! and lossless transcript persistence live here so every Studio model call follows the same
+//! bounded contract.
 
 use super::{write_json_atomic, MovieSettings, StudioError, MOVIE_THINKING_BUDGET};
 use crate::runtime::{authorized, ModelConnection};
@@ -69,7 +70,7 @@ impl AgentTranscript {
             &json!({
                 "updatedAt": Utc::now().to_rfc3339(),
                 "step": self.step,
-                "messages": sanitize_chat_messages(&self.messages),
+                "messages": self.messages,
             }),
         )
     }
@@ -132,6 +133,14 @@ pub(super) fn sanitize_chat_messages(messages: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+pub(super) fn redacted_transcript_view(transcript: &Value) -> Value {
+    let mut view = transcript.clone();
+    if let Some(messages) = transcript.get("messages").and_then(Value::as_array) {
+        view["messages"] = Value::Array(sanitize_chat_messages(messages));
+    }
+    view
+}
+
 pub(super) fn response_message(response: &Value) -> Result<Value, StudioError> {
     response
         .pointer("/choices/0/message")
@@ -153,7 +162,7 @@ pub(super) fn movie_agent_request(
 ) -> Value {
     json!({
         "model": model_id,
-        "messages": sanitize_chat_messages(messages),
+        "messages": messages,
         "tools": tools,
         "tool_choice": "required",
         "parallel_tool_calls": false,
@@ -491,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn transcript_mutations_are_immediately_durable_and_sanitized() {
+    fn transcript_mutations_are_immediately_durable_and_lossless() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("agent-transcript.json");
         let mut transcript = AgentTranscript::begin(path.clone(), 0, "system", "start").unwrap();
@@ -505,8 +514,45 @@ mod tests {
         let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(value["step"], 1);
         let serialized = value.to_string();
-        assert!(!serialized.contains("```"));
-        assert!(!serialized.contains("<think>"));
+        assert!(serialized.contains("```"));
+        assert!(serialized.contains("<think>hidden</think>"));
+    }
+
+    #[test]
+    fn sanitized_view_redacts_without_mutating_source_messages() {
+        let messages = vec![json!({
+            "role":"user",
+            "content":"```json\n<think>private marker</think>"
+        })];
+
+        let redacted = sanitize_chat_messages(&messages);
+
+        assert_eq!(
+            messages[0]["content"],
+            "```json\n<think>private marker</think>"
+        );
+        assert!(!redacted[0]["content"].as_str().unwrap().contains("```"));
+        assert!(!redacted[0]["content"].as_str().unwrap().contains("<think>"));
+
+        let request = movie_agent_request(
+            "bonsai",
+            &messages,
+            &json!([]),
+            &MovieSettings::default(),
+            32_768,
+        );
+        assert_eq!(request["messages"], json!(messages));
+
+        let transcript = json!({"step": 1, "messages": messages});
+        let view = redacted_transcript_view(&transcript);
+        assert!(transcript["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("<think>"));
+        assert!(!view["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("<think>"));
     }
 
     #[test]

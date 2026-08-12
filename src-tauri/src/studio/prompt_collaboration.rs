@@ -13,10 +13,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::MAX_MOVIE_PROMPT_BYTES;
 
-// Prompt collaboration is an explicit producer action and may need a long private
-// reasoning pass before any visible prose arrives. Do not inherit a smaller chat
-// preference here: Bonsai's tested local ceiling leaves enough room for reasoning
-// and the bounded visible draft is still enforced independently below.
+// Prompt collaboration is an explicit producer action and may need a long private reasoning pass
+// before any visible prose arrives. Use its tested ceiling when the configured runtime allows it,
+// while respecting the runtime's explicit output limit.
 const PROMPT_COLLABORATOR_MAX_TOKENS: u32 = 32_768;
 const PROMPT_COLLABORATOR_THINKING_BUDGET: u32 = 32_768;
 const MAX_REFERENCE_DESCRIPTION_BYTES: usize = 4_000;
@@ -24,10 +23,10 @@ const STORY_SYSTEM_PROMPT: &str = "You are an offline story collaborator for fil
 const IMAGE_SYSTEM_PROMPT: &str = "You are an offline visual-development prompt writer for film producers. Write one complete, standalone main prompt for a MiniMax H3 still-image asset: a character identity, location, prop, poster, texture plate, or style frame. Specify the subject, composition, camera viewpoint, lighting, palette, materials, atmosphere, and exact visible lettering when requested. Keep identities and story facts consistent with the supplied movie brief. Do not add a no-motion or stillness suffix because Kestrel applies that separately. Never use reserved runtime tags such as <Picture 1>, <Video 1>, or <Audio 1>. Do not discuss your process, use Markdown, or add a preamble. Return only the image description. You have no tools and cannot take actions or inspect media.";
 const REFERENCE_SYSTEM_PROMPT: &str = "You are an offline producer-reference editor. Write one complete, producer-facing placement description that tells Bonsai exactly what an attached image, video, or audio asset contributes to a movie and where it should or should not be used. Cover identity, wardrobe, composition, motion, camera, timing, voice, music, ambience, or effects only when relevant. Use the movie brief for continuity. Do not claim to have inspected the media; you receive only its name, type, and the producer's text. Never use reserved runtime tags such as <Picture 1>, <Video 1>, or <Audio 1>. Do not discuss your process, use Markdown, or add a preamble. Return only the placement description. You have no tools and cannot take actions.";
 
-fn prompt_inference_allowance() -> (u32, u32) {
+fn prompt_inference_allowance(settings: &ControlSettings) -> (u32, u32) {
     (
-        PROMPT_COLLABORATOR_MAX_TOKENS,
-        PROMPT_COLLABORATOR_THINKING_BUDGET,
+        PROMPT_COLLABORATOR_MAX_TOKENS.min(settings.max_output_tokens),
+        PROMPT_COLLABORATOR_THINKING_BUDGET.min(settings.max_output_tokens),
     )
 }
 
@@ -141,7 +140,7 @@ impl PromptDraftJob {
         } else {
             output_limit
         };
-        let (max_tokens, thinking_budget_tokens) = prompt_inference_allowance();
+        let (max_tokens, thinking_budget_tokens) = prompt_inference_allowance(&settings);
         let (temperature, top_p, top_k) = sampling(request.target);
         let body = json!({
             "model": lease.connection.model_id,
@@ -532,8 +531,18 @@ mod tests {
     }
 
     #[test]
-    fn prompt_collaboration_always_reserves_the_full_reasoning_allowance() {
-        assert_eq!(prompt_inference_allowance(), (32_768, 32_768));
+    fn prompt_collaboration_respects_the_configured_runtime_limit() {
+        let limited = ControlSettings {
+            max_output_tokens: 4_096,
+            ..ControlSettings::default()
+        };
+        assert_eq!(prompt_inference_allowance(&limited), (4_096, 4_096));
+
+        let uncapped = ControlSettings {
+            max_output_tokens: 65_536,
+            ..ControlSettings::default()
+        };
+        assert_eq!(prompt_inference_allowance(&uncapped), (32_768, 32_768));
     }
 
     #[test]
