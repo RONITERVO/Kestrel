@@ -1,4 +1,4 @@
-//! Producer-directed Bonsai planning orchestration.
+//! Producer-directed local-model planning orchestration.
 //!
 //! This module is the lifecycle owner for context sessions, producer controls, workspace tool
 //! dispatch, checkpoints, and independent-review repair rounds. It deliberately does not define
@@ -15,9 +15,13 @@ use super::{
     check_cancel, has_meaningful_prose, prompts, IndependentReviewRequest, MoviePlan, MovieProject,
     MovieSettings, MovieStudio, ProducerFeedbackRecord, StudioError, MOVIE_AGENT_SESSION_STEPS,
 };
-use crate::{models::ResearchSettings, runtime::ModelConnection};
+use crate::{
+    model::ModelInfo,
+    models::ControlSettings,
+    runtime::{ModelConnection, RuntimeManager},
+};
 use serde_json::{json, Value};
-use std::{fs, path::Path, time::Duration};
+use std::{fs, path::Path, sync::Arc, time::Duration};
 use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -32,8 +36,11 @@ pub(super) struct MovieAgentRequest<'a> {
     pub seed: Option<&'a MoviePlan>,
     pub producer_feedback: Option<&'a str>,
     pub settings: &'a MovieSettings,
-    pub connection: &'a ModelConnection,
-    pub research: &'a ResearchSettings,
+    pub runtime: &'a Arc<RuntimeManager>,
+    pub models: &'a [ModelInfo],
+    pub runtime_settings: &'a ControlSettings,
+    pub director_model_id: &'a str,
+    pub reviewer_model_id: &'a str,
     pub cancel: &'a CancellationToken,
 }
 
@@ -47,7 +54,7 @@ enum ReviewDisposition {
     Repair,
 }
 
-/// Runs the durable Bonsai planning state machine.
+/// Runs the durable local-model planning state machine.
 ///
 /// The runner owns orchestration only. Workspace mutation remains typed in `movie_agent`, model
 /// wire-format handling lives in `agent_protocol`, and `MovieStudio` retains project persistence
@@ -106,18 +113,29 @@ pub(super) async fn run(
             announce_turn(studio, project, &lifecycle, app)?;
             let request_messages =
                 transcript.request_messages(workspace.authoritative_story_memory()?);
+            let lease = tokio::select! {
+                result = request.runtime.lease_model(
+                    request.director_model_id,
+                    request.models,
+                    request.runtime_settings,
+                    app,
+                ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
+                _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
+            };
             let stream_request = StreamRequest {
-                connection: request.connection,
+                connection: &lease.connection,
                 messages: &request_messages,
                 tools: &tools,
                 settings: request.settings,
-                research: request.research,
+                runtime_max_output_tokens: request.runtime_settings.max_output_tokens,
                 cancel: request.cancel,
                 project_id: &project.id,
                 position: lifecycle.position(),
                 app,
             };
-            let response = match complete_agent_stream(studio, stream_request).await {
+            let response_result = complete_agent_stream(studio, stream_request).await;
+            drop(lease);
+            let response = match response_result {
                 Ok(response) => response,
                 Err(StudioError::Cancelled) => return Err(StudioError::Cancelled),
                 Err(error) => {
@@ -126,7 +144,7 @@ pub(super) async fn run(
                         step,
                     )?;
                     project.detail = format!(
-                        "Bonsai response failed safely at agent step {step}; Kestrel is checkpointing and resuming in a fresh context."
+                        "The Director response failed safely at agent step {step}; Kestrel is checkpointing and resuming in a fresh context."
                     );
                     studio.persist_emit(project, app)?;
                     lifecycle.restart_session();
@@ -144,7 +162,7 @@ pub(super) async fn run(
                 )?;
                 if lifecycle.record_model_turn(false) == TurnDecision::RestartSession {
                     project.detail = format!(
-                        "Bonsai stopped using its workspace for three turns at agent step {step}; Kestrel is checkpointing and resuming in a fresh context."
+                        "The Director stopped using its workspace for three turns at agent step {step}; Kestrel is checkpointing and resuming in a fresh context."
                     );
                     studio.persist_emit(project, app)?;
                     lifecycle.restart_session();
@@ -177,9 +195,11 @@ pub(super) async fn run(
                         plan,
                         SubmissionReview {
                             prompt: request.prompt,
-                            connection: request.connection,
                             settings: request.settings,
-                            research: request.research,
+                            runtime: request.runtime,
+                            models: request.models,
+                            runtime_settings: request.runtime_settings,
+                            reviewer_model_id: request.reviewer_model_id,
                             cancel: request.cancel,
                             app,
                         },
@@ -257,7 +277,7 @@ fn apply_producer_controls(
                     }),
             );
         project.detail =
-            "Bonsai received the producer's latest direction and is revising the durable plan."
+            "The Director received the producer's latest direction and is revising the durable plan."
                 .into();
         studio.persist_emit(project, app)?;
     }
@@ -272,7 +292,7 @@ fn announce_turn(
 ) -> Result<(), StudioError> {
     project.phase = "agent-workspace".into();
     project.detail = format!(
-        "Bonsai is editing and checking the durable movie codebase (agent step {}, context session {}).",
+        "The Director is editing and checking the durable movie codebase (agent step {}, context session {}).",
         lifecycle.absolute_step(),
         lifecycle.session()
     );
@@ -281,7 +301,10 @@ fn announce_turn(
         &project.id,
         PlanningEventKind::TurnStart,
         PlanningStage::Planning,
-        format!("Bonsai is planning turn {}.", lifecycle.absolute_step()),
+        format!(
+            "The Director is planning turn {}.",
+            lifecycle.absolute_step()
+        ),
         lifecycle.position(),
         app,
     );
@@ -361,9 +384,11 @@ fn parse_workspace_request(arguments: &Value) -> Result<WorkspaceToolRequest, se
 
 struct SubmissionReview<'a> {
     prompt: &'a str,
-    connection: &'a ModelConnection,
     settings: &'a MovieSettings,
-    research: &'a ResearchSettings,
+    runtime: &'a Arc<RuntimeManager>,
+    models: &'a [ModelInfo],
+    runtime_settings: &'a ControlSettings,
+    reviewer_model_id: &'a str,
     cancel: &'a CancellationToken,
     app: Option<&'a AppHandle>,
 }
@@ -378,22 +403,32 @@ async fn review_submission(
 ) -> Result<ReviewDisposition, StudioError> {
     project.phase = "agent-submitted".into();
     project.detail = format!(
-        "Bonsai submitted a checked {}-scene plan. A fresh-context reviewer is comparing every scene with the producer brief.",
+        "The Director submitted a checked {}-scene plan. A fresh-context reviewer is comparing every scene with the producer brief.",
         plan.clips.len()
     );
     studio.persist_emit(project, request.app)?;
+    let lease = tokio::select! {
+        result = request.runtime.lease_model(
+            request.reviewer_model_id,
+            request.models,
+            request.runtime_settings,
+            request.app,
+        ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
+        _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
+    };
     let review = tokio::select! {
         result = studio.independently_review_movie_plan(IndependentReviewRequest {
             project_id: &project.id,
             prompt: request.prompt,
             references: &project.references,
             plan: &plan,
-            connection: request.connection,
+            connection: &lease.connection,
             settings: request.settings,
-            research: request.research,
+            runtime_max_output_tokens: request.runtime_settings.max_output_tokens,
         }) => result?,
         _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
     };
+    drop(lease);
     let blocking = review
         .issues
         .into_iter()
@@ -404,9 +439,9 @@ async fn review_submission(
         })
         .collect::<Vec<_>>();
     if blocking.is_empty() {
-        plan.quality_review.verdict = "Bonsai completed the durable workspace build, two clean native checks, a whole-codebase self-review, and a separate fresh-context fidelity review against the exact producer brief and references.".into();
+        plan.quality_review.verdict = "The Kestrel Director completed the durable workspace build, two clean native checks, a whole-codebase self-review, and a separate fresh-context fidelity review against the exact producer brief and references.".into();
         project.detail = format!(
-            "Bonsai's {}-scene plan passed native lint, self-review, and an independent whole-film review.",
+            "The Director's {}-scene plan passed native lint, self-review, and an independent whole-film review.",
             plan.clips.len()
         );
         studio.persist_emit(project, request.app)?;
@@ -435,7 +470,7 @@ async fn review_submission(
     )?;
     project.phase = "agent-workspace".into();
     project.detail = format!(
-        "The independent reviewer found {} blocking issue(s). Bonsai is repairing the durable plan before H3 can render.",
+        "The independent reviewer found {} blocking issue(s). The Director is repairing the durable plan before H3 can render.",
         review_feedback["blockingIssues"]
             .as_array()
             .map_or(0, Vec::len)
@@ -449,7 +484,7 @@ struct StreamRequest<'a> {
     messages: &'a [Value],
     tools: &'a Value,
     settings: &'a MovieSettings,
-    research: &'a ResearchSettings,
+    runtime_max_output_tokens: u32,
     cancel: &'a CancellationToken,
     project_id: &'a str,
     position: (u32, u32),
@@ -472,7 +507,7 @@ async fn complete_agent_stream(
             messages: request.messages,
             tools: request.tools,
             settings: request.settings,
-            runtime_max_output_tokens: request.research.max_output_tokens,
+            runtime_max_output_tokens: request.runtime_max_output_tokens,
             cancel: request.cancel,
             audit_path: &audit_path,
             fallback_tool_call_prefix: &fallback_tool_call_prefix,
@@ -490,7 +525,7 @@ async fn complete_agent_stream(
                 request.project_id,
                 PlanningEventKind::Reasoning,
                 PlanningStage::Thinking,
-                "Bonsai is reasoning locally before its next production action.",
+                "The Director is reasoning locally before its next production action.",
                 request.position,
                 request.app,
             ),
@@ -498,7 +533,7 @@ async fn complete_agent_stream(
                 request.project_id,
                 PlanningEventKind::Activity,
                 PlanningStage::Planning,
-                "Bonsai is streaming its next structured production action.",
+                "The Director is streaming its next structured production action.",
                 request.position,
                 request.app,
             ),
@@ -517,7 +552,7 @@ async fn complete_agent_stream(
         request.project_id,
         PlanningEventKind::TurnComplete,
         PlanningStage::Planning,
-        "Bonsai completed the model turn and is applying its production action.",
+        "The Director completed the model turn and is applying its production action.",
         request.position,
         request.app,
     );
@@ -532,23 +567,25 @@ async fn restart_delay(cancel: &CancellationToken) -> Result<(), StudioError> {
 
 fn producer_activity(request: &WorkspaceToolRequest) -> String {
     match request.action {
-        WorkspaceAction::List => "Bonsai is reviewing the durable production workspace.".into(),
+        WorkspaceAction::List => {
+            "The Director is reviewing the durable production workspace.".into()
+        }
         WorkspaceAction::Read | WorkspaceAction::ReadMany => {
             if request.path.is_empty() {
-                "Bonsai is reviewing the brief and current scene work.".into()
+                "The Director is reviewing the brief and current scene work.".into()
             } else {
-                format!("Bonsai is reviewing {}.", request.path)
+                format!("The Director is reviewing {}.", request.path)
             }
         }
         WorkspaceAction::Write | WorkspaceAction::WriteBatch => {
-            "Bonsai is updating the screenplay and scene directions.".into()
+            "The Director is updating the screenplay and scene directions.".into()
         }
-        WorkspaceAction::Delete => "Bonsai is removing an obsolete draft scene.".into(),
+        WorkspaceAction::Delete => "The Director is removing an obsolete draft scene.".into(),
         WorkspaceAction::Check => {
-            "Bonsai is running native H3 lint and the full production review.".into()
+            "The Director is running native H3 lint and the full production review.".into()
         }
         WorkspaceAction::Submit => {
-            "Bonsai is submitting the checked plan for producer review.".into()
+            "The Director is submitting the checked plan for producer review.".into()
         }
     }
 }
@@ -556,19 +593,19 @@ fn producer_activity(request: &WorkspaceToolRequest) -> String {
 fn producer_tool_result(result: &WorkspaceToolResult) -> String {
     match result.outcome {
         WorkspaceOutcome::CheckPassed => {
-            "Native checks passed. Bonsai is completing the required whole-film review.".into()
+            "Native checks passed. The Director is completing the required whole-film review.".into()
         }
         WorkspaceOutcome::CheckFailed { issue_count } => format!(
-            "Native review found {} issue{}; Bonsai is repairing the affected scenes.",
+            "Native review found {} issue{}; the Director is repairing the affected scenes.",
             issue_count.max(1),
             if issue_count == 1 { "" } else { "s" }
         ),
         WorkspaceOutcome::Submitted => "The checked plan was submitted successfully.".into(),
         WorkspaceOutcome::SubmissionBlocked | WorkspaceOutcome::Rejected => {
-            "The production action was rejected safely; Bonsai received the exact diagnostic and will repair it.".into()
+            "The production action was rejected safely; the Director received the exact diagnostic and will repair it.".into()
         }
         WorkspaceOutcome::Observed | WorkspaceOutcome::Mutated => {
-            "The durable workspace accepted Bonsai's production action.".into()
+            "The durable workspace accepted the Director's production action.".into()
         }
     }
 }

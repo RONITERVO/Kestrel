@@ -37,7 +37,9 @@ import type {
   MovieImageAssetEvent,
   MovieImageAssetGeneration,
   MovieImageAssetRequest,
+  ModelCompatibility,
   MoviePlan,
+  MovieModelRoleRequest,
   MoviePlanningEvent,
   MoviePlanningSnapshot,
   MovieProject,
@@ -188,6 +190,16 @@ export async function startMovie(request: StartMovieRequest): Promise<MovieProje
   return invoke<MovieProject>("start_movie", { request });
 }
 
+export async function listStudioModelCompatibility(): Promise<ModelCompatibility[]> {
+  if (!isTauri()) return [];
+  return invoke<ModelCompatibility[]>("list_studio_model_compatibility");
+}
+
+export async function qualifyStudioModel(modelId: string): Promise<ModelCompatibility> {
+  if (!isTauri()) throw new Error("Studio model checks require the desktop application.");
+  return invoke<ModelCompatibility>("qualify_studio_model", { modelId });
+}
+
 export async function startManualMovie(request: StartMovieRequest): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Movie production requires the desktop application.");
   return invoke<MovieProject>("start_manual_movie", { request });
@@ -257,7 +269,7 @@ export async function saveMoviePlan(id: string, plan: MoviePlan): Promise<MovieP
 }
 
 export async function reviseMoviePlan(id: string, feedback: string): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Bonsai plan revision requires the desktop application.");
+  if (!isTauri()) throw new Error("Studio plan revision requires the desktop application.");
   return invoke<MovieProject>("revise_movie_plan", { request: { id, feedback } });
 }
 
@@ -266,9 +278,14 @@ export async function approveMoviePlan(id: string): Promise<MovieProject> {
   return invoke<MovieProject>("approve_movie_plan", { id });
 }
 
-export async function askBonsaiMovieClip(id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
-  if (!isTauri()) throw new Error("Bonsai scene assistance requires the desktop application.");
-  return invoke<MovieClipSuggestion>("ask_bonsai_movie_clip", { request: { id, clipId, feedback } });
+export async function askMovieDirectorClip(id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
+  if (!isTauri()) throw new Error("Studio scene assistance requires the desktop application.");
+  return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { id, clipId, feedback } });
+}
+
+export async function setMovieModelRoles(id: string, modelRoles: MovieModelRoleRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Studio model-role changes require the desktop application.");
+  return invoke<MovieProject>("set_movie_model_roles", { id, modelRoles });
 }
 
 export async function renderMovieClipVersion(request: MovieClipRenderRequest): Promise<MovieProject> {

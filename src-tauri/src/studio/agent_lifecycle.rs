@@ -1,4 +1,4 @@
-//! Pure lifecycle decisions for the durable Bonsai planning loop.
+//! Pure lifecycle decisions for the durable Studio Director planning loop.
 //!
 //! Keeping thresholds and transitions here makes the expensive model/filesystem runner a thin
 //! executor. Every restart and reviewer-exhaustion rule is testable without a model runtime.
@@ -41,7 +41,7 @@ impl AgentLifecycle {
     pub(super) fn ensure_session_budget(&self) -> Result<(), StudioError> {
         if self.session > MAX_MOVIE_AGENT_SESSIONS {
             return Err(StudioError::Planning(format!(
-                "Bonsai did not submit a valid movie after {MAX_MOVIE_AGENT_SESSIONS} context sessions; the durable workspace is intact for a later retry"
+                "The Studio Director did not submit a valid movie after {MAX_MOVIE_AGENT_SESSIONS} context sessions; the durable workspace is intact for a later retry"
             )));
         }
         Ok(())

@@ -1,20 +1,32 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyPlannedClip, LiveH3Preview, MovieStudio, previewProvenanceAvailable, ProducerCopilot, ProducerPlanDesk, referenceDisplayTags } from "./MovieStudio";
 import type { ModelInfo, MovieEdit, MoviePlan, MovieProject, MovieRenderPreviewEvent, PendingMovieReference } from "./types";
 
 afterEach(cleanup);
 
+const baselineModel = {
+  id: "bonsai-local",
+  name: "Ternary Bonsai 27B",
+  path: "bonsai.gguf",
+  source: "test",
+  bytes: 1,
+  chatTemplate: true,
+  supportsVision: false,
+  supportsAudio: false,
+  recommendation: "Release baseline",
+} satisfies ModelInfo;
+
 describe("Kestrel Movie Studio", () => {
   it("presents a one-prompt offline production path", async () => {
-    render(<MovieStudio advancedEnabled onError={vi.fn()} />);
+    render(<MovieStudio advancedEnabled models={[baselineModel]} selectedModelId={baselineModel.id} onError={vi.fn()} />);
     expect(screen.getByText(/Shape the production brief together/i)).toBeInTheDocument();
     expect(screen.getByText(/drafts, reviews, and repairs/i)).toBeInTheDocument();
     expect(screen.queryByText(/Wikipedia/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Ask Bonsai to plan/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Ask Director to plan/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Write plan myself/i })).toBeEnabled();
     fireEvent.change(screen.getByLabelText("Movie brief"), { target: { value: "A tiny film about a lighthouse keeper" } });
-    expect(screen.getByRole("button", { name: /Ask Bonsai to plan/i })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: /Ask Director to plan/i })).toBeEnabled());
   });
 
   it("keeps full-context and expert production controls discoverable", () => {
@@ -111,7 +123,7 @@ describe("Kestrel Movie Studio", () => {
   });
 
   it("keeps the whole creation process in bounded editor workspaces", () => {
-    render(<MovieStudio advancedEnabled onError={vi.fn()} />);
+    render(<MovieStudio advancedEnabled models={[baselineModel]} selectedModelId={baselineModel.id} onError={vi.fn()} />);
     const rooms = screen.getByRole("navigation", { name: "New production workspaces" });
     expect(rooms).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /ReferencesBind media to the story/i }));
@@ -119,7 +131,7 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.queryByLabelText("Movie brief")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /SetupQuality and controls/i }));
     expect(screen.getByText(/Choose the working quality and review boundary/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Ask Bonsai to plan/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Ask Director to plan/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Write plan myself/i })).toBeEnabled();
   });
 

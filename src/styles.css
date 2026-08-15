@@ -1400,6 +1400,23 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .studio-room-assurance small { color: #718078; font: 9px/1.45 var(--sans); }
 .launch-workspace-panel .image-asset-lab, .launch-workspace-panel.movie-reference-builder { margin-top: 0; }
 .setup-room { align-content: start; }
+.studio-model-roles { margin-bottom: 14px; padding: 13px; display: grid; grid-template-columns: minmax(180px,.85fr) repeat(2,minmax(230px,1fr)) auto; align-items: end; gap: 11px; border: 1px solid #3b4b40; border-radius: 10px; background: linear-gradient(135deg,#121a15,#0b110d); }
+.studio-model-role-heading { align-self: center; display: grid; gap: 4px; }
+.studio-model-role-heading > span { display: grid; gap: 2px; }
+.studio-model-role-heading small, .studio-model-roles label > small { color: #76847b; font: 8px var(--mono); }
+.studio-model-role-heading strong { color: #e0e7e2; font: 600 13px var(--serif); }
+.studio-model-role-heading p { margin: 2px 0 0; color: #8a9890; font: 8px/1.45 var(--sans); }
+.studio-model-roles label { min-width: 0; display: grid; gap: 4px; color: #cbd5ce; font: 750 9px var(--sans); }
+.studio-model-roles select { min-width: 0; width: 100%; height: 34px; padding: 0 9px; border: 1px solid #3a493f; border-radius: 7px; color: #d7e0da; background: #090f0b; text-overflow: ellipsis; font: 8px var(--sans); }
+.studio-model-roles .model-tier { min-height: 25px; overflow: hidden; color: #b6a268; font: normal 7px/1.35 var(--mono); }
+.studio-model-roles .model-tier.ready { color: #8fbf6d; }
+.studio-model-roles > button { min-height: 34px; padding: 0 11px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #67844a; border-radius: 7px; color: #11170f; background: #b7e866; white-space: nowrap; font: 750 8px var(--sans); }
+.studio-model-roles > button:disabled, .studio-model-roles select:disabled { opacity: .42; }
+.studio-model-warning { grid-column: 2/-1; color: #c4a65e; font: 8px/1.4 var(--sans); }
+.project-model-team { margin-bottom: 14px; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 9px; }
+.project-model-team .studio-model-roles { margin: 0; }
+.project-model-team > button { min-height: 36px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid #4f6544; border-radius: 7px; color: #dce8dd; background: #18231a; white-space: nowrap; font: 750 8px var(--sans); }
+.project-model-team > button:disabled { opacity: .4; }
 .studio-launch-footer { min-width: 0; padding: 0 13px; display: flex; align-items: center; justify-content: flex-end; gap: 14px; border-top: 1px solid #37423c; background: linear-gradient(90deg,#182119,#111713); }
 .studio-launch-footer > span { min-width: 0; overflow: hidden; color: #748078; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--sans); }
 .studio-launch-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
@@ -1460,6 +1477,8 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   .editor-upper.with-browser.with-inspector { grid-template-columns: 190px minmax(260px,1fr) 220px; }
   .studio-workspace-tabs > button { padding-inline: 8px; }
   .studio-workspace-tabs small { display: none; }
+  .studio-model-roles { grid-template-columns: 1fr 1fr; }
+  .studio-model-role-heading { grid-column: 1/-1; }
 }
 
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip-path: inset(50%) !important; white-space: nowrap !important; border: 0 !important; }
@@ -1513,6 +1532,9 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   .movie-export-history article > span { grid-template-columns: 1fr; }
   .movie-export-history code { grid-column: 1; grid-row: auto; }
   .producer-feedback { grid-template-columns: 1fr; }
+  .studio-model-roles { grid-template-columns: 1fr; }
+  .studio-model-role-heading, .studio-model-warning { grid-column: auto; }
+  .project-model-team { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {

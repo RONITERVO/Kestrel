@@ -185,7 +185,7 @@ pub(super) fn add_direction(
     let mut control = load_control(path)?;
     if control.pending_directions.len() >= MAX_DIRECTIONS {
         return Err(StudioError::Invalid(
-            "32 producer directions are already waiting; let Bonsai consume them before adding more"
+            "32 producer directions are already waiting; let the Director consume them before adding more"
                 .into(),
         ));
     }

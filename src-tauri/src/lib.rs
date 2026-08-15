@@ -10,6 +10,7 @@ mod html;
 mod kiwix;
 mod model;
 mod model_download;
+mod model_roles;
 mod models;
 mod profile;
 mod runtime;
@@ -26,6 +27,10 @@ use harness::ResearchHarness;
 use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
 use model_download::{
     ModelDownloadInspection, ModelDownloadManager, ModelDownloadRecord, ModelDownloadRequest,
+};
+use model_roles::{
+    is_bonsai, qualification_receipt, ModelCompatibility, ModelQualificationStore,
+    STUDIO_PROTOCOL_REVISION,
 };
 use models::{
     AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess,
@@ -46,9 +51,10 @@ use store::ResearchStore;
 use studio::{
     MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieCopilotJob,
     MovieCopilotReceipt, MovieCopilotRequest, MovieEdit, MovieImageAssetGeneration,
-    MovieImageAssetRequest, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot,
-    MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, PromptDraftJob,
-    PromptDraftRequest, StartMovieRequest,
+    MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest, MovieModelRoles,
+    MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot, MovieProject,
+    MovieReferenceImport, MovieStudio, MovieSummary, PromptDraftJob, PromptDraftRequest,
+    StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -64,6 +70,7 @@ struct AppState {
     control_settings: ControlSettingsStore,
     model_catalog: ModelCatalogStore,
     model_downloads: ModelDownloadManager,
+    model_qualifications: ModelQualificationStore,
     models: RwLock<Vec<ModelInfo>>,
     engine_candidates: RwLock<Vec<models::EngineCandidate>>,
     runtime: Arc<RuntimeManager>,
@@ -330,12 +337,257 @@ fn cancel_movie_image_asset(request_id: String, state: State<'_, AppState>) -> R
     Ok(())
 }
 
+fn studio_runtime_settings(
+    mut control: ControlSettings,
+    research: &ResearchSettings,
+) -> ControlSettings {
+    control.context_window = research.context_window;
+    control.max_output_tokens = research.max_output_tokens;
+    control
+}
+
+async fn studio_model_context(
+    state: &AppState,
+) -> Result<(ResearchSettings, ControlSettings, Vec<ModelInfo>), String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let models = state.models.read().await.clone();
+    Ok((
+        research.clone(),
+        studio_runtime_settings(control, &research),
+        models,
+    ))
+}
+
+fn model_binding(model: &ModelInfo, compatibility: &ModelCompatibility) -> MovieModelBinding {
+    MovieModelBinding {
+        model_id: model.id.clone(),
+        model_name: model.name.clone(),
+        compatibility_tier: compatibility.tier.clone(),
+        protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
+        bound_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+fn select_default_studio_model<'a>(
+    models: &'a [ModelInfo],
+    selected_model_id: Option<&str>,
+    qualifications: &ModelQualificationStore,
+    settings: &ControlSettings,
+) -> Result<Option<&'a ModelInfo>, String> {
+    if let Some(selected) =
+        selected_model_id.and_then(|id| models.iter().find(|model| model.id == id))
+    {
+        if qualifications.assess(selected, settings)?.studio_ready {
+            return Ok(Some(selected));
+        }
+    }
+    Ok(models
+        .iter()
+        .find(|model| is_bonsai(model))
+        .or_else(|| models.first()))
+}
+
+fn resolve_movie_model_roles(
+    request: &MovieModelRoleRequest,
+    producer_authored: bool,
+    advanced: bool,
+    models: &[ModelInfo],
+    settings: &ControlSettings,
+    qualifications: &ModelQualificationStore,
+) -> Result<MovieModelRoles, String> {
+    if models.is_empty() {
+        return if producer_authored {
+            Ok(MovieModelRoles::default())
+        } else {
+            Err("No local model is available for Studio planning. Download or scan a chat-template GGUF first.".into())
+        };
+    }
+    let director = if request.director_model_id.trim().is_empty() {
+        select_default_studio_model(
+            models,
+            settings.selected_model_id.as_deref(),
+            qualifications,
+            settings,
+        )?
+        .ok_or_else(|| "No local Studio director model is available.".to_string())?
+    } else {
+        models
+            .iter()
+            .find(|model| model.id == request.director_model_id)
+            .ok_or_else(|| {
+                "The selected Studio director is no longer in the local model catalog. Scan models again or choose another model.".to_string()
+            })?
+    };
+    let reviewer = if request.reviewer_model_id.trim().is_empty() {
+        director
+    } else {
+        models
+            .iter()
+            .find(|model| model.id == request.reviewer_model_id)
+            .ok_or_else(|| {
+                "The selected Studio reviewer is no longer in the local model catalog. Scan models again or choose another model.".to_string()
+            })?
+    };
+    let director_compatibility = qualifications.assess(director, settings)?;
+    let reviewer_compatibility = qualifications.assess(reviewer, settings)?;
+    for (role, compatibility) in [
+        ("director", &director_compatibility),
+        ("reviewer", &reviewer_compatibility),
+    ] {
+        if matches!(
+            compatibility.tier.as_str(),
+            "incompatible" | "limited-context"
+        ) {
+            return Err(format!(
+                "The selected Studio {role} cannot be used: {}",
+                compatibility.detail
+            ));
+        }
+        if !producer_authored && !advanced && !compatibility.studio_ready {
+            return Err(format!(
+                "The selected Studio {role} has not passed Kestrel's local protocol check. Run Check for Studio first, or enable Advanced mode for an explicitly supervised trial."
+            ));
+        }
+    }
+    Ok(MovieModelRoles {
+        director: model_binding(director, &director_compatibility),
+        reviewer: model_binding(reviewer, &reviewer_compatibility),
+    })
+}
+
+fn project_model_ids(
+    project: &MovieProject,
+    models: &[ModelInfo],
+    settings: &ControlSettings,
+    qualifications: &ModelQualificationStore,
+    advanced: bool,
+) -> Result<(String, String), String> {
+    let legacy_bonsai = || {
+        models
+            .iter()
+            .find(|model| is_bonsai(model))
+            .map(|model| model.id.clone())
+            .ok_or_else(|| {
+                "This legacy Studio project requires its Bonsai model. Scan or restore that model before resuming.".to_string()
+            })
+    };
+    let resolve = |role: &str, model_id: &str| -> Result<String, String> {
+        let resolved = if model_id.trim().is_empty() {
+            legacy_bonsai()?
+        } else {
+            model_id.to_string()
+        };
+        let model = models
+            .iter()
+            .find(|model| model.id == resolved)
+            .ok_or_else(|| {
+                format!(
+                    "This project is pinned to a Studio {role} that is not currently available. Scan or restore the exact model before continuing; Kestrel will not silently substitute another model."
+                )
+            })?;
+        let compatibility = qualifications.assess(model, settings)?;
+        if matches!(
+            compatibility.tier.as_str(),
+            "incompatible" | "limited-context"
+        ) {
+            return Err(format!(
+                "The project's pinned Studio {role} cannot be used: {}",
+                compatibility.detail
+            ));
+        }
+        if !advanced && !compatibility.studio_ready {
+            return Err(format!(
+                "The project's pinned Studio {role} no longer has a valid local protocol receipt for the current engine and runtime profile. Run Check for Studio again before using agent help."
+            ));
+        }
+        Ok(resolved)
+    };
+    Ok((
+        resolve("director", &project.model_roles.director.model_id)?,
+        resolve("reviewer", &project.model_roles.reviewer.model_id)?,
+    ))
+}
+
 #[tauri::command]
-fn start_movie(
+async fn list_studio_model_compatibility(
+    state: State<'_, AppState>,
+) -> Result<Vec<ModelCompatibility>, String> {
+    let (_, settings, models) = studio_model_context(&state).await?;
+    state.model_qualifications.assess_all(&models, &settings)
+}
+
+#[tauri::command]
+async fn qualify_studio_model(
+    model_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ModelCompatibility, String> {
+    let _guard = claim_workspace(&state)?;
+    let (research, settings, models) = studio_model_context(&state).await?;
+    let model = models
+        .iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| "The selected model is no longer in the local catalog.".to_string())?;
+    let current = state.model_qualifications.assess(model, &settings)?;
+    if matches!(current.tier.as_str(), "incompatible" | "limited-context") {
+        return Err(current.detail);
+    }
+    state.studio.release_comfy_memory().await;
+    state
+        .runtime
+        .stop_managed()
+        .await
+        .map_err(|error| error.to_string())?;
+    services::stop_bonsai(&research.bonsai_root)
+        .await
+        .map_err(|error| error.to_string())?;
+    let lease = state
+        .runtime
+        .lease_model(&model_id, &models, &settings, Some(&app))
+        .await
+        .map_err(|error| error.to_string())?;
+    let checked = state
+        .studio
+        .qualify_model_protocol(&lease.connection, settings.max_output_tokens)
+        .await;
+    drop(lease);
+    let _ = state.runtime.stop_managed().await;
+    let (passed, checks, detail) = match checked {
+        Ok(checks) => (
+            true,
+            checks,
+            "Passed Kestrel's local structured Studio protocol check.".to_string(),
+        ),
+        Err(error) => (false, Vec::new(), error.to_string()),
+    };
+    state.model_qualifications.record(qualification_receipt(
+        model, &settings, passed, checks, detail,
+    )?)?;
+    state.model_qualifications.assess(model, &settings)
+}
+
+#[tauri::command]
+async fn start_movie(
     request: StartMovieRequest,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<MovieProject, String> {
+    let (research, runtime_settings, models) = studio_model_context(&state).await?;
+    let roles = resolve_movie_model_roles(
+        &request.model_roles,
+        false,
+        research.advanced_mode || runtime_settings.advanced_mode,
+        &models,
+        &runtime_settings,
+        &state.model_qualifications,
+    )?;
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -343,13 +595,13 @@ fn start_movie(
             "Chat, research, a computer task, or another movie production is already active."
                 .to_string()
         })?;
-    let research = state.research_settings.load().map_err(|error| {
-        state.work_active.store(false, Ordering::Release);
-        error.to_string()
-    })?;
     let project = state
         .studio
-        .create(request, research.advanced_mode)
+        .create(
+            request,
+            research.advanced_mode || runtime_settings.advanced_mode,
+            roles,
+        )
         .map_err(|error| {
             state.work_active.store(false, Ordering::Release);
             error.to_string()
@@ -368,18 +620,27 @@ fn start_movie(
 }
 
 #[tauri::command]
-fn start_manual_movie(
+async fn start_manual_movie(
     request: StartMovieRequest,
     state: State<'_, AppState>,
 ) -> Result<MovieProject, String> {
+    let (research, runtime_settings, models) = studio_model_context(&state).await?;
+    let roles = resolve_movie_model_roles(
+        &request.model_roles,
+        true,
+        research.advanced_mode || runtime_settings.advanced_mode,
+        &models,
+        &runtime_settings,
+        &state.model_qualifications,
+    )?;
     let _guard = claim_workspace(&state)?;
-    let settings = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
     state
         .studio
-        .create_manual(request, settings.advanced_mode)
+        .create_manual(
+            request,
+            research.advanced_mode || runtime_settings.advanced_mode,
+            roles,
+        )
         .map_err(|error| error.to_string())
 }
 
@@ -436,17 +697,39 @@ fn spawn_movie(
         let result: Result<(), String> = async {
             if needs_plan {
                 managed.studio.release_comfy_memory().await;
-                let lease = managed
+                let (_, runtime_settings, models) = studio_model_context(&managed).await?;
+                let project = managed.studio.get(&id).map_err(|error| error.to_string())?;
+                let (director_model_id, reviewer_model_id) = project_model_ids(
+                    &project,
+                    &models,
+                    &runtime_settings,
+                    &managed.model_qualifications,
+                    research.advanced_mode || runtime_settings.advanced_mode,
+                )?;
+                managed
                     .runtime
-                    .lease_research(&research)
+                    .stop_managed()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                services::stop_bonsai(&research.bonsai_root)
                     .await
                     .map_err(|error| error.to_string())?;
                 let planned = managed
                     .studio
-                    .plan(&id, &lease.connection, &research, &cancel, Some(&app))
+                    .plan(
+                        &id,
+                        MovieModelRuntime {
+                            runtime: &managed.runtime,
+                            models: &models,
+                            settings: &runtime_settings,
+                            director_model_id: &director_model_id,
+                            reviewer_model_id: &reviewer_model_id,
+                        },
+                        &cancel,
+                        Some(&app),
+                    )
                     .await
                     .map_err(|error| error.to_string())?;
-                drop(lease);
                 if matches!(
                     planned.status.as_str(),
                     "awaiting-review" | "planning-checkpoint"
@@ -727,6 +1010,30 @@ async fn save_movie_plan(
 }
 
 #[tauri::command]
+async fn set_movie_model_roles(
+    id: String,
+    model_roles: MovieModelRoleRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let (research, runtime_settings, models) = studio_model_context(&state).await?;
+    let roles = resolve_movie_model_roles(
+        &model_roles,
+        false,
+        research.advanced_mode || runtime_settings.advanced_mode,
+        &models,
+        &runtime_settings,
+        &state.model_qualifications,
+    )?;
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .set_model_roles(&id, roles, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn get_movie_plan_exchange_prompt(
     id: String,
     state: State<'_, AppState>,
@@ -760,7 +1067,27 @@ async fn revise_movie_plan(
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
+    let (_, runtime_settings, models) = studio_model_context(&state).await?;
+    let project = state
+        .studio
+        .get(&request.id)
+        .map_err(|error| error.to_string())?;
+    let (director_model_id, reviewer_model_id) = project_model_ids(
+        &project,
+        &models,
+        &runtime_settings,
+        &state.model_qualifications,
+        research.advanced_mode || runtime_settings.advanced_mode,
+    )?;
     state.studio.release_comfy_memory().await;
+    state
+        .runtime
+        .stop_managed()
+        .await
+        .map_err(|error| error.to_string())?;
+    services::stop_bonsai(&research.bonsai_root)
+        .await
+        .map_err(|error| error.to_string())?;
     let cancel = CancellationToken::new();
     state
         .movie_jobs
@@ -768,18 +1095,18 @@ async fn revise_movie_plan(
         .map_err(|_| "movie job registry is unavailable".to_string())?
         .insert(request.id.clone(), cancel.clone());
     let result: Result<MovieProject, String> = async {
-        let lease = state
-            .runtime
-            .lease_research(&research)
-            .await
-            .map_err(|error| error.to_string())?;
         state
             .studio
             .revise_with_producer_feedback(
                 &request.id,
                 &request.feedback,
-                &lease.connection,
-                &research,
+                MovieModelRuntime {
+                    runtime: &state.runtime,
+                    models: &models,
+                    settings: &runtime_settings,
+                    director_model_id: &director_model_id,
+                    reviewer_model_id: &reviewer_model_id,
+                },
                 &cancel,
                 Some(&app),
             )
@@ -832,7 +1159,7 @@ async fn approve_movie_plan(
 }
 
 #[tauri::command]
-async fn ask_bonsai_movie_clip(
+async fn ask_movie_director_clip(
     request: MovieClipAssistRequest,
     state: State<'_, AppState>,
 ) -> Result<MovieClipSuggestion, String> {
@@ -841,11 +1168,31 @@ async fn ask_bonsai_movie_clip(
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
+    let (_, runtime_settings, models) = studio_model_context(&state).await?;
+    let project = state
+        .studio
+        .get(&request.id)
+        .map_err(|error| error.to_string())?;
+    let (director_model_id, _) = project_model_ids(
+        &project,
+        &models,
+        &runtime_settings,
+        &state.model_qualifications,
+        research.advanced_mode || runtime_settings.advanced_mode,
+    )?;
     state.studio.release_comfy_memory().await;
+    state
+        .runtime
+        .stop_managed()
+        .await
+        .map_err(|error| error.to_string())?;
+    services::stop_bonsai(&research.bonsai_root)
+        .await
+        .map_err(|error| error.to_string())?;
     let result: Result<MovieClipSuggestion, String> = async {
         let lease = state
             .runtime
-            .lease_research(&research)
+            .lease_model(&director_model_id, &models, &runtime_settings, None)
             .await
             .map_err(|error| error.to_string())?;
         state
@@ -855,7 +1202,7 @@ async fn ask_bonsai_movie_clip(
                 &request.clip_id,
                 &request.feedback,
                 &lease.connection,
-                &research,
+                runtime_settings.max_output_tokens,
             )
             .await
             .map_err(|error| error.to_string())
@@ -2275,6 +2622,8 @@ pub fn run() {
             let model_catalog = ModelCatalogStore::new(store.root());
             let model_downloads =
                 ModelDownloadManager::new(store.root()).map_err(|error| error.to_string())?;
+            let model_qualifications =
+                ModelQualificationStore::new(store.root()).map_err(|error| error.to_string())?;
             let models = model_catalog.load().unwrap_or_else(|error| {
                 eprintln!("Kestrel could not restore its disposable model catalog: {error}");
                 Vec::new()
@@ -2291,6 +2640,7 @@ pub fn run() {
                 control_settings,
                 model_catalog,
                 model_downloads,
+                model_qualifications,
                 models: RwLock::new(models),
                 engine_candidates: RwLock::new(engine_candidates),
                 runtime: Arc::new(RuntimeManager::new()),
@@ -2350,6 +2700,8 @@ pub fn run() {
             list_movie_image_assets,
             start_movie_image_asset,
             cancel_movie_image_asset,
+            list_studio_model_compatibility,
+            qualify_studio_model,
             start_movie,
             start_manual_movie,
             resume_movie,
@@ -2365,9 +2717,10 @@ pub fn run() {
             get_movie_plan_exchange_prompt,
             parse_movie_plan_exchange,
             save_movie_plan,
+            set_movie_model_roles,
             revise_movie_plan,
             approve_movie_plan,
-            ask_bonsai_movie_clip,
+            ask_movie_director_clip,
             render_movie_clip_version,
             save_movie_edits,
             render_movie_edit,

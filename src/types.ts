@@ -486,6 +486,7 @@ export interface MovieProject {
   createdAt: string;
   updatedAt: string;
   model: string;
+  modelRoles?: MovieModelRoles;
   renderer: string;
   settings: MovieSettings;
   references: MovieReference[];
@@ -552,6 +553,49 @@ export interface StartMovieRequest {
   settings: MovieSettings;
   references: ProducerReferenceRequest[];
   pauseAfterPlan: boolean;
+  modelRoles: MovieModelRoleRequest;
+}
+
+export interface MovieModelRoleRequest {
+  directorModelId: string;
+  reviewerModelId: string;
+}
+
+export interface MovieModelBinding {
+  modelId: string;
+  modelName: string;
+  compatibilityTier: string;
+  protocolRevision: string;
+  boundAt: string;
+}
+
+export interface MovieModelRoles {
+  director: MovieModelBinding;
+  reviewer: MovieModelBinding;
+}
+
+export interface ModelQualificationReceipt {
+  modelId: string;
+  modelName: string;
+  protocolRevision: string;
+  engineSha256: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  passed: boolean;
+  checks: string[];
+  detail: string;
+  checkedAt: string;
+}
+
+export interface ModelCompatibility {
+  modelId: string;
+  modelName: string;
+  tier: "release-validated" | "protocol-ready" | "unverified" | "limited-context" | "incompatible" | string;
+  studioReady: boolean;
+  requiresQualification: boolean;
+  detail: string;
+  protocolRevision: string;
+  receipt?: ModelQualificationReceipt;
 }
 
 export type PromptDraftTarget = "story" | "imageAsset" | "referenceDescription";
