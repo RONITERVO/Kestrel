@@ -72,6 +72,7 @@ pub use prompt_collaboration::{
 
 const SCHEMA_VERSION: u32 = 7;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
+pub(super) const MUSIC_COMFY_BASE: &str = "http://127.0.0.1:8189";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
@@ -86,6 +87,35 @@ const MOVIE_AGENT_SESSION_STEPS: u32 = 96;
 const MAX_MOVIE_AGENT_SESSIONS: u32 = 8;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Clone, Copy)]
+enum ComfyWorkload {
+    Shared,
+    Music,
+}
+
+impl ComfyWorkload {
+    fn base_url(self) -> &'static str {
+        match self {
+            Self::Shared => COMFY_BASE,
+            Self::Music => MUSIC_COMFY_BASE,
+        }
+    }
+
+    fn port(self) -> u16 {
+        match self {
+            Self::Shared => 8188,
+            Self::Music => 8189,
+        }
+    }
+
+    fn script_names(self) -> &'static [&'static str] {
+        match self {
+            Self::Shared => &["Start-Kestrel-ComfyUI.ps1", "Start-ComfyUI-MiniMax-H3.ps1"],
+            Self::Music => &["Start-Kestrel-ComfyUI-Music.ps1"],
+        }
+    }
+}
 
 struct IndependentReviewRequest<'a> {
     project_id: &'a str,
@@ -818,6 +848,7 @@ pub struct MovieStudio {
     root: PathBuf,
     http: Client,
     comfy_child: Arc<AsyncMutex<Option<Child>>>,
+    music_comfy_child: Arc<AsyncMutex<Option<Child>>>,
     comfy_preview_available: Arc<AsyncMutex<Option<bool>>>,
     project_locks: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     planning_control: Arc<StdMutex<()>>,
@@ -837,6 +868,7 @@ impl MovieStudio {
                 .timeout(Duration::from_secs(3_600))
                 .build()?,
             comfy_child: Arc::new(AsyncMutex::new(None)),
+            music_comfy_child: Arc::new(AsyncMutex::new(None)),
             comfy_preview_available: Arc::new(AsyncMutex::new(None)),
             project_locks: Arc::new(StdMutex::new(HashMap::new())),
             planning_control: Arc::new(StdMutex::new(())),
@@ -2479,31 +2511,52 @@ impl MovieStudio {
         logs: &Path,
         cancel: Option<&CancellationToken>,
     ) -> Result<(), StudioError> {
-        if self.comfy_ready().await {
+        self.ensure_comfy_process_at(root, logs, cancel, ComfyWorkload::Shared)
+            .await
+    }
+
+    pub(super) async fn ensure_music_comfy_process(
+        &self,
+        root: &str,
+        logs: &Path,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<(), StudioError> {
+        self.ensure_comfy_process_at(root, logs, cancel, ComfyWorkload::Music)
+            .await
+    }
+
+    async fn ensure_comfy_process_at(
+        &self,
+        root: &str,
+        logs: &Path,
+        cancel: Option<&CancellationToken>,
+        workload: ComfyWorkload,
+    ) -> Result<(), StudioError> {
+        let base_url = workload.base_url();
+        if self.comfy_ready_at(base_url).await {
             return Ok(());
         }
         let root = PathBuf::from(root);
-        let generic_script = root.join("Start-Kestrel-ComfyUI.ps1");
-        let legacy_script = root.join("Start-ComfyUI-MiniMax-H3.ps1");
-        let script = if generic_script.is_file() {
-            generic_script
-        } else {
-            legacy_script
-        };
-        if !script.is_file() {
-            return Err(StudioError::Render(format!(
-                "Kestrel's local ComfyUI starter is missing from {}. Open Setup and resume Movie Studio or Music Production.",
-                root.display()
-            )));
-        }
+        let script = workload
+            .script_names()
+            .iter()
+            .map(|name| root.join(name))
+            .find(|candidate| candidate.is_file())
+            .ok_or_else(|| {
+                StudioError::Render(format!(
+                    "Kestrel's local ComfyUI starter is missing from {}. Open Setup and resume Movie Studio or Music Production.",
+                    root.display()
+                ))
+            })?;
         fs::create_dir_all(logs)?;
         let stdout = fs::File::create(logs.join("comfy.stdout.log"))?;
         let stderr = fs::File::create(logs.join("comfy.stderr.log"))?;
+        let port = workload.port().to_string();
         let mut command = tokio::process::Command::new("powershell.exe");
         command
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script)
-            .args(["-Port", "8188", "-NoBrowser"])
+            .args(["-Port", &port, "-NoBrowser"])
             .current_dir(&root)
             .stdin(Stdio::null())
             .stdout(stdout)
@@ -2512,10 +2565,15 @@ impl MovieStudio {
         #[cfg(windows)]
         command.creation_flags(0x08000000);
         let child = command.spawn()?;
-        *self.comfy_preview_available.lock().await = None;
-        *self.comfy_child.lock().await = Some(child);
+        match workload {
+            ComfyWorkload::Shared => {
+                *self.comfy_preview_available.lock().await = None;
+                *self.comfy_child.lock().await = Some(child);
+            }
+            ComfyWorkload::Music => *self.music_comfy_child.lock().await = Some(child),
+        }
         for _ in 0..180 {
-            if self.comfy_ready().await {
+            if self.comfy_ready_at(base_url).await {
                 return Ok(());
             }
             if let Some(cancel) = cancel {
@@ -2533,8 +2591,12 @@ impl MovieStudio {
     }
 
     pub(super) async fn comfy_ready(&self) -> bool {
+        self.comfy_ready_at(COMFY_BASE).await
+    }
+
+    async fn comfy_ready_at(&self, base_url: &str) -> bool {
         self.http
-            .get(format!("{COMFY_BASE}/system_stats"))
+            .get(format!("{base_url}/system_stats"))
             .timeout(Duration::from_secs(3))
             .send()
             .await

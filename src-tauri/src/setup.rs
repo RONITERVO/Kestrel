@@ -147,11 +147,11 @@ pub fn snapshot(
         .join("comfy_extras")
         .join("nodes_minimax_music.py")
         .is_file();
-    let music_ready = comfy.join("main.py").is_file()
-        && (generic_launcher || (legacy_h3_launcher && h3_files))
-        && music_nodes
-        && music_files;
-    let music_partial = music_nodes
+    let music_launcher = comfy.join("Start-Kestrel-ComfyUI-Music.ps1").is_file();
+    let music_ready =
+        comfy.join("main.py").is_file() && music_launcher && music_nodes && music_files;
+    let music_partial = music_launcher
+        || music_nodes
         || music_assets()
             .iter()
             .any(|asset| comfy.join("models").join(asset.relative).is_file());
@@ -1354,6 +1354,52 @@ exit $LASTEXITCODE
     if !generic_target.is_file() || generic_managed {
         fs::write(generic_target, generic_script)?;
     }
+    let music_script = r#"# Kestrel-managed MiniMax Music 3 GPU launcher
+param(
+  [int]$Port = 8189,
+  [switch]$NoBrowser
+)
+$ErrorActionPreference='Stop'
+$root=$PSScriptRoot
+$python=Join-Path $root '.venv\Scripts\python.exe'
+if(-not (Test-Path $python)){ $python=Join-Path (Split-Path $root -Parent) 'python_embeded\python.exe' }
+if(-not (Test-Path $python)){ throw "ComfyUI Python is missing: $python" }
+if(-not (Test-Path (Join-Path $root 'main.py'))){ throw "ComfyUI main.py is missing from $root" }
+$required=[ordered]@{
+  'models\diffusion_models\minimax_music3_dit_int8_convrot.safetensors'=2502161682
+  'models\text_encoders\minimax_music3_text_encoder_pruned_int8_convrot.safetensors'=9196611886
+  'models\vae\minimax_music3_dav.safetensors'=216696128
+}
+$missing=@($required.GetEnumerator() | Where-Object {
+  $path=Join-Path $root $_.Key
+  (-not (Test-Path -LiteralPath $path)) -or ((Get-Item -LiteralPath $path).Length -ne $_.Value)
+} | ForEach-Object { $_.Key })
+if($missing){ throw "MiniMax Music 3 files are missing or incomplete: $($missing -join ', '). Open Kestrel Setup and resume Music Production." }
+$arguments=@(
+  (Join-Path $root 'main.py'),
+  '--listen','127.0.0.1',
+  '--port',[string]$Port,
+  '--cuda-device','0',
+  '--preview-method','none',
+  '--disable-async-offload',
+  '--enable-dynamic-vram',
+  '--reserve-vram','1.0',
+  '--cache-none'
+)
+$env:PYTHONUTF8='1'
+$env:CUDA_VISIBLE_DEVICES='0'
+& $python -c 'import sageattention' 2>$null
+if($LASTEXITCODE -eq 0){ $arguments += '--use-sage-attention' }
+& $python @arguments
+exit $LASTEXITCODE
+"#;
+    let music_target = comfy.join("Start-Kestrel-ComfyUI-Music.ps1");
+    let music_managed = fs::read_to_string(&music_target)
+        .map(|value| value.contains("Kestrel-managed MiniMax Music 3 GPU launcher"))
+        .unwrap_or(false);
+    if !music_target.is_file() || music_managed {
+        fs::write(music_target, music_script)?;
+    }
     let script = r#"# Kestrel-managed MiniMax H3 launcher
 param(
   [int]$Port = 8188,
@@ -1628,5 +1674,23 @@ mod tests {
         )
         .unwrap();
         assert!(!is_kestrel_managed_comfy_root(&producer, root.path()));
+    }
+
+    #[test]
+    fn music_launcher_gets_a_dedicated_gpu_resident_profile() {
+        let root = tempfile::tempdir().unwrap();
+        ensure_comfy_launcher(root.path()).unwrap();
+
+        let music =
+            fs::read_to_string(root.path().join("Start-Kestrel-ComfyUI-Music.ps1")).unwrap();
+        assert!(music.contains("[int]$Port = 8189"));
+        assert!(music.contains("'--disable-async-offload'"));
+        assert!(music.contains("'--enable-dynamic-vram'"));
+        assert!(music.contains("'--reserve-vram','1.0'"));
+        assert!(!music.contains("'--lowvram'"));
+
+        let shared = fs::read_to_string(root.path().join("Start-Kestrel-ComfyUI.ps1")).unwrap();
+        assert!(shared.contains("[int]$Port = 8188"));
+        assert!(shared.contains("'--lowvram'"));
     }
 }

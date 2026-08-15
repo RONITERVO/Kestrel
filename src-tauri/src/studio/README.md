@@ -118,17 +118,22 @@ open recoverable song project
   -> producer edits description, tagged sections, lyrics, and settings
   -> optional selected local GGUF streams an unapplied description or lyrics proposal
   -> producer applies, discards, redirects, or keeps the partial checkpoint
-  -> persist project and unload the language-model runtime
-  -> submit the native MiniMax Music 3 graph to loopback ComfyUI
+  -> persist project and unload the language-model runtime plus every retained ComfyUI model
+  -> submit the native MiniMax Music 3 graph to its GPU-resident loopback ComfyUI service on 8189
   -> stream node phase, sample step, percentage, and ETA
   -> copy and hash the completed stereo WAV inside the project
-  -> append an immutable take and exact generation receipt
+  -> append an immutable take and exact generation receipt, then call `/free` on both ComfyUI services
 ```
 
 `music/<uuid>/project.json` is recoverable truth. `takes/<uuid>.wav` and its graph receipt are immutable;
 editing the arrangement never rewrites an older take. Startup changes active generations to
 `interrupted` and never submits them again. MiniMax Music 3 produces a stereo master, so the arranger
 may show semantic lanes for structure and lyrics but must not label generated audio as separate stems.
+The shared H3/speech service remains on port 8188 with its conservative low-VRAM profile. Music uses
+port 8189 with async weight offload disabled, dynamic VRAM as an OOM fallback, and one GiB reserved
+for the desktop. The installed INT8 text encoder, INT8 DiT, and VAE run one stage at a time; Kestrel
+does not pretend that all three can remain resident together on a 12 GiB GPU. MuScriptor startup first
+releases both ComfyUI services and the local language model so its checkpoint cannot overlap them.
 MuScriptor remains an explicit advanced adapter: the producer supplies both its executable and gated
 checkpoint, Kestrel invokes a fixed argument array, and the receipt preserves its non-commercial
 license notice and output hash.

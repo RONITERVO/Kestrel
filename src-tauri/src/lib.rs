@@ -99,6 +99,13 @@ struct AppState {
     model_download_job: Mutex<Option<CancellationToken>>,
 }
 
+async fn release_all_comfy_memory(state: &AppState) {
+    tokio::join!(
+        state.studio.release_comfy_memory(),
+        state.music.release_comfy_memory()
+    );
+}
+
 #[derive(Clone)]
 struct SpeechRuntimeRestore {
     model_id: String,
@@ -892,7 +899,7 @@ async fn qualify_studio_model(
     if matches!(current.tier.as_str(), "incompatible" | "limited-context") {
         return Err(current.detail);
     }
-    state.studio.release_comfy_memory().await;
+    release_all_comfy_memory(&state).await;
     state
         .runtime
         .stop_managed()
@@ -1049,7 +1056,7 @@ fn spawn_movie(
         let _guard = WorkGuard(&managed.work_active);
         let result: Result<(), String> = async {
             if needs_plan {
-                managed.studio.release_comfy_memory().await;
+                release_all_comfy_memory(&managed).await;
                 let (_, runtime_settings, models) = studio_model_context(&managed).await?;
                 let project = managed.studio.get(&id).map_err(|error| error.to_string())?;
                 let (director_model_id, reviewer_model_id) = project_model_ids(
@@ -1092,6 +1099,7 @@ fn spawn_movie(
                     return Ok(());
                 }
             }
+            release_all_comfy_memory(&managed).await;
             managed
                 .runtime
                 .stop_managed()
@@ -1108,6 +1116,7 @@ fn spawn_movie(
             Ok(())
         }
         .await;
+        release_all_comfy_memory(&managed).await;
         if let Err(error) = result {
             if cancel.is_cancelled() {
                 let _ = managed.studio.stop(&id, Some(&app));
@@ -1432,7 +1441,7 @@ async fn revise_movie_plan(
         &state.model_qualifications,
         research.advanced_mode || runtime_settings.advanced_mode,
     )?;
-    state.studio.release_comfy_memory().await;
+    release_all_comfy_memory(&state).await;
     state
         .runtime
         .stop_managed()
@@ -1533,7 +1542,7 @@ async fn ask_movie_director_clip(
         &state.model_qualifications,
         research.advanced_mode || runtime_settings.advanced_mode,
     )?;
-    state.studio.release_comfy_memory().await;
+    release_all_comfy_memory(&state).await;
     state
         .runtime
         .stop_managed()
@@ -1682,6 +1691,7 @@ async fn start_music_generation(
         let research = managed.research_settings.load();
         let result: Result<(), String> = async {
             let research = research.map_err(|error| error.to_string())?;
+            release_all_comfy_memory(&managed).await;
             managed
                 .runtime
                 .stop_managed()
@@ -1698,6 +1708,7 @@ async fn start_music_generation(
             Ok(())
         }
         .await;
+        release_all_comfy_memory(&managed).await;
         if let Err(error) = result {
             managed
                 .music
@@ -1729,6 +1740,19 @@ async fn transcribe_music_midi(
     state: State<'_, AppState>,
 ) -> Result<MusicProject, String> {
     let _guard = claim_workspace(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    release_all_comfy_memory(&state).await;
+    state
+        .runtime
+        .stop_managed()
+        .await
+        .map_err(|error| error.to_string())?;
+    services::stop_bonsai(&research.bonsai_root)
+        .await
+        .map_err(|error| error.to_string())?;
     state
         .music
         .transcribe_midi(request)
@@ -2403,7 +2427,7 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
     services::stop_bonsai(&research.bonsai_root)
         .await
         .map_err(|error| error.to_string())?;
-    state.studio.release_comfy_memory().await;
+    release_all_comfy_memory(&state).await;
     state
         .runtime
         .stop_orphaned_kestrel_processes()

@@ -6,7 +6,7 @@
 //! audio-to-MIDI export using a producer-supplied executable and locally accepted checkpoint.
 
 use super::{
-    comfy_execution_error, find_output_media, truncate, MovieStudio, StudioError, COMFY_BASE,
+    comfy_execution_error, find_output_media, truncate, MovieStudio, StudioError, MUSIC_COMFY_BASE,
 };
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -237,6 +237,18 @@ impl MusicStudio {
         Ok(studio)
     }
 
+    /// Release every model retained by the dedicated Music 3 ComfyUI service. The server stays
+    /// warm on port 8189, while its CUDA allocations are returned before another local model runs.
+    pub async fn release_comfy_memory(&self) {
+        let _ = self
+            .http
+            .post(format!("{MUSIC_COMFY_BASE}/free"))
+            .json(&json!({"unload_models":true,"free_memory":true}))
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await;
+    }
+
     pub fn list(&self) -> Result<Vec<MusicSummary>, StudioError> {
         let mut projects = Vec::new();
         for entry in fs::read_dir(&self.root)?.take(2_000) {
@@ -428,8 +440,9 @@ impl MusicStudio {
                 "Preparing local ComfyUI and checking the native MiniMax Music 3 nodes.",
             ),
         );
+        self.release_comfy_memory().await;
         shared_renderer
-            .ensure_comfy_process(
+            .ensure_music_comfy_process(
                 project.settings.comfy_root.trim(),
                 &self.project_dir(project_id).join("logs"),
                 Some(cancel),
@@ -471,7 +484,7 @@ impl MusicStudio {
         let progress = MusicProgressSession::connect(app, &client_id, project_id, take_id).await;
         let response = self
             .http
-            .post(format!("{COMFY_BASE}/prompt"))
+            .post(format!("{MUSIC_COMFY_BASE}/prompt"))
             .json(&json!({"prompt":graph,"client_id":client_id}))
             .send()
             .await?;
@@ -498,7 +511,7 @@ impl MusicStudio {
             if cancel.is_cancelled() {
                 let _ = self
                     .http
-                    .post(format!("{COMFY_BASE}/interrupt"))
+                    .post(format!("{MUSIC_COMFY_BASE}/interrupt"))
                     .send()
                     .await;
                 return Err(StudioError::Cancelled);
@@ -510,7 +523,7 @@ impl MusicStudio {
             }
             let history: Value = self
                 .http
-                .get(format!("{COMFY_BASE}/history/{prompt_id}"))
+                .get(format!("{MUSIC_COMFY_BASE}/history/{prompt_id}"))
                 .send()
                 .await?
                 .json()
@@ -603,6 +616,7 @@ impl MusicStudio {
                 "Full-quality stereo take preserved in the private project.",
             ),
         );
+        self.release_comfy_memory().await;
         Ok(project)
     }
 
@@ -822,7 +836,7 @@ impl MusicProgressSession {
         take_id: &str,
     ) -> Option<Self> {
         let app = app?.clone();
-        let url = format!("ws://127.0.0.1:8188/ws?clientId={client_id}");
+        let url = format!("ws://127.0.0.1:8189/ws?clientId={client_id}");
         let (stream, _) = tokio_tungstenite::connect_async(&url).await.ok()?;
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
@@ -1153,7 +1167,7 @@ fn validate_muscriptor_settings(settings: &MusicMidiSettings) -> Result<(), Stud
 
 async fn verify_music_nodes(http: &Client, tiled_decode: bool) -> Result<(), StudioError> {
     let info: Value = http
-        .get(format!("{COMFY_BASE}/object_info"))
+        .get(format!("{MUSIC_COMFY_BASE}/object_info"))
         .timeout(Duration::from_secs(30))
         .send()
         .await?
