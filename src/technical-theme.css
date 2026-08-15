@@ -158,6 +158,14 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .research-article { padding: 32px; border: var(--tech-rule); border-radius: 10px; background: #fff; box-shadow: var(--tech-shadow); }
 .report-dek, .narrative-section > p:not(.section-summary) { color: #303538; font-family: var(--sans); }
 .report-byline, .reader-breadcrumb, .finding-card p, .timeline-item p, .term-list dd, .sources-intro { color: #596064; }
+.research-speech-player { color: #111; border: var(--tech-rule); border-radius: 8px; background: #fff; box-shadow: 4px 4px 0 #111; backdrop-filter: none; }
+.speech-player-icon { color: #111; border: 1px solid #111; border-radius: 6px; background: var(--tech-blue); }
+.speech-transport button, .speech-options select { color: #111; border: 1px solid #111; border-radius: 5px; background: #fff; }
+.speech-transport button:hover:not(:disabled) { color: #111; border-color: #111; background: var(--tech-yellow); }
+.speech-transport .speech-play { color: #111; border-color: #111; background: var(--tech-green); }
+.speech-progress { border: 1px solid #111; background: #fff; }
+.speech-progress span { background: var(--tech-orange); }
+.speech-active { outline-color: var(--tech-blue); }
 .answer-card, .finding-card, .source-card, .context-card, .improvement-note { border: var(--tech-rule); border-radius: 8px; background: #fff; box-shadow: 2px 2px 0 #111; }
 .answer-card { border-left: 12px solid var(--tech-blue); }
 .findings-grid .finding-card:nth-child(3n+1) { border-top: 8px solid var(--tech-blue); }

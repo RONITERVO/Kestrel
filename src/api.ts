@@ -19,6 +19,13 @@ import type {
   ProfileTransfer,
   ResearchProgress,
   ResearchReport,
+  LocalSpeechSnapshot,
+  SpeechAlignmentRequest,
+  SpeechClip,
+  SpeechProgress,
+  SpeechSynthesisRequest,
+  SpeechTranscription,
+  SpeechTranscriptionRequest,
   ResearchSettings,
   ResumeComputerTaskRequest,
   RunResearchRequest,
@@ -188,6 +195,58 @@ export async function onMovieRenderPreview(callback: (event: MovieRenderPreviewE
 export async function startMovie(request: StartMovieRequest): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Movie production requires the desktop application.");
   return invoke<MovieProject>("start_movie", { request });
+}
+
+export async function getLocalSpeechSnapshot(): Promise<LocalSpeechSnapshot> {
+  if (!isTauri()) return {
+    narrationAvailable: false,
+    transcriptionAvailable: false,
+    comfyReady: false,
+    voices: [],
+    transcribers: [],
+    detail: "Local speech uses the user's ComfyUI voice and Whisper models in the desktop app.",
+  };
+  return invoke<LocalSpeechSnapshot>("get_local_speech_snapshot");
+}
+
+export async function prepareLocalSpeech(): Promise<LocalSpeechSnapshot> {
+  if (!isTauri()) return getLocalSpeechSnapshot();
+  return invoke<LocalSpeechSnapshot>("prepare_local_speech");
+}
+
+export async function synthesizeLocalSpeech(request: SpeechSynthesisRequest): Promise<SpeechClip> {
+  if (!isTauri()) throw new Error("ComfyUI local narration requires the desktop application.");
+  return invoke<SpeechClip>("synthesize_local_speech", { request });
+}
+
+export async function alignLocalSpeech(request: SpeechAlignmentRequest): Promise<SpeechClip> {
+  if (!isTauri()) throw new Error("ComfyUI local speech alignment requires the desktop application.");
+  return invoke<SpeechClip>("align_local_speech", { request });
+}
+
+export async function transcribeLocalSpeech(request: SpeechTranscriptionRequest): Promise<SpeechTranscription> {
+  if (!isTauri()) throw new Error("ComfyUI Whisper dictation requires the desktop application.");
+  return invoke<SpeechTranscription>("transcribe_local_speech", { request });
+}
+
+export async function cancelLocalSpeech(jobId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_local_speech", { jobId });
+}
+
+export async function releaseLocalSpeechMemory(): Promise<void> {
+  if (isTauri()) await invoke("release_local_speech_memory");
+}
+
+export async function onLocalSpeechProgress(
+  callback: (progress: SpeechProgress) => void,
+): Promise<UnlistenFn> {
+  if (isTauri()) return listen<SpeechProgress>("local-speech-progress", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export function localSpeechMediaUrl(relativePath: string): string {
+  if (!relativePath || !isTauri()) return "";
+  return `http://kestrel-speech.localhost/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 export async function listStudioModelCompatibility(): Promise<ModelCompatibility[]> {

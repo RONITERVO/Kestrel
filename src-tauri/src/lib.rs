@@ -8,6 +8,7 @@ mod developer;
 mod harness;
 mod html;
 mod kiwix;
+mod local_speech;
 mod model;
 mod model_download;
 mod model_roles;
@@ -24,6 +25,10 @@ use attachments::{AttachmentStore, ContextAttachment};
 use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
+use local_speech::{
+    LocalSpeech, SpeechAlignmentRequest, SpeechClip, SpeechSnapshot, SpeechSynthesisRequest,
+    SpeechTranscription, SpeechTranscriptionRequest,
+};
 use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
 use model_download::{
     ModelDownloadInspection, ModelDownloadManager, ModelDownloadRecord, ModelDownloadRequest,
@@ -57,7 +62,7 @@ use studio::{
     StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use workspace::WorkspaceStore;
 
@@ -80,12 +85,22 @@ struct AppState {
     research_active: AtomicBool,
     work_active: AtomicBool,
     jobs: Mutex<HashMap<String, CancellationToken>>,
+    speech: LocalSpeech,
+    speech_command_gate: AsyncMutex<()>,
+    speech_jobs: Mutex<HashMap<String, CancellationToken>>,
+    speech_restore_model: Mutex<Option<SpeechRuntimeRestore>>,
     interactive_jobs: Mutex<HashMap<String, CancellationToken>>,
     studio: MovieStudio,
     movie_jobs: Mutex<HashMap<String, CancellationToken>>,
     image_asset_jobs: Mutex<HashMap<String, CancellationToken>>,
     setup_job: Mutex<Option<CancellationToken>>,
     model_download_job: Mutex<Option<CancellationToken>>,
+}
+
+#[derive(Clone)]
+struct SpeechRuntimeRestore {
+    model_id: String,
+    attached: bool,
 }
 
 struct ResearchGuard<'a> {
@@ -131,6 +146,319 @@ async fn bootstrap(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
 #[tauri::command]
 async fn get_report(id: String, state: State<'_, AppState>) -> Result<ResearchReport, String> {
     state.store.get(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_local_speech_snapshot(state: State<'_, AppState>) -> Result<SpeechSnapshot, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    Ok(state.speech.snapshot(&settings.comfy_root).await)
+}
+
+async fn remember_runtime_for_speech(state: &AppState) {
+    let snapshot = state.runtime.snapshot().await;
+    let Some(model_id) = snapshot.model_id.filter(|_| snapshot.phase == "ready") else {
+        return;
+    };
+    if let Ok(mut restore) = state.speech_restore_model.lock() {
+        if restore.is_none() {
+            *restore = Some(SpeechRuntimeRestore {
+                model_id,
+                attached: snapshot.mode == "attached",
+            });
+        }
+    }
+}
+
+async fn restore_runtime_after_speech(state: &AppState, app: &AppHandle) -> Result<(), String> {
+    let restore = state
+        .speech_restore_model
+        .lock()
+        .map_err(|_| "Local speech restore state is unavailable".to_string())?
+        .take();
+    let Some(restore) = restore else {
+        return Ok(());
+    };
+    let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let model = state
+        .models
+        .read()
+        .await
+        .iter()
+        .find(|model| model.id == restore.model_id)
+        .cloned()
+        .ok_or_else(|| {
+            "The model used before local speech is no longer in the catalog. Rescan it in Control."
+                .to_string()
+        })?;
+    let result: Result<(), String> = async {
+        if restore.attached {
+            let research = state
+                .research_settings
+                .load()
+                .map_err(|error| error.to_string())?;
+            services::restart_bonsai(&research.bonsai_root)
+                .await
+                .map_err(|error| error.to_string())?;
+            state
+                .runtime
+                .attach_external_if_ready(&research)
+                .await
+                .ok_or_else(|| {
+                    "the configured attached Bonsai service did not become ready".to_string()
+                })?;
+            state.runtime.identify_attached_model(&model).await;
+        } else {
+            state
+                .runtime
+                .start_model(&model, &settings, Some(app))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        if let Ok(mut pending) = state.speech_restore_model.lock() {
+            *pending = Some(restore);
+        }
+        return Err(format!(
+            "Speech finished, but Kestrel could not restore {}: {error}",
+            model.name
+        ));
+    }
+    Ok(())
+}
+
+async fn claim_workspace_after_speech(state: &AppState) -> Result<WorkGuard<'_>, String> {
+    for _ in 0..80 {
+        if let Ok(guard) = claim_workspace(state) {
+            return Ok(guard);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    Err("Local speech is still stopping after 20 seconds. Use Release AI memory in Control; Kestrel kept the previous model identity so it can be restored safely.".into())
+}
+
+fn register_speech_job(state: &AppState, job_id: &str) -> Result<CancellationToken, String> {
+    let cancel = CancellationToken::new();
+    let mut jobs = state
+        .speech_jobs
+        .lock()
+        .map_err(|_| "Local speech job registry is unavailable".to_string())?;
+    if jobs.contains_key(job_id) {
+        return Err("Local speech job ID is already active".into());
+    }
+    jobs.insert(job_id.to_string(), cancel.clone());
+    Ok(cancel)
+}
+
+fn finish_speech_job(state: &AppState, job_id: &str) {
+    if let Ok(mut jobs) = state.speech_jobs.lock() {
+        jobs.remove(job_id);
+    }
+}
+
+async fn wait_for_speech_turn<'a>(
+    state: &'a AppState,
+    cancel: &CancellationToken,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
+    tokio::select! {
+        turn = state.speech_command_gate.lock() => Ok(turn),
+        _ = cancel.cancelled() => Err("Local speech operation was stopped".into()),
+    }
+}
+
+#[tauri::command]
+async fn prepare_local_speech(state: State<'_, AppState>) -> Result<SpeechSnapshot, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let initial = state.speech.snapshot(&settings.comfy_root).await;
+    if (!initial.narration_available && !initial.transcription_available) || initial.comfy_ready {
+        return Ok(initial);
+    }
+    let cancel = CancellationToken::new();
+    state
+        .speech
+        .ensure_comfy(&settings.comfy_root, &cancel)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(state.speech.snapshot(&settings.comfy_root).await)
+}
+
+#[tauri::command]
+async fn synthesize_local_speech(
+    request: SpeechSynthesisRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<SpeechClip, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    if let Some(clip) = state
+        .speech
+        .cached_clip(&settings.comfy_root, &request)
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(clip);
+    }
+    let cancel = register_speech_job(&state, &request.job_id)?;
+    let result: Result<SpeechClip, String> = async {
+        let _turn = wait_for_speech_turn(&state, &cancel).await?;
+        if let Some(clip) = state
+            .speech
+            .cached_clip(&settings.comfy_root, &request)
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(clip);
+        }
+        let _guard = claim_workspace(&state)?;
+        remember_runtime_for_speech(&state).await;
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+        services::stop_bonsai(&settings.bonsai_root)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .ensure_comfy(&settings.comfy_root, &cancel)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .synthesize(&settings.comfy_root, &request, &cancel, Some(&app))
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    finish_speech_job(&state, &request.job_id);
+    result
+}
+
+#[tauri::command]
+fn cancel_local_speech(job_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .speech_jobs
+        .lock()
+        .map_err(|_| "Local speech job registry is unavailable".to_string())?
+        .get(&job_id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn transcribe_local_speech(
+    request: SpeechTranscriptionRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<SpeechTranscription, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let cancel = register_speech_job(&state, &request.job_id)?;
+    let result: Result<SpeechTranscription, String> = async {
+        let _turn = wait_for_speech_turn(&state, &cancel).await?;
+        let _guard = claim_workspace(&state)?;
+        remember_runtime_for_speech(&state).await;
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+        services::stop_bonsai(&settings.bonsai_root)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .ensure_comfy(&settings.comfy_root, &cancel)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .transcribe(&settings.comfy_root, &request, &cancel, Some(&app))
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    finish_speech_job(&state, &request.job_id);
+    result
+}
+
+#[tauri::command]
+async fn align_local_speech(
+    request: SpeechAlignmentRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<SpeechClip, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    if let Some(clip) = state
+        .speech
+        .cached_alignment(&settings.comfy_root, &request)
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(clip);
+    }
+    let cancel = register_speech_job(&state, &request.job_id)?;
+    let result: Result<SpeechClip, String> = async {
+        let _turn = wait_for_speech_turn(&state, &cancel).await?;
+        if let Some(clip) = state
+            .speech
+            .cached_alignment(&settings.comfy_root, &request)
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(clip);
+        }
+        let _guard = claim_workspace(&state)?;
+        remember_runtime_for_speech(&state).await;
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+        services::stop_bonsai(&settings.bonsai_root)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .ensure_comfy(&settings.comfy_root, &cancel)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .align(&settings.comfy_root, &request, &cancel, Some(&app))
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    finish_speech_job(&state, &request.job_id);
+    result
+}
+
+#[tauri::command]
+async fn release_local_speech_memory(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let _guard = claim_workspace_after_speech(&state).await?;
+    state.speech.release_model_memory().await;
+    restore_runtime_after_speech(&state, &app).await
 }
 
 #[tauri::command]
@@ -1853,14 +2181,40 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        let speech = state
+            .speech_jobs
+            .lock()
+            .map_err(|_| "local speech job registry is unavailable".to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         research
             .into_iter()
             .chain(interactive)
             .chain(image_assets)
+            .chain(speech)
             .collect::<Vec<_>>()
     };
+    *state
+        .speech_restore_model
+        .lock()
+        .map_err(|_| "Local speech restore state is unavailable".to_string())? = None;
     for cancellation in cancellations {
         cancellation.cancel();
+    }
+    for attempt in 0..80 {
+        let speech_idle = state
+            .speech_jobs
+            .lock()
+            .map_err(|_| "local speech job registry is unavailable".to_string())?
+            .is_empty();
+        if speech_idle {
+            break;
+        }
+        if attempt == 79 {
+            return Err("The local speech job did not stop within 20 seconds. Its cancellation remains requested; try Release AI memory again after the visible speech status settles.".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     let Some(_idle_permit) = state
         .runtime
@@ -2597,6 +2951,9 @@ pub fn run() {
         .register_uri_scheme_protocol("kestrel-media", |_context, request| {
             studio::media_response(request)
         })
+        .register_uri_scheme_protocol("kestrel-speech", |_context, request| {
+            local_speech::media_response(request)
+        })
         .setup(|app| {
             let store = ResearchStore::open_default().map_err(|error| error.to_string())?;
             let research_settings = SettingsStore::new(store.root());
@@ -2633,6 +2990,7 @@ pub fn run() {
             let workspace = WorkspaceStore::new(store.root())?;
             let attachments = AttachmentStore::new(&store.root().join("workspace"))?;
             let studio = MovieStudio::new(store.root()).map_err(|error| error.to_string())?;
+            let speech = LocalSpeech::new(store.root()).map_err(|error| error.to_string())?;
             app.manage(AppState {
                 store,
                 harness,
@@ -2650,6 +3008,10 @@ pub fn run() {
                 research_active: AtomicBool::new(false),
                 work_active: AtomicBool::new(false),
                 jobs: Mutex::new(HashMap::new()),
+                speech,
+                speech_command_gate: AsyncMutex::new(()),
+                speech_jobs: Mutex::new(HashMap::new()),
+                speech_restore_model: Mutex::new(None),
                 interactive_jobs: Mutex::new(HashMap::new()),
                 studio,
                 movie_jobs: Mutex::new(HashMap::new()),
@@ -2692,6 +3054,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             get_report,
+            get_local_speech_snapshot,
+            prepare_local_speech,
+            synthesize_local_speech,
+            transcribe_local_speech,
+            align_local_speech,
+            cancel_local_speech,
+            release_local_speech_memory,
             run_research,
             cancel_research,
             list_movies,

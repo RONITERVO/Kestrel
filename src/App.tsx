@@ -54,6 +54,7 @@ import {
 } from "./api";
 import { ControlPlane, DeveloperConsole } from "./ControlPlane";
 import { MovieStudio } from "./MovieStudio";
+import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { SetupConsole } from "./Setup";
 import type {
   AppSnapshot,
@@ -370,7 +371,12 @@ function LibrarySidebar({
 
 function ResearchReader({ report, onStandalone }: { report: ResearchReport; onStandalone: () => void }) {
   const [sourceFocus, setSourceFocus] = useState<string | null>(null);
+  const [spokenAnchor, setSpokenAnchor] = useState<string | null>(null);
   const sourceMap = useMemo(() => new Map(report.sources.map((source) => [source.id, source])), [report.sources]);
+  const handleSpeechPassage = useCallback((anchorId: string | null) => {
+    setSpokenAnchor(anchorId);
+    if (anchorId) document.getElementById(anchorId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
   const focusSource = (id: string) => {
     setSourceFocus(id);
     document.getElementById(`source-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -379,7 +385,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
     <div className="reader-layout">
       <article className="research-article">
         <nav className="reader-breadcrumb"><button><ArrowLeft size={15} /> Library</button><span>/</span><span>{report.title}</span></nav>
-        <header className="report-header">
+        <header className={`report-header ${spokenAnchor === "report-overview" ? "speech-active" : ""}`} id="report-overview">
           <div className="report-kicker"><span>Research brief</span><span>Edition {report.edition}</span><span>{formatDate(report.updatedAt)}</span></div>
           <h1>{report.title}</h1>
           <p className="report-dek">{report.dek}</p>
@@ -390,20 +396,22 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
           </div>
         </header>
 
-        <section className="answer-card" aria-labelledby="short-answer-title">
+        <ResearchSpeechPlayer report={report} onPassageChange={handleSpeechPassage} />
+
+        <section className={`answer-card ${spokenAnchor === "short-answer" ? "speech-active" : ""}`} id="short-answer" aria-labelledby="short-answer-title">
           <div className="section-label" id="short-answer-title"><Sparkles size={16} /> Short answer</div>
           <p>{report.answer}</p>
         </section>
 
         {report.edition > 1 && (
-          <aside className="improvement-note">
+          <aside className={`improvement-note ${spokenAnchor === "edition-improvement" ? "speech-active" : ""}`} id="edition-improvement">
             <div className="improvement-icon"><History size={17} /></div>
             <div><strong>What changed in this edition</strong><p>{report.improvement}</p></div>
             <span className="edition-badge">v{report.edition}</span>
           </aside>
         )}
 
-        <section className="content-section" id="findings">
+        <section className={`content-section ${spokenAnchor === "findings" ? "speech-active" : ""}`} id="findings">
           <div className="section-heading"><span className="section-number">01</span><div><span className="eyebrow">The evidence at a glance</span><h2>Key findings</h2></div></div>
           <div className="findings-grid">
             {report.findings.map((finding, index) => (
@@ -418,7 +426,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
         </section>
 
         {report.sections.map((section, index) => (
-          <section className="content-section narrative-section" id={section.id} key={section.id}>
+          <section className={`content-section narrative-section ${spokenAnchor === section.id ? "speech-active" : ""}`} id={section.id} key={section.id}>
             <div className="section-heading"><span className="section-number">{String(index + 2).padStart(2, "0")}</span><div><span className="eyebrow">Deep dive</span><h2>{section.heading}</h2></div></div>
             <p className="section-summary">{section.summary}</p>
             {section.body.map((paragraph, paragraphIndex) => <p key={paragraphIndex}>{paragraph}</p>)}
@@ -427,7 +435,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
         ))}
 
         {!!report.timeline.length && (
-          <section className="content-section" id="timeline">
+          <section className={`content-section ${spokenAnchor === "timeline" ? "speech-active" : ""}`} id="timeline">
             <div className="section-heading"><span className="section-number">{String(report.sections.length + 2).padStart(2, "0")}</span><div><span className="eyebrow">Sequence</span><h2>Timeline</h2></div></div>
             <div className="timeline">
               {report.timeline.map((item) => (
@@ -439,7 +447,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
           </section>
         )}
 
-        <section className="content-section split-section" id="terms">
+        <section className={`content-section split-section ${spokenAnchor === "terms" ? "speech-active" : ""}`} id="terms">
           <div>
             <div className="section-heading small"><div><span className="eyebrow">Plain language</span><h2>Terms worth knowing</h2></div></div>
             <dl className="term-list">{report.terms.map((term) => <div key={term.term}><dt>{term.term}</dt><dd>{term.meaning}</dd></div>)}</dl>
@@ -450,7 +458,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
           </div>
         </section>
 
-        <section className="content-section sources-section" id="sources">
+        <section className={`content-section sources-section ${spokenAnchor === "sources" ? "speech-active" : ""}`} id="sources">
           <div className="section-heading"><span className="section-number">{String(report.sections.length + 3).padStart(2, "0")}</span><div><span className="eyebrow">Evidence ledger</span><h2>Sources inspected</h2></div></div>
           <p className="sources-intro">Every source below was opened by the local model. Excerpts show the evidence it received; Wikipedia is a tertiary starting point, not a substitute for primary sources.</p>
           <div className="source-list">

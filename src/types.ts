@@ -556,6 +556,87 @@ export interface StartMovieRequest {
   modelRoles: MovieModelRoleRequest;
 }
 
+export interface SpeechModel {
+  id: string;
+  name: string;
+  provider: string;
+}
+
+export interface LocalSpeechSnapshot {
+  narrationAvailable: boolean;
+  transcriptionAvailable: boolean;
+  comfyReady: boolean;
+  voices: SpeechModel[];
+  transcribers: SpeechModel[];
+  detail: string;
+}
+
+export interface SpeechSynthesisRequest {
+  jobId: string;
+  sourceKind: "research" | "chat" | "task" | "copilot";
+  sourceId: string;
+  passageId: string;
+  text: string;
+  modelId: string;
+}
+
+export interface SpeechAlignmentRequest {
+  jobId: string;
+  sourceKind: "research" | "chat" | "task" | "copilot";
+  sourceId: string;
+  passageId: string;
+  text: string;
+  relativePath: string;
+  voiceModelId: string;
+  alignmentModelId: string;
+}
+
+export interface SpeechTiming {
+  value: string;
+  start: number;
+  end: number;
+}
+
+export interface SpeechClip {
+  jobId: string;
+  passageId: string;
+  relativePath: string;
+  modelId: string;
+  cacheHit: boolean;
+  segments: SpeechTiming[];
+  words: SpeechTiming[];
+}
+
+export interface SpeechTranscriptionRequest {
+  jobId: string;
+  sourceKind: "research" | "chat" | "task" | "copilot";
+  sourceId: string;
+  recordingId: string;
+  audioBase64: string;
+  mimeType: string;
+  modelId: string;
+  language: string;
+  prompt: string;
+  finalPass: boolean;
+}
+
+export interface SpeechTranscription {
+  jobId: string;
+  recordingId: string;
+  text: string;
+  segments: SpeechTiming[];
+  words: SpeechTiming[];
+  audioRelativePath?: string;
+  finalPass: boolean;
+}
+
+export interface SpeechProgress {
+  jobId: string;
+  passageId: string;
+  stage: "cached" | "generating" | "transcribing" | "aligning" | "complete" | string;
+  detail: string;
+}
+
 export interface MovieModelRoleRequest {
   directorModelId: string;
   reviewerModelId: string;

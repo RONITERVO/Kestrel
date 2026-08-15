@@ -203,6 +203,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .report-dek { max-width: 700px; margin: 0; color: #626158; font: 400 20px/1.5 var(--serif); }
 .report-byline { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 26px; color: #77746a; font-size: 11px; }
 .report-byline span { display: inline-flex; align-items: center; gap: 6px; }
+.research-speech-player { position: sticky; top: 8px; z-index: 8; display: grid; grid-template-columns: minmax(115px,1fr) auto; align-items: center; gap: 9px 10px; margin: 18px 0 26px; padding: 11px 13px; border: 1px solid #d2cec4; border-radius: 12px; background: rgba(255,253,248,.96); box-shadow: 0 6px 22px rgba(45,43,38,.1); backdrop-filter: blur(14px); }
+.speech-player-heading { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.speech-player-heading > span:last-child { min-width: 0; display: flex; flex-direction: column; }
+.speech-player-heading strong { font-size: 11px; }
+.speech-player-heading small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.speech-player-icon { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; color: #fff; background: var(--green); }
+.speech-transport { display: flex; gap: 4px; }
+.speech-transport button { width: 29px; height: 29px; display: grid; place-items: center; padding: 0; border: 1px solid #c9c5bc; border-radius: 8px; color: #4e504a; background: #fff; cursor: pointer; }
+.speech-transport button:hover:not(:disabled) { color: var(--green); border-color: #9cad9f; }
+.speech-transport button:disabled { opacity: .35; cursor: default; }
+.speech-transport .speech-play { color: #fff; border-color: var(--green); background: var(--green); }
+.speech-options { min-width: 0; grid-column: 1 / -1; display: grid; grid-template-columns: 80px minmax(120px,1fr) 80px; gap: 6px; }
+.speech-options label { min-width: 0; color: #7e7a70; font-size: 8px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
+.speech-options select { width: 100%; height: 27px; display: block; margin-top: 2px; padding: 0 22px 0 7px; border: 1px solid #d2cec4; border-radius: 6px; color: #3e403b; background: #fff; font: 10px var(--sans); }
+.speech-progress { grid-column: 1 / -1; height: 3px; overflow: hidden; border-radius: 2px; background: #dfddd6; }
+.speech-progress span { display: block; width: 0; height: 100%; background: var(--green); transition: width .15s linear; }
+.speech-player-meta { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 12px; color: #918d84; font-size: 8px; }
+.speech-error { grid-column: 1 / -1; margin: 0; color: #9b342d; font-size: 9px; }
+.speech-active { outline: 3px solid rgba(76,122,104,.18); outline-offset: 5px; transition: outline-color .2s; }
 .answer-card { position: relative; margin: 32px 0 20px; padding: 25px 28px 25px 31px; border: 1px solid #cedcd2; border-radius: 3px 13px 13px 3px; background: linear-gradient(135deg, #e6eee7, #eef2ea); overflow: hidden; }
 .answer-card::before { content: ""; position: absolute; left: 0; inset-block: 0; width: 4px; background: var(--green); }
 .section-label { display: flex; align-items: center; gap: 8px; color: var(--green); font-size: 10px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
@@ -1618,6 +1637,11 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   .project-model-team { grid-template-columns: 1fr; }
 }
 
+@media (max-width: 760px) {
+  .research-speech-player { position: relative; top: auto; grid-template-columns: 1fr auto; }
+  .speech-options { grid-column: 1 / -1; }
+}
+
 @media (max-width: 520px) {
   .header-actions .quiet-button { display: none; }
   .primary-button.compact { width: 36px; padding: 0; font-size: 0; }
@@ -1728,6 +1752,54 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   .setup-progress { grid-template-columns: 1fr; }
   .setup-progress > button { justify-self: start; }
 }
+
+/* Shared local ComfyUI speech controls. Public model replies are spoken only on request. */
+.inline-speech { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.inline-speech-button, .inline-speech-stop, .speech-dictation > button {
+  min-height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink);
+  font: inherit; font-size: 11px; padding: 4px 8px;
+}
+.inline-speech-button svg, .inline-speech-stop svg, .speech-dictation svg { width: 14px; height: 14px; }
+.inline-speech-stop { width: 28px; padding: 4px; }
+.speech-inline-seek { min-width: 96px; flex: 1; accent-color: var(--green); cursor: pointer; }
+.speech-current-passage { min-width: 0; grid-column: 1 / -1; display: grid; gap: 5px; }
+.speech-current-passage > input { width: 100%; margin: 0; accent-color: var(--green); cursor: pointer; }
+.speech-live-caption {
+  flex: 1 0 100%; padding: 8px 10px; border-left: 3px solid var(--green); border-radius: 0 5px 5px 0;
+  background: color-mix(in srgb, var(--green) 7%, var(--paper)); color: var(--ink); line-height: 1.55; font-size: 13px;
+}
+.speech-current-passage > .speech-live-caption { min-width: 0; }
+.speech-live-caption span, .speech-live-caption mark { display: inline; margin-right: .3em; }
+.speech-live-caption mark { border-radius: 3px; background: #ffd43b; color: #171717; box-shadow: 0 0 0 2px #ffd43b; }
+.speech-live-caption button {
+  display: inline; margin: 0 .3em 0 0; padding: 0; border: 0; border-radius: 3px;
+  background: transparent; color: inherit; font: inherit; line-height: inherit; cursor: pointer;
+}
+.speech-live-caption button:hover { text-decoration: underline; text-underline-offset: 2px; }
+.speech-live-caption button.active { background: #ffd43b; color: #171717; box-shadow: 0 0 0 2px #ffd43b; }
+.speech-inline-error { flex: 1 0 100%; color: var(--red); }
+.speech-input-wrap { position: relative; display: flex; min-width: 0; flex: 1; }
+.speech-input-wrap > textarea { flex: 1; padding-right: 42px; }
+.speech-input-wrap > .speech-dictation { position: absolute; right: 7px; bottom: 7px; }
+.speech-dictation { position: relative; display: inline-flex; flex: 0 0 auto; }
+.composer-row > .speech-dictation > button { width: 36px; height: 36px; padding: 0; }
+.composer-row > .speech-dictation span, .speech-input-wrap > .speech-dictation span {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
+}
+.speech-dictation.recording > button {
+  border-color: var(--red); color: var(--red); background: color-mix(in srgb, var(--red) 10%, var(--paper));
+}
+.speech-dictation > i {
+  position: absolute; top: 2px; right: 2px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--red); animation: speech-recording-pulse 1.2s infinite;
+}
+.speech-dictation-status {
+  position: absolute; z-index: 12; right: 0; bottom: calc(100% + 6px); width: max-content; max-width: 260px;
+  padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--muted);
+  font-size: 10px; line-height: 1.25; box-shadow: 2px 2px 0 var(--line); pointer-events: none;
+}
+@keyframes speech-recording-pulse { 50% { opacity: .25; transform: scale(.75); } }
 
 @media print {
   html, body, #root, .app-shell { width: auto; height: auto; overflow: visible; }

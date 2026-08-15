@@ -1,11 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { LocalSpeechProvider } from "./LocalSpeechControls";
 import "./styles.css";
 import "./technical-theme.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <LocalSpeechProvider><App /></LocalSpeechProvider>
   </StrictMode>,
 );

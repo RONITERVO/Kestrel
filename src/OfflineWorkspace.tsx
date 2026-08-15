@@ -28,6 +28,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
 import {
   cancelChatStream,
   deleteChatSession,
@@ -83,6 +84,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [session, setSession] = useState<ChatSession | null>(null);
   const [draft, setDraft] = useState("");
+  const [chatDictating, setChatDictating] = useState(false);
   const [chatAttachments, setChatAttachments] = useState<ContextAttachment[]>(
     [],
   );
@@ -1006,6 +1008,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                   <Message
                     key={message.id}
                     message={message}
+                    sessionId={session.id}
                     model={selected?.name}
                     onError={onError}
                   />
@@ -1083,11 +1086,21 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                     <Paperclip />
                   )}
                 </button>
+                <SpeechDictationButton
+                  sourceKind="chat"
+                  sourceId={session?.id ?? "chat-draft"}
+                  value={draft}
+                  onChange={setDraft}
+                  onActiveChange={setChatDictating}
+                  disabled={control.runtime.phase !== "ready" || !!taskRunRef.current || !!stream}
+                  label="Dictate message"
+                />
                 <textarea
                   value={draft}
+                  readOnly={chatDictating}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
+                    if (!chatDictating && event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
                       void send();
                     }
@@ -1121,6 +1134,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                     onClick={() => void send()}
                     disabled={
                       (!draft.trim() && chatAttachments.length === 0) ||
+                      chatDictating ||
                       control.runtime.phase !== "ready" ||
                       !!taskRunRef.current
                     }
@@ -1436,6 +1450,7 @@ function ComputerTasks({
   onOpen: (path: string) => void;
   onError: (message: string) => void;
 }) {
+  const [dictating, setDictating] = useState(false);
   const resumable =
     !!run &&
     ["waiting", "cancelled", "interrupted", "failed"].includes(run.status);
@@ -1457,11 +1472,15 @@ function ComputerTasks({
             Decision-critical questions pause safely for your answer. Workspace
             mode is the everyday default.
           </p>
-          <textarea
-            value={objective}
-            onChange={(event) => onObjective(event.target.value)}
-            placeholder="Describe the outcome, or attach context and ask the model to inspect it."
-          />
+          <div className="speech-input-wrap">
+            <textarea
+              value={objective}
+              readOnly={dictating}
+              onChange={(event) => onObjective(event.target.value)}
+              placeholder="Describe the outcome, or attach context and ask the model to inspect it."
+            />
+            <SpeechDictationButton sourceKind="task" sourceId={run?.id ?? "task-draft"} value={objective} onChange={onObjective} onActiveChange={setDictating} disabled={running} label="Dictate objective" />
+          </div>
           {attachments.length > 0 && (
             <AttachmentShelf
               attachments={attachments}
@@ -1507,7 +1526,7 @@ function ComputerTasks({
           </div>
           <button
             className="primary-button task-run"
-            disabled={!ready || (!objective.trim() && attachments.length === 0)}
+            disabled={dictating || !ready || (!objective.trim() && attachments.length === 0)}
             onClick={onRun}
           >
             <Play /> Start visible task
@@ -1567,6 +1586,9 @@ function ComputerTasks({
                     </span>
                   </header>
                   <pre>{event.detail}</pre>
+                  {["done", "question"].includes(event.kind) && event.detail.trim() && (
+                    <SpeechPlaybackButton sourceKind="task" sourceId={run.id} passageId={`${event.kind}-${index}`} text={event.detail} label="Listen" />
+                  )}
                   {event.kind === "artifact" && event.data?.path && (
                     <button
                       className="artifact-button"
@@ -1609,14 +1631,15 @@ function ComputerTasks({
                   ))}
                 </div>
               )}
-              <textarea
+              <div className="speech-input-wrap"><textarea
                 value={answer}
+                readOnly={dictating}
                 onChange={(event) => onAnswer(event.target.value)}
                 placeholder="Answer or add a precise continuation instruction…"
-              />
+              /><SpeechDictationButton sourceKind="task" sourceId={run.id} value={answer} onChange={onAnswer} onActiveChange={setDictating} disabled={running || resuming} label="Dictate answer" /></div>
               <button
                 className="primary-button"
-                disabled={!ready || !answer.trim() || resuming}
+                disabled={dictating || !ready || !answer.trim() || resuming}
                 onClick={onResume}
               >
                 {resuming ? <LoaderCircle className="spin" /> : <Play />} Resume
@@ -1645,10 +1668,12 @@ function ComputerTasks({
 
 function Message({
   message,
+  sessionId,
   model,
   onError,
 }: {
   message: ChatMessage;
+  sessionId: string;
   model?: string;
   onError: (message: string) => void;
 }) {
@@ -1680,6 +1705,9 @@ function Message({
         </details>
       )}
       <RichText value={message.content} />
+      {message.role === "assistant" && message.content.trim() && (
+        <SpeechPlaybackButton sourceKind="chat" sourceId={sessionId} passageId={message.id} text={message.content} label="Listen" />
+      )}
     </article>
   );
 }
