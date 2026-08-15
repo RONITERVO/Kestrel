@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    model_stream::{OpenAiSseDecoder, OpenAiStreamEvent},
+    model_stream::{reasoning_delta, OpenAiSseDecoder, OpenAiStreamEvent},
     MAX_MOVIE_PROMPT_BYTES,
 };
 
@@ -219,7 +219,6 @@ impl PromptDraftJob {
         let mut decoder = OpenAiSseDecoder::default();
         let mut emitted_bytes = 0usize;
         let mut output_limited = false;
-        let mut reasoning_announced = false;
         let mut accept_events = |events: Vec<OpenAiStreamEvent>| -> bool {
             for event in events {
                 let OpenAiStreamEvent::Message(value) = event else {
@@ -261,19 +260,12 @@ impl PromptDraftJob {
                 {
                     output_limited = true;
                 }
-                if !reasoning_announced
-                    && value
-                        .pointer("/choices/0/delta/reasoning_content")
-                        .or_else(|| value.pointer("/choices/0/delta/reasoning"))
-                        .and_then(Value::as_str)
-                        .is_some()
-                {
-                    reasoning_announced = true;
+                if let Some(token) = reasoning_delta(&value) {
                     emit(
                         &app,
                         &request.request_id,
                         "reasoning",
-                        None,
+                        Some(token),
                         Some(&model.name),
                         None,
                     );

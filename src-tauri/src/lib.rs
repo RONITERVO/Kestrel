@@ -1526,6 +1526,7 @@ async fn approve_movie_plan(
 #[tauri::command]
 async fn ask_movie_director_clip(
     request: MovieClipAssistRequest,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<MovieClipSuggestion, String> {
     let _guard = claim_workspace(&state)?;
@@ -1563,11 +1564,10 @@ async fn ask_movie_director_clip(
         state
             .studio
             .assist_clip(
-                &request.id,
-                &request.clip_id,
-                &request.feedback,
+                &request,
                 &lease.connection,
                 runtime_settings.max_output_tokens,
+                Some(&app),
             )
             .await
             .map_err(|error| error.to_string())

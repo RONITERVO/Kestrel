@@ -135,6 +135,9 @@ struct IndependentReviewRequest<'a> {
     connection: &'a ModelConnection,
     settings: &'a MovieSettings,
     runtime_max_output_tokens: u32,
+    cancel: &'a CancellationToken,
+    app: Option<&'a AppHandle>,
+    position: (u32, u32),
 }
 
 fn media_program(name: &str) -> PathBuf {
@@ -377,9 +380,21 @@ pub struct MoviePlanFeedbackRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MovieClipAssistRequest {
+    pub request_id: String,
     pub id: String,
     pub clip_id: String,
     pub feedback: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieClipAssistEvent {
+    pub request_id: String,
+    pub project_id: String,
+    pub clip_id: String,
+    pub kind: String,
+    pub content: String,
+    pub at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1847,6 +1862,8 @@ impl MovieStudio {
                 runtime_max_output_tokens,
                 label: "Studio model qualification",
                 audit_path: None,
+                cancel: None,
+                on_event: None,
             },
         )
         .await?;
@@ -2171,19 +2188,19 @@ impl MovieStudio {
 
     pub async fn assist_clip(
         &self,
-        id: &str,
-        clip_id: &str,
-        feedback: &str,
+        request: &MovieClipAssistRequest,
         connection: &ModelConnection,
         runtime_max_output_tokens: u32,
+        app: Option<&AppHandle>,
     ) -> Result<MovieClipSuggestion, StudioError> {
-        let feedback = feedback.trim();
+        validate_id(&request.request_id)?;
+        let feedback = request.feedback.trim();
         if feedback.chars().count() < 3 || feedback.chars().count() > 8_000 {
             return Err(StudioError::Invalid(
                 "scene feedback must contain 3 to 8,000 characters".into(),
             ));
         }
-        let project = self.get(id)?;
+        let project = self.get(&request.id)?;
         let plan = project
             .plan
             .as_ref()
@@ -2191,7 +2208,7 @@ impl MovieStudio {
         let index = plan
             .clips
             .iter()
-            .position(|clip| clip.id == clip_id)
+            .position(|clip| clip.id == request.clip_id)
             .ok_or_else(|| StudioError::Invalid("unknown movie scene".into()))?;
         let start = index.saturating_sub(1);
         let end = (index + 2).min(plan.clips.len());
@@ -2208,6 +2225,21 @@ impl MovieStudio {
             json!({"role":"system","content":clip_assistant_prompt()}),
             json!({"role":"user","content":payload.to_string()}),
         ];
+        let mut on_event = |event| {
+            if let (Some(app), agent_protocol::StreamEvent::Reasoning(token)) = (app, event) {
+                let _ = app.emit(
+                    "movie-clip-assist",
+                    MovieClipAssistEvent {
+                        request_id: request.request_id.clone(),
+                        project_id: request.id.clone(),
+                        clip_id: request.clip_id.clone(),
+                        kind: "reasoning".into(),
+                        content: token,
+                        at: Utc::now().to_rfc3339(),
+                    },
+                );
+            }
+        };
         let mut suggestion: MovieClipSuggestion = agent_protocol::complete_tool_submission(
             &self.http,
             ToolSubmissionRequest {
@@ -2220,11 +2252,13 @@ impl MovieStudio {
                 runtime_max_output_tokens,
                 label: "movie scene suggestion",
                 audit_path: None,
+                cancel: None,
+                on_event: Some(&mut on_event),
             },
         )
         .await?;
-        suggestion.clip_id = clip_id.into();
-        suggestion.clip.id = clip_id.into();
+        suggestion.clip_id = request.clip_id.clone();
+        suggestion.clip.id = request.clip_id.clone();
         let mut candidate = plan.clone();
         candidate.clips[index] = suggestion.clip.clone();
         prepare_producer_plan(&project, &mut candidate)?;
@@ -2277,6 +2311,18 @@ impl MovieStudio {
             .project_dir(request.project_id)
             .join("agent-workspace")
             .join("agent-last-request.json");
+        let mut on_event = |event| {
+            if let agent_protocol::StreamEvent::Reasoning(token) = event {
+                self.emit_planning(
+                    request.project_id,
+                    PlanningEventKind::Reasoning,
+                    PlanningStage::Thinking,
+                    token,
+                    request.position,
+                    request.app,
+                );
+            }
+        };
         agent_protocol::complete_tool_submission(
             &self.http,
             ToolSubmissionRequest {
@@ -2289,6 +2335,8 @@ impl MovieStudio {
                 runtime_max_output_tokens: request.runtime_max_output_tokens,
                 label: "independent movie code review",
                 audit_path: Some(&audit_path),
+                cancel: Some(request.cancel),
+                on_event: Some(&mut on_event),
             },
         )
         .await

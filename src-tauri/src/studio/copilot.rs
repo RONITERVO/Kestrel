@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    model_stream::{OpenAiSseDecoder, OpenAiStreamEvent},
+    model_stream::{reasoning_delta, OpenAiSseDecoder, OpenAiStreamEvent},
     validate_movie_edit, write_json_atomic, MovieCopilotTurn, MovieEdit, MovieProject, MovieStudio,
     StudioError, TimelineMarker,
 };
@@ -241,7 +241,6 @@ impl MovieCopilotJob {
         let mut decoder = OpenAiSseDecoder::default();
         let mut response_text = String::new();
         let mut tool_calls = Vec::<StreamedToolCall>::new();
-        let mut reasoning_announced = false;
         loop {
             let next = tokio::select! {
                 value = stream.next() => value,
@@ -275,7 +274,6 @@ impl MovieCopilotJob {
                 &model.name,
                 &mut response_text,
                 &mut tool_calls,
-                &mut reasoning_announced,
             );
         }
         let final_events = match decoder.finish() {
@@ -292,7 +290,6 @@ impl MovieCopilotJob {
             &model.name,
             &mut response_text,
             &mut tool_calls,
-            &mut reasoning_announced,
         );
 
         let proposal = match parse_proposal(&project, &request.edit, &tool_calls) {
@@ -352,7 +349,6 @@ fn accept_copilot_stream_events(
     model_name: &str,
     response_text: &mut String,
     tool_calls: &mut Vec<StreamedToolCall>,
-    reasoning_announced: &mut bool,
 ) {
     for event in events {
         let OpenAiStreamEvent::Message(value) = event else {
@@ -377,20 +373,13 @@ fn accept_copilot_stream_events(
                 );
             }
         }
-        if !*reasoning_announced
-            && value
-                .pointer("/choices/0/delta/reasoning_content")
-                .or_else(|| value.pointer("/choices/0/delta/reasoning"))
-                .and_then(Value::as_str)
-                .is_some()
-        {
-            *reasoning_announced = true;
+        if let Some(token) = reasoning_delta(&value) {
             emit(
                 app,
                 &request.request_id,
                 &request.project_id,
                 "reasoning",
-                (None, Some(model_name)),
+                (Some(token), Some(model_name)),
                 None,
                 None,
             );

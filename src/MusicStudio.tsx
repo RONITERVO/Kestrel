@@ -11,6 +11,7 @@ import {
   onMusicProjectUpdated, pickSetupFile, revealMusicProject, saveMusicProject,
   startMoviePromptDraft, startMusicGeneration, transcribeMusicMidi,
 } from "./api";
+import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import type {
   ModelInfo, MusicGenerationEvent, MusicProject, MusicSection, MusicSummary, MusicTake,
   PromptDraftMode, PromptDraftReceipt, PromptDraftTarget,
@@ -27,6 +28,7 @@ interface CollaborationDraft {
   mode: PromptDraftMode;
   base: string;
   text: string;
+  reasoning: string;
   status: string;
   modelName: string;
   receipt?: PromptDraftReceipt;
@@ -101,7 +103,7 @@ export function MusicStudio({
         if (!current || current.id !== event.requestId) return current;
         if (event.kind === "token") return { ...current, text: current.text + (event.content ?? ""), status: "writing", modelName: event.modelName ?? current.modelName };
         if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt };
-        if (event.kind === "reasoning") return { ...current, status: "thinking", modelName: event.modelName ?? current.modelName };
+        if (event.kind === "reasoning") return { ...current, reasoning: appendModelThinking(current.reasoning, event.content ?? ""), status: "thinking", modelName: event.modelName ?? current.modelName };
         if (event.kind === "complete") return { ...current, status: "ready", modelName: event.modelName ?? current.modelName };
         if (event.kind === "limited") return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName };
         if (event.kind === "cancelled") return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName };
@@ -265,7 +267,7 @@ export function MusicStudio({
     const context = target === "musicCaption"
       ? `Song idea:\n${project.idea}\n\nProducer section plan:\n${sectionPlan}\n\nCurrent lyrics:\n${compiledLyrics(project)}`
       : `Song idea:\n${project.idea}\n\nMusic description:\n${project.caption}\n\nProducer section plan:\n${sectionPlan}`;
-    setCollaboration({ id, target, mode: draftMode, base, text: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model" });
+    setCollaboration({ id, target, mode: draftMode, base, text: "", reasoning: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model" });
     try {
       await startMoviePromptDraft({ requestId: id, modelId, target, mode: draftMode, storyText: context, existingText: base, assetName: "", assetKind: "" });
     } catch (error) {
@@ -424,9 +426,9 @@ export function MusicStudio({
         </div>}
       </aside>
 
-      {collaboration && <section className="music-collaboration-sheet" aria-live="polite">
-        <header><span><Sparkles /><strong>{collaboration.target === "musicCaption" ? "Description proposal" : "Lyrics proposal"}</strong><small>{collaboration.modelName} · {collaboration.status === "thinking" ? "thinking privately" : collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header>
-        <pre>{collaboration.text || (collaboration.status === "thinking" ? "The local model is thinking before it writes…" : "Waiting for the first words…")}</pre>
+      {collaboration && <section className="music-collaboration-sheet">
+        <header><span><Sparkles /><strong>{collaboration.target === "musicCaption" ? "Description proposal" : "Lyrics proposal"}</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header>
+        <div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} active={assistantBusy} modelName={collaboration.modelName} /><section className="model-result-stream"><strong>{collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}</strong><pre>{collaboration.text || (assistantBusy ? "The proposal will stream here when the model begins its answer…" : "No proposal was returned.")}</pre></section></div>
         <footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt.exactRequest, null, 2)}</pre></details>}</footer>
       </section>}
 

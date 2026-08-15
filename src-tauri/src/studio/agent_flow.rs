@@ -443,7 +443,15 @@ async fn review_submission(
         ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
         _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
     };
-    let review = tokio::select! {
+    studio.emit_planning(
+        &project.id,
+        PlanningEventKind::TurnStart,
+        PlanningStage::Thinking,
+        "The independent Reviewer is comparing the complete plan with the producer brief.",
+        lifecycle.position(),
+        request.app,
+    );
+    let review_result = tokio::select! {
         result = studio.independently_review_movie_plan(IndependentReviewRequest {
             project_id: &project.id,
             prompt: request.prompt,
@@ -452,10 +460,22 @@ async fn review_submission(
             connection: &lease.connection,
             settings: request.settings,
             runtime_max_output_tokens: request.runtime_settings.max_output_tokens,
-        }) => result?,
-        _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
+            cancel: request.cancel,
+            app: request.app,
+            position: lifecycle.position(),
+        }) => result,
+        _ = request.cancel.cancelled() => Err(StudioError::Cancelled),
     };
     drop(lease);
+    studio.emit_planning(
+        &project.id,
+        PlanningEventKind::TurnComplete,
+        PlanningStage::Planning,
+        "The independent Reviewer completed its model turn.",
+        lifecycle.position(),
+        request.app,
+    );
+    let review = review_result?;
     let blocking = review
         .issues
         .into_iter()
@@ -536,7 +556,7 @@ async fn complete_agent_stream(
             settings: request.settings,
             runtime_max_output_tokens: request.runtime_max_output_tokens,
             cancel: request.cancel,
-            audit_path: &audit_path,
+            audit_path: Some(&audit_path),
             fallback_tool_call_prefix: &fallback_tool_call_prefix,
         },
         |event| match event {
@@ -548,11 +568,11 @@ async fn complete_agent_stream(
                 request.position,
                 request.app,
             ),
-            agent_protocol::StreamEvent::ReasoningStarted => studio.emit_planning(
+            agent_protocol::StreamEvent::Reasoning(token) => studio.emit_planning(
                 request.project_id,
                 PlanningEventKind::Reasoning,
                 PlanningStage::Thinking,
-                "The Director is reasoning locally before its next production action.",
+                token,
                 request.position,
                 request.app,
             ),

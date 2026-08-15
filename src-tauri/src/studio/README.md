@@ -32,7 +32,7 @@ and must not acquire authority implicitly.
 | `agent_flow.rs` | Director planning orchestration, producer-control boundaries, per-turn model leases, tool dispatch, independent-review coordination | Wire parsing or file mutation rules |
 | `agent_lifecycle.rs` | Pure session, tool-use, and reviewer-budget transitions | HTTP, filesystem, UI events, or project state |
 | `agent_protocol.rs` | Exact planning requests, lossless transcript history, assistant/tool-call assembly | Workspace mutation or producer copy |
-| `model_stream.rs` | Shared OpenAI-compatible SSE framing, UTF-8 fragmentation, JSON validation, completion markers | Feature-specific tokens, tool schemas, or UI events |
+| `model_stream.rs` | Shared OpenAI-compatible SSE framing, UTF-8 fragmentation, JSON validation, completion markers, and explicit reasoning-channel extraction | Tool schemas or producer-facing UI events |
 | `movie_agent.rs` | Sandboxed movie workspace, typed actions/outcomes, native plan compilation and lint | OS commands, arbitrary paths, renderer execution, or network |
 | `planning.rs` | Durable redirection/checkpoint controls and typed planning UI event contract | Model inference |
 | `prompts.rs` | Planning, lint, resume, and repair prompt text exposed to advanced producers | Hidden control behavior |
@@ -81,6 +81,12 @@ All Studio language-model streams pass response bytes through `OpenAiSseDecoder`
 their own request bodies and map decoded JSON into their own events, but must not implement another
 `data:`/`[DONE]` parser. The decoder intentionally rejects malformed JSON, invalid UTF-8, duplicate
 completion markers, and events after completion so token loss cannot look like success.
+
+Explicit `reasoning_content` or `reasoning` deltas are streamed to the same bounded, provisional
+thinking pane in prompt collaboration, Director planning and review, Producer Copilot, and the
+per-scene Director assistant. They are never inferred from ordinary answer text, treated as a
+production instruction, or copied into the model's durable tool transcript. A model that exposes no
+separate channel is identified honestly in the UI.
 
 When adding a compatible runtime variation:
 

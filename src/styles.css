@@ -2273,6 +2273,32 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 }
 @keyframes speech-recording-pulse { 50% { opacity: .25; transform: scale(.75); } }
 
+/* One explicit reasoning surface for every producer-facing local-model collaboration. */
+.model-thinking-stream { min-width: 0; min-height: 112px; overflow: hidden; display: grid; grid-template-rows: auto minmax(0,1fr) auto; border: 1px solid #536355; border-radius: 7px; background: #0b110d; }
+.model-thinking-stream.live { border-color: #78964e; box-shadow: inset 3px 0 #a9d75c; }
+.model-thinking-stream > header { min-height: 32px; padding: 6px 8px; display: flex !important; flex-direction: row !important; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid #2f3a32; background: #141c16; }
+.model-thinking-stream > header > span { min-width: 0; display: flex; align-items: center; gap: 6px; color: #dce7d8; }
+.model-thinking-stream > header svg { width: 13px !important; height: 13px; color: #b8e66d !important; }
+.model-thinking-stream > header strong { font: 750 9px var(--sans) !important; }
+.model-thinking-stream > header small { overflow: hidden; color: #849188 !important; font: 7px var(--mono) !important; text-overflow: ellipsis; white-space: nowrap; }
+.model-thinking-meta { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.model-thinking-meta button { min-height: 22px !important; padding: 0 6px !important; border: 1px solid #4f6245 !important; border-radius: 4px !important; color: #b9d99e !important; background: #172018 !important; font: 700 7px var(--sans) !important; cursor: pointer; }
+.model-thinking-stream > pre { min-height: 54px !important; max-height: 190px; margin: 0 !important; padding: 9px !important; overflow: auto; border: 0 !important; border-radius: 0 !important; color: #aebbb1 !important; background: #090e0b !important; white-space: pre-wrap; overflow-wrap: anywhere; font: 9px/1.55 var(--mono) !important; }
+.model-thinking-stream > pre.model-thinking-empty { color: #78847c !important; font-family: var(--sans) !important; font-style: italic !important; }
+.model-thinking-stream > footer { padding: 5px 8px; border-top: 1px solid #29332c; color: #68746c; font: 7px/1.35 var(--sans); }
+.model-collaboration-streams { min-width: 0; min-height: 0; padding: 8px; overflow: hidden; display: grid; grid-template-columns: minmax(0,.9fr) minmax(0,1.1fr); gap: 8px; }
+.model-result-stream { min-width: 0; min-height: 112px; overflow: hidden; display: grid; grid-template-rows: auto minmax(0,1fr); border: 1px solid #424944; border-radius: 7px; background: #141816; }
+.model-result-stream > strong { padding: 8px; border-bottom: 1px solid #363d39; color: #c7cec9; font: 750 8px var(--sans); }
+.model-result-stream > pre { min-height: 0 !important; max-height: none; margin: 0 !important; border: 0 !important; border-radius: 0 !important; }
+.prompt-assist-bar > .model-thinking-stream { grid-column: 1/-1; width: 100%; }
+.copilot-thinking-stream { margin-top: 10px; }
+.planning-thinking-stream { margin-top: 12px; }
+.scene-thinking-stream { margin-top: 8px; }
+
+@media (max-width: 900px) {
+  .model-collaboration-streams { grid-template-columns: 1fr; overflow: auto; }
+}
+
 @media print {
   html, body, #root, .app-shell { width: auto; height: auto; overflow: visible; }
   .app-shell { display: block; }

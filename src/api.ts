@@ -35,6 +35,7 @@ import type {
   SetupLocations,
   SetupProgress,
   SetupSnapshot,
+  MovieClipAssistEvent,
   MovieClipRenderRequest,
   MovieClipSuggestion,
   MovieCopilotEvent,
@@ -434,9 +435,14 @@ export async function approveMoviePlan(id: string): Promise<MovieProject> {
   return invoke<MovieProject>("approve_movie_plan", { id });
 }
 
-export async function askMovieDirectorClip(id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
+export async function askMovieDirectorClip(requestId: string, id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
   if (!isTauri()) throw new Error("Studio scene assistance requires the desktop application.");
-  return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { id, clipId, feedback } });
+  return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { requestId, id, clipId, feedback } });
+}
+
+export async function onMovieClipAssist(callback: (event: MovieClipAssistEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieClipAssistEvent>("movie-clip-assist", (event) => callback(event.payload));
+  return () => undefined;
 }
 
 export async function setMovieModelRoles(id: string, modelRoles: MovieModelRoleRequest): Promise<MovieProject> {

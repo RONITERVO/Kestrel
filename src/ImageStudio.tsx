@@ -11,6 +11,7 @@ import {
   onMoviePromptDraft, revealImageProject, saveImageProject, startImageGeneration,
   startMoviePromptDraft,
 } from "./api";
+import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import type {
   ImageElement, ImageGenerationEvent, ImageProject, ImageSummary, ImageTake, ModelInfo,
   PromptDraftReceipt,
@@ -19,6 +20,7 @@ import type {
 interface ImageCollaboration {
   id: string;
   text: string;
+  reasoning: string;
   status: string;
   modelName: string;
   receipt?: PromptDraftReceipt;
@@ -108,7 +110,7 @@ export function ImageStudio({
         if (!current || current.id !== event.requestId) return current;
         if (event.kind === "token") return { ...current, text: current.text + (event.content ?? ""), status: "writing", modelName: event.modelName ?? current.modelName };
         if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt };
-        if (event.kind === "reasoning") return { ...current, status: "thinking", modelName: event.modelName ?? current.modelName };
+        if (event.kind === "reasoning") return { ...current, reasoning: appendModelThinking(current.reasoning, event.content ?? ""), status: "thinking", modelName: event.modelName ?? current.modelName };
         if (event.kind === "complete") return { ...current, status: "ready", modelName: event.modelName ?? current.modelName };
         if (["limited", "cancelled"].includes(event.kind)) return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName };
         if (event.kind === "error") return { ...current, status: "error" };
@@ -128,7 +130,7 @@ export function ImageStudio({
   const activeTake = completedTakes.find((take) => take.id === project?.activeTakeId);
   const selectedElement = project?.elements.find((element) => element.id === selectedElementId);
   const generating = project?.status === "generating";
-  const assistantBusy = collaboration?.status === "thinking" || collaboration?.status === "writing";
+  const assistantBusy = !!collaboration && ["queued", "thinking", "writing"].includes(collaboration.status);
   const busy = saving || creating || generating || assistantBusy;
 
   const mutate = (change: (current: ImageProject) => ImageProject) => {
@@ -187,7 +189,7 @@ export function ImageStudio({
   const startCollaboration = async () => {
     if (!project || !modelId || assistantBusy) return;
     const id = crypto.randomUUID();
-    setCollaboration({ id, text: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model" });
+    setCollaboration({ id, text: "", reasoning: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model" });
     try {
       await startMoviePromptDraft({
         requestId: id,
@@ -419,7 +421,7 @@ export function ImageStudio({
       </div>}
     </aside>
 
-    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status === "thinking" ? "thinking privately" : collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><pre>{collaboration.text || (collaboration.status === "thinking" ? "The local model is thinking. Visible JSON will stream here when ready…" : "Waiting for the local model…")}</pre><footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt, null, 2)}</pre></details>}</footer></section>}
+    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} active={assistantBusy} modelName={collaboration.modelName} /><section className="model-result-stream"><strong>Proposed production settings</strong><pre>{collaboration.text || (assistantBusy ? "The structured proposal will stream here when the model begins its answer…" : "No structured proposal was returned.")}</pre></section></div><footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt, null, 2)}</pre></details>}</footer></section>}
     {newOpen && <NewImageDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
   </div>;
 }

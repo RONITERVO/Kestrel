@@ -376,6 +376,15 @@ export interface MovieClipSuggestion {
   clip: PlannedClip;
 }
 
+export interface MovieClipAssistEvent {
+  requestId: string;
+  projectId: string;
+  clipId: string;
+  kind: "reasoning" | string;
+  content: string;
+  at: string;
+}
+
 export interface MovieClipRenderRequest {
   id: string;
   suggestion: MovieClipSuggestion;

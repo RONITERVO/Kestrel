@@ -5,7 +5,7 @@
 //! bounded contract.
 
 use super::{
-    model_stream::{OpenAiSseDecoder, OpenAiStreamEvent},
+    model_stream::{reasoning_delta, OpenAiSseDecoder, OpenAiStreamEvent},
     write_json_atomic, MovieSettings, StudioError, MOVIE_THINKING_BUDGET,
 };
 use crate::runtime::{authorized, ModelConnection};
@@ -178,39 +178,6 @@ pub(super) fn movie_agent_request(
     })
 }
 
-pub(super) async fn complete(
-    client: &Client,
-    connection: &ModelConnection,
-    messages: &[Value],
-    tools: &Value,
-    settings: &MovieSettings,
-    runtime_max_output_tokens: u32,
-) -> Result<Value, StudioError> {
-    let body = movie_agent_request(
-        &connection.model_id,
-        messages,
-        tools,
-        settings,
-        runtime_max_output_tokens,
-    );
-    let response = authorized(
-        client.post(format!("{}/chat/completions", connection.endpoint)),
-        connection,
-    )
-    .json(&body)
-    .send()
-    .await?;
-    let status = response.status();
-    let text = response.text().await?;
-    if !status.is_success() {
-        return Err(StudioError::Planning(format!(
-            "movie agent HTTP {status}: {}",
-            super::truncate(&text, 500)
-        )));
-    }
-    serde_json::from_str(&text).map_err(StudioError::from)
-}
-
 pub(super) struct StreamCompletionRequest<'a> {
     pub connection: &'a ModelConnection,
     pub messages: &'a [Value],
@@ -218,14 +185,14 @@ pub(super) struct StreamCompletionRequest<'a> {
     pub settings: &'a MovieSettings,
     pub runtime_max_output_tokens: u32,
     pub cancel: &'a CancellationToken,
-    pub audit_path: &'a Path,
+    pub audit_path: Option<&'a Path>,
     pub fallback_tool_call_prefix: &'a str,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum StreamEvent {
     Content(String),
-    ReasoningStarted,
+    Reasoning(String),
     ToolArgumentsStarted,
     ToolArguments(String),
 }
@@ -253,7 +220,9 @@ pub(super) async fn complete_stream(
     );
     body["stream"] = json!(true);
     body["stream_options"] = json!({"include_usage": true});
-    write_json_atomic(request.audit_path, &body)?;
+    if let Some(path) = request.audit_path {
+        write_json_atomic(path, &body)?;
+    }
     let response = authorized(
         client.post(format!("{}/chat/completions", request.connection.endpoint)),
         request.connection,
@@ -274,7 +243,6 @@ pub(super) async fn complete_stream(
     let mut decoder = OpenAiSseDecoder::default();
     let mut content = String::new();
     let mut tool_calls = Vec::<StreamedToolCall>::new();
-    let mut reasoning_announced = false;
     let mut accept_events = |events: Vec<OpenAiStreamEvent>| {
         for event in events {
             let OpenAiStreamEvent::Message(value) = event else {
@@ -287,15 +255,8 @@ pub(super) async fn complete_stream(
                 content.push_str(token);
                 on_event(StreamEvent::Content(token.to_string()));
             }
-            if !reasoning_announced
-                && value
-                    .pointer("/choices/0/delta/reasoning_content")
-                    .or_else(|| value.pointer("/choices/0/delta/reasoning"))
-                    .and_then(Value::as_str)
-                    .is_some()
-            {
-                reasoning_announced = true;
-                on_event(StreamEvent::ReasoningStarted);
+            if let Some(token) = reasoning_delta(&value) {
+                on_event(StreamEvent::Reasoning(token.to_string()));
             }
             if let Some(deltas) = value
                 .pointer("/choices/0/delta/tool_calls")
@@ -384,6 +345,8 @@ pub(super) struct ToolSubmissionRequest<'a> {
     pub runtime_max_output_tokens: u32,
     pub label: &'a str,
     pub audit_path: Option<&'a Path>,
+    pub cancel: Option<&'a CancellationToken>,
+    pub on_event: Option<&'a mut (dyn FnMut(StreamEvent) + Send)>,
 }
 
 /// Completes a typed, tool-only model exchange with bounded corrective retries.
@@ -394,41 +357,54 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
     client: &Client,
     request: ToolSubmissionRequest<'_>,
 ) -> Result<T, StudioError> {
-    let schema = request
-        .response_format
+    let ToolSubmissionRequest {
+        connection,
+        initial_messages,
+        tool_name,
+        tool_description,
+        response_format,
+        settings,
+        runtime_max_output_tokens,
+        label,
+        audit_path,
+        cancel,
+        mut on_event,
+    } = request;
+    let schema = response_format
         .pointer("/json_schema/schema")
         .cloned()
-        .unwrap_or(request.response_format);
+        .unwrap_or(response_format);
     let tools = json!([{
         "type":"function",
         "function":{
-            "name":request.tool_name,
-            "description":request.tool_description,
+            "name":tool_name,
+            "description":tool_description,
             "parameters":schema,
         }
     }]);
-    let mut messages = request.initial_messages.to_vec();
+    let mut messages = initial_messages.to_vec();
     let mut last_error = String::new();
-    for _ in 0..3 {
-        if let Some(path) = request.audit_path {
-            write_json_atomic(
-                path,
-                &movie_agent_request(
-                    &request.connection.model_id,
-                    &messages,
-                    &tools,
-                    request.settings,
-                    request.runtime_max_output_tokens,
-                ),
-            )?;
-        }
-        let response = complete(
+    let local_cancel = CancellationToken::new();
+    let cancel = cancel.unwrap_or(&local_cancel);
+    for attempt in 0..3 {
+        let fallback_tool_call_prefix = format!("studio-submission-{attempt}");
+        let response = complete_stream(
             client,
-            request.connection,
-            &messages,
-            &tools,
-            request.settings,
-            request.runtime_max_output_tokens,
+            StreamCompletionRequest {
+                connection,
+                messages: &messages,
+                tools: &tools,
+                settings,
+                runtime_max_output_tokens,
+                cancel,
+                audit_path,
+                fallback_tool_call_prefix: &fallback_tool_call_prefix,
+            },
+            |event| {
+                if let Some(handler) = on_event.as_deref_mut() {
+                    handler(event);
+                }
+            },
         )
         .await?;
         let message = response_message(&response)?;
@@ -437,8 +413,7 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
             .and_then(Value::as_array)
             .and_then(|calls| {
                 calls.iter().find(|call| {
-                    call.pointer("/function/name").and_then(Value::as_str)
-                        == Some(request.tool_name)
+                    call.pointer("/function/name").and_then(Value::as_str) == Some(tool_name)
                 })
             });
         if let Some(call) = tool_call {
@@ -456,7 +431,7 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
                 Err(error) => last_error = error.to_string(),
             }
         } else {
-            last_error = format!("The Studio Director did not call {}", request.tool_name);
+            last_error = format!("The Studio Director did not call {tool_name}");
         }
         let mut history_message = message;
         if let Some(object) = history_message.as_object_mut() {
@@ -465,13 +440,12 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
         }
         messages.push(history_message);
         messages.push(json!({"role":"user","content":format!(
-            "The {} submission failed validation: {last_error}. Correct it and call {}; do not answer in prose.",
-            request.label, request.tool_name
+            "The {label} submission failed validation: {last_error}. Correct it and call {tool_name}; do not answer in prose.",
         )}));
     }
     Err(StudioError::Planning(format!(
         "{} remained invalid after three attempts: {last_error}",
-        request.label
+        label
     )))
 }
 
