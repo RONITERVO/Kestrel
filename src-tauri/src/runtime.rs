@@ -492,7 +492,11 @@ foreach($item in $all){
             .iter()
             .find(|model| model.id == model_id)
             .ok_or_else(|| RuntimeError::MissingModel(model_id.to_string()))?;
-        let connection = match self.current_for_model(&model.id).await {
+        let effective = settings.for_model(&model.id);
+        let connection = match self
+            .current_for_model(&model.id, effective.context_window)
+            .await
+        {
             Some(current) => current,
             None => {
                 self.start_model(model, settings, app).await?;
@@ -523,11 +527,15 @@ foreach($item in $all){
         self.health(&connection).await.then_some(connection)
     }
 
-    async fn current_for_model(&self, catalog_id: &str) -> Option<ModelConnection> {
+    async fn current_for_model(
+        &self,
+        catalog_id: &str,
+        context_window: u32,
+    ) -> Option<ModelConnection> {
         let (connection, matches) = self.process.lock().await.as_ref().map(|value| {
             (
                 value.connection.clone(),
-                value.snapshot.model_id.as_deref() == Some(catalog_id),
+                process_matches(&value.snapshot, catalog_id, context_window),
             )
         })?;
         (matches && self.health(&connection).await).then_some(connection)
@@ -542,6 +550,15 @@ foreach($item in $all){
             .and_then(Result::ok)
             .is_some_and(|response| response.status().is_success())
     }
+}
+
+fn process_matches(
+    snapshot: &ManagedRuntimeSnapshot,
+    catalog_id: &str,
+    context_window: u32,
+) -> bool {
+    snapshot.model_id.as_deref() == Some(catalog_id)
+        && snapshot.context_window == context_window
 }
 
 pub fn authorized(
@@ -681,6 +698,19 @@ mod tests {
         assert!(!candidates
             .iter()
             .any(|candidate| candidate.path == program.to_string_lossy()));
+    }
+
+    #[test]
+    fn runtime_reuse_requires_the_same_model_and_context_window() {
+        let snapshot = ManagedRuntimeSnapshot {
+            model_id: Some("model-a".into()),
+            context_window: 32_768,
+            ..ManagedRuntimeSnapshot::default()
+        };
+
+        assert!(process_matches(&snapshot, "model-a", 32_768));
+        assert!(!process_matches(&snapshot, "model-a", 98_304));
+        assert!(!process_matches(&snapshot, "model-b", 32_768));
     }
 
     #[tokio::test]

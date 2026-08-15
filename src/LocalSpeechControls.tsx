@@ -396,11 +396,7 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
         prompt: utf8Tail(initialRef.current, 4_000),
         finalPass,
       });
-      if (finalPass) {
-        provisionalTranscriptRef.current = result.text.trim();
-      } else {
-        provisionalTranscriptRef.current = result.text.trim();
-      }
+      provisionalTranscriptRef.current = result.text.trim();
       applyTranscript(provisionalTranscriptRef.current);
       setDetail(finalPass ? "Saved locally with word timestamps" : "Listening · live text updated");
     })().catch((error) => {

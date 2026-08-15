@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { midiSecondsToTick, midiTickToSeconds, MusicMidiEditor, quantizeTick } from "./MusicMidiEditor";
 import { applyTaggedLyrics, managedMuscriptorPaths, MusicStudio } from "./MusicStudio";
@@ -86,6 +86,8 @@ describe("MusicStudio", () => {
     const onSave = vi.fn(async (document: MusicMidiDocument) => ({ ...document, revision: document.revision + 1 }));
     render(<MusicMidiEditor document={midiDocument} takeLabel="Take 1" currentTime={0} playing={false} busy={false} onTogglePlay={vi.fn()} onSeek={vi.fn()} onSave={onSave} onExport={vi.fn()} onReveal={vi.fn()} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Add MIDI track" }));
+    fireEvent.click(screen.getByRole("button", { name: "Undo MIDI edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Redo MIDI edit" }));
     fireEvent.click(screen.getByRole("button", { name: /Save revision/i }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const saved = onSave.mock.calls[0][0];
@@ -93,5 +95,23 @@ describe("MusicStudio", () => {
     expect(saved.revision).toBe(2);
     expect(saved.tracks).toHaveLength(2);
     expect(screen.getByText(/Revision 3 saved/i)).toBeInTheDocument();
+  });
+
+  it("provides keyboard seek and add-note controls without treating note clicks as grid insertion", () => {
+    const onSeek = vi.fn();
+    const view = render(<MusicMidiEditor document={midiDocument} takeLabel="Take 1" currentTime={0} playing={false} busy={false} onTogglePlay={vi.fn()} onSeek={onSeek} onSave={vi.fn()} onExport={vi.fn()} onReveal={vi.fn()} onClose={vi.fn()} />);
+    const editor = within(view.container);
+
+    fireEvent.keyDown(editor.getByRole("slider", { name: "MIDI timeline seek" }), { key: "ArrowRight" });
+    expect(onSeek).toHaveBeenCalledWith(expect.any(Number));
+
+    const originalNote = editor.getByRole("button", { name: /C4 at beat 1\.00/i });
+    fireEvent.doubleClick(originalNote);
+    expect(editor.getAllByRole("button", { name: /C4 at beat/i })).toHaveLength(1);
+
+    fireEvent.keyDown(editor.getByRole("application", { name: /MIDI note grid/i }), { key: "Enter" });
+    expect(editor.getAllByRole("button", { name: /C4 at beat/i })).toHaveLength(2);
+    fireEvent.click(editor.getByRole("button", { name: "Add note" }));
+    expect(editor.getAllByRole("button", { name: /C4 at beat/i })).toHaveLength(3);
   });
 });

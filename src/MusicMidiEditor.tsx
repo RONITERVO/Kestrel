@@ -19,6 +19,12 @@ interface DragState {
   original: MusicMidiNote;
 }
 
+interface TrackHistoryEntry {
+  trackId: string;
+  index: number;
+  track?: MusicMidiTrack;
+}
+
 export function MusicMidiEditor({
   document,
   takeLabel,
@@ -48,16 +54,19 @@ export function MusicMidiEditor({
   const [selectedTrackId, setSelectedTrackId] = useState(document.tracks[0]?.id ?? "");
   const [selectedNoteId, setSelectedNoteId] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [undo, setUndo] = useState<MusicMidiDocument[]>([]);
-  const [redo, setRedo] = useState<MusicMidiDocument[]>([]);
+  const [undo, setUndo] = useState<TrackHistoryEntry[]>([]);
+  const [redo, setRedo] = useState<TrackHistoryEntry[]>([]);
   const [snap, setSnap] = useState<SnapDivision>("1/16");
   const [pixelsPerBeat, setPixelsPerBeat] = useState(42);
   const [drag, setDrag] = useState<DragState>();
   const [notice, setNotice] = useState("Original transcription preserved · edits create revisions");
   const viewport = useRef<HTMLDivElement>(null);
+  const draftRef = useRef(draft);
 
   useEffect(() => {
-    setDraft(cloneDocument(document));
+    const next = cloneDocument(document);
+    draftRef.current = next;
+    setDraft(next);
     setSelectedTrackId((current) => document.tracks.some((track) => track.id === current) ? current : document.tracks[0]?.id ?? "");
     setSelectedNoteId("");
     setDirty(false);
@@ -75,9 +84,14 @@ export function MusicMidiEditor({
   const signature = draft.timeSignatures[0] ?? { numerator: 4, denominator: 4 };
 
   const edit = (change: (value: MusicMidiDocument) => MusicMidiDocument) => {
-    setUndo((history) => [...history.slice(-49), cloneDocument(draft)]);
+    const current = draftRef.current;
+    const next = change(current);
+    const historyEntry = changedTrackEntry(current, next);
+    if (!historyEntry) return;
+    setUndo((history) => [...history.slice(-49), historyEntry]);
     setRedo([]);
-    setDraft(change(cloneDocument(draft)));
+    draftRef.current = next;
+    setDraft(next);
     setDirty(true);
   };
 
@@ -97,27 +111,35 @@ export function MusicMidiEditor({
   const undoEdit = () => {
     const previous = undo.at(-1);
     if (!previous) return;
-    setRedo((history) => [...history.slice(-49), cloneDocument(draft)]);
+    const current = draftRef.current;
+    setRedo((history) => [...history.slice(-49), trackEntry(current, previous.trackId, previous.index)]);
     setUndo((history) => history.slice(0, -1));
-    setDraft(cloneDocument(previous));
+    const next = applyTrackEntry(current, previous);
+    draftRef.current = next;
+    setDraft(next);
     setDirty(true);
   };
 
   const redoEdit = () => {
     const next = redo.at(-1);
     if (!next) return;
-    setUndo((history) => [...history.slice(-49), cloneDocument(draft)]);
+    const current = draftRef.current;
+    setUndo((history) => [...history.slice(-49), trackEntry(current, next.trackId, next.index)]);
     setRedo((history) => history.slice(0, -1));
-    setDraft(cloneDocument(next));
+    const restored = applyTrackEntry(current, next);
+    draftRef.current = restored;
+    setDraft(restored);
     setDirty(true);
   };
 
   const save = async (): Promise<MusicMidiDocument | undefined> => {
-    if (!dirty) return draft;
+    if (!dirty) return draftRef.current;
     setNotice("Saving a new immutable MIDI revision…");
-    const saved = await onSave(draft);
+    const saved = await onSave(draftRef.current);
     if (saved) {
-      setDraft(cloneDocument(saved));
+      const next = cloneDocument(saved);
+      draftRef.current = next;
+      setDraft(next);
       setDirty(false);
       setUndo([]);
       setRedo([]);
@@ -184,11 +206,8 @@ export function MusicMidiEditor({
     setNotice(`${selectedTrack.name} quantized to ${snap}`);
   };
 
-  const addNote = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!selectedTrack || event.detail < 2) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const tick = quantizeTick(Math.max(0, (event.clientX - bounds.left) / pixelsPerBeat * draft.ticksPerQuarter), snapTicks);
-    const pitch = clamp(127 - Math.floor((event.clientY - bounds.top) / NOTE_HEIGHT), 0, 127);
+  const insertNote = (tick: number, pitch: number) => {
+    if (!selectedTrack || busy) return;
     const id = stableMidiId("note");
     const durationTicks = Math.max(1, snapTicks || draft.ticksPerQuarter / 4);
     edit((current) => ({
@@ -202,19 +221,35 @@ export function MusicMidiEditor({
     audition(pitch, 96);
   };
 
+  const addNote = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || event.detail < 2) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const tick = quantizeTick(Math.max(0, (event.clientX - bounds.left) / pixelsPerBeat * draft.ticksPerQuarter), snapTicks);
+    const pitch = clamp(127 - Math.floor((event.clientY - bounds.top) / NOTE_HEIGHT), 0, 127);
+    insertNote(tick, pitch);
+  };
+
+  const addNoteAtPlayhead = () => {
+    insertNote(quantizeTick(playheadTick, snapTicks), selectedNote?.pitch ?? 60);
+  };
+
   useEffect(() => {
     if (!drag || !selectedTrackId) return;
     const move = (event: PointerEvent) => {
       const tickDelta = (event.clientX - drag.startX) / pixelsPerBeat * draft.ticksPerQuarter;
       const pitchDelta = -Math.round((event.clientY - drag.startY) / NOTE_HEIGHT);
-      setDraft((current) => updateNote(current, selectedTrackId, drag.noteId, (note) => drag.mode === "resize" ? {
-        ...note,
-        durationTicks: Math.max(snapTicks || 1, quantizeTick(drag.original.durationTicks + tickDelta, snapTicks)),
-      } : {
-        ...note,
-        startTick: Math.max(0, quantizeTick(drag.original.startTick + tickDelta, snapTicks)),
-        pitch: clamp(drag.original.pitch + pitchDelta, 0, 127),
-      }));
+      setDraft((current) => {
+        const next = updateNote(current, selectedTrackId, drag.noteId, (note) => drag.mode === "resize" ? {
+          ...note,
+          durationTicks: Math.max(snapTicks || 1, quantizeTick(drag.original.durationTicks + tickDelta, snapTicks)),
+        } : {
+          ...note,
+          startTick: Math.max(0, quantizeTick(drag.original.startTick + tickDelta, snapTicks)),
+          pitch: clamp(drag.original.pitch + pitchDelta, 0, 127),
+        });
+        draftRef.current = next;
+        return next;
+      });
       setDirty(true);
     };
     const up = () => setDrag(undefined);
@@ -256,10 +291,30 @@ export function MusicMidiEditor({
   const beginDrag = (event: React.PointerEvent, note: MusicMidiNote, mode: DragState["mode"]) => {
     event.stopPropagation();
     setSelectedNoteId(note.id);
-    setUndo((history) => [...history.slice(-49), cloneDocument(draft)]);
+    setUndo((history) => [...history.slice(-49), trackEntry(draftRef.current, selectedTrackId)]);
     setRedo([]);
     setDrag({ noteId: note.id, mode, startX: event.clientX, startY: event.clientY, original: { ...note } });
     audition(note.pitch, note.velocity);
+  };
+
+  const seekToTick = (tick: number) => {
+    onSeek(midiTickToSeconds(clamp(tick, 0, draft.durationTicks), draft));
+  };
+
+  const seekWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = Math.max(1, snapTicks);
+    if (event.key === "ArrowLeft") seekToTick(playheadTick - step);
+    else if (event.key === "ArrowRight") seekToTick(playheadTick + step);
+    else if (event.key === "Home") seekToTick(0);
+    else if (event.key === "End") seekToTick(draft.durationTicks);
+    else return;
+    event.preventDefault();
+  };
+
+  const addNoteWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || !["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    addNoteAtPlayhead();
   };
 
   return (
@@ -267,24 +322,25 @@ export function MusicMidiEditor({
       <header className="midi-editor-toolbar">
         <div className="midi-editor-identity"><span><Piano /></span><div><small>{takeLabel}</small><strong>MIDI Piano Roll</strong></div><em>Revision {draft.revision}{dirty ? " · edited" : " · saved"}</em></div>
         <div className="midi-editor-transport">
-          <button aria-label={playing ? "Pause preserved master" : "Play preserved master"} onClick={onTogglePlay}>{playing ? <Pause /> : <Play />}</button>
-          <button disabled={!undo.length || busy} aria-label="Undo MIDI edit" onClick={undoEdit}><Undo2 /></button>
-          <button disabled={!redo.length || busy} aria-label="Redo MIDI edit" onClick={redoEdit}><Redo2 /></button>
+          <button type="button" aria-label={playing ? "Pause preserved master" : "Play preserved master"} onClick={onTogglePlay}>{playing ? <Pause /> : <Play />}</button>
+          <button type="button" disabled={!undo.length || busy} aria-label="Undo MIDI edit" onClick={undoEdit}><Undo2 /></button>
+          <button type="button" disabled={!redo.length || busy} aria-label="Redo MIDI edit" onClick={redoEdit}><Redo2 /></button>
           <label>Snap<select value={snap} onChange={(event) => setSnap(event.target.value as SnapDivision)}><option value="off">Off</option><option value="1/4">1/4</option><option value="1/8">1/8</option><option value="1/16">1/16</option><option value="1/32">1/32</option></select></label>
-          <button disabled={!selectedTrack || snap === "off" || busy} onClick={quantizeTrack}><Check /> Quantize track</button>
+          <button type="button" disabled={!selectedTrack || snap === "off" || busy} onClick={quantizeTrack}><Check /> Quantize track</button>
+          <button type="button" disabled={!selectedTrack || busy} onClick={addNoteAtPlayhead}><Plus /> Add note</button>
           <label>Zoom<input aria-label="MIDI horizontal zoom" type="range" min={24} max={84} value={pixelsPerBeat} onChange={(event) => setPixelsPerBeat(Number(event.target.value))} /></label>
         </div>
         <div className="midi-editor-actions">
-          <button disabled={busy} onClick={() => void onReveal()}><FolderOpen /> Reveal</button>
-          <button disabled={busy} onClick={() => void exportMidi()}><Download /> Export MIDI</button>
-          <button className="midi-save" disabled={!dirty || busy} onClick={() => void save()}><Save /> Save revision</button>
-          <button className="midi-done" disabled={busy} onClick={() => void finish()}><X /> Done</button>
+          <button type="button" disabled={busy} onClick={() => void onReveal()}><FolderOpen /> Reveal</button>
+          <button type="button" disabled={busy} onClick={() => void exportMidi()}><Download /> Export MIDI</button>
+          <button type="button" className="midi-save" disabled={!dirty || busy} onClick={() => void save()}><Save /> Save revision</button>
+          <button type="button" className="midi-done" disabled={busy} onClick={() => void finish()}><X /> Done</button>
         </div>
       </header>
 
       <aside className="midi-track-list">
-        <header><span><ListMusic /><strong>Tracks</strong></span><div><button aria-label="Add MIDI track" disabled={busy} onClick={addTrack}><Plus /></button><button aria-label="Remove selected MIDI track" disabled={busy || draft.tracks.length <= 1} onClick={deleteTrack}><Trash2 /></button></div></header>
-        <div>{draft.tracks.map((track, index) => <article key={track.id} className={track.id === selectedTrack?.id ? "active" : ""}><button className="midi-track-choice" onClick={() => { setSelectedTrackId(track.id); setSelectedNoteId(""); }}><i style={{ background: trackColor(index) }} /><span><strong>{track.name}</strong><small>{GM_PROGRAMS[track.program]} · Ch {track.channel + 1} · {track.notes.length} notes</small></span></button><button className="midi-track-mute" aria-label={`${track.muted ? "Unmute" : "Mute"} ${track.name}`} onClick={() => { setSelectedTrackId(track.id); edit((current) => ({ ...current, tracks: current.tracks.map((item) => item.id === track.id ? { ...item, muted: !item.muted } : item) })); }}>{track.muted ? <VolumeX /> : <Volume2 />}</button></article>)}</div>
+        <header><span><ListMusic /><strong>Tracks</strong></span><div><button type="button" aria-label="Add MIDI track" disabled={busy} onClick={addTrack}><Plus /></button><button type="button" aria-label="Remove selected MIDI track" disabled={busy || draft.tracks.length <= 1} onClick={deleteTrack}><Trash2 /></button></div></header>
+        <div>{draft.tracks.map((track, index) => <article key={track.id} className={track.id === selectedTrack?.id ? "active" : ""}><button type="button" className="midi-track-choice" onClick={() => { setSelectedTrackId(track.id); setSelectedNoteId(""); }}><i style={{ background: trackColor(index) }} /><span><strong>{track.name}</strong><small>{GM_PROGRAMS[track.program]} · Ch {track.channel + 1} · {track.notes.length} notes</small></span></button><button type="button" className="midi-track-mute" aria-label={`${track.muted ? "Unmute" : "Mute"} ${track.name}`} onClick={() => { setSelectedTrackId(track.id); edit((current) => ({ ...current, tracks: current.tracks.map((item) => item.id === track.id ? { ...item, muted: !item.muted } : item) })); }}>{track.muted ? <VolumeX /> : <Volume2 />}</button></article>)}</div>
         <footer><span>{draft.tracks.length} tracks</span><span>{draft.tracks.reduce((sum, track) => sum + track.notes.length, 0).toLocaleString()} notes</span></footer>
       </aside>
 
@@ -292,14 +348,14 @@ export function MusicMidiEditor({
         <div className="midi-roll-status"><span>{bpm} BPM · {signature.numerator}/{signature.denominator} · {draft.ticksPerQuarter} PPQ</span><span>{notice}</span><span>Double-click grid to add · drag notes to move · drag right edge to resize</span></div>
         <div ref={viewport} className="midi-roll-viewport">
           <div className="midi-roll-content" style={{ width: canvasWidth + PIANO_WIDTH, height: 128 * NOTE_HEIGHT + 27 }}>
-            <div className="midi-ruler" style={{ left: PIANO_WIDTH, width: canvasWidth, backgroundSize: `${pixelsPerBeat * 4}px 100%` }} onClick={(event) => {
+            <div className="midi-ruler" role="slider" tabIndex={0} aria-label="MIDI timeline seek" aria-valuemin={0} aria-valuemax={draft.durationSeconds} aria-valuenow={clamp(currentTime, 0, draft.durationSeconds)} onKeyDown={seekWithKeyboard} style={{ left: PIANO_WIDTH, width: canvasWidth, backgroundSize: `${pixelsPerBeat * 4}px 100%` }} onClick={(event) => {
               const bounds = event.currentTarget.getBoundingClientRect();
               const tick = Math.max(0, (event.clientX - bounds.left) / pixelsPerBeat * draft.ticksPerQuarter);
               onSeek(midiTickToSeconds(tick, draft));
             }}>{Array.from({ length: Math.ceil(beats / 4) }, (_, index) => <span key={index} style={{ left: index * pixelsPerBeat * 4 }}>{index + 1}</span>)}</div>
             <div className="midi-keyboard">{Array.from({ length: 128 }, (_, index) => { const pitch = 127 - index; return <span key={pitch} className={isBlackKey(pitch) ? "black" : "white"}>{pitch % 12 === 0 ? noteName(pitch) : ""}</span>; })}</div>
-            <div className="midi-note-grid" style={{ left: PIANO_WIDTH, top: 27, width: canvasWidth, height: 128 * NOTE_HEIGHT, backgroundSize: `${pixelsPerBeat}px ${NOTE_HEIGHT}px` }} onClick={addNote}>
-              {selectedTrack?.notes.map((note) => <button key={note.id} aria-label={`${noteName(note.pitch)} at beat ${(note.startTick / draft.ticksPerQuarter + 1).toFixed(2)}`} className={`midi-note ${note.id === selectedNote?.id ? "selected" : ""}`} style={{ left: note.startTick / draft.ticksPerQuarter * pixelsPerBeat, top: (127 - note.pitch) * NOTE_HEIGHT + 1, width: Math.max(5, note.durationTicks / draft.ticksPerQuarter * pixelsPerBeat), height: NOTE_HEIGHT - 2, background: trackColor(draft.tracks.findIndex((track) => track.id === selectedTrack.id)) }} onPointerDown={(event) => beginDrag(event, note, "move")} onDoubleClick={(event) => { event.stopPropagation(); audition(note.pitch, note.velocity); }}><span onPointerDown={(event) => beginDrag(event, note, "resize")} /></button>)}
+            <div className="midi-note-grid" role="application" tabIndex={0} aria-label="MIDI note grid. Press Enter to add a note at the playhead." aria-disabled={busy} onKeyDown={addNoteWithKeyboard} style={{ left: PIANO_WIDTH, top: 27, width: canvasWidth, height: 128 * NOTE_HEIGHT, backgroundSize: `${pixelsPerBeat}px ${NOTE_HEIGHT}px` }} onClick={addNote}>
+              {selectedTrack?.notes.map((note) => <button type="button" key={note.id} aria-label={`${noteName(note.pitch)} at beat ${(note.startTick / draft.ticksPerQuarter + 1).toFixed(2)}`} className={`midi-note ${note.id === selectedNote?.id ? "selected" : ""}`} style={{ left: note.startTick / draft.ticksPerQuarter * pixelsPerBeat, top: (127 - note.pitch) * NOTE_HEIGHT + 1, width: Math.max(5, note.durationTicks / draft.ticksPerQuarter * pixelsPerBeat), height: NOTE_HEIGHT - 2, background: trackColor(draft.tracks.findIndex((track) => track.id === selectedTrack.id)) }} onPointerDown={(event) => beginDrag(event, note, "move")} onDoubleClick={(event) => { event.stopPropagation(); audition(note.pitch, note.velocity); }}><span onPointerDown={(event) => beginDrag(event, note, "resize")} /></button>)}
               <i className="midi-playhead" style={{ left: playheadTick / draft.ticksPerQuarter * pixelsPerBeat }} />
             </div>
           </div>
@@ -311,10 +367,10 @@ export function MusicMidiEditor({
         {selectedTrack && <fieldset disabled={busy}>
           <label>Track name<input maxLength={256} value={selectedTrack.name} onChange={(event) => patchTrack({ name: event.target.value })} /></label>
           <label>Instrument<select value={selectedTrack.program} onChange={(event) => patchTrack({ program: Number(event.target.value) })}>{GM_PROGRAMS.map((name, index) => <option key={name} value={index}>{index + 1}. {name}</option>)}</select></label>
-          <div className="midi-inspector-pair"><label>Channel<input type="number" min={1} max={16} value={selectedTrack.channel + 1} onChange={(event) => { const channel = event.currentTarget.valueAsNumber - 1; if (Number.isFinite(channel) && channel >= 0 && channel <= 15) patchTrack({ channel, notes: selectedTrack.notes.map((note) => ({ ...note, channel })) }); }} /></label><label>Output<button className={selectedTrack.muted ? "muted" : ""} onClick={() => patchTrack({ muted: !selectedTrack.muted })}>{selectedTrack.muted ? <VolumeX /> : <Volume2 />}{selectedTrack.muted ? "Muted" : "Included"}</button></label></div>
+          <div className="midi-inspector-pair"><label>Channel<input type="number" min={1} max={16} value={selectedTrack.channel + 1} onChange={(event) => { const channel = event.currentTarget.valueAsNumber - 1; if (Number.isFinite(channel) && channel >= 0 && channel <= 15) patchTrack({ channel, notes: selectedTrack.notes.map((note) => ({ ...note, channel })) }); }} /></label><label>Output<button type="button" className={selectedTrack.muted ? "muted" : ""} onClick={() => patchTrack({ muted: !selectedTrack.muted })}>{selectedTrack.muted ? <VolumeX /> : <Volume2 />}{selectedTrack.muted ? "Muted" : "Included"}</button></label></div>
           {selectedNote ? <>
             <hr />
-            <div className="midi-note-name"><Piano /><span><strong>{noteName(selectedNote.pitch)}</strong><small>MIDI {selectedNote.pitch}</small></span><button aria-label="Delete selected MIDI note" onClick={deleteNote}><Trash2 /></button></div>
+            <div className="midi-note-name"><Piano /><span><strong>{noteName(selectedNote.pitch)}</strong><small>MIDI {selectedNote.pitch}</small></span><button type="button" aria-label="Delete selected MIDI note" onClick={deleteNote}><Trash2 /></button></div>
             <div className="midi-inspector-pair"><label>Pitch<input type="number" min={0} max={127} value={selectedNote.pitch} onChange={(event) => finiteMidiValue(event.currentTarget.valueAsNumber, 0, 127, (pitch) => { patchNote({ pitch }); audition(pitch, selectedNote.velocity); })} /></label><label>Velocity<input type="number" min={1} max={127} value={selectedNote.velocity} onChange={(event) => finiteMidiValue(event.currentTarget.valueAsNumber, 1, 127, (velocity) => patchNote({ velocity }))} /></label></div>
             <div className="midi-inspector-pair"><label>Start beat<input type="number" min={1} step={.25} value={round(selectedNote.startTick / draft.ticksPerQuarter + 1)} onChange={(event) => { const beat = event.currentTarget.valueAsNumber; if (Number.isFinite(beat) && beat >= 1) patchNote({ startTick: Math.round((beat - 1) * draft.ticksPerQuarter) }); }} /></label><label>Length beats<input type="number" min={.03125} step={.25} value={round(selectedNote.durationTicks / draft.ticksPerQuarter)} onChange={(event) => { const length = event.currentTarget.valueAsNumber; if (Number.isFinite(length) && length > 0) patchNote({ durationTicks: Math.max(1, Math.round(length * draft.ticksPerQuarter)) }); }} /></label></div>
           </> : <div className="midi-inspector-empty"><Piano /><span>Select a note to edit exact pitch, timing, length, and velocity.</span></div>}
@@ -369,7 +425,35 @@ function updateNote(document: MusicMidiDocument, trackId: string, noteId: string
 }
 
 function cloneDocument(document: MusicMidiDocument): MusicMidiDocument {
-  return JSON.parse(JSON.stringify(document)) as MusicMidiDocument;
+  return structuredClone(document);
+}
+
+function trackEntry(document: MusicMidiDocument, trackId: string, fallbackIndex = document.tracks.length): TrackHistoryEntry {
+  const index = document.tracks.findIndex((track) => track.id === trackId);
+  return {
+    trackId,
+    index: index >= 0 ? index : fallbackIndex,
+    track: index >= 0 ? structuredClone(document.tracks[index]) : undefined,
+  };
+}
+
+function changedTrackEntry(before: MusicMidiDocument, after: MusicMidiDocument): TrackHistoryEntry | undefined {
+  const ids = new Set([...before.tracks.map((track) => track.id), ...after.tracks.map((track) => track.id)]);
+  for (const trackId of ids) {
+    const beforeTrack = before.tracks.find((track) => track.id === trackId);
+    const afterTrack = after.tracks.find((track) => track.id === trackId);
+    if (beforeTrack !== afterTrack) {
+      const afterIndex = after.tracks.findIndex((track) => track.id === trackId);
+      return trackEntry(before, trackId, Math.max(0, afterIndex));
+    }
+  }
+  return undefined;
+}
+
+function applyTrackEntry(document: MusicMidiDocument, entry: TrackHistoryEntry): MusicMidiDocument {
+  const tracks = document.tracks.filter((track) => track.id !== entry.trackId);
+  if (entry.track) tracks.splice(Math.min(entry.index, tracks.length), 0, structuredClone(entry.track));
+  return { ...document, tracks };
 }
 
 function stableMidiId(prefix: string): string {

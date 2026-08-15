@@ -323,9 +323,11 @@ export function MusicStudio({
 
   const openMidi = async (take: MusicTake) => {
     if (!project || !take.midiPath) return;
+    const saved = dirty ? await save() : project;
+    if (!saved) return;
     setMidiBusy(true);
     try {
-      const loaded = await getMusicMidiDocument(project.id, take.id);
+      const loaded = await getMusicMidiDocument(saved.id, take.id);
       setProject(loaded.project);
       setMidiDocument(loaded.document);
       setMidiOpen(true);

@@ -1824,6 +1824,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn only_the_managed_uvx_runner_selects_the_pinned_offline_invocation() {
         let managed_model = Path::new(r"C:\Kestrel AI\MuScriptor\models\model.safetensors");
         assert!(is_managed_muscriptor_uvx(

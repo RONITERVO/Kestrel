@@ -20,6 +20,7 @@ struct CompletionOptions {
     max_tokens: u32,
     thinking_budget: u32,
     parallel_tool_calls: bool,
+    tool_choice: Option<Value>,
 }
 use uuid::Uuid;
 
@@ -229,7 +230,7 @@ impl ResearchHarness {
             ];
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-                result = self.complete(connection, &planning_messages, None, CompletionOptions { response_format: Some(plan_schema(settings.research_lanes)), max_tokens: max_output, thinking_budget, parallel_tool_calls: false }) => result?,
+                result = self.complete(connection, &planning_messages, None, CompletionOptions { response_format: Some(plan_schema(settings.research_lanes)), max_tokens: max_output, thinking_budget, parallel_tool_calls: false, tool_choice: None }) => result?,
             };
             let content = response_message(&response)?
                 .get("content")
@@ -256,12 +257,7 @@ impl ResearchHarness {
         } else {
             "No preplanned lanes; use the tools adaptively.".into()
         };
-        let system = system_prompt(
-            thorough,
-            expedition,
-            &settings,
-            &connection.model_label,
-        );
+        let system = system_prompt(thorough, expedition, &settings, &connection.model_label);
         let user = format!(
             "Research question: {query}\n\nExisting-library matches:\n{related_context}\n\nShared lane memory (candidate references, not evidence until opened):\n{lane_context}\n\nUse search_archive and read_source. Inspect at least {required_wikipedia} distinct relevant Wikipedia articles. If prior research exists, inspect it and make a concrete improvement. Distinguish sourced statements from inference, explain specialist terms, preserve uncertainty, and remember the archive cutoff. Do not claim the result is final or the best possible."
         );
@@ -280,11 +276,22 @@ impl ResearchHarness {
             "The selected local model is choosing useful article paths—not merely matching titles",
             2,
         )?;
+        let mut required_tool = "search_archive";
         for turn in 0..max_turns {
             self.ensure_not_cancelled(&cancel)?;
+            let wikipedia_before = evidence
+                .iter()
+                .filter(|source| source.kind == "wikipedia")
+                .count();
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-                result = self.complete(connection, &messages, Some(&tools), CompletionOptions { response_format: None, max_tokens: if expedition { max_output } else { 1_800 }, thinking_budget, parallel_tool_calls: expedition }) => result?,
+                result = self.complete(connection, &messages, Some(&tools), CompletionOptions {
+                    response_format: None,
+                    max_tokens: if expedition { max_output } else { 1_800 },
+                    thinking_budget,
+                    parallel_tool_calls: expedition,
+                    tool_choice: Some(named_tool_choice(required_tool)),
+                }) => result?,
             };
             let assistant = response_message(&response)?;
             let calls = assistant
@@ -301,9 +308,11 @@ impl ResearchHarness {
                 if wikipedia_count >= required_wikipedia || turn + 1 == max_turns {
                     break;
                 }
-                messages.push(json!({"role":"user","content":format!("You have inspected {wikipedia_count} Wikipedia articles. Inspect at least {required_wikipedia} distinct relevant articles before synthesis; broaden or refine the search if needed.")}));
+                required_tool = "search_archive";
+                messages.push(json!({"role":"user","content":format!("The required archive function was not called. You have inspected {wikipedia_count} Wikipedia articles. Search the local archive now, then inspect at least {required_wikipedia} distinct relevant articles before synthesis.")}));
                 continue;
             }
+            let mut searched = false;
             for call in calls {
                 self.ensure_not_cancelled(&cancel)?;
                 let id = call
@@ -324,6 +333,7 @@ impl ResearchHarness {
                 .unwrap_or_else(|_| json!({}));
                 let result = match name {
                     "search_archive" => {
+                        searched = true;
                         let search_query = arguments
                             .get("query")
                             .and_then(Value::as_str)
@@ -403,6 +413,18 @@ impl ResearchHarness {
                 };
                 messages.push(json!({"role":"tool","tool_call_id":id,"content":result}));
             }
+            let wikipedia_after = evidence
+                .iter()
+                .filter(|source| source.kind == "wikipedia")
+                .count();
+            required_tool = if searched && wikipedia_after == wikipedia_before {
+                "read_source"
+            } else {
+                "search_archive"
+            };
+            if wikipedia_after == wikipedia_before && !searched {
+                messages.push(json!({"role":"user","content":"That tool call did not add a new inspected Wikipedia article. Search with a different focused query and choose a new sourceRef."}));
+            }
         }
 
         self.ensure_not_cancelled(&cancel)?;
@@ -412,7 +434,7 @@ impl ResearchHarness {
             .count();
         if wikipedia_count == 0 {
             return Err(ResearchError::InvalidModelOutput(
-                "no Wikipedia article was inspected; try a more specific question".into(),
+                "the selected model did not complete the required local archive search/read cycle; try another tool-capable local model or review its chat template".into(),
             ));
         }
         if wikipedia_count < required_wikipedia {
@@ -443,7 +465,7 @@ impl ResearchHarness {
         }));
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-            result = self.complete(connection, &messages, None, CompletionOptions { response_format: Some(report_schema(expedition)), max_tokens: max_output, thinking_budget, parallel_tool_calls: false }) => result?,
+            result = self.complete(connection, &messages, None, CompletionOptions { response_format: Some(report_schema(expedition)), max_tokens: max_output, thinking_budget, parallel_tool_calls: false, tool_choice: None }) => result?,
         };
         let mut content = response_message(&response)?
             .get("content")
@@ -457,7 +479,7 @@ impl ResearchHarness {
                 messages.push(json!({"role":"user","content":if expedition { "The previous JSON was incomplete. Retry once with concise but complete prose that fits the schema. Return the strict JSON object only; preserve the evidence IDs, lane coverage, uncertainty, and concrete improvement." } else { "The previous JSON was incomplete. Retry once with compact prose: at most 4 findings, 4 sections, 2 paragraphs per section, 8 timeline items, and 8 terms. Return the complete strict JSON object only. Preserve the same evidence IDs and concrete improvement." }}));
                 let retry = tokio::select! {
                     _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
-                    result = self.complete(connection, &messages, None, CompletionOptions { response_format: Some(report_schema(expedition)), max_tokens: if expedition { max_output } else { 9_000 }, thinking_budget: 0, parallel_tool_calls: false }) => result?,
+                    result = self.complete(connection, &messages, None, CompletionOptions { response_format: Some(report_schema(expedition)), max_tokens: if expedition { max_output } else { 9_000 }, thinking_budget: 0, parallel_tool_calls: false, tool_choice: None }) => result?,
                 };
                 content = response_message(&retry)?
                     .get("content")
@@ -657,15 +679,7 @@ impl ResearchHarness {
         tools: Option<&Value>,
         options: CompletionOptions,
     ) -> Result<Value, ResearchError> {
-        let request = completion_request(
-            &connection.model_id,
-            messages,
-            tools,
-            options.response_format,
-            options.max_tokens,
-            options.thinking_budget,
-            options.parallel_tool_calls,
-        );
+        let request = completion_request(&connection.model_id, messages, tools, options);
         let response = authorized(
             self.http
                 .post(format!("{}/chat/completions", connection.endpoint)),
@@ -699,24 +713,25 @@ fn completion_request(
     model_id: &str,
     messages: &[Value],
     tools: Option<&Value>,
-    response_format: Option<Value>,
-    max_tokens: u32,
-    thinking_budget: u32,
-    parallel_tool_calls: bool,
+    options: CompletionOptions,
 ) -> Value {
     let mut request = json!({
         "model": model_id, "messages": messages, "stream": false, "temperature": 0.2, "top_p": 0.9,
-        "max_tokens": max_tokens, "thinking_budget_tokens": thinking_budget
+        "max_tokens": options.max_tokens, "thinking_budget_tokens": options.thinking_budget
     });
     if let Some(tools) = tools {
         request["tools"] = tools.clone();
-        request["tool_choice"] = json!("auto");
-        request["parallel_tool_calls"] = json!(parallel_tool_calls);
+        request["tool_choice"] = options.tool_choice.unwrap_or_else(|| json!("auto"));
+        request["parallel_tool_calls"] = json!(options.parallel_tool_calls);
     }
-    if let Some(format) = response_format {
+    if let Some(format) = options.response_format {
         request["response_format"] = format;
     }
     request
+}
+
+fn named_tool_choice(name: &str) -> Value {
+    json!({"type":"function","function":{"name":name}})
 }
 
 fn emit(
@@ -1291,10 +1306,13 @@ mod tests {
             "bonsai-27b",
             &[json!({"role":"user","content":"test"})],
             Some(&tool_schema(true, 65_536)),
-            None,
-            32_768,
-            8_192,
-            true,
+            CompletionOptions {
+                response_format: None,
+                max_tokens: 32_768,
+                thinking_budget: 8_192,
+                parallel_tool_calls: true,
+                tool_choice: None,
+            },
         );
         assert_eq!(request["max_tokens"], 32_768);
         assert_eq!(request["thinking_budget_tokens"], 8_192);
@@ -1303,6 +1321,25 @@ mod tests {
             request.pointer("/tools/1/function/parameters/properties/max_chars/maximum"),
             Some(&json!(65_536))
         );
+    }
+
+    #[test]
+    fn evidence_requests_force_the_required_archive_function() {
+        let request = completion_request(
+            "local-model",
+            &[json!({"role":"user","content":"Where are jungles?"})],
+            Some(&tool_schema(false, 40_000)),
+            CompletionOptions {
+                response_format: None,
+                max_tokens: 1_800,
+                thinking_budget: 1_024,
+                parallel_tool_calls: false,
+                tool_choice: Some(named_tool_choice("search_archive")),
+            },
+        );
+
+        assert_eq!(request["tool_choice"]["type"], "function");
+        assert_eq!(request["tool_choice"]["function"]["name"], "search_archive");
     }
 
     #[test]
@@ -1426,6 +1463,43 @@ mod tests {
             report.title,
             directory.path().join(&report.html_path).display()
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a tool-capable local model on 127.0.0.1:8080, Kiwix on 127.0.0.1:8085, and KESTREL_LIVE_WIKIPEDIA_BOOK"]
+    async fn live_simple_question_forces_search_and_inspects_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ResearchStore::open(directory.path().to_path_buf()).unwrap();
+        let harness = ResearchHarness::new(store);
+        let settings = ResearchSettings {
+            wikipedia_book: std::env::var("KESTREL_LIVE_WIKIPEDIA_BOOK")
+                .expect("KESTREL_LIVE_WIKIPEDIA_BOOK is required"),
+            ..ResearchSettings::default()
+        };
+        let report = harness
+            .run(
+                None,
+                RunResearchRequest {
+                    query: "Where are jungles?".into(),
+                    depth: "focused".into(),
+                },
+                settings,
+                &live_connection(),
+                "live-simple-research",
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            report
+                .sources
+                .iter()
+                .filter(|source| source.kind == "wikipedia")
+                .count()
+                >= 2
+        );
+        assert!(!report.answer.trim().is_empty());
     }
 
     fn live_connection() -> ModelConnection {

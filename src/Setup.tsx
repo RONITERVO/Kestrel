@@ -221,7 +221,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     </header>
 
     {!snapshot.setup.ready && <section className="setup-simple-panel">
-      <div><span className="eyebrow">Recommended</span><h2>Set up the essentials for me</h2><p>Installs Kestrel's included Ternary Bonsai model, the shared local runtime, and compact offline English Wikipedia. It behaves like every other model you add.</p></div>
+      <div><span className="eyebrow">Recommended</span><h2>Set up the essentials for me</h2><p>Installs Kestrel’s included Ternary Bonsai model, the shared local runtime, and compact offline English Wikipedia. It behaves like every other model you add.</p></div>
       <div className="setup-speed"><label>Internet speed<input type="number" min="1" max="10000" value={speed} onChange={(event) => setSpeed(Math.max(1, Number(event.target.value) || 1))} /><span>Mbps</span></label><small>At {speed} Mbps, essentials need roughly {formatTime(20_980_000_000, speed)} plus verification.</small></div>
       <button className="primary-button setup-main-button" disabled={!!busy} onClick={() => void installEssentials()}>{busy === "essentials" ? <LoaderCircle className="spin" /> : <Download />} Set up essentials</button>
     </section>}

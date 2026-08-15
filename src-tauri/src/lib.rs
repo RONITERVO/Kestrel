@@ -2409,6 +2409,13 @@ async fn apply_model_runtime(
     state: State<'_, AppState>,
 ) -> Result<SystemSnapshot, String> {
     let _guard = claim_workspace(&state)?;
+    let engine_path = std::path::Path::new(&settings.engine_path);
+    if engine_path.is_file() && !runtime::is_llama_server_file(engine_path) {
+        return Err(format!(
+            "model engine must be a file named llama-server.exe: {}",
+            engine_path.display()
+        ));
+    }
     state
         .control_settings
         .save(&settings)
@@ -3315,9 +3322,10 @@ fn open_with_explorer(path: &std::path::Path) -> Result<(), String> {
 }
 
 fn reveal_with_explorer(path: &std::path::Path) -> Result<(), String> {
+    let mut selection = std::ffi::OsString::from("/select,");
+    selection.push(path.as_os_str());
     std::process::Command::new("explorer.exe")
-        .arg("/select,")
-        .arg(path)
+        .arg(selection)
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("could not reveal {}: {error}", path.display()))

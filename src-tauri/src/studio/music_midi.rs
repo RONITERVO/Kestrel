@@ -110,6 +110,7 @@ pub fn parse_midi_document(
     let mut signature_map = BTreeMap::new();
     signature_map.insert(0_u64, (4_u8, 4_u8));
     let mut tracks = Vec::new();
+    let mut total_notes = 0_usize;
     let mut duration_ticks = 0_u64;
 
     for (source_index, source_track) in smf.tracks.iter().enumerate() {
@@ -165,6 +166,7 @@ pub fn parse_midi_document(
                             if let Some(open) = builder.open_notes.get_mut(&key.as_int()) {
                                 if let Some((start, velocity)) = open.pop() {
                                     let duration = tick.saturating_sub(start).max(1);
+                                    reserve_midi_note(&mut total_notes)?;
                                     builder
                                         .notes
                                         .push((key.as_int(), start, duration, velocity));
@@ -184,6 +186,7 @@ pub fn parse_midi_document(
             for (pitch, open) in &builder.open_notes {
                 for (start, velocity) in open {
                     let duration = tick.saturating_sub(*start).max(1);
+                    reserve_midi_note(&mut total_notes)?;
                     builder.notes.push((*pitch, *start, duration, *velocity));
                     duration_ticks = duration_ticks.max(start.saturating_add(duration));
                 }
@@ -210,6 +213,7 @@ pub fn parse_midi_document(
                     },
                 )
                 .collect();
+            ensure_midi_track_slot(tracks.len())?;
             tracks.push(MusicMidiTrack {
                 id: format!("source-{:03}-channel-{:02}", source_index + 1, channel + 1),
                 name: if builders_name_needs_channel(&source_name, &tracks) {
@@ -254,6 +258,25 @@ pub fn parse_midi_document(
     };
     validate_midi_document(&document)?;
     Ok(document)
+}
+
+fn reserve_midi_note(total_notes: &mut usize) -> Result<(), StudioError> {
+    if *total_notes >= MAX_MIDI_NOTES {
+        return Err(StudioError::Invalid(
+            "MIDI projects are limited to 250000 notes".into(),
+        ));
+    }
+    *total_notes += 1;
+    Ok(())
+}
+
+fn ensure_midi_track_slot(track_count: usize) -> Result<(), StudioError> {
+    if track_count >= MAX_MIDI_TRACKS {
+        return Err(StudioError::Invalid(
+            "MIDI projects are limited to 128 tracks".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn builders_name_needs_channel(name: &str, tracks: &[MusicMidiTrack]) -> bool {
@@ -634,5 +657,17 @@ mod tests {
         let mut invalid = document();
         invalid.tracks[0].notes[0].velocity = 0;
         assert!(validate_midi_document(&invalid).is_err());
+    }
+
+    #[test]
+    fn parser_limits_are_checked_before_notes_or_tracks_are_added() {
+        let mut notes = MAX_MIDI_NOTES - 1;
+        reserve_midi_note(&mut notes).unwrap();
+        assert_eq!(notes, MAX_MIDI_NOTES);
+        assert!(reserve_midi_note(&mut notes).is_err());
+        assert_eq!(notes, MAX_MIDI_NOTES);
+
+        ensure_midi_track_slot(MAX_MIDI_TRACKS - 1).unwrap();
+        assert!(ensure_midi_track_slot(MAX_MIDI_TRACKS).is_err());
     }
 }
