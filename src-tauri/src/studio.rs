@@ -39,6 +39,7 @@ mod image_assets;
 mod live_preview;
 mod model_stream;
 mod movie_agent;
+mod music;
 mod planning;
 mod prompt_collaboration;
 mod prompts;
@@ -60,6 +61,9 @@ use live_preview::{
     emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget, PREVIEW_NODE_ID,
 };
 use movie_agent::MovieAgentWorkspace;
+pub use music::{
+    CreateMusicProjectRequest, MusicMidiRequest, MusicProject, MusicStudio, MusicSummary,
+};
 pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningStage};
 pub use prompt_collaboration::{
     emit_error as emit_prompt_draft_error, emit_settled as emit_prompt_draft_settled,
@@ -68,6 +72,7 @@ pub use prompt_collaboration::{
 
 const SCHEMA_VERSION: u32 = 7;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
+pub(super) const MUSIC_COMFY_BASE: &str = "http://127.0.0.1:8189";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
@@ -82,6 +87,43 @@ const MOVIE_AGENT_SESSION_STEPS: u32 = 96;
 const MAX_MOVIE_AGENT_SESSIONS: u32 = 8;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Clone, Copy)]
+pub(crate) enum ComfyWorkload {
+    Shared,
+    Music,
+}
+
+impl ComfyWorkload {
+    pub(crate) fn from_music(music: bool) -> Self {
+        if music {
+            Self::Music
+        } else {
+            Self::Shared
+        }
+    }
+
+    pub(crate) fn base_url(self) -> &'static str {
+        match self {
+            Self::Shared => COMFY_BASE,
+            Self::Music => MUSIC_COMFY_BASE,
+        }
+    }
+
+    pub(crate) fn port(self) -> u16 {
+        url::Url::parse(self.base_url())
+            .ok()
+            .and_then(|url| url.port_or_known_default())
+            .expect("fixed ComfyUI base URL must include a valid port")
+    }
+
+    pub(crate) fn script_names(self) -> &'static [&'static str] {
+        match self {
+            Self::Shared => &["Start-Kestrel-ComfyUI.ps1", "Start-ComfyUI-MiniMax-H3.ps1"],
+            Self::Music => &["Start-Kestrel-ComfyUI-Music.ps1"],
+        }
+    }
+}
 
 struct IndependentReviewRequest<'a> {
     project_id: &'a str,
@@ -130,15 +172,20 @@ fn read_media_response(
     {
         return Err((403, "unsafe movie media path".into()));
     }
-    let root = directories::UserDirs::new()
-        .map(|dirs| dirs.home_dir().join("Kestrel Research").join("movies"))
-        .ok_or_else(|| (500, "local movie library is unavailable".to_string()))?;
+    let library = directories::UserDirs::new()
+        .map(|dirs| dirs.home_dir().join("Kestrel Research"))
+        .ok_or_else(|| (500, "local media library is unavailable".to_string()))?;
+    let (root, relative) = if let Some(relative) = relative.strip_prefix("music/") {
+        (library.join("music"), relative)
+    } else {
+        (library.join("movies"), relative.as_ref())
+    };
     let canonical_root = fs::canonicalize(&root)
         .map_err(|_| (404, "local movie library does not exist".to_string()))?;
-    let target = fs::canonicalize(root.join(relative.as_ref()))
-        .map_err(|_| (404, "movie media was not found".to_string()))?;
+    let target = fs::canonicalize(root.join(relative))
+        .map_err(|_| (404, "local media was not found".to_string()))?;
     if !target.starts_with(&canonical_root) || !target.is_file() {
-        return Err((403, "movie media is outside the private library".into()));
+        return Err((403, "media is outside the private library".into()));
     }
     let mut file = fs::File::open(&target).map_err(|error| (500, error.to_string()))?;
     let length = file
@@ -809,6 +856,7 @@ pub struct MovieStudio {
     root: PathBuf,
     http: Client,
     comfy_child: Arc<AsyncMutex<Option<Child>>>,
+    music_comfy_child: Arc<AsyncMutex<Option<Child>>>,
     comfy_preview_available: Arc<AsyncMutex<Option<bool>>>,
     project_locks: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     planning_control: Arc<StdMutex<()>>,
@@ -828,6 +876,7 @@ impl MovieStudio {
                 .timeout(Duration::from_secs(3_600))
                 .build()?,
             comfy_child: Arc::new(AsyncMutex::new(None)),
+            music_comfy_child: Arc::new(AsyncMutex::new(None)),
             comfy_preview_available: Arc::new(AsyncMutex::new(None)),
             project_locks: Arc::new(StdMutex::new(HashMap::new())),
             planning_control: Arc::new(StdMutex::new(())),
@@ -2470,25 +2519,52 @@ impl MovieStudio {
         logs: &Path,
         cancel: Option<&CancellationToken>,
     ) -> Result<(), StudioError> {
-        if self.comfy_ready().await {
+        self.ensure_comfy_process_at(root, logs, cancel, ComfyWorkload::Shared)
+            .await
+    }
+
+    pub(super) async fn ensure_music_comfy_process(
+        &self,
+        root: &str,
+        logs: &Path,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<(), StudioError> {
+        self.ensure_comfy_process_at(root, logs, cancel, ComfyWorkload::Music)
+            .await
+    }
+
+    async fn ensure_comfy_process_at(
+        &self,
+        root: &str,
+        logs: &Path,
+        cancel: Option<&CancellationToken>,
+        workload: ComfyWorkload,
+    ) -> Result<(), StudioError> {
+        let base_url = workload.base_url();
+        if self.comfy_ready_at(base_url).await {
             return Ok(());
         }
         let root = PathBuf::from(root);
-        let script = root.join("Start-ComfyUI-MiniMax-H3.ps1");
-        if !script.is_file() {
-            return Err(StudioError::Render(format!(
-                "MiniMax H3 starter is missing: {}",
-                script.display()
-            )));
-        }
+        let script = workload
+            .script_names()
+            .iter()
+            .map(|name| root.join(name))
+            .find(|candidate| candidate.is_file())
+            .ok_or_else(|| {
+                StudioError::Render(format!(
+                    "Kestrel's local ComfyUI starter is missing from {}. Open Setup and resume Movie Studio or Music Production.",
+                    root.display()
+                ))
+            })?;
         fs::create_dir_all(logs)?;
         let stdout = fs::File::create(logs.join("comfy.stdout.log"))?;
         let stderr = fs::File::create(logs.join("comfy.stderr.log"))?;
+        let port = workload.port().to_string();
         let mut command = tokio::process::Command::new("powershell.exe");
         command
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script)
-            .args(["-Port", "8188", "-NoBrowser"])
+            .args(["-Port", &port, "-NoBrowser"])
             .current_dir(&root)
             .stdin(Stdio::null())
             .stdout(stdout)
@@ -2497,10 +2573,15 @@ impl MovieStudio {
         #[cfg(windows)]
         command.creation_flags(0x08000000);
         let child = command.spawn()?;
-        *self.comfy_preview_available.lock().await = None;
-        *self.comfy_child.lock().await = Some(child);
+        match workload {
+            ComfyWorkload::Shared => {
+                *self.comfy_preview_available.lock().await = None;
+                *self.comfy_child.lock().await = Some(child);
+            }
+            ComfyWorkload::Music => *self.music_comfy_child.lock().await = Some(child),
+        }
         for _ in 0..180 {
-            if self.comfy_ready().await {
+            if self.comfy_ready_at(base_url).await {
                 return Ok(());
             }
             if let Some(cancel) = cancel {
@@ -2518,8 +2599,12 @@ impl MovieStudio {
     }
 
     pub(super) async fn comfy_ready(&self) -> bool {
+        self.comfy_ready_at(COMFY_BASE).await
+    }
+
+    async fn comfy_ready_at(&self, base_url: &str) -> bool {
         self.http
-            .get(format!("{COMFY_BASE}/system_stats"))
+            .get(format!("{base_url}/system_stats"))
             .timeout(Duration::from_secs(3))
             .send()
             .await
@@ -2702,7 +2787,7 @@ impl MovieStudio {
                     if let Some(preview) = &preview {
                         preview.finish();
                     }
-                    let media = find_output_media(entry).ok_or_else(|| {
+                    let media = find_output_media(entry, "videos").ok_or_else(|| {
                         StudioError::Render("completed H3 job exposed no saved video".into())
                     })?;
                     let source = PathBuf::from(&project.settings.comfy_root)
@@ -4983,26 +5068,24 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
     graph
 }
 
-fn find_output_media(entry: &Value) -> Option<(String, String)> {
+fn find_output_media(entry: &Value, category: &str) -> Option<(String, String)> {
     let outputs = entry.get("outputs")?.as_object()?;
     for output in outputs.values() {
-        for key in ["images", "videos"] {
-            for media in output
-                .get(key)
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if let Some(filename) = media.get("filename").and_then(Value::as_str) {
-                    return Some((
-                        filename.into(),
-                        media
-                            .get("subfolder")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .into(),
-                    ));
-                }
+        for media in output
+            .get(category)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(filename) = media.get("filename").and_then(Value::as_str) {
+                return Some((
+                    filename.into(),
+                    media
+                        .get("subfolder")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .into(),
+                ));
             }
         }
     }
@@ -5280,6 +5363,32 @@ mod tests {
     use super::*;
     use crate::runtime::RuntimeManager;
     use std::sync::Arc;
+
+    #[test]
+    fn comfy_workload_derives_ports_from_its_base_url() {
+        assert_eq!(ComfyWorkload::Shared.port(), 8188);
+        assert_eq!(ComfyWorkload::Music.port(), 8189);
+    }
+
+    #[test]
+    fn output_media_selection_is_scoped_to_the_requested_category() {
+        let history = json!({
+            "outputs": {
+                "preview": {"images": [{"filename": "preview.png"}]},
+                "sound": {"audio": [{"filename": "sound.flac", "subfolder": "audio"}]},
+                "master": {"videos": [{"filename": "master.mp4", "subfolder": "video"}]}
+            }
+        });
+
+        assert_eq!(
+            find_output_media(&history, "videos"),
+            Some(("master.mp4".into(), "video".into()))
+        );
+        assert_eq!(
+            find_output_media(&history, "audio"),
+            Some(("sound.flac".into(), "audio".into()))
+        );
+    }
 
     fn live_bonsai_studio_context(
         research: &ResearchSettings,

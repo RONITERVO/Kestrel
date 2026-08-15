@@ -1,7 +1,7 @@
 # Studio maintainer guide
 
 This directory contains every model-assisted part of Kestrel Studio. Start here before changing
-Director/Reviewer planning, prompt generation, Producer Copilot, H3 image assets, or live previews. The root
+Director/Reviewer planning, prompt generation, Producer Copilot, H3 image assets, live previews, or Music. The root
 `studio.rs` file remains the domain and persistence facade; child modules own one bounded concern
 and must not acquire authority implicitly.
 
@@ -17,8 +17,8 @@ and must not acquire authority implicitly.
   and planning controls are durable user data. Interrupted work is surfaced, never silently resumed.
 - The model receives the original producer request and a fresh authoritative workspace snapshot on
   every Director planning turn. UI/log redaction must never mutate model input or durable history.
-- H3 rendering begins only after every language-model inference lease is released and the runtime is
-  unloaded from the GPU.
+- H3 and Music 3 rendering begin only after every language-model inference lease is released and the
+  runtime is unloaded from the GPU.
 - Director and Reviewer bindings are durable project data. Missing pinned models fail visibly; an
   explicit checkpointed role change records provenance and forces producer review.
 - Non-Bonsai models must pass the current local Studio protocol check before standard-mode unattended
@@ -36,10 +36,11 @@ and must not acquire authority implicitly.
 | `movie_agent.rs` | Sandboxed movie workspace, typed actions/outcomes, native plan compilation and lint | OS commands, arbitrary paths, renderer execution, or network |
 | `planning.rs` | Durable redirection/checkpoint controls and typed planning UI event contract | Model inference |
 | `prompts.rs` | Planning, lint, resume, and repair prompt text exposed to advanced producers | Hidden control behavior |
-| `prompt_collaboration.rs` | Story/image/reference prompt drafting from producer context | Movie-plan mutation |
+| `prompt_collaboration.rs` | Story/image/reference/music-description/lyrics drafting from producer context | Applying proposals, movie-plan mutation, or rendering |
 | `copilot.rs` | Timeline advice and validated, unapplied edit proposals | Applying edits or rendering |
 | `image_assets.rs` | Durable H3 pseudo-image generations, graph/receipt provenance, imported candidates | Planning authority |
 | `live_preview.rs` | TAE preview graph nodes and producer-visible preview events | Final-render truth |
+| `music.rs` | Recoverable song projects, producer arrangement, native Music 3 graphs, immutable takes, progress, and optional MuScriptor adapter | LLM process ownership, fake stem separation, bundled gated weights, or public-network fallback |
 
 If a change appears to belong to two rows, introduce a typed boundary instead of importing private
 implementation details across both modules.
@@ -107,6 +108,35 @@ The project directory is the source of truth. Important planning files include:
 
 Atomic replacement and recovery copies are deliberate. Do not trade them for in-memory convenience.
 The advanced UI reads bounded redacted views; the unmodified files remain available as durable truth.
+
+## Music production lifecycle
+
+Music uses the same resource boundary without inheriting movie-agent authority:
+
+```text
+open recoverable song project
+  -> producer edits description, tagged sections, lyrics, and settings
+  -> optional selected local GGUF streams an unapplied description or lyrics proposal
+  -> producer applies, discards, redirects, or keeps the partial checkpoint
+  -> persist project and unload the language-model runtime plus every retained ComfyUI model
+  -> submit the native MiniMax Music 3 graph to its GPU-resident loopback ComfyUI service on 8189
+  -> stream node phase, sample step, percentage, and ETA
+  -> copy and hash the completed lossless stereo master inside the project
+  -> append an immutable take and exact generation receipt, then call `/free` on both ComfyUI services
+```
+
+`music/<uuid>/project.json` is recoverable truth. `takes/<uuid>.flac` and its graph receipt are immutable;
+editing the arrangement never rewrites an older take. Startup changes active generations to
+`interrupted` and never submits them again. MiniMax Music 3 produces a stereo master, so the arranger
+may show semantic lanes for structure and lyrics but must not label generated audio as separate stems.
+The shared H3/speech service remains on port 8188 with its conservative low-VRAM profile. Music uses
+port 8189 with async weight offload disabled, dynamic VRAM as an OOM fallback, and one GiB reserved
+for the desktop. The installed INT8 text encoder, INT8 DiT, and VAE run one stage at a time; Kestrel
+does not pretend that all three can remain resident together on a 12 GiB GPU. MuScriptor startup first
+releases both ComfyUI services and the local language model so its checkpoint cannot overlap them.
+MuScriptor remains an explicit advanced adapter: the producer supplies both its executable and gated
+checkpoint, Kestrel invokes a fixed argument array, and the receipt preserves its non-commercial
+license notice and output hash.
 
 ## Typed cross-boundary contracts
 

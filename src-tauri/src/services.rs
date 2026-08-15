@@ -3,6 +3,7 @@ use crate::kiwix::KiwixClient;
 use crate::models::{
     GpuSnapshot, ResearchSettings, RuntimeSnapshot, ServiceStatus, SystemSnapshot,
 };
+use crate::studio::ComfyWorkload;
 use reqwest::Client;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -142,33 +143,39 @@ pub async fn system_snapshot(settings: ResearchSettings) -> SystemSnapshot {
     }
 }
 
-pub async fn start_comfy(comfy_root: &str) -> Result<(), ServiceError> {
+pub async fn start_comfy(comfy_root: &str, workload: ComfyWorkload) -> Result<(), ServiceError> {
     let client = Client::builder()
         .no_proxy()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .expect("HTTP client");
-    let endpoint = "http://127.0.0.1:8188/system_stats";
+    let port = workload.port().to_string();
+    let endpoint = format!("{}/system_stats", workload.base_url());
     if client
-        .get(endpoint)
+        .get(&endpoint)
         .send()
         .await
         .is_ok_and(|response| response.status().is_success())
     {
         return Ok(());
     }
-    let script = Path::new(comfy_root).join("Start-ComfyUI-MiniMax-H3.ps1");
-    if !script.is_file() {
-        return Err(ServiceError::MissingScript(format!(
-            "MiniMax H3 launcher is missing: {}. Open Setup and install or locate Movie Studio.",
-            script.display()
-        )));
-    }
+    let root = Path::new(comfy_root);
+    let script = workload
+        .script_names()
+        .iter()
+        .map(|name| root.join(name))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            ServiceError::MissingScript(format!(
+                "Kestrel's ComfyUI launcher is missing from {}. Open Setup and resume Movie Studio or Music Production.",
+                root.display()
+            ))
+        })?;
     let mut command = Command::new("powershell.exe");
     command
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
-        .args(["-Port", "8188", "-NoBrowser"])
+        .args(["-Port", &port, "-NoBrowser"])
         .current_dir(comfy_root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -182,7 +189,7 @@ pub async fn start_comfy(comfy_root: &str) -> Result<(), ServiceError> {
     })?;
     for _ in 0..180 {
         if client
-            .get(endpoint)
+            .get(&endpoint)
             .send()
             .await
             .is_ok_and(|response| response.status().is_success())

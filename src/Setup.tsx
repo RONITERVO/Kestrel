@@ -1,6 +1,6 @@
 import {
-  Check, ChevronDown, CircleStop, Download, Film, FolderOpen, HardDrive,
-  Library, LoaderCircle, MessageSquare, RefreshCw, Settings2, ShieldCheck,
+  Check, ChevronDown, CircleStop, Download, Film, FolderOpen, HardDrive, Headphones,
+  Library, LoaderCircle, MessageSquare, Mic2, RefreshCw, Settings2, ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -33,6 +33,9 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
 
   const requiredReady = snapshot.setup.components.filter((item) => !item.optional && item.status === "ready").length;
   const installed = snapshot.setup.components.filter((item) => item.status === "ready").length;
+  const productionIds = ["media", "studio", "music", "speech"];
+  const productionReady = productionIds.every((id) => snapshot.setup.components.find((item) => item.id === id)?.status === "ready");
+  const productionBytes = snapshot.setup.components.filter((item) => productionIds.includes(item.id) && item.status !== "ready").reduce((total, item) => total + item.downloadBytes, 0);
   const components = useMemo(() => snapshot.setup.components.map((item) => item.id === "wikipedia" && edition === "complete"
     ? { ...item, downloadBytes: 52_709_000_000, detail: item.status === "ready" ? item.detail : "Complete English Wikipedia text without images (about 49.1 GB)." }
     : item), [snapshot.setup.components, edition]);
@@ -85,9 +88,30 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     }
   };
 
-  const openStudio = async () => {
-    setBusy("studio-open");
-    try { await openComfyUi(); } catch (error) { onError(String(error)); } finally { setBusy(null); }
+  const installProductionSuite = async () => {
+    setBusy("production");
+    try {
+      let next = await saveLocations();
+      const savedInstallRoot = next.settings.installRoot;
+      for (const component of productionIds) {
+        if (next.setup.components.find((item) => item.id === component)?.status === "ready") continue;
+        setProgress({ component, stage: "preparing", detail: `Preparing ${component}…`, downloadedBytes: 0, totalBytes: 0, bytesPerSecond: 0 });
+        next = await installSetupComponent({ component, installRoot: savedInstallRoot, wikipediaEdition: edition });
+        onChanged(next);
+      }
+      setLocations(fromSnapshot(next));
+      setProgress(null);
+    } catch (error) {
+      setProgress(null);
+      if (!String(error).toLowerCase().includes("paused")) onError(String(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openStudio = async (component: "studio" | "music") => {
+    setBusy(`${component}-open`);
+    try { await openComfyUi(component); } catch (error) { onError(String(error)); } finally { setBusy(null); }
   };
 
   const chooseFolder = async (field: "installRoot" | "bonsaiRoot" | "comfyRoot") => {
@@ -108,7 +132,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     <header className="setup-hero">
       <div className="setup-hero-copy">
         <span className="eyebrow">One-time private setup</span>
-        <h1>{snapshot.setup.ready ? "Kestrel is ready." : "Let’s make Kestrel work on this computer."}</h1>
+        <h1>{snapshot.setup.ready ? productionReady ? "Kestrel is ready." : "Kestrel essentials are ready." : "Let’s make Kestrel work on this computer."}</h1>
         <p>You do not need the app’s code or a technical helper. Kestrel can download, resume, verify, and remember every local component. After setup, your work runs offline.</p>
         <div className="setup-assurances"><span><ShieldCheck />No accounts required</span><span><RefreshCw />Interrupted downloads resume</span><span><HardDrive />Choose any drive</span></div>
       </div>
@@ -120,7 +144,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     </header>
 
     {!snapshot.setup.ready && <section className="setup-simple-panel">
-      <div><span className="eyebrow">Recommended</span><h2>Set up the essentials for me</h2><p>Installs the Bonsai assistant and a compact offline English Wikipedia. You can add the movie studio later.</p></div>
+      <div><span className="eyebrow">Recommended</span><h2>Set up the essentials for me</h2><p>Installs the Bonsai assistant and compact offline English Wikipedia. Movie and music production remain optional.</p></div>
       <div className="setup-speed"><label>Internet speed<input type="number" min="1" max="10000" value={speed} onChange={(event) => setSpeed(Math.max(1, Number(event.target.value) || 1))} /><span>Mbps</span></label><small>At {speed} Mbps, essentials need roughly {formatTime(20_980_000_000, speed)} plus verification.</small></div>
       <button className="primary-button setup-main-button" disabled={!!busy} onClick={() => void installEssentials()}>{busy === "essentials" ? <LoaderCircle className="spin" /> : <Download />} Set up essentials</button>
     </section>}
@@ -131,7 +155,13 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     </section>
 
     {!snapshot.setup.gpuName && <div className="setup-hardware-note"><TriangleAlert /><div><strong>No NVIDIA graphics card was detected.</strong><span>The assistant and Wikipedia can still work, although Bonsai may be slow on a laptop processor. Movie Studio stays optional because MiniMax H3 is not practical on this hardware.</span></div></div>}
-    {snapshot.setup.gpuName && <div className="setup-hardware-note compatible"><Check /><div><strong>{snapshot.setup.gpuName}</strong><span>{formatBytes(snapshot.setup.gpuMemoryBytes)} graphics memory detected. Kestrel will use the NVIDIA Bonsai engine; H3 remains an optional large install.</span></div></div>}
+    {snapshot.setup.gpuName && <div className="setup-hardware-note compatible"><Check /><div><strong>{snapshot.setup.gpuName}</strong><span>{formatBytes(snapshot.setup.gpuMemoryBytes)} graphics memory detected. Kestrel can install the validated NVIDIA profiles for Bonsai, H3, Music 3, narration, and dictation.</span></div></div>}
+
+    <section className={`setup-simple-panel setup-production-panel ${productionReady ? "ready" : ""}`}>
+      <div><span className="eyebrow">Complete production suite</span><h2>{productionReady ? "Every distributable production service is ready." : "Set up the full studio for me"}</h2><p>Installs movie finishing, H3 video and image generation, Music 3, Chatterbox narration, and timestamped Whisper dictation. Downloads are pinned, resumable, and verified before use.</p><small>MuScriptor audio-to-MIDI remains a separately licensed non-commercial extension and cannot be silently included in a sold product.</small></div>
+      {!productionReady && <div className="setup-speed"><strong>{formatBytes(productionBytes)} remaining</strong><small>Roughly {formatTime(productionBytes, speed)} at {speed} Mbps, plus extraction and verification.</small></div>}
+      <button className={productionReady ? "quiet-button" : "primary-button setup-main-button"} disabled={!!busy || productionReady} onClick={() => void installProductionSuite()}>{busy === "production" ? <LoaderCircle className="spin" /> : productionReady ? <Check /> : <Download />} {productionReady ? "Production ready" : "Set up production suite"}</button>
+    </section>
 
     <section className="setup-model-library" aria-labelledby="setup-model-library-title">
       <div className="setup-model-library-heading">
@@ -147,13 +177,16 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     </section>
 
     <section className="setup-components" aria-label="Kestrel components">
-      {components.map((component) => <article className={`setup-component ${component.status}`} key={component.id}>
-        <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : <Settings2 />}</div>
+      {components.map((component) => {
+        const sharedComfy = component.id === "studio" || component.id === "music";
+        const opening = busy === `${component.id}-open`;
+        return <article className={`setup-component ${component.status}`} key={component.id}>
+        <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : component.id === "music" ? <Headphones /> : component.id === "speech" ? <Mic2 /> : <Settings2 />}</div>
         <div className="setup-component-copy"><div className="setup-component-title"><h2>{component.label}</h2><span className={`setup-state ${component.status}`}>{component.status === "ready" ? <><Check /> Ready</> : component.status === "partial" ? "Resume available" : component.optional ? "Optional" : "Needed"}</span></div><p>{component.detail}</p><small>{component.status === "ready" ? component.path : `${formatBytes(component.downloadBytes)} download · about ${formatTime(component.downloadBytes, speed)} at ${speed} Mbps`}</small>
           {component.id === "wikipedia" && component.status !== "ready" && <div className="wikipedia-choice"><button className={edition === "compact" ? "active" : ""} onClick={() => setEdition("compact")}><strong>Compact</strong><span>11.7 GB · article summaries</span></button><button className={edition === "complete" ? "active" : ""} onClick={() => setEdition("complete")}><strong>Complete text</strong><span>49.1 GB · full articles</span></button></div>}
         </div>
-        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && component.id !== "studio")} onClick={() => component.status === "ready" && component.id === "studio" ? void openStudio() : void install(component.id)}>{busy === component.id || (busy === "studio-open" && component.id === "studio") ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : <Download />}{component.status === "ready" && component.id === "studio" ? "Open ComfyUI" : component.status === "ready" ? "Installed" : component.status === "partial" ? "Resume" : "Install"}</button>
-      </article>)}
+        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !sharedComfy)} onClick={() => component.status === "ready" && sharedComfy ? void openStudio(component.id as "studio" | "music") : void install(component.id)}>{busy === component.id || opening ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : <Download />}{component.status === "ready" && sharedComfy ? "Open ComfyUI" : component.status === "ready" ? "Installed" : component.status === "partial" ? "Resume" : "Install"}</button>
+      </article>})}
     </section>
 
     {progress && <section className="setup-progress" role="status" aria-live="polite">

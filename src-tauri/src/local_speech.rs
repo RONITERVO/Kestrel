@@ -1,8 +1,9 @@
 //! Shared offline speech through the user's local ComfyUI installation.
 //!
 //! Kestrel never falls back to a browser, operating-system, or remote speech service. The first
-//! adapters target ComfyUI-Chatterbox for narration and ComfyUI-Whisper for timestamped microphone
-//! transcription. Additional ComfyUI adapters belong here rather than in individual product UIs.
+//! adapters target ComfyUI-Chatterbox for narration and Kestrel's small ComfyUI Whisper boundary
+//! for timestamped microphone transcription. Additional adapters belong here rather than in
+//! individual product UIs.
 
 use crate::store::default_research_root;
 use base64::Engine as _;
@@ -25,10 +26,10 @@ use tokio_util::sync::CancellationToken;
 
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 const TTS_ADAPTER_REVISION: &str = "chatterbox-opus-v2";
-const STT_ADAPTER_REVISION: &str = "comfy-whisper-v1";
+const STT_ADAPTER_REVISION: &str = "kestrel-whisper-v1";
 const CHATTERBOX_NODE: &str = "custom_nodes/ComfyUI-Chatterbox/nodes.py";
 const CHATTERBOX_MODEL_ROOT: &str = "models/tts/chatterbox";
-const WHISPER_NODE: &str = "custom_nodes/ComfyUI-Whisper/apply_whisper.py";
+const WHISPER_NODE: &str = "custom_nodes/Kestrel-Whisper/nodes.py";
 const WHISPER_MODEL_ROOT: &str = "models/stt/whisper";
 const CHATTERBOX_FILES: [&str; 5] = [
     "conds.pt",
@@ -207,7 +208,7 @@ impl LocalSpeech {
         let detail = if !root.join("main.py").is_file() {
             "Choose the user's ComfyUI folder in Setup before using local speech.".into()
         } else if !narration_available && !transcription_available {
-            "No supported local ComfyUI speech models are ready. Kestrel requires ComfyUI-Chatterbox for narration or ComfyUI-Whisper for dictation and never falls back to system speech.".into()
+            "No supported local ComfyUI speech models are ready. Open Setup and install Local voice and dictation; Kestrel never falls back to system or browser speech.".into()
         } else if comfy_ready {
             "Local ComfyUI speech is ready. Narration is cached and dictation receives a final timestamped Whisper pass.".into()
         } else {
@@ -502,7 +503,7 @@ impl LocalSpeech {
         if cancel.is_cancelled() {
             return Err(SpeechError::Cancelled);
         }
-        self.verify_live_node("Apply Whisper", "ComfyUI-Whisper")
+        self.verify_live_node("KestrelWhisper", "Kestrel's Whisper adapter")
             .await?;
         self.verify_live_node("PreviewAny", "the ComfyUI Preview as Text node")
             .await?;
@@ -607,7 +608,7 @@ impl LocalSpeech {
         if cancel.is_cancelled() {
             return Err(SpeechError::Cancelled);
         }
-        self.verify_live_node("Apply Whisper", "ComfyUI-Whisper")
+        self.verify_live_node("KestrelWhisper", "Kestrel's Whisper adapter")
             .await?;
         self.verify_live_node("PreviewAny", "the ComfyUI Preview as Text node")
             .await?;
@@ -735,6 +736,12 @@ impl LocalSpeech {
     }
 
     pub async fn release_model_memory(&self) {
+        let _ = self
+            .http
+            .post(format!("{COMFY_BASE}/kestrel/speech/free"))
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await;
         let _ = self
             .http
             .post(format!("{COMFY_BASE}/free"))
@@ -1412,7 +1419,7 @@ fn whisper_graph(request: &SpeechTranscriptionRequest, input_relative: &str) -> 
             "inputs": {"audio": input_relative}
         },
         "2": {
-            "class_type": "Apply Whisper",
+            "class_type": "KestrelWhisper",
             "inputs": {
                 "audio": ["1", 0],
                 "model": model,
@@ -1849,7 +1856,7 @@ mod tests {
         let request = transcription_request();
         let graph = whisper_graph(&request, "kestrel_speech/recording.webm");
         assert_eq!(graph["1"]["class_type"], "LoadAudio");
-        assert_eq!(graph["2"]["class_type"], "Apply Whisper");
+        assert_eq!(graph["2"]["class_type"], "KestrelWhisper");
         assert_eq!(graph["2"]["inputs"]["model"], "large-v3-turbo");
         assert_eq!(graph["2"]["inputs"]["language"], "auto");
         assert_eq!(graph["3"]["class_type"], "PreviewAny");
@@ -2004,7 +2011,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires KESTREL_LIVE_COMFY_ROOT plus installed ComfyUI-Chatterbox and ComfyUI-Whisper models"]
+    #[ignore = "requires KESTREL_LIVE_COMFY_ROOT plus installed ComfyUI-Chatterbox and Kestrel Whisper models"]
     async fn live_local_voice_round_trip_returns_durable_word_timings() {
         let Some(comfy_root) = std::env::var_os("KESTREL_LIVE_COMFY_ROOT") else {
             panic!("KESTREL_LIVE_COMFY_ROOT is required");

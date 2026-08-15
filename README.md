@@ -1,13 +1,15 @@
 # Kestrel Local
 
-Kestrel is a Windows-first local model control plane, fully offline research workspace, and agent-directed movie studio. Research uses its release-validated Bonsai 27B harness with an English Kiwix Wikipedia archive; the separate Studio can pin any compatible local GGUF as Director and Reviewer and uses MiniMax H3 through local ComfyUI without research tools. Research remains usable as plain JSON and self-contained HTML; movie projects remain ordinary JSON, PNG, and MP4 files without Kestrel, SQLite, Codex, or internet access.
+Kestrel is a Windows-first local model control plane, fully offline research workspace, and producer-directed movie and music environment. Research uses its release-validated Bonsai 27B harness with an English Kiwix Wikipedia archive; the separate Studio can pin any compatible local GGUF as Director and Reviewer and uses MiniMax H3 through local ComfyUI without research tools. Music uses native MiniMax Music 3 with producer-owned arrangements and immutable local takes. Research remains usable as plain JSON and self-contained HTML; media projects remain ordinary JSON, WAV, PNG, and MP4 files without Kestrel, SQLite, Codex, or internet access.
 
-The application has six adjacent workspaces:
+The application has eight adjacent workspaces:
 
-- **Setup** guides first-run installation, validates existing local components, and provides the observed, resumable local-model downloader.
+- **Setup** owns blank-Windows onboarding: one click installs the assistant and offline archive, while a second production-suite action installs verified movie finishing, H3, Music 3, Chatterbox narration, and Kestrel's timestamped Whisper adapter. Downloads are pinned, integrity checked, observed, safely resumable, and kept on the producer-selected drive.
 - **Control** discovers GGUF files read-only, keeps a recoverable startup catalog, rediscovers installed Bonsai/Jan/PATH engines, attaches to an existing Bonsai service or starts one authenticated `llama-server`, shows live VRAM, exposes exact launch arguments, and offers durable multimodal chat and Computer Tasks.
 - **Research** runs a Bonsai-specific two-tool harness, visibly reports six stages, validates every citation, finds related prior work, and publishes immutable editions.
 - **Studio** turns one unmodified user prompt into a local-Director-authored screenplay, continuity bible, independently reviewed production-grade MiniMax H3 prompts, native-audio clips, and a non-linear offline timeline. Director and Reviewer are pinned per project; generic chat-template GGUFs receive a recoverable, version-bound local protocol check before standard-mode unattended use, and two different role models are swapped through the sole inference slot rather than loaded together. Split or repeat scenes, choose any preserved version, retime, trim, fade picture and sound, audition the sequence, undo decisions, and render archive/publish/review cuts. Producers can also generate durable local character, location, prop, poster, and style-frame assets through H3's pseudo-image workflow: Kestrel preserves six nearby stable frames from one 22-frame pass, records the exact prompt/seed/graph, and attaches only the chosen candidate. Optional producer pictures, videos, and exact clip audio are imported once, described for placement, and bound through H3's native reference model. Studio has no research or archive tools and unloads the language-model runtime before H3 receives the GPU.
+- **Music** provides a fixed-window, Mac-DAW-familiar arranger for producer-owned sections, description, lyrics, transport, take library, and exact generation settings. Any selected local GGUF may stream an unapplied description or tagged-lyrics proposal with stop-and-keep-checkpoint control. Native MiniMax Music 3 renders one honest stereo master through loopback ComfyUI with step progress and ETA; every lossless FLAC take, graph, model identity, seed, and SHA-256 remains durable. Advanced producers may configure their own gated MuScriptor executable and checkpoint for explicit audio-to-MIDI transcription.
+- **Local speech** uses the setup-installed Chatterbox model for opt-in narration and an owned, auditable ComfyUI adapter around a pinned OpenAI Whisper checkpoint for dictation and word timing. It has no browser, Windows, or remote fallback; generated audio and recordings remain in Kestrel's private cache.
 - **Developer** runs fixed offline checks. If Codex CLI is installed and signed in, an explicit one-click action can repair this Git workspace under an ephemeral workspace-write sandbox. Research never depends on it.
 - **System** exposes the installed Bonsai/Kiwix state, GPU telemetry, and opt-in high-capacity research settings.
 
@@ -23,6 +25,7 @@ Kiwix:       D:\LocalAI\OfflineWikipedia\tools\kiwix-tools-3.8.1\kiwix-serve.exe
 Archive:     D:\OfflineInternet\wikipedia_en_all_maxi_2024-01.zim
 ComfyUI:     D:\AI\ComfyUI (127.0.0.1:8188)
 Video:       MiniMax H3 int8 convrot + Qwen3-VL NVFP4/AWQ encoder
+Music:       MiniMax Music 3 int8 DiT + Qwen3-Embedding-4B int8 + DAV VAE
 Snapshot:    2024-01-12
 Articles:    6,863,660
 ```
@@ -37,7 +40,7 @@ Control also provides an explicit observed Hugging Face GGUF downloader. A produ
 
 One `RuntimeManager` owns Kestrel-managed model processes and one semaphore owns inference. Research and chat share that lease, so a 12 GiB GPU cannot accidentally receive duplicate Kestrel loads or simultaneous generations. If the installed Bonsai endpoint is already healthy, Kestrel attaches without launching another model.
 
-Movie planning uses that same lease. Kestrel explicitly unloads Comfy models before Director or Reviewer planning and stops the language-model runtime before H3 rendering, so the two large stacks never compete for the GPU. Different Director and Reviewer models are switched only between complete turns. The Studio owns Comfy lifecycle and queue polling; it never routes through or assumes the separate Wan Video Studio product.
+Movie planning and Music's optional writing assistants use that same lease. Kestrel explicitly unloads Comfy models before language-model work and stops the language-model runtime before H3 or Music 3 rendering, so the two large stacks never compete for the GPU. Different Director and Reviewer models are switched only between complete turns. Kestrel owns Comfy lifecycle and queue polling; it never routes through or assumes the separate Wan Video Studio product.
 
 Managed launches bind to `127.0.0.1`, use a random session API key, one slot, strict full-GPU placement, no prompt RAM cache, no silent fit/offload, and Bonsai-specific Q4 KV plus flash attention. The API key is redacted from the visible launch proof.
 
@@ -86,6 +89,11 @@ C:\Users\<you>\Kestrel Research\
 |   |-- exports\*.mp4      # immutable first cuts and timeline exports
 |   |-- exports\*.json     # exact edit decision sidecar + SHA-256 export record
 |   `-- logs\              # local renderer startup diagnostics
+|-- music\<uuid>           # recoverable producer-owned song project
+|   |-- project.json       # arrangement, lyrics, settings, take history, and status
+|   |-- takes\*.flac        # immutable lossless stereo masters
+|   |-- receipts\<take_id>.graph.json # exact submitted graph and generation receipt
+|   `-- midi\*.mid          # optional explicit MuScriptor transcriptions
 `-- reports\YYYY\MM\<title>--<id>\
     |-- index.html        # self-contained, printable research page
     |-- report.json       # complete structured edition
@@ -112,6 +120,7 @@ Portable setup profiles contain research/runtime tuning, path-independent model 
 - The WebView CSP permits no external network connection or remote asset.
 - Native research clients accept only fixed loopback services.
 - Movie rendering accepts only fixed loopback ComfyUI on `127.0.0.1:8188`; completed media is copied into Kestrel's library before use.
+- Music generation and optional transcription are local-only; generated lossless stereo masters and MIDI files are copied into the project before Kestrel reports success.
 - Kiwix runs with external access blocked.
 - Research receives only its two citation tools. Ordinary chat receives no mutation tools. Computer Tasks receives only typed, policy-checked tools; attachment reads are restricted to files explicitly selected for that task.
 - Codex is isolated to `developer.rs`, requires explicit confirmation, cannot run during research, creates no commit, and is not required for diagnostics or any offline feature.
@@ -120,7 +129,9 @@ Wikipedia is a tertiary starting point with a January 2024 cutoff. Reports expos
 
 ## Run and verify
 
-Requirements are Windows 10/11, Node.js 20.19+ or 22.12+, Rust stable with MSVC, WebView2, FFmpeg on PATH, and the local assets above.
+The installed product requires Windows 10/11 and a supported NVIDIA production GPU. The NSIS package embeds the offline WebView2 installer; Setup installs FFmpeg, ComfyUI, engines, and model assets without requiring a terminal, Python, Git, Node.js, or Rust installation.
+
+Building Kestrel from source requires Node.js 20.19+ or 22.12+, Rust stable with MSVC, and the normal Windows build toolchain:
 
 ```powershell
 npm install

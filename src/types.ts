@@ -556,6 +556,94 @@ export interface StartMovieRequest {
   modelRoles: MovieModelRoleRequest;
 }
 
+export interface MusicSettings {
+  maxDurationSeconds: number;
+  steps: number;
+  cfgScale: number;
+  topK: number;
+  seed: number;
+  tiledDecode: boolean;
+  modelVariant: "auto" | "int8" | "fp16";
+  comfyRoot: string;
+}
+
+export interface MusicSection {
+  id: string;
+  tag: "Intro" | "Verse" | "Pre-Chorus" | "Chorus" | "Post-Chorus" | "Bridge" | "Instrumental" | "Solo" | "Break" | "Outro";
+  name: string;
+  bars: number;
+  lyrics: string;
+  direction: string;
+}
+
+export interface MusicMidiSettings {
+  executablePath: string;
+  modelPath: string;
+  instruments: string;
+}
+
+export interface MusicTake {
+  id: string;
+  createdAt: string;
+  status: string;
+  detail: string;
+  error: string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  durationSeconds: number;
+  seed: number;
+  resolvedModel: string;
+  caption: string;
+  lyrics: string;
+  promptId: string;
+  exactGraph: unknown;
+  midiPath: string;
+  midiReceiptPath: string;
+}
+
+export interface MusicProject {
+  schemaVersion: number;
+  id: string;
+  title: string;
+  idea: string;
+  caption: string;
+  instrumental: boolean;
+  sections: MusicSection[];
+  settings: MusicSettings;
+  midi: MusicMidiSettings;
+  takes: MusicTake[];
+  activeTakeId: string;
+  status: string;
+  phase: string;
+  detail: string;
+  error: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MusicSummary {
+  id: string;
+  title: string;
+  status: string;
+  updatedAt: string;
+  takeCount: number;
+  activeTakePath: string;
+}
+
+export interface MusicGenerationEvent {
+  projectId: string;
+  takeId: string;
+  kind: "queued" | "progress" | "complete" | "cancelled" | "error" | string;
+  phase: string;
+  detail: string;
+  step?: number;
+  total?: number;
+  percent?: number;
+  etaSeconds?: number;
+  at: string;
+}
+
 export interface SpeechModel {
   id: string;
   name: string;
@@ -679,7 +767,7 @@ export interface ModelCompatibility {
   receipt?: ModelQualificationReceipt;
 }
 
-export type PromptDraftTarget = "story" | "imageAsset" | "referenceDescription";
+export type PromptDraftTarget = "story" | "imageAsset" | "referenceDescription" | "musicCaption" | "musicLyrics";
 export type PromptDraftMode = "develop" | "continue";
 
 export interface PromptDraftRequest {
