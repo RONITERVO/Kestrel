@@ -59,6 +59,9 @@ import type {
   MusicGenerationEvent,
   MusicProject,
   MusicSummary,
+  ImageGenerationEvent,
+  ImageProject,
+  ImageSummary,
   StartMovieRequest,
   PromptDraftEvent,
   PromptDraftRequest,
@@ -105,7 +108,7 @@ export async function getSetupSnapshot(): Promise<SetupSnapshot> {
   return invoke<SetupSnapshot>("get_setup_snapshot");
 }
 
-export async function openComfyUi(workload: "studio" | "music"): Promise<void> {
+export async function openComfyUi(workload: "studio" | "music" | "image"): Promise<void> {
   if (isTauri()) await invoke("open_comfy_ui", { workload });
 }
 
@@ -245,6 +248,49 @@ export async function onMusicGeneration(callback: (event: MusicGenerationEvent) 
 
 export async function onMusicProjectUpdated(callback: (project: MusicProject) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MusicProject>("music-project-updated", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function listImageProjects(): Promise<ImageSummary[]> {
+  if (!isTauri()) return [];
+  return invoke<ImageSummary[]>("list_image_projects");
+}
+
+export async function getImageProject(id: string): Promise<ImageProject> {
+  if (!isTauri()) throw new Error("Image projects require the desktop application.");
+  return invoke<ImageProject>("get_image_project", { id });
+}
+
+export async function createImageProject(request: { title: string; idea: string; comfyRoot: string }): Promise<ImageProject> {
+  if (!isTauri()) throw new Error("Image projects require the desktop application.");
+  return invoke<ImageProject>("create_image_project", { request });
+}
+
+export async function saveImageProject(project: ImageProject): Promise<ImageProject> {
+  if (!isTauri()) throw new Error("Image projects require the desktop application.");
+  return invoke<ImageProject>("save_image_project", { project });
+}
+
+export async function startImageGeneration(id: string): Promise<ImageProject> {
+  if (!isTauri()) throw new Error("Local Ideogram image generation requires the desktop application.");
+  return invoke<ImageProject>("start_image_generation", { id });
+}
+
+export async function cancelImageGeneration(id: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_image_generation", { id });
+}
+
+export async function revealImageProject(id: string): Promise<void> {
+  if (isTauri()) await invoke("reveal_image_project", { id });
+}
+
+export async function onImageGeneration(callback: (event: ImageGenerationEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<ImageGenerationEvent>("image-generation", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function onImageProjectUpdated(callback: (project: ImageProject) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<ImageProject>("image-project-updated", (event) => callback(event.payload));
   return () => undefined;
 }
 
@@ -455,6 +501,16 @@ export function musicMediaUrl(path: string): string {
   if (offset < 0) return "";
   const relative = normalized.slice(offset + marker.length);
   return `http://kestrel-media.localhost/music/${relative.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+export function imageMediaUrl(path: string): string {
+  if (!path || !isTauri()) return "";
+  const normalized = path.replaceAll("\\", "/");
+  const marker = "/images/";
+  const offset = normalized.toLowerCase().lastIndexOf(marker);
+  if (offset < 0) return "";
+  const relative = normalized.slice(offset + marker.length);
+  return `http://kestrel-media.localhost/images/${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 export async function onRuntimeProgress(

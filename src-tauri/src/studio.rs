@@ -36,6 +36,7 @@ mod agent_lifecycle;
 mod agent_protocol;
 mod copilot;
 mod image_assets;
+mod image_studio;
 mod live_preview;
 mod model_stream;
 mod movie_agent;
@@ -57,6 +58,7 @@ pub use image_assets::{
     emit_image_asset_error, GeneratedImageProvenance, MovieImageAssetGeneration,
     MovieImageAssetRequest,
 };
+pub use image_studio::{CreateImageProjectRequest, ImageProject, ImageStudio, ImageSummary};
 use live_preview::{
     emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget, PREVIEW_NODE_ID,
 };
@@ -177,6 +179,8 @@ fn read_media_response(
         .ok_or_else(|| (500, "local media library is unavailable".to_string()))?;
     let (root, relative) = if let Some(relative) = relative.strip_prefix("music/") {
         (library.join("music"), relative)
+    } else if let Some(relative) = relative.strip_prefix("images/") {
+        (library.join("images"), relative)
     } else {
         (library.join("movies"), relative.as_ref())
     };

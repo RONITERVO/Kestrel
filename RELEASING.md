@@ -38,3 +38,8 @@ record a clean-machine acceptance run on hardware with at least 12 GiB NVIDIA VR
 
 MuScriptor is not part of this commercial acceptance matrix. Its gated CC-BY-NC checkpoint remains
 a producer-supplied extension and Setup must not silently download, bundle, or grant rights to it.
+Ideogram 4 is also excluded from the commercial acceptance matrix because its published model
+agreement is non-commercial. For an internal non-commercial acceptance run, install it separately
+through its explicit Setup acknowledgement, disconnect the public network, reboot, generate one
+full-resolution Image Studio PNG, and preserve the take receipt with the acceptance record. Do not
+bundle the weights or represent Kestrel's MIT license as granting Ideogram model or output rights.

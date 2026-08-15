@@ -1,5 +1,5 @@
 import {
-  Check, ChevronDown, CircleStop, Download, Film, FolderOpen, HardDrive, Headphones,
+  Check, ChevronDown, CircleStop, Download, Film, FolderOpen, HardDrive, Headphones, Image as ImageIcon,
   Library, LoaderCircle, MessageSquare, Mic2, RefreshCw, Settings2, ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
@@ -22,6 +22,8 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState<SetupProgress | null>(null);
   const [advanced, setAdvanced] = useState(false);
+  const [ideogramLicenseOpen, setIdeogramLicenseOpen] = useState(false);
+  const [ideogramLicenseAccepted, setIdeogramLicenseAccepted] = useState(false);
   const [locations, setLocations] = useState<SetupLocations>(() => fromSnapshot(snapshot));
 
   useEffect(() => setLocations(fromSnapshot(snapshot)), [snapshot.settings]);
@@ -50,12 +52,17 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     return next;
   };
 
-  const install = async (component: string) => {
+  const runInstall = async (component: string, acceptedIdeogramLicense = false) => {
     setBusy(component);
     setProgress({ component, stage: "preparing", detail: "Checking saved files and available downloads…", downloadedBytes: 0, totalBytes: 0, bytesPerSecond: 0 });
     try {
-      await saveLocations();
-      const next = await installSetupComponent({ component, installRoot: locations.installRoot, wikipediaEdition: edition });
+      const saved = await saveLocations();
+      const next = await installSetupComponent({
+        component,
+        installRoot: saved.settings.installRoot,
+        wikipediaEdition: edition,
+        acceptIdeogramNonCommercialLicense: acceptedIdeogramLicense,
+      });
       onChanged(next);
       setLocations(fromSnapshot(next));
       setProgress(null);
@@ -70,12 +77,12 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const installEssentials = async () => {
     setBusy("essentials");
     try {
-      await saveLocations();
-      let next = snapshot;
+      let next = await saveLocations();
+      const savedInstallRoot = next.settings.installRoot;
       for (const component of ["assistant", "wikipedia"]) {
         if (next.setup.components.find((item) => item.id === component)?.status === "ready") continue;
         setProgress({ component, stage: "preparing", detail: `Preparing ${component}…`, downloadedBytes: 0, totalBytes: 0, bytesPerSecond: 0 });
-        next = await installSetupComponent({ component, installRoot: locations.installRoot, wikipediaEdition: edition });
+        next = await installSetupComponent({ component, installRoot: savedInstallRoot, wikipediaEdition: edition });
         onChanged(next);
       }
       setLocations(fromSnapshot(next));
@@ -86,6 +93,15 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     } finally {
       setBusy(null);
     }
+  };
+
+  const install = async (component: string) => {
+    if (component === "image") {
+      setIdeogramLicenseAccepted(false);
+      setIdeogramLicenseOpen(true);
+      return;
+    }
+    await runInstall(component);
   };
 
   const installProductionSuite = async () => {
@@ -109,7 +125,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     }
   };
 
-  const openStudio = async (component: "studio" | "music") => {
+  const openStudio = async (component: "studio" | "music" | "image") => {
     setBusy(`${component}-open`);
     try { await openComfyUi(component); } catch (error) { onError(String(error)); } finally { setBusy(null); }
   };
@@ -155,7 +171,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     </section>
 
     {!snapshot.setup.gpuName && <div className="setup-hardware-note"><TriangleAlert /><div><strong>No NVIDIA graphics card was detected.</strong><span>The assistant and Wikipedia can still work, although Bonsai may be slow on a laptop processor. Movie Studio stays optional because MiniMax H3 is not practical on this hardware.</span></div></div>}
-    {snapshot.setup.gpuName && <div className="setup-hardware-note compatible"><Check /><div><strong>{snapshot.setup.gpuName}</strong><span>{formatBytes(snapshot.setup.gpuMemoryBytes)} graphics memory detected. Kestrel can install the validated NVIDIA profiles for Bonsai, H3, Music 3, narration, and dictation.</span></div></div>}
+    {snapshot.setup.gpuName && <div className="setup-hardware-note compatible"><Check /><div><strong>{snapshot.setup.gpuName}</strong><span>{formatBytes(snapshot.setup.gpuMemoryBytes)} graphics memory detected. Kestrel can install the validated NVIDIA profiles for Bonsai, H3, Music 3, Ideogram 4, narration, and dictation.</span></div></div>}
 
     <section className={`setup-simple-panel setup-production-panel ${productionReady ? "ready" : ""}`}>
       <div><span className="eyebrow">Complete production suite</span><h2>{productionReady ? "Every distributable production service is ready." : "Set up the full studio for me"}</h2><p>Installs movie finishing, H3 video and image generation, Music 3, Chatterbox narration, and timestamped Whisper dictation. Downloads are pinned, resumable, and verified before use.</p><small>MuScriptor audio-to-MIDI remains a separately licensed non-commercial extension and cannot be silently included in a sold product.</small></div>
@@ -178,14 +194,14 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
 
     <section className="setup-components" aria-label="Kestrel components">
       {components.map((component) => {
-        const sharedComfy = component.id === "studio" || component.id === "music";
+        const sharedComfy = component.id === "studio" || component.id === "music" || component.id === "image";
         const opening = busy === `${component.id}-open`;
         return <article className={`setup-component ${component.status}`} key={component.id}>
-        <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : component.id === "music" ? <Headphones /> : component.id === "speech" ? <Mic2 /> : <Settings2 />}</div>
+        <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : component.id === "music" ? <Headphones /> : component.id === "image" ? <ImageIcon /> : component.id === "speech" ? <Mic2 /> : <Settings2 />}</div>
         <div className="setup-component-copy"><div className="setup-component-title"><h2>{component.label}</h2><span className={`setup-state ${component.status}`}>{component.status === "ready" ? <><Check /> Ready</> : component.status === "partial" ? "Resume available" : component.optional ? "Optional" : "Needed"}</span></div><p>{component.detail}</p><small>{component.status === "ready" ? component.path : `${formatBytes(component.downloadBytes)} download · about ${formatTime(component.downloadBytes, speed)} at ${speed} Mbps`}</small>
           {component.id === "wikipedia" && component.status !== "ready" && <div className="wikipedia-choice"><button className={edition === "compact" ? "active" : ""} onClick={() => setEdition("compact")}><strong>Compact</strong><span>11.7 GB · article summaries</span></button><button className={edition === "complete" ? "active" : ""} onClick={() => setEdition("complete")}><strong>Complete text</strong><span>49.1 GB · full articles</span></button></div>}
         </div>
-        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !sharedComfy)} onClick={() => component.status === "ready" && sharedComfy ? void openStudio(component.id as "studio" | "music") : void install(component.id)}>{busy === component.id || opening ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : <Download />}{component.status === "ready" && sharedComfy ? "Open ComfyUI" : component.status === "ready" ? "Installed" : component.status === "partial" ? "Resume" : "Install"}</button>
+        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !sharedComfy)} onClick={() => component.status === "ready" && sharedComfy ? void openStudio(component.id as "studio" | "music" | "image") : void install(component.id)}>{busy === component.id || opening ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : component.status === "ready" && component.id === "image" ? <ImageIcon /> : <Download />}{component.status === "ready" && sharedComfy ? "Open ComfyUI" : component.status === "ready" ? "Installed" : component.status === "partial" ? "Resume" : "Install"}</button>
       </article>})}
     </section>
 
@@ -194,6 +210,8 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
       {progress.totalBytes > 0 && <div className="setup-progress-track"><span style={{ width: `${Math.min(100, progress.downloadedBytes / progress.totalBytes * 100)}%` }} /></div>}
       <button onClick={() => void cancelSetupInstall()}><CircleStop /> Pause safely</button>
     </section>}
+
+    {ideogramLicenseOpen && <dialog open className="setup-license-dialog" aria-labelledby="ideogram-license-title"><div className="setup-license-icon"><ImageIcon /></div><div><span className="eyebrow">Separate model terms</span><h2 id="ideogram-license-title">Ideogram 4 is non-commercial.</h2><p>The published agreement does not permit client deliverables, promotion, advertising, or other revenue-generating use without separate rights from Ideogram. Kestrel’s MIT license does not change those model terms.</p><a href="https://github.com/ideogram-oss/ideogram4/blob/main/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL" target="_blank" rel="noreferrer">Read the complete Ideogram 4 agreement</a><label><input type="checkbox" checked={ideogramLicenseAccepted} onChange={(event) => setIdeogramLicenseAccepted(event.target.checked)} /> I have read and accept the Ideogram Non-Commercial Model Agreement for this installation.</label></div><footer><button disabled={!!busy} onClick={() => setIdeogramLicenseOpen(false)}>Cancel</button><button className="primary-button" disabled={!!busy || !ideogramLicenseAccepted} onClick={() => { setIdeogramLicenseOpen(false); void runInstall("image", true); }}><Download /> Accept and install</button></footer></dialog>}
 
     <button className="setup-advanced-toggle" onClick={() => setAdvanced((value) => !value)}><Settings2 /> Use existing files or choose every location <ChevronDown className={advanced ? "open" : ""} /></button>
     {advanced && <section className="setup-advanced-panel">

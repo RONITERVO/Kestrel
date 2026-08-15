@@ -126,6 +126,7 @@ export interface SetupInstallRequest {
   component: string;
   installRoot: string;
   wikipediaEdition: "compact" | "complete";
+  acceptIdeogramNonCommercialLicense?: boolean;
 }
 
 export interface SetupProgress {
@@ -556,6 +557,101 @@ export interface StartMovieRequest {
   modelRoles: MovieModelRoleRequest;
 }
 
+export interface ImageStyle {
+  mode: "photo" | "art";
+  aesthetics: string;
+  lighting: string;
+  photo: string;
+  artStyle: string;
+  medium: string;
+  colorPalette: string[];
+}
+
+export interface ImageElement {
+  id: string;
+  kind: "obj" | "text";
+  /** Ideogram coordinates: [top, left, bottom, right], normalized to 0..1000. */
+  bbox: [number, number, number, number];
+  text: string;
+  description: string;
+  colorPalette: string[];
+}
+
+export interface ImageSettings {
+  width: number;
+  height: number;
+  preset: "quality" | "standard" | "turbo";
+  seed: number;
+  batchSize: number;
+  comfyRoot: string;
+}
+
+export interface ImageTake {
+  id: string;
+  createdAt: string;
+  status: string;
+  detail: string;
+  error: string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  width: number;
+  height: number;
+  preset: ImageSettings["preset"];
+  seed: number;
+  batchIndex: number;
+  batchSize: number;
+  promptId: string;
+  exactPrompt: unknown;
+  exactPromptText: string;
+  exactGraph: unknown;
+  modelProfile: string;
+  licenseNotice: string;
+}
+
+export interface ImageProject {
+  schemaVersion: number;
+  id: string;
+  title: string;
+  idea: string;
+  highLevelDescription: string;
+  style: ImageStyle;
+  background: string;
+  elements: ImageElement[];
+  settings: ImageSettings;
+  takes: ImageTake[];
+  activeTakeId: string;
+  status: string;
+  phase: string;
+  detail: string;
+  error: string;
+  licenseNotice: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ImageSummary {
+  id: string;
+  title: string;
+  status: string;
+  updatedAt: string;
+  takeCount: number;
+  activeTakePath: string;
+}
+
+export interface ImageGenerationEvent {
+  projectId: string;
+  takeId: string;
+  kind: "queued" | "progress" | "complete" | "cancelled" | "error" | string;
+  phase: string;
+  detail: string;
+  step?: number;
+  total?: number;
+  percent?: number;
+  etaSeconds?: number;
+  at: string;
+}
+
 export interface MusicSettings {
   maxDurationSeconds: number;
   steps: number;
@@ -767,7 +863,7 @@ export interface ModelCompatibility {
   receipt?: ModelQualificationReceipt;
 }
 
-export type PromptDraftTarget = "story" | "imageAsset" | "referenceDescription" | "musicCaption" | "musicLyrics";
+export type PromptDraftTarget = "story" | "imageAsset" | "imageComposition" | "referenceDescription" | "musicCaption" | "musicLyrics";
 export type PromptDraftMode = "develop" | "continue";
 
 export interface PromptDraftRequest {

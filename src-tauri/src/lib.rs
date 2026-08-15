@@ -54,8 +54,9 @@ use std::{
 };
 use store::ResearchStore;
 use studio::{
-    ComfyWorkload, CreateMusicProjectRequest, MovieClipAssistRequest, MovieClipRenderRequest,
-    MovieClipSuggestion, MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
+    ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
+    ImageSummary, MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion,
+    MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
     MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest,
     MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot,
     MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest, MusicProject,
@@ -92,8 +93,10 @@ struct AppState {
     interactive_jobs: Mutex<HashMap<String, CancellationToken>>,
     studio: MovieStudio,
     music: MusicStudio,
+    images: ImageStudio,
     movie_jobs: Mutex<HashMap<String, CancellationToken>>,
     music_jobs: Mutex<HashMap<String, CancellationToken>>,
+    image_generation_jobs: Mutex<HashMap<String, CancellationToken>>,
     image_asset_jobs: Mutex<HashMap<String, CancellationToken>>,
     setup_job: Mutex<Option<CancellationToken>>,
     model_download_job: Mutex<Option<CancellationToken>>,
@@ -1770,6 +1773,130 @@ fn reveal_music_project(id: String, state: State<'_, AppState>) -> Result<(), St
 }
 
 #[tauri::command]
+fn list_image_projects(state: State<'_, AppState>) -> Result<Vec<ImageSummary>, String> {
+    state.images.list().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_image_project(id: String, state: State<'_, AppState>) -> Result<ImageProject, String> {
+    state.images.get(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_image_project(
+    request: CreateImageProjectRequest,
+    state: State<'_, AppState>,
+) -> Result<ImageProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .images
+        .create(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_image_project(
+    project: ImageProject,
+    state: State<'_, AppState>,
+) -> Result<ImageProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .images
+        .save_editable(project)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn start_image_generation(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ImageProject, String> {
+    ensure_workspace_idle(&state)?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI or media job is already active.".to_string())?;
+    let (project, take_ids) = state
+        .images
+        .begin_generation(&id, Some(&app))
+        .map_err(|error| {
+            state.work_active.store(false, Ordering::Release);
+            error.to_string()
+        })?;
+    let cancel = CancellationToken::new();
+    match state.image_generation_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("image job registry is unavailable".into());
+        }
+    }
+    tauri::async_runtime::spawn(async move {
+        let managed = app.state::<AppState>();
+        let _guard = WorkGuard(&managed.work_active);
+        let research = managed.research_settings.load();
+        let result: Result<(), String> = async {
+            let research = research.map_err(|error| error.to_string())?;
+            release_all_comfy_memory(&managed).await;
+            managed
+                .runtime
+                .stop_managed()
+                .await
+                .map_err(|error| error.to_string())?;
+            services::stop_bonsai(&research.bonsai_root)
+                .await
+                .map_err(|error| error.to_string())?;
+            managed
+                .images
+                .render(&id, &take_ids, &managed.studio, &cancel, Some(&app))
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        .await;
+        release_all_comfy_memory(&managed).await;
+        if let Err(error) = result {
+            managed.images.fail_generation(
+                &id,
+                &take_ids,
+                error,
+                cancel.is_cancelled(),
+                Some(&app),
+            );
+        }
+        if let Ok(mut jobs) = managed.image_generation_jobs.lock() {
+            jobs.remove(&id);
+        };
+    });
+    Ok(project)
+}
+
+#[tauri::command]
+fn cancel_image_generation(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .image_generation_jobs
+        .lock()
+        .map_err(|_| "image job registry is unavailable".to_string())?
+        .get(&id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_image_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let path = state
+        .images
+        .reveal_path(&id)
+        .map_err(|error| error.to_string())?;
+    open_with_explorer(&path)
+}
+
+#[tauri::command]
 async fn prepare_services(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -2384,6 +2511,13 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        let images = state
+            .image_generation_jobs
+            .lock()
+            .map_err(|_| "image job registry is unavailable".to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         let speech = state
             .speech_jobs
             .lock()
@@ -2396,6 +2530,7 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .chain(interactive)
             .chain(image_assets)
             .chain(music)
+            .chain(images)
             .chain(speech)
             .collect::<Vec<_>>()
     };
@@ -3195,6 +3330,7 @@ pub fn run() {
             let attachments = AttachmentStore::new(&store.root().join("workspace"))?;
             let studio = MovieStudio::new(store.root()).map_err(|error| error.to_string())?;
             let music = MusicStudio::new(store.root()).map_err(|error| error.to_string())?;
+            let images = ImageStudio::new(store.root()).map_err(|error| error.to_string())?;
             let speech = LocalSpeech::new(store.root()).map_err(|error| error.to_string())?;
             app.manage(AppState {
                 store,
@@ -3220,8 +3356,10 @@ pub fn run() {
                 interactive_jobs: Mutex::new(HashMap::new()),
                 studio,
                 music,
+                images,
                 movie_jobs: Mutex::new(HashMap::new()),
                 music_jobs: Mutex::new(HashMap::new()),
+                image_generation_jobs: Mutex::new(HashMap::new()),
                 image_asset_jobs: Mutex::new(HashMap::new()),
                 setup_job: Mutex::new(None),
                 model_download_job: Mutex::new(None),
@@ -3309,6 +3447,13 @@ pub fn run() {
             cancel_music_generation,
             transcribe_music_midi,
             reveal_music_project,
+            list_image_projects,
+            get_image_project,
+            create_image_project,
+            save_image_project,
+            start_image_generation,
+            cancel_image_generation,
+            reveal_image_project,
             prepare_services,
             get_setup_snapshot,
             open_comfy_ui,

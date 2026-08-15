@@ -1,7 +1,7 @@
 [package]
 name = "kestrel-local"
 version = "0.15.0"
-description = "Local model control, durable offline research, and agent-directed H3 movie production"
+description = "Local model control, durable offline research, and producer-directed movie, image, and music production"
 authors = ["Kestrel contributors"]
 edition = "2021"
 

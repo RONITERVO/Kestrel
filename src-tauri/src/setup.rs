@@ -19,6 +19,10 @@ const BONSAI_RELEASE: &str = "prism-b9596-9fcaed7";
 const H3_REVISION: &str = "0bd506d2e895983a9663037febda27aa3948cf48";
 const COMFY_VERSION: &str = "v0.33.1";
 const MUSIC_REVISION: &str = "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6";
+const IDEOGRAM_REVISION: &str = "9d0e686d42c1b1e575f0de15104d68e9157f59a0";
+const QWEN3_VL_REVISION: &str = "d3f437bd7bd2df08e77c8fe5c51ca4239f753aa3";
+const FLUX2_REVISION: &str = "06029c966dd5b73929c909f046cbd29303b98879";
+const IDEOGRAM_LICENSE_REVISION: &str = "990fe1c4e950bb9e9dc90e01c0ad98ba434f83c2";
 const KJ_PREVIEW_REVISION: &str = "5219cd171cb44e2edce9e4daad6cc42c41eded5c";
 const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
 const CHATTERBOX_NODE_REVISION: &str = "f0300cf84ee1b8fc9cbd38cb68cb3bace1895063";
@@ -77,6 +81,8 @@ pub struct SetupInstallRequest {
     pub install_root: String,
     #[serde(default = "compact_wikipedia")]
     pub wikipedia_edition: String,
+    #[serde(default)]
+    pub accept_ideogram_non_commercial_license: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,6 +175,17 @@ pub fn snapshot(
         || music_assets()
             .iter()
             .any(|asset| comfy.join("models").join(asset.relative).is_file());
+    let image_files = ideogram_assets()
+        .iter()
+        .all(|asset| file_has_size(&comfy.join(asset.relative), asset.download.bytes));
+    let image_nodes = comfy.join("comfy_extras/nodes_ideogram4.py").is_file()
+        && comfy.join("comfy_extras/nodes_custom_sampler.py").is_file();
+    let image_ready =
+        comfy.join("main.py").is_file() && generic_launcher && image_nodes && image_files;
+    let image_partial = image_nodes
+        || ideogram_assets()
+            .iter()
+            .any(|asset| comfy.join(asset.relative).is_file());
     let speech_files = speech_assets()
         .iter()
         .all(|asset| file_has_size(&comfy.join(asset.relative), asset.download.bytes));
@@ -261,6 +278,20 @@ pub fn snapshot(
             },
             &research.comfy_root,
             (11_915_469_696, true),
+        ),
+        component(
+            "image",
+            "Ideogram 4 Image Studio",
+            (image_ready, image_partial),
+            if image_ready {
+                "Ready for private non-commercial image design with structured layout and typography control."
+            } else if comfy.join("main.py").is_file() && !image_nodes {
+                "ComfyUI must be updated to 0.33.1 or newer before Kestrel can install the native Ideogram 4 workflow."
+            } else {
+                "Optional: about 16.4 GiB for the 12 GB NVIDIA profile. Ideogram's license permits non-commercial work only."
+            },
+            &research.comfy_root,
+            (17_622_549_040, true),
         ),
         component(
             "speech",
@@ -382,6 +413,16 @@ pub async fn install_component(
         "media" => install_media(app, settings, &root, cancel).await,
         "studio" => install_studio(app, settings, &root, cancel).await,
         "music" => install_music(app, settings, &root, cancel).await,
+        "image" => {
+            install_image(
+                app,
+                settings,
+                &root,
+                request.accept_ideogram_non_commercial_license,
+                cancel,
+            )
+            .await
+        }
         "speech" => install_speech(app, settings, &root, cancel).await,
         other => Err(SetupError::Download {
             name: other.into(),
@@ -654,7 +695,8 @@ async fn install_studio(
             details: "no NVIDIA GPU was detected. H3 is optional and is not practical on this computer; the rest of Kestrel can still be installed.".into(),
         });
     }
-    let comfy = install_comfy_portable(app, root, "studio", false, &cancel).await?;
+    let comfy =
+        install_comfy_portable(app, root, "studio", ComfyRequirement::Base, &cancel).await?;
     for asset in h3_assets() {
         let destination = comfy.join("models").join(asset.relative);
         if let Some(parent) = destination.parent() {
@@ -693,11 +735,39 @@ async fn install_studio(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ComfyRequirement {
+    Base,
+    Music,
+    Ideogram,
+}
+
+impl ComfyRequirement {
+    fn available_in(self, comfy: &Path) -> bool {
+        match self {
+            Self::Base => true,
+            Self::Music => comfy.join("comfy_extras/nodes_minimax_music.py").is_file(),
+            Self::Ideogram => {
+                comfy.join("comfy_extras/nodes_ideogram4.py").is_file()
+                    && comfy.join("comfy_extras/nodes_custom_sampler.py").is_file()
+            }
+        }
+    }
+
+    fn missing_detail(self) -> &'static str {
+        match self {
+            Self::Base => "the installed ComfyUI is incomplete",
+            Self::Music => "the installed ComfyUI does not contain native MiniMax Music 3 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.0+, then resume",
+            Self::Ideogram => "the installed ComfyUI does not contain native Ideogram 4 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.1+, then resume",
+        }
+    }
+}
+
 async fn install_comfy_portable(
     app: &AppHandle,
     root: &Path,
     component: &str,
-    require_music_nodes: bool,
+    requirement: ComfyRequirement,
     cancel: &CancellationToken,
 ) -> Result<PathBuf, SetupError> {
     let portable = Asset::new(
@@ -711,8 +781,7 @@ async fn install_comfy_portable(
     let comfy = portable_root.join("ComfyUI");
     let needs_extraction = !comfy.join("main.py").is_file();
     let needs_replacement = !needs_extraction
-        && require_music_nodes
-        && !comfy.join("comfy_extras/nodes_minimax_music.py").is_file()
+        && !requirement.available_in(&comfy)
         && is_kestrel_managed_comfy_root(&comfy, root);
     if needs_extraction || needs_replacement {
         let downloads = root.join("downloads");
@@ -732,10 +801,10 @@ async fn install_comfy_portable(
             replace_managed_comfy_portable(&archive, root, &portable.name).await?;
         }
     }
-    if require_music_nodes && !comfy.join("comfy_extras/nodes_minimax_music.py").is_file() {
+    if !requirement.available_in(&comfy) {
         return Err(SetupError::Extract {
             name: portable.name,
-            details: "the installed ComfyUI does not contain native MiniMax Music 3 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.0+, then resume".into(),
+            details: requirement.missing_detail().into(),
         });
     }
     Ok(comfy)
@@ -760,7 +829,7 @@ async fn install_music(
             .is_file()
         {
             if is_kestrel_managed_comfy_root(&configured, root) {
-                install_comfy_portable(app, root, "music", true, &cancel).await?
+                install_comfy_portable(app, root, "music", ComfyRequirement::Music, &cancel).await?
             } else {
                 return Err(SetupError::Download {
                     name: "MiniMax Music 3 Production".into(),
@@ -774,7 +843,7 @@ async fn install_music(
             configured
         }
     } else {
-        install_comfy_portable(app, root, "music", true, &cancel).await?
+        install_comfy_portable(app, root, "music", ComfyRequirement::Music, &cancel).await?
     };
     for asset in music_assets() {
         let destination = comfy.join("models").join(asset.relative);
@@ -790,6 +859,67 @@ async fn install_music(
         "music",
         "complete",
         "MiniMax Music 3 is installed and verified for offline production.",
+        1,
+        1,
+        0,
+    );
+    Ok(())
+}
+
+async fn install_image(
+    app: &AppHandle,
+    settings: &mut ResearchSettings,
+    root: &Path,
+    accepted_license: bool,
+    cancel: CancellationToken,
+) -> Result<(), SetupError> {
+    if !accepted_license {
+        return Err(SetupError::Dependency {
+            name: "Ideogram 4 Image Studio".into(),
+            details: "Ideogram 4 is available only under Ideogram's Non-Commercial Model Agreement. Read and explicitly accept that agreement in Setup before downloading the model.".into(),
+        });
+    }
+    if crate::services::gpu_snapshot().await.is_none() {
+        return Err(SetupError::Download {
+            name: "Ideogram 4 Image Studio".into(),
+            details: "no NVIDIA GPU was detected. Keep using the rest of Kestrel, or configure a supported local ComfyUI computer before installing image generation.".into(),
+        });
+    }
+    let configured = PathBuf::from(settings.comfy_root.trim());
+    let comfy = if configured.join("main.py").is_file() {
+        if !ComfyRequirement::Ideogram.available_in(&configured) {
+            if is_kestrel_managed_comfy_root(&configured, root) {
+                install_comfy_portable(app, root, "image", ComfyRequirement::Ideogram, &cancel)
+                    .await?
+            } else {
+                return Err(SetupError::Download {
+                    name: "Ideogram 4 Image Studio".into(),
+                    details: format!(
+                        "{} is older than ComfyUI 0.33.1. Update this producer-managed installation first; Kestrel will not overwrite it.",
+                        configured.display()
+                    ),
+                });
+            }
+        } else {
+            configured
+        }
+    } else {
+        install_comfy_portable(app, root, "image", ComfyRequirement::Ideogram, &cancel).await?
+    };
+    for asset in ideogram_assets() {
+        let destination = comfy.join(asset.relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        download(app, "image", &asset.download, &destination, &cancel).await?;
+    }
+    ensure_comfy_launcher(&comfy)?;
+    settings.comfy_root = comfy.to_string_lossy().into_owned();
+    emit(
+        app,
+        "image",
+        "complete",
+        "Ideogram 4 is installed and verified for offline non-commercial image production.",
         1,
         1,
         0,
@@ -813,7 +943,7 @@ async fn install_speech(
     let comfy = if configured.join("main.py").is_file() {
         configured
     } else {
-        install_comfy_portable(app, root, "speech", false, &cancel).await?
+        install_comfy_portable(app, root, "speech", ComfyRequirement::Base, &cancel).await?
     };
     let kestrel_managed = is_kestrel_managed_comfy_root(&comfy, root);
     ensure_speech_python(app, &comfy, kestrel_managed, &cancel).await?;
@@ -1251,6 +1381,76 @@ fn music_assets() -> Vec<MusicAsset> {
             relative: "vae/minimax_music3_dav.safetensors",
             bytes: 216_696_128,
             sha256: "2a32155b769be01445fcc2a8663b910fc9e1751e18dc1c3ec528064512d9ef0c",
+        },
+    ]
+}
+
+struct IdeogramAsset {
+    relative: &'static str,
+    download: Asset,
+}
+
+fn ideogram_assets() -> Vec<IdeogramAsset> {
+    vec![
+        IdeogramAsset {
+            relative: "models/diffusion_models/ideogram4_nvfp4_mixed.safetensors",
+            download: Asset::new(
+                "Ideogram 4 conditional NVFP4 model",
+                &format!(
+                    "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/{IDEOGRAM_REVISION}/diffusion_models/ideogram4_nvfp4_mixed.safetensors"
+                ),
+                "ideogram4_nvfp4_mixed.safetensors",
+                5_490_550_037,
+                "e7923b4b0a1129ae5afcc09e63046185688c8b09eb9a1a748cccdbde5d381609",
+            ),
+        },
+        IdeogramAsset {
+            relative: "models/diffusion_models/ideogram4_unconditional_nvfp4_mixed.safetensors",
+            download: Asset::new(
+                "Ideogram 4 unconditional NVFP4 model",
+                &format!(
+                    "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/{IDEOGRAM_REVISION}/diffusion_models/ideogram4_unconditional_nvfp4_mixed.safetensors"
+                ),
+                "ideogram4_unconditional_nvfp4_mixed.safetensors",
+                5_490_550_037,
+                "639e37bd1dd7ee35e23c7cfccf93a518ddc7f4587818956ec42b31e659fd6ac0",
+            ),
+        },
+        IdeogramAsset {
+            relative: "models/text_encoders/qwen3vl_8b_nvfp4.safetensors",
+            download: Asset::new(
+                "Ideogram 4 Qwen3-VL text encoder",
+                &format!(
+                    "https://huggingface.co/Comfy-Org/Qwen3-VL/resolve/{QWEN3_VL_REVISION}/text_encoders/qwen3vl_8b_nvfp4.safetensors"
+                ),
+                "qwen3vl_8b_nvfp4.safetensors",
+                6_305_221_764,
+                "e462e9e0c3b9313ae17f82040d7c77beb92d7aef3e40692d7803228dab7c3b98",
+            ),
+        },
+        IdeogramAsset {
+            relative: "models/vae/flux2-vae.safetensors",
+            download: Asset::new(
+                "Ideogram 4 Flux 2 decoder",
+                &format!(
+                    "https://huggingface.co/Comfy-Org/flux2-dev/resolve/{FLUX2_REVISION}/split_files/vae/flux2-vae.safetensors"
+                ),
+                "flux2-vae.safetensors",
+                336_213_556,
+                "d64f3a68e1cc4f9f4e29b6e0da38a0204fe9a49f2d4053f0ec1fa1ca02f9c4b5",
+            ),
+        },
+        IdeogramAsset {
+            relative: "models/diffusion_models/IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt",
+            download: Asset::new(
+                "Ideogram 4 Non-Commercial Model Agreement",
+                &format!(
+                    "https://raw.githubusercontent.com/ideogram-oss/ideogram4/{IDEOGRAM_LICENSE_REVISION}/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL"
+                ),
+                "IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt",
+                13_646,
+                "8e631193e8cab3632f93fc4e72689f6e41fb6e2e1b9fab5ab8cb17b5909bc8b2",
+            ),
         },
     ]
 }
@@ -2076,6 +2276,21 @@ mod tests {
                 .set_len(asset.download.bytes)
                 .unwrap();
         }
+        for asset in ideogram_assets() {
+            let path = comfy.join(asset.relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::File::create(path)
+                .unwrap()
+                .set_len(asset.download.bytes)
+                .unwrap();
+        }
+        for path in [
+            comfy.join("comfy_extras/nodes_ideogram4.py"),
+            comfy.join("comfy_extras/nodes_custom_sampler.py"),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"x").unwrap();
+        }
         let decoder = comfy.join("models/vae_approx/taeh3.safetensors");
         fs::create_dir_all(decoder.parent().unwrap()).unwrap();
         fs::File::create(decoder)
@@ -2144,6 +2359,15 @@ mod tests {
                 .status
                 == "ready"
         );
+        assert_eq!(
+            value
+                .components
+                .iter()
+                .find(|item| item.id == "image")
+                .unwrap()
+                .status,
+            "ready"
+        );
         fs::write(
             comfy.join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready"),
             "kestrel-whisper-old\nchatterbox-node=old\nchatterbox-model=old\n",
@@ -2211,6 +2435,27 @@ mod tests {
         assert!(shared.contains("[int]$Port = 8188"));
         assert!(shared.contains("'--lowvram'"));
         assert!(shared.contains("$env:HF_HUB_OFFLINE='1'"));
+    }
+
+    #[test]
+    fn ideogram_assets_are_pinned_and_match_the_setup_download_budget() {
+        let assets = ideogram_assets();
+        assert_eq!(assets.len(), 5);
+        assert_eq!(
+            assets.iter().map(|asset| asset.download.bytes).sum::<u64>(),
+            17_622_549_040
+        );
+        assert!(assets.iter().all(|asset| asset.download.sha256.len() == 64));
+        assert!(assets.iter().any(|asset| {
+            asset
+                .relative
+                .ends_with("IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt")
+                && asset.download.url.contains(IDEOGRAM_LICENSE_REVISION)
+        }));
+        assert!(assets.iter().any(|asset| {
+            asset.relative.ends_with("qwen3vl_8b_nvfp4.safetensors")
+                && asset.download.url.contains(QWEN3_VL_REVISION)
+        }));
     }
 
     #[test]

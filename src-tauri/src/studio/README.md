@@ -1,7 +1,7 @@
 # Studio maintainer guide
 
 This directory contains every model-assisted part of Kestrel Studio. Start here before changing
-Director/Reviewer planning, prompt generation, Producer Copilot, H3 image assets, live previews, or Music. The root
+Director/Reviewer planning, prompt generation, Producer Copilot, H3 image assets, live previews, Image Studio, or Music. The root
 `studio.rs` file remains the domain and persistence facade; child modules own one bounded concern
 and must not acquire authority implicitly.
 
@@ -17,7 +17,7 @@ and must not acquire authority implicitly.
   and planning controls are durable user data. Interrupted work is surfaced, never silently resumed.
 - The model receives the original producer request and a fresh authoritative workspace snapshot on
   every Director planning turn. UI/log redaction must never mutate model input or durable history.
-- H3 and Music 3 rendering begin only after every language-model inference lease is released and the
+- H3, Ideogram 4, and Music 3 rendering begin only after every language-model inference lease is released and the
   runtime is unloaded from the GPU.
 - Director and Reviewer bindings are durable project data. Missing pinned models fail visibly; an
   explicit checkpointed role change records provenance and forces producer review.
@@ -39,6 +39,7 @@ and must not acquire authority implicitly.
 | `prompt_collaboration.rs` | Story/image/reference/music-description/lyrics drafting from producer context | Applying proposals, movie-plan mutation, or rendering |
 | `copilot.rs` | Timeline advice and validated, unapplied edit proposals | Applying edits or rendering |
 | `image_assets.rs` | Durable H3 pseudo-image generations, graph/receipt provenance, imported candidates | Planning authority |
+| `image_studio.rs` | Recoverable image projects, structured compositions, native Ideogram 4 graphs, immutable PNG takes, and progress | LLM process ownership, arbitrary imported workflows, bundled license rights, or public-network fallback |
 | `live_preview.rs` | TAE preview graph nodes and producer-visible preview events | Final-render truth |
 | `music.rs` | Recoverable song projects, producer arrangement, native Music 3 graphs, immutable takes, progress, and optional MuScriptor adapter | LLM process ownership, fake stem separation, bundled gated weights, or public-network fallback |
 
@@ -137,6 +138,36 @@ releases both ComfyUI services and the local language model so its checkpoint ca
 MuScriptor remains an explicit advanced adapter: the producer supplies both its executable and gated
 checkpoint, Kestrel invokes a fixed argument array, and the receipt preserves its non-commercial
 license notice and output hash.
+
+## Image production lifecycle
+
+Image Studio uses the same resource boundary without inheriting movie-agent authority:
+
+```text
+open recoverable image project
+  -> producer edits the brief, exclusive photo/art style, palette, exact text, layer order, and normalized layout boxes
+  -> optional selected local GGUF streams an unapplied structured-composition proposal
+  -> producer applies, discards, redirects, or keeps the partial checkpoint
+  -> persist the project and unload the language-model runtime plus retained ComfyUI models
+  -> serialize Ideogram's order-sensitive compact JSON and compile Kestrel's native graph on loopback ComfyUI port 8188
+  -> stream node phase, sampling progress, percentage, and ETA
+  -> require every expected batch PNG, then copy, dimension-check, and hash each inside the project
+  -> append separate immutable takes with exact prompt/graph/model/license receipts, then call `/free`
+```
+
+`images/<uuid>/project.json` is recoverable truth. `takes/*.png` and each generation receipt are
+immutable; changing the design never rewrites an older take. Startup marks an active generation
+`interrupted` and never submits it again. The React surface sends typed producer fields, not ComfyUI
+graphs. Native code owns node names, model filenames, limits, output extraction, and provenance.
+The layout desk supports direct box drawing, overlap cycling, layer ordering, duplication, keyboard
+nudge, extreme canvas presets, explicit seed modes, and one/two/four-image batches. A completed take
+can be used as an opacity-adjustable alignment backdrop, but it is never sent as model conditioning.
+ComfyUI Manager and KJNodes are not Image Studio runtime dependencies: those projects informed the
+producer interaction, while Kestrel keeps the submitted workflow on versioned Comfy core nodes so a
+custom-node update cannot silently alter an existing project contract.
+Ideogram 4 is installed only after explicit acceptance of its pinned non-commercial agreement and is
+not included in the commercial production-suite action. Kestrel's MIT license does not grant model
+or output rights.
 
 ## Typed cross-boundary contracts
 

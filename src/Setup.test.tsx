@@ -27,6 +27,7 @@ describe("SetupConsole", () => {
     expect(screen.getByRole("heading", { name: "Kestrel essentials are ready." })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Bonsai assistant" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax H3 Movie Studio" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ideogram 4 Image Studio" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax Music 3 Production" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Local voice and dictation" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Add another local model" })).toBeInTheDocument();
@@ -89,6 +90,35 @@ describe("SetupConsole", () => {
       "media", "studio", "music", "speech",
     ]);
     expect(setupApi.install.mock.calls.every(([request]) => request.installRoot === installRoot)).toBe(true);
+  });
+
+  it("requires explicit Ideogram non-commercial acceptance and uses the saved location", async () => {
+    const installRoot = "E:\\Image Models";
+    const saved = {
+      ...demoSnapshot,
+      settings: { ...demoSnapshot.settings, installRoot },
+      setup: { ...demoSnapshot.setup, installRoot },
+    };
+    setupApi.save.mockResolvedValue(saved);
+    render(<SetupConsole snapshot={demoSnapshot} onChanged={vi.fn()} onError={vi.fn()} />);
+    const card = screen.getByRole("heading", { name: "Ideogram 4 Image Studio" }).closest("article");
+    const installButton = card?.querySelector("button");
+    expect(installButton).not.toBeNull();
+
+    fireEvent.click(installButton!);
+    expect(screen.getByRole("dialog", { name: /Ideogram 4 is non-commercial/i })).toBeInTheDocument();
+    expect(setupApi.install).not.toHaveBeenCalled();
+    const acceptButton = screen.getByRole("button", { name: /accept and install/i });
+    expect(acceptButton).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /have read and accept/i }));
+    fireEvent.click(acceptButton);
+
+    await waitFor(() => expect(setupApi.install).toHaveBeenCalledOnce());
+    expect(setupApi.install).toHaveBeenCalledWith(expect.objectContaining({
+      component: "image",
+      installRoot,
+      acceptIdeogramNonCommercialLicense: true,
+    }));
   });
 
   it("merges downloader completion into the latest setup snapshot", () => {
