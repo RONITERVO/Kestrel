@@ -54,8 +54,8 @@ use std::{
 };
 use store::ResearchStore;
 use studio::{
-    CreateMusicProjectRequest, MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion,
-    MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
+    ComfyWorkload, CreateMusicProjectRequest, MovieClipAssistRequest, MovieClipRenderRequest,
+    MovieClipSuggestion, MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
     MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest,
     MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot,
     MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest, MusicProject,
@@ -1840,6 +1840,7 @@ async fn open_comfy_ui(workload: Option<String>, state: State<'_, AppState>) -> 
         .load()
         .map_err(|error| error.to_string())?;
     let music = workload.as_deref() == Some("music");
+    let workload = ComfyWorkload::from_music(music);
     release_all_comfy_memory(&state).await;
     state
         .runtime
@@ -1849,15 +1850,11 @@ async fn open_comfy_ui(workload: Option<String>, state: State<'_, AppState>) -> 
     services::stop_bonsai(&settings.bonsai_root)
         .await
         .map_err(|error| error.to_string())?;
-    services::start_comfy(&settings.comfy_root, music)
+    services::start_comfy(&settings.comfy_root, workload)
         .await
         .map_err(|error| error.to_string())?;
     std::process::Command::new("explorer.exe")
-        .arg(if music {
-            "http://127.0.0.1:8189/"
-        } else {
-            "http://127.0.0.1:8188/"
-        })
+        .arg(workload.base_url())
         .spawn()
         .map(|_| ())
         .map_err(|error| {

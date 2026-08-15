@@ -121,11 +121,11 @@ open recoverable song project
   -> persist project and unload the language-model runtime plus every retained ComfyUI model
   -> submit the native MiniMax Music 3 graph to its GPU-resident loopback ComfyUI service on 8189
   -> stream node phase, sample step, percentage, and ETA
-  -> copy and hash the completed stereo WAV inside the project
+  -> copy and hash the completed lossless stereo master inside the project
   -> append an immutable take and exact generation receipt, then call `/free` on both ComfyUI services
 ```
 
-`music/<uuid>/project.json` is recoverable truth. `takes/<uuid>.wav` and its graph receipt are immutable;
+`music/<uuid>/project.json` is recoverable truth. `takes/<uuid>.flac` and its graph receipt are immutable;
 editing the arrangement never rewrites an older take. Startup changes active generations to
 `interrupted` and never submits them again. MiniMax Music 3 produces a stereo master, so the arranger
 may show semantic lanes for structure and lyrics but must not label generated audio as separate stems.

@@ -1,7 +1,23 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { demoSnapshot } from "./demo";
 import { mergeSetupControlSnapshot, SetupConsole } from "./Setup";
+
+const setupApi = vi.hoisted(() => ({
+  install: vi.fn(),
+  save: vi.fn(),
+}));
+
+vi.mock("./api", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./api")>(),
+  installSetupComponent: setupApi.install,
+  saveSetupLocations: setupApi.save,
+}));
+
+beforeEach(() => {
+  setupApi.install.mockReset().mockResolvedValue(demoSnapshot);
+  setupApi.save.mockReset().mockResolvedValue(demoSnapshot);
+});
 
 afterEach(cleanup);
 
@@ -31,6 +47,48 @@ describe("SetupConsole", () => {
     expect(screen.getByRole("button", { name: /Set up essentials/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Set up production suite/ })).toBeInTheDocument();
     expect(screen.getByText(/Interrupted downloads resume/)).toBeInTheDocument();
+  });
+
+  it("installs every production component after saving a new empty location", async () => {
+    const installRoot = "E:\\Empty Kestrel";
+    let current = {
+      ...demoSnapshot,
+      settings: { ...demoSnapshot.settings, installRoot },
+      setup: {
+        ...demoSnapshot.setup,
+        installRoot,
+        components: demoSnapshot.setup.components.map((item) =>
+          ["media", "studio", "music", "speech"].includes(item.id)
+            ? { ...item, status: "missing" }
+            : item,
+        ),
+      },
+    };
+    setupApi.save.mockResolvedValue(current);
+    setupApi.install.mockImplementation(async (request: { component: string; installRoot: string }) => {
+      current = {
+        ...current,
+        setup: {
+          ...current.setup,
+          components: current.setup.components.map((item) =>
+            item.id === request.component ? { ...item, status: "ready" } : item,
+          ),
+        },
+      };
+      return current;
+    });
+
+    render(<SetupConsole snapshot={demoSnapshot} onChanged={vi.fn()} onError={vi.fn()} />);
+    fireEvent.change(screen.getByDisplayValue(demoSnapshot.settings.installRoot), {
+      target: { value: installRoot },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Set up production suite/ }));
+
+    await waitFor(() => expect(setupApi.install).toHaveBeenCalledTimes(4));
+    expect(setupApi.install.mock.calls.map(([request]) => request.component)).toEqual([
+      "media", "studio", "music", "speech",
+    ]);
+    expect(setupApi.install.mock.calls.every(([request]) => request.installRoot === installRoot)).toBe(true);
   });
 
   it("merges downloader completion into the latest setup snapshot", () => {

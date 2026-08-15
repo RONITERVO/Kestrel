@@ -3,6 +3,7 @@ use crate::kiwix::KiwixClient;
 use crate::models::{
     GpuSnapshot, ResearchSettings, RuntimeSnapshot, ServiceStatus, SystemSnapshot,
 };
+use crate::studio::ComfyWorkload;
 use reqwest::Client;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -142,14 +143,14 @@ pub async fn system_snapshot(settings: ResearchSettings) -> SystemSnapshot {
     }
 }
 
-pub async fn start_comfy(comfy_root: &str, music: bool) -> Result<(), ServiceError> {
+pub async fn start_comfy(comfy_root: &str, workload: ComfyWorkload) -> Result<(), ServiceError> {
     let client = Client::builder()
         .no_proxy()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .expect("HTTP client");
-    let port = if music { "8189" } else { "8188" };
-    let endpoint = format!("http://127.0.0.1:{port}/system_stats");
+    let port = workload.port().to_string();
+    let endpoint = format!("{}/system_stats", workload.base_url());
     if client
         .get(&endpoint)
         .send()
@@ -159,28 +160,22 @@ pub async fn start_comfy(comfy_root: &str, music: bool) -> Result<(), ServiceErr
         return Ok(());
     }
     let root = Path::new(comfy_root);
-    let generic = root.join(if music {
-        "Start-Kestrel-ComfyUI-Music.ps1"
-    } else {
-        "Start-Kestrel-ComfyUI.ps1"
-    });
-    let legacy = root.join("Start-ComfyUI-MiniMax-H3.ps1");
-    let script = if generic.is_file() || music {
-        generic
-    } else {
-        legacy
-    };
-    if !script.is_file() {
-        return Err(ServiceError::MissingScript(format!(
-            "Kestrel's ComfyUI launcher is missing from {}. Open Setup and resume Movie Studio or Music Production.",
-            root.display()
-        )));
-    }
+    let script = workload
+        .script_names()
+        .iter()
+        .map(|name| root.join(name))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            ServiceError::MissingScript(format!(
+                "Kestrel's ComfyUI launcher is missing from {}. Open Setup and resume Movie Studio or Music Production.",
+                root.display()
+            ))
+        })?;
     let mut command = Command::new("powershell.exe");
     command
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
-        .args(["-Port", port, "-NoBrowser"])
+        .args(["-Port", &port, "-NoBrowser"])
         .current_dir(comfy_root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

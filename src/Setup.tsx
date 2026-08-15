@@ -91,12 +91,12 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const installProductionSuite = async () => {
     setBusy("production");
     try {
-      await saveLocations();
-      let next = snapshot;
+      let next = await saveLocations();
+      const savedInstallRoot = next.settings.installRoot;
       for (const component of productionIds) {
         if (next.setup.components.find((item) => item.id === component)?.status === "ready") continue;
         setProgress({ component, stage: "preparing", detail: `Preparing ${component}…`, downloadedBytes: 0, totalBytes: 0, bytesPerSecond: 0 });
-        next = await installSetupComponent({ component, installRoot: locations.installRoot, wikipediaEdition: edition });
+        next = await installSetupComponent({ component, installRoot: savedInstallRoot, wikipediaEdition: edition });
         onChanged(next);
       }
       setLocations(fromSnapshot(next));

@@ -89,27 +89,35 @@ const MOVIE_THINKING_BUDGET: u32 = 32_768;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Copy)]
-enum ComfyWorkload {
+pub(crate) enum ComfyWorkload {
     Shared,
     Music,
 }
 
 impl ComfyWorkload {
-    fn base_url(self) -> &'static str {
+    pub(crate) fn from_music(music: bool) -> Self {
+        if music {
+            Self::Music
+        } else {
+            Self::Shared
+        }
+    }
+
+    pub(crate) fn base_url(self) -> &'static str {
         match self {
             Self::Shared => COMFY_BASE,
             Self::Music => MUSIC_COMFY_BASE,
         }
     }
 
-    fn port(self) -> u16 {
-        match self {
-            Self::Shared => 8188,
-            Self::Music => 8189,
-        }
+    pub(crate) fn port(self) -> u16 {
+        url::Url::parse(self.base_url())
+            .ok()
+            .and_then(|url| url.port_or_known_default())
+            .expect("fixed ComfyUI base URL must include a valid port")
     }
 
-    fn script_names(self) -> &'static [&'static str] {
+    pub(crate) fn script_names(self) -> &'static [&'static str] {
         match self {
             Self::Shared => &["Start-Kestrel-ComfyUI.ps1", "Start-ComfyUI-MiniMax-H3.ps1"],
             Self::Music => &["Start-Kestrel-ComfyUI-Music.ps1"],
@@ -2779,7 +2787,7 @@ impl MovieStudio {
                     if let Some(preview) = &preview {
                         preview.finish();
                     }
-                    let media = find_output_media(entry).ok_or_else(|| {
+                    let media = find_output_media(entry, "videos").ok_or_else(|| {
                         StudioError::Render("completed H3 job exposed no saved video".into())
                     })?;
                     let source = PathBuf::from(&project.settings.comfy_root)
@@ -5060,26 +5068,24 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
     graph
 }
 
-fn find_output_media(entry: &Value) -> Option<(String, String)> {
+fn find_output_media(entry: &Value, category: &str) -> Option<(String, String)> {
     let outputs = entry.get("outputs")?.as_object()?;
     for output in outputs.values() {
-        for key in ["images", "videos", "audio"] {
-            for media in output
-                .get(key)
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if let Some(filename) = media.get("filename").and_then(Value::as_str) {
-                    return Some((
-                        filename.into(),
-                        media
-                            .get("subfolder")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .into(),
-                    ));
-                }
+        for media in output
+            .get(category)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(filename) = media.get("filename").and_then(Value::as_str) {
+                return Some((
+                    filename.into(),
+                    media
+                        .get("subfolder")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .into(),
+                ));
             }
         }
     }
@@ -5357,6 +5363,32 @@ mod tests {
     use super::*;
     use crate::runtime::RuntimeManager;
     use std::sync::Arc;
+
+    #[test]
+    fn comfy_workload_derives_ports_from_its_base_url() {
+        assert_eq!(ComfyWorkload::Shared.port(), 8188);
+        assert_eq!(ComfyWorkload::Music.port(), 8189);
+    }
+
+    #[test]
+    fn output_media_selection_is_scoped_to_the_requested_category() {
+        let history = json!({
+            "outputs": {
+                "preview": {"images": [{"filename": "preview.png"}]},
+                "sound": {"audio": [{"filename": "sound.flac", "subfolder": "audio"}]},
+                "master": {"videos": [{"filename": "master.mp4", "subfolder": "video"}]}
+            }
+        });
+
+        assert_eq!(
+            find_output_media(&history, "videos"),
+            Some(("master.mp4".into(), "video".into()))
+        );
+        assert_eq!(
+            find_output_media(&history, "audio"),
+            Some(("sound.flac".into(), "audio".into()))
+        );
+    }
 
     fn live_bonsai_studio_context(
         research: &ResearchSettings,

@@ -24,6 +24,15 @@ const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
 const CHATTERBOX_NODE_REVISION: &str = "f0300cf84ee1b8fc9cbd38cb68cb3bace1895063";
 const CHATTERBOX_MODEL_REVISION: &str = "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd";
 const KESTREL_WHISPER_ADAPTER_REVISION: &str = "kestrel-whisper-v1";
+const KESTREL_MANAGED_COMFY_MARKER: &str = ".kestrel-managed-portable";
+const KESTREL_MANAGED_COMFY_MARKER_CONTENT: &str = "Kestrel-managed ComfyUI portable\n";
+const SPEECH_PYTHON_PACKAGES: [&str; 5] = [
+    "openai-whisper==20250625",
+    "s3tokenizer==0.3.0",
+    "conformer==0.3.2",
+    "librosa==0.11.0",
+    "soundfile==0.14.0",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,9 +178,7 @@ pub fn snapshot(
         && comfy
             .join("custom_nodes/Kestrel-Whisper/nodes.py")
             .is_file();
-    let speech_marker = comfy
-        .join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready")
-        .is_file();
+    let speech_marker = speech_marker_is_current(comfy);
     let speech_ready = comfy.join("main.py").is_file()
         && generic_launcher
         && speech_nodes
@@ -693,8 +700,6 @@ async fn install_comfy_portable(
     require_music_nodes: bool,
     cancel: &CancellationToken,
 ) -> Result<PathBuf, SetupError> {
-    let downloads = root.join("downloads");
-    fs::create_dir_all(&downloads)?;
     let portable = Asset::new(
         "ComfyUI portable",
         &format!("https://github.com/Comfy-Org/ComfyUI/releases/download/{COMFY_VERSION}/ComfyUI_windows_portable_nvidia.7z"),
@@ -702,17 +707,30 @@ async fn install_comfy_portable(
         2_133_107_036,
         "4a221588979b96b8244e0e50b2edca03af732acae1deba69d60aa3b4d60b9dba",
     );
-    let archive = downloads.join(&portable.file_name);
-    download(app, component, &portable, &archive, cancel).await?;
     let portable_root = root.join("ComfyUI_windows_portable");
     let comfy = portable_root.join("ComfyUI");
-    if !comfy.join("main.py").is_file() {
-        extract_7z(&archive, root, &portable.name).await?;
-    } else if require_music_nodes
+    let needs_extraction = !comfy.join("main.py").is_file();
+    let needs_replacement = !needs_extraction
+        && require_music_nodes
         && !comfy.join("comfy_extras/nodes_minimax_music.py").is_file()
-        && is_kestrel_managed_comfy_root(&comfy, root)
-    {
-        replace_managed_comfy_portable(&archive, root, &portable.name).await?;
+        && is_kestrel_managed_comfy_root(&comfy, root);
+    if needs_extraction || needs_replacement {
+        let downloads = root.join("downloads");
+        fs::create_dir_all(&downloads)?;
+        let archive = downloads.join(&portable.file_name);
+        download(app, component, &portable, &archive, cancel).await?;
+        if needs_extraction {
+            extract_7z(&archive, root, &portable.name).await?;
+            if !comfy.join("main.py").is_file() {
+                return Err(SetupError::Extract {
+                    name: portable.name,
+                    details: "the verified portable archive did not contain ComfyUI/main.py".into(),
+                });
+            }
+            mark_kestrel_managed_comfy_root(&comfy)?;
+        } else {
+            replace_managed_comfy_portable(&archive, root, &portable.name).await?;
+        }
     }
     if require_music_nodes && !comfy.join("comfy_extras/nodes_minimax_music.py").is_file() {
         return Err(SetupError::Extract {
@@ -797,6 +815,8 @@ async fn install_speech(
     } else {
         install_comfy_portable(app, root, "speech", false, &cancel).await?
     };
+    let kestrel_managed = is_kestrel_managed_comfy_root(&comfy, root);
+    ensure_speech_python(app, &comfy, kestrel_managed, &cancel).await?;
     let downloads = root.join("downloads");
     fs::create_dir_all(&downloads)?;
     let chatterbox_node = Asset::new(
@@ -826,13 +846,10 @@ async fn install_speech(
         }
         download(app, "speech", &asset.download, &destination, &cancel).await?;
     }
-    ensure_speech_python(app, &comfy, &cancel).await?;
     ensure_comfy_launcher(&comfy)?;
     fs::write(
         comfy.join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready"),
-        format!(
-            "{KESTREL_WHISPER_ADAPTER_REVISION}\nchatterbox-node={CHATTERBOX_NODE_REVISION}\nchatterbox-model={CHATTERBOX_MODEL_REVISION}\n"
-        ),
+        speech_marker_contents(),
     )?;
     settings.comfy_root = comfy.to_string_lossy().into_owned();
     emit(
@@ -939,6 +956,7 @@ fn install_kestrel_whisper_node(comfy: &Path) -> Result<(), SetupError> {
 async fn ensure_speech_python(
     app: &AppHandle,
     comfy: &Path,
+    kestrel_managed: bool,
     cancel: &CancellationToken,
 ) -> Result<(), SetupError> {
     let python = comfy_python(comfy).ok_or_else(|| SetupError::Dependency {
@@ -950,6 +968,18 @@ async fn ensure_speech_python(
     })?;
     if speech_python_ready(&python).await {
         return Ok(());
+    }
+    if !kestrel_managed {
+        return Err(SetupError::Dependency {
+            name: "local speech Python packages".into(),
+            details: format!(
+                "{} is producer-managed, so Kestrel did not change its Python environment. Install these exact packages with `{}` -m pip install {}, then choose Resume: {}",
+                comfy.display(),
+                python.display(),
+                SPEECH_PYTHON_PACKAGES.join(" "),
+                SPEECH_PYTHON_PACKAGES.join(", ")
+            ),
+        });
     }
     emit(
         app,
@@ -969,12 +999,8 @@ async fn ensure_speech_python(
         "--no-input",
         "--upgrade-strategy",
         "only-if-needed",
-        "openai-whisper==20250625",
-        "s3tokenizer==0.3.0",
-        "conformer==0.3.2",
-        "librosa==0.11.0",
-        "soundfile==0.14.0",
     ]);
+    command.args(SPEECH_PYTHON_PACKAGES);
     command
         .current_dir(comfy)
         .env("PIP_DISABLE_PIP_VERSION_CHECK", "1")
@@ -1051,9 +1077,32 @@ fn is_kestrel_managed_comfy_root(comfy: &Path, install_root: &Path) -> bool {
         .join("ComfyUI_windows_portable")
         .join("ComfyUI");
     let expected_location = paths_equal(comfy, &expected);
-    let version_managed = read_bounded_text(&comfy.join("comfyui_version.py"), 4 * 1024)
-        .is_some_and(|value| value.contains("__version__"));
-    expected_location && (launcher_managed || version_managed)
+    let portable_marker = read_bounded_text(&comfy.join(KESTREL_MANAGED_COMFY_MARKER), 256)
+        .is_some_and(|value| value == KESTREL_MANAGED_COMFY_MARKER_CONTENT);
+    expected_location && (launcher_managed || portable_marker)
+}
+
+fn mark_kestrel_managed_comfy_root(comfy: &Path) -> Result<(), SetupError> {
+    fs::write(
+        comfy.join(KESTREL_MANAGED_COMFY_MARKER),
+        KESTREL_MANAGED_COMFY_MARKER_CONTENT,
+    )?;
+    Ok(())
+}
+
+fn speech_marker_contents() -> String {
+    format!(
+        "{KESTREL_WHISPER_ADAPTER_REVISION}\nchatterbox-node={CHATTERBOX_NODE_REVISION}\nchatterbox-model={CHATTERBOX_MODEL_REVISION}\n"
+    )
+}
+
+fn speech_marker_is_current(comfy: &Path) -> bool {
+    let expected = speech_marker_contents();
+    read_bounded_text(
+        &comfy.join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready"),
+        1_024,
+    )
+    .is_some_and(|value| value == expected)
 }
 
 fn paths_equal(left: &Path, right: &Path) -> bool {
@@ -1097,6 +1146,7 @@ async fn replace_managed_comfy_portable(
             ),
         });
     }
+    mark_kestrel_managed_comfy_root(&staged_comfy)?;
     fs::rename(&portable, &backup)?;
     if let Err(error) = fs::rename(&staged_portable, &portable) {
         let _ = fs::rename(&backup, &portable);
@@ -1118,6 +1168,9 @@ async fn replace_managed_comfy_portable(
                 failed_replacement.display()
             ),
         });
+    }
+    if backup.exists() {
+        fs::remove_dir_all(&backup)?;
     }
     let _ = fs::remove_dir(&staging);
     Ok(())
@@ -1685,7 +1738,7 @@ async fn extract_7z(archive: &Path, destination: &Path, name: &str) -> Result<()
     let destination = destination.to_path_buf();
     let label = name.to_string();
     tokio::task::spawn_blocking(move || {
-        sevenz_rust::decompress_file_with_extract_fn(
+        sevenz_rust2::decompress_file_with_extract_fn(
             &archive,
             &destination,
             |entry, reader, output| {
@@ -1695,9 +1748,11 @@ async fn extract_7z(archive: &Path, destination: &Path, name: &str) -> Result<()
                         .components()
                         .any(|component| !matches!(component, std::path::Component::Normal(_)))
                 {
-                    return Err(sevenz_rust::Error::other("archive contains an unsafe path"));
+                    return Err(sevenz_rust2::Error::Other(
+                        "archive contains an unsafe path".into(),
+                    ));
                 }
-                sevenz_rust::default_entry_extract_fn(entry, reader, output)
+                sevenz_rust2::default_entry_extract_fn(entry, reader, output)
             },
         )
         .map_err(|error| SetupError::Extract {
@@ -1996,11 +2051,15 @@ mod tests {
             comfy.join("Start-ComfyUI-MiniMax-H3.ps1"),
             comfy.join("custom_nodes/ComfyUI-Chatterbox/nodes.py"),
             comfy.join("custom_nodes/Kestrel-Whisper/nodes.py"),
-            comfy.join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready"),
         ] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"x").unwrap();
         }
+        fs::write(
+            comfy.join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready"),
+            speech_marker_contents(),
+        )
+        .unwrap();
         for asset in h3_assets() {
             let path = comfy.join("models").join(asset.relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -2085,6 +2144,21 @@ mod tests {
                 .status
                 == "ready"
         );
+        fs::write(
+            comfy.join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready"),
+            "kestrel-whisper-old\nchatterbox-node=old\nchatterbox-model=old\n",
+        )
+        .unwrap();
+        let stale = snapshot(&research, &control, None);
+        assert_eq!(
+            stale
+                .components
+                .iter()
+                .find(|item| item.id == "speech")
+                .unwrap()
+                .status,
+            "partial"
+        );
     }
 
     #[test]
@@ -2095,6 +2169,16 @@ mod tests {
         fs::write(
             managed.join("comfyui_version.py"),
             "__version__ = \"0.32.0\"",
+        )
+        .unwrap();
+        assert!(!is_kestrel_managed_comfy_root(&managed, root.path()));
+
+        mark_kestrel_managed_comfy_root(&managed).unwrap();
+        assert!(is_kestrel_managed_comfy_root(&managed, root.path()));
+        fs::remove_file(managed.join(KESTREL_MANAGED_COMFY_MARKER)).unwrap();
+        fs::write(
+            managed.join("Start-Kestrel-ComfyUI.ps1"),
+            "# Kestrel-managed shared ComfyUI launcher",
         )
         .unwrap();
         assert!(is_kestrel_managed_comfy_root(&managed, root.path()));

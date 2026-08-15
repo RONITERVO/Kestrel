@@ -536,7 +536,7 @@ impl MusicStudio {
                     return Err(StudioError::Render(format!("ComfyUI {detail}")));
                 }
                 if entry.pointer("/status/completed").and_then(Value::as_bool) == Some(true) {
-                    let media = find_output_media(entry).ok_or_else(|| {
+                    let media = find_output_media(entry, "audio").ok_or_else(|| {
                         StudioError::Render(
                             "the completed music graph exposed no saved audio output".into(),
                         )

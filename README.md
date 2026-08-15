@@ -2,13 +2,13 @@
 
 Kestrel is a Windows-first local model control plane, fully offline research workspace, and producer-directed movie and music environment. Research uses its release-validated Bonsai 27B harness with an English Kiwix Wikipedia archive; the separate Studio can pin any compatible local GGUF as Director and Reviewer and uses MiniMax H3 through local ComfyUI without research tools. Music uses native MiniMax Music 3 with producer-owned arrangements and immutable local takes. Research remains usable as plain JSON and self-contained HTML; media projects remain ordinary JSON, WAV, PNG, and MP4 files without Kestrel, SQLite, Codex, or internet access.
 
-The application has seven adjacent workspaces:
+The application has eight adjacent workspaces:
 
 - **Setup** owns blank-Windows onboarding: one click installs the assistant and offline archive, while a second production-suite action installs verified movie finishing, H3, Music 3, Chatterbox narration, and Kestrel's timestamped Whisper adapter. Downloads are pinned, integrity checked, observed, safely resumable, and kept on the producer-selected drive.
 - **Control** discovers GGUF files read-only, keeps a recoverable startup catalog, rediscovers installed Bonsai/Jan/PATH engines, attaches to an existing Bonsai service or starts one authenticated `llama-server`, shows live VRAM, exposes exact launch arguments, and offers durable multimodal chat and Computer Tasks.
 - **Research** runs a Bonsai-specific two-tool harness, visibly reports six stages, validates every citation, finds related prior work, and publishes immutable editions.
 - **Studio** turns one unmodified user prompt into a local-Director-authored screenplay, continuity bible, independently reviewed production-grade MiniMax H3 prompts, native-audio clips, and a non-linear offline timeline. Director and Reviewer are pinned per project; generic chat-template GGUFs receive a recoverable, version-bound local protocol check before standard-mode unattended use, and two different role models are swapped through the sole inference slot rather than loaded together. Split or repeat scenes, choose any preserved version, retime, trim, fade picture and sound, audition the sequence, undo decisions, and render archive/publish/review cuts. Producers can also generate durable local character, location, prop, poster, and style-frame assets through H3's pseudo-image workflow: Kestrel preserves six nearby stable frames from one 22-frame pass, records the exact prompt/seed/graph, and attaches only the chosen candidate. Optional producer pictures, videos, and exact clip audio are imported once, described for placement, and bound through H3's native reference model. Studio has no research or archive tools and unloads the language-model runtime before H3 receives the GPU.
-- **Music** provides a fixed-window, Mac-DAW-familiar arranger for producer-owned sections, description, lyrics, transport, take library, and exact generation settings. Any selected local GGUF may stream an unapplied description or tagged-lyrics proposal with stop-and-keep-checkpoint control. Native MiniMax Music 3 renders one honest stereo master through loopback ComfyUI with step progress and ETA; every WAV take, graph, model identity, seed, and SHA-256 remains durable. Advanced producers may configure their own gated MuScriptor executable and checkpoint for explicit audio-to-MIDI transcription.
+- **Music** provides a fixed-window, Mac-DAW-familiar arranger for producer-owned sections, description, lyrics, transport, take library, and exact generation settings. Any selected local GGUF may stream an unapplied description or tagged-lyrics proposal with stop-and-keep-checkpoint control. Native MiniMax Music 3 renders one honest stereo master through loopback ComfyUI with step progress and ETA; every lossless FLAC take, graph, model identity, seed, and SHA-256 remains durable. Advanced producers may configure their own gated MuScriptor executable and checkpoint for explicit audio-to-MIDI transcription.
 - **Local speech** uses the setup-installed Chatterbox model for opt-in narration and an owned, auditable ComfyUI adapter around a pinned OpenAI Whisper checkpoint for dictation and word timing. It has no browser, Windows, or remote fallback; generated audio and recordings remain in Kestrel's private cache.
 - **Developer** runs fixed offline checks. If Codex CLI is installed and signed in, an explicit one-click action can repair this Git workspace under an ephemeral workspace-write sandbox. Research never depends on it.
 - **System** exposes the installed Bonsai/Kiwix state, GPU telemetry, and opt-in high-capacity research settings.
@@ -91,7 +91,7 @@ C:\Users\<you>\Kestrel Research\
 |   `-- logs\              # local renderer startup diagnostics
 |-- music\<uuid>           # recoverable producer-owned song project
 |   |-- project.json       # arrangement, lyrics, settings, take history, and status
-|   |-- takes\*.wav         # immutable local stereo masters
+|   |-- takes\*.flac        # immutable lossless stereo masters
 |   |-- receipts\<take_id>.graph.json # exact submitted graph and generation receipt
 |   `-- midi\*.mid          # optional explicit MuScriptor transcriptions
 `-- reports\YYYY\MM\<title>--<id>\
@@ -120,7 +120,7 @@ Portable setup profiles contain research/runtime tuning, path-independent model 
 - The WebView CSP permits no external network connection or remote asset.
 - Native research clients accept only fixed loopback services.
 - Movie rendering accepts only fixed loopback ComfyUI on `127.0.0.1:8188`; completed media is copied into Kestrel's library before use.
-- Music generation and optional transcription are local-only; generated WAV/MIDI files are copied into the project before Kestrel reports success.
+- Music generation and optional transcription are local-only; generated lossless stereo masters and MIDI files are copied into the project before Kestrel reports success.
 - Kiwix runs with external access blocked.
 - Research receives only its two citation tools. Ordinary chat receives no mutation tools. Computer Tasks receives only typed, policy-checked tools; attachment reads are restricted to files explicitly selected for that task.
 - Codex is isolated to `developer.rs`, requires explicit confirmation, cannot run during research, creates no commit, and is not required for diagnostics or any offline feature.
