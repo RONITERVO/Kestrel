@@ -134,6 +134,7 @@ export const demoSnapshot: AppSnapshot = {
       { id: "media", label: "Movie finishing tools", status: "ready", detail: "Ready for movie assembly.", path: "D:\\LocalAI\\MediaTools", downloadBytes: 80000000, optional: true },
       { id: "studio", label: "MiniMax H3 Movie Studio", status: "ready", detail: "Ready for high-quality movies.", path: "D:\\AI\\ComfyUI", downloadBytes: 65550000000, optional: true },
       { id: "music", label: "MiniMax Music 3 Production", status: "missing", detail: "Optional private full-song generation through local ComfyUI.", path: "D:\\AI\\ComfyUI", downloadBytes: 11915469696, optional: true },
+      { id: "speech", label: "Local voice and dictation", status: "missing", detail: "Optional private narration and timestamped dictation through local ComfyUI.", path: "D:\\AI\\ComfyUI", downloadBytes: 4810176394, optional: true },
     ],
   },
   control: {

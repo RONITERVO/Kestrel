@@ -16,7 +16,7 @@ Rust application boundary
   |           |-- immutable directory-atomic HTML/JSON bundles
   |           |-- catalog.jsonl durable index
   |           `-- SQLite FTS5 rebuildable cache
-  |-- LocalSpeech: shared narration + timestamped dictation through user-owned ComfyUI on 127.0.0.1:8188
+  |-- LocalSpeech: setup-owned or producer-selected ComfyUI on 127.0.0.1:8188
   |     |-- Chatterbox: content-addressed low-bitrate speech for Research, chat, Tasks, and Studio Copilot
   |     |-- Whisper: rolling dictation plus durable word alignment for click-to-seek playback
   |     `-- no browser, operating-system, public-network, or remote model fallback
@@ -35,7 +35,7 @@ Rust application boundary
   |     `-- FFmpeg first-cut and edited exports
   |-- MusicStudio: producer-owned arrangement + immutable local song takes
   |     |-- any selected local GGUF proposes descriptions or lyrics through the single inference lease
-  |     |-- native ComfyUI MiniMax Music 3 on fixed 127.0.0.1:8188
+  |     |-- native ComfyUI MiniMax Music 3 on dedicated 127.0.0.1:8189
   |     |-- exact graph/model/seed/hash receipts; no synthetic claim of separate stems
   |     `-- optional explicit MuScriptor audio-to-MIDI transcription with local gated weights
   `-- DeveloperAssistant: optional, user-triggered Codex child
@@ -43,7 +43,7 @@ Rust application boundary
 
 `work_active` is the process-wide strict lock for chat, research, Computer Tasks, movie production, music production, local speech, and the explicit model-download network exception. Model downloads therefore cannot overlap strict research, and an interrupted transfer never auto-resumes. Model changes, runtime restarts, native diagnostics, and Codex repair are rejected while work is active. All local-model inference is additionally serialized by `RuntimeManager`; a Studio Director and a different Reviewer are swapped between turns rather than loaded together. ComfyUI generation begins only after the language-model lease is returned and the runtime is stopped. The speech boundary remembers that model and restores it only after the user stops playback or the final dictation pass has durably completed, avoiding duplicate VRAM residents and stop/start churn between rolling Whisper passes.
 
-Local speech is opt-in at every response. Hidden reasoning, system prompts, tool schemas, and raw tool arguments are never narrated. User microphone capture uses the WebView only as a bounded 32-kbit/s recorder; recognition is exclusively the installed local ComfyUI-Whisper model. Provisional passes may revise the visible draft while the user speaks, and the final whole-recording pass owns the durable transcript, segment timings, word timings, compressed audio, and recoverable JSON sidecar. Assistant Chatterbox output is cached as 64-kbit/s Opus with a receipt under its source kind and durable source ID. Playback begins immediately with duration-weighted timing when needed, then a background ComfyUI-Whisper pass aligns and durably records exact words. Clicking the passage scrubber or a visible word changes `currentTime` on that original Opus; it never creates, transcodes, or substitutes a seek copy. One shared UI playback owner prevents overlapping voices. The native alignment request and receipt are adapter boundaries so a future offline forced-alignment ComfyUI node can improve timing without changing product UIs or durable paths.
+Local speech is opt-in at every response. Hidden reasoning, system prompts, tool schemas, and raw tool arguments are never narrated. User microphone capture uses the WebView only as a bounded 32-kbit/s recorder; recognition is exclusively the setup-installed OpenAI Whisper checkpoint behind Kestrel's owned ComfyUI adapter. Provisional passes may revise the visible draft while the user speaks, and the final whole-recording pass owns the durable transcript, segment timings, word timings, compressed audio, and recoverable JSON sidecar. Assistant Chatterbox output is cached as 64-kbit/s Opus with a receipt under its source kind and durable source ID. Playback begins immediately with duration-weighted timing when needed, then a background Whisper pass aligns and durably records exact words. Clicking the passage scrubber or a visible word changes `currentTime` on that original Opus; it never creates, transcodes, or substitutes a seek copy. One shared UI playback owner prevents overlapping voices. The native alignment request and receipt remain adapter boundaries so a future offline forced aligner can improve timing without changing product UIs or durable paths.
 
 The research prefix has only `search_archive` and `read_source`. Candidate references are compact shared memory, not evidence. Citation IDs are issued on successful reads and validated natively. FTS similarity proposes existing editions; deterministic code owns report IDs, parent linkage, edition numbers, and output paths.
 

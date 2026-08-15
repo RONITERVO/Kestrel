@@ -142,15 +142,16 @@ pub async fn system_snapshot(settings: ResearchSettings) -> SystemSnapshot {
     }
 }
 
-pub async fn start_comfy(comfy_root: &str) -> Result<(), ServiceError> {
+pub async fn start_comfy(comfy_root: &str, music: bool) -> Result<(), ServiceError> {
     let client = Client::builder()
         .no_proxy()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .expect("HTTP client");
-    let endpoint = "http://127.0.0.1:8188/system_stats";
+    let port = if music { "8189" } else { "8188" };
+    let endpoint = format!("http://127.0.0.1:{port}/system_stats");
     if client
-        .get(endpoint)
+        .get(&endpoint)
         .send()
         .await
         .is_ok_and(|response| response.status().is_success())
@@ -158,9 +159,17 @@ pub async fn start_comfy(comfy_root: &str) -> Result<(), ServiceError> {
         return Ok(());
     }
     let root = Path::new(comfy_root);
-    let generic = root.join("Start-Kestrel-ComfyUI.ps1");
+    let generic = root.join(if music {
+        "Start-Kestrel-ComfyUI-Music.ps1"
+    } else {
+        "Start-Kestrel-ComfyUI.ps1"
+    });
     let legacy = root.join("Start-ComfyUI-MiniMax-H3.ps1");
-    let script = if generic.is_file() { generic } else { legacy };
+    let script = if generic.is_file() || music {
+        generic
+    } else {
+        legacy
+    };
     if !script.is_file() {
         return Err(ServiceError::MissingScript(format!(
             "Kestrel's ComfyUI launcher is missing from {}. Open Setup and resume Movie Studio or Music Production.",
@@ -171,7 +180,7 @@ pub async fn start_comfy(comfy_root: &str) -> Result<(), ServiceError> {
     command
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
-        .args(["-Port", "8188", "-NoBrowser"])
+        .args(["-Port", port, "-NoBrowser"])
         .current_dir(comfy_root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -185,7 +194,7 @@ pub async fn start_comfy(comfy_root: &str) -> Result<(), ServiceError> {
     })?;
     for _ in 0..180 {
         if client
-            .get(endpoint)
+            .get(&endpoint)
             .send()
             .await
             .is_ok_and(|response| response.status().is_success())

@@ -8,10 +8,11 @@ afterEach(cleanup);
 describe("SetupConsole", () => {
   it("keeps installed components and editable expert locations visible", () => {
     render(<SetupConsole snapshot={demoSnapshot} onChanged={vi.fn()} onError={vi.fn()} />);
-    expect(screen.getByRole("heading", { name: "Kestrel is ready." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Kestrel essentials are ready." })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Bonsai assistant" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax H3 Movie Studio" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax Music 3 Production" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Local voice and dictation" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Add another local model" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Observed model downloader" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Use existing files/ })).toBeInTheDocument();
@@ -28,6 +29,7 @@ describe("SetupConsole", () => {
     };
     render(<SetupConsole snapshot={clean} onChanged={vi.fn()} onError={vi.fn()} />);
     expect(screen.getByRole("button", { name: /Set up essentials/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Set up production suite/ })).toBeInTheDocument();
     expect(screen.getByText(/Interrupted downloads resume/)).toBeInTheDocument();
   });
 

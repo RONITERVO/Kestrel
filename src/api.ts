@@ -105,8 +105,8 @@ export async function getSetupSnapshot(): Promise<SetupSnapshot> {
   return invoke<SetupSnapshot>("get_setup_snapshot");
 }
 
-export async function openComfyUi(): Promise<void> {
-  if (isTauri()) await invoke("open_comfy_ui");
+export async function openComfyUi(workload: "studio" | "music"): Promise<void> {
+  if (isTauri()) await invoke("open_comfy_ui", { workload });
 }
 
 export async function saveSetupLocations(locations: SetupLocations): Promise<AppSnapshot> {

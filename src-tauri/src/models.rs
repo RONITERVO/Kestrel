@@ -338,34 +338,16 @@ impl Default for ResearchSettings {
     fn default() -> Self {
         let install_root = default_install_root();
         let bonsai_root = default_bonsai_root();
-        let legacy_zim =
-            std::path::PathBuf::from(r"D:\OfflineInternet\wikipedia_en_all_maxi_2024-01.zim");
-        let wikipedia_zim = if legacy_zim.is_file() {
-            legacy_zim
-        } else {
-            install_root
-                .join("Wikipedia")
-                .join("wikipedia_en_all_mini_2026-06.zim")
-        };
-        let legacy_kiwix = std::path::PathBuf::from(
-            r"D:\LocalAI\OfflineWikipedia\tools\kiwix-tools-3.8.1\kiwix-serve.exe",
-        );
-        let kiwix_server = if legacy_kiwix.is_file() {
-            legacy_kiwix
-        } else {
-            install_root
-                .join("Wikipedia")
-                .join("tools")
-                .join("kiwix-serve.exe")
-        };
-        let legacy_comfy = std::path::PathBuf::from(r"D:\AI\ComfyUI");
-        let comfy_root = if legacy_comfy.join("main.py").is_file() {
-            legacy_comfy
-        } else {
-            install_root
-                .join("ComfyUI_windows_portable")
-                .join("ComfyUI")
-        };
+        let wikipedia_zim = install_root
+            .join("Wikipedia")
+            .join("wikipedia_en_all_mini_2026-06.zim");
+        let kiwix_server = install_root
+            .join("Wikipedia")
+            .join("tools")
+            .join("kiwix-serve.exe");
+        let comfy_root = install_root
+            .join("ComfyUI_windows_portable")
+            .join("ComfyUI");
         let wikipedia_book = wikipedia_zim
             .file_stem()
             .and_then(|value| value.to_str())
@@ -406,12 +388,7 @@ fn default_install_root() -> std::path::PathBuf {
 }
 
 fn default_bonsai_root() -> std::path::PathBuf {
-    let legacy = std::path::PathBuf::from(r"D:\LocalAI\Bonsai27B");
-    if legacy.join("runtime").join("llama-server.exe").is_file() {
-        legacy
-    } else {
-        default_install_root().join("Bonsai")
-    }
+    default_install_root().join("Bonsai")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -4,11 +4,12 @@ Kestrel is a Windows-first local model control plane, fully offline research wor
 
 The application has seven adjacent workspaces:
 
-- **Setup** guides first-run installation, validates existing local components, and provides the observed, resumable local-model downloader.
+- **Setup** owns blank-Windows onboarding: one click installs the assistant and offline archive, while a second production-suite action installs verified movie finishing, H3, Music 3, Chatterbox narration, and Kestrel's timestamped Whisper adapter. Downloads are pinned, integrity checked, observed, safely resumable, and kept on the producer-selected drive.
 - **Control** discovers GGUF files read-only, keeps a recoverable startup catalog, rediscovers installed Bonsai/Jan/PATH engines, attaches to an existing Bonsai service or starts one authenticated `llama-server`, shows live VRAM, exposes exact launch arguments, and offers durable multimodal chat and Computer Tasks.
 - **Research** runs a Bonsai-specific two-tool harness, visibly reports six stages, validates every citation, finds related prior work, and publishes immutable editions.
 - **Studio** turns one unmodified user prompt into a local-Director-authored screenplay, continuity bible, independently reviewed production-grade MiniMax H3 prompts, native-audio clips, and a non-linear offline timeline. Director and Reviewer are pinned per project; generic chat-template GGUFs receive a recoverable, version-bound local protocol check before standard-mode unattended use, and two different role models are swapped through the sole inference slot rather than loaded together. Split or repeat scenes, choose any preserved version, retime, trim, fade picture and sound, audition the sequence, undo decisions, and render archive/publish/review cuts. Producers can also generate durable local character, location, prop, poster, and style-frame assets through H3's pseudo-image workflow: Kestrel preserves six nearby stable frames from one 22-frame pass, records the exact prompt/seed/graph, and attaches only the chosen candidate. Optional producer pictures, videos, and exact clip audio are imported once, described for placement, and bound through H3's native reference model. Studio has no research or archive tools and unloads the language-model runtime before H3 receives the GPU.
 - **Music** provides a fixed-window, Mac-DAW-familiar arranger for producer-owned sections, description, lyrics, transport, take library, and exact generation settings. Any selected local GGUF may stream an unapplied description or tagged-lyrics proposal with stop-and-keep-checkpoint control. Native MiniMax Music 3 renders one honest stereo master through loopback ComfyUI with step progress and ETA; every WAV take, graph, model identity, seed, and SHA-256 remains durable. Advanced producers may configure their own gated MuScriptor executable and checkpoint for explicit audio-to-MIDI transcription.
+- **Local speech** uses the setup-installed Chatterbox model for opt-in narration and an owned, auditable ComfyUI adapter around a pinned OpenAI Whisper checkpoint for dictation and word timing. It has no browser, Windows, or remote fallback; generated audio and recordings remain in Kestrel's private cache.
 - **Developer** runs fixed offline checks. If Codex CLI is installed and signed in, an explicit one-click action can repair this Git workspace under an ephemeral workspace-write sandbox. Research never depends on it.
 - **System** exposes the installed Bonsai/Kiwix state, GPU telemetry, and opt-in high-capacity research settings.
 
@@ -128,7 +129,9 @@ Wikipedia is a tertiary starting point with a January 2024 cutoff. Reports expos
 
 ## Run and verify
 
-Requirements are Windows 10/11, Node.js 20.19+ or 22.12+, Rust stable with MSVC, WebView2, FFmpeg on PATH, and the local assets above.
+The installed product requires Windows 10/11 and a supported NVIDIA production GPU. The NSIS package embeds the offline WebView2 installer; Setup installs FFmpeg, ComfyUI, engines, and model assets without requiring a terminal, Python, Git, Node.js, or Rust installation.
+
+Building Kestrel from source requires Node.js 20.19+ or 22.12+, Rust stable with MSVC, and the normal Windows build toolchain:
 
 ```powershell
 npm install

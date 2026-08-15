@@ -21,6 +21,9 @@ const COMFY_VERSION: &str = "v0.33.1";
 const MUSIC_REVISION: &str = "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6";
 const KJ_PREVIEW_REVISION: &str = "5219cd171cb44e2edce9e4daad6cc42c41eded5c";
 const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
+const CHATTERBOX_NODE_REVISION: &str = "f0300cf84ee1b8fc9cbd38cb68cb3bace1895063";
+const CHATTERBOX_MODEL_REVISION: &str = "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd";
+const KESTREL_WHISPER_ADAPTER_REVISION: &str = "kestrel-whisper-v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +93,8 @@ pub enum SetupError {
     Integrity { name: String, details: String },
     #[error("could not unpack {name}: {details}")]
     Extract { name: String, details: String },
+    #[error("could not prepare {name}: {details}")]
+    Dependency { name: String, details: String },
     #[error("setup file error: {0}")]
     Io(#[from] std::io::Error),
     #[error("not enough free space for {name}: {needed} remains but only {available} is available. Choose another drive in Setup or free space, then resume")]
@@ -129,7 +134,7 @@ pub fn snapshot(
     let comfy = Path::new(&research.comfy_root);
     let h3_files = h3_assets()
         .iter()
-        .all(|asset| comfy.join("models").join(asset.relative).is_file());
+        .all(|asset| file_has_size(&comfy.join("models").join(asset.relative), asset.bytes));
     let generic_launcher = comfy.join("Start-Kestrel-ComfyUI.ps1").is_file();
     let legacy_h3_launcher = comfy.join("Start-ComfyUI-MiniMax-H3.ps1").is_file();
     let studio_ready = comfy.join("main.py").is_file()
@@ -142,7 +147,7 @@ pub fn snapshot(
             .any(|asset| comfy.join("models").join(asset.relative).is_file());
     let music_files = music_assets()
         .iter()
-        .all(|asset| comfy.join("models").join(asset.relative).is_file());
+        .all(|asset| file_has_size(&comfy.join("models").join(asset.relative), asset.bytes));
     let music_nodes = comfy
         .join("comfy_extras")
         .join("nodes_minimax_music.py")
@@ -155,6 +160,28 @@ pub fn snapshot(
         || music_assets()
             .iter()
             .any(|asset| comfy.join("models").join(asset.relative).is_file());
+    let speech_files = speech_assets()
+        .iter()
+        .all(|asset| file_has_size(&comfy.join(asset.relative), asset.download.bytes));
+    let speech_nodes = comfy
+        .join("custom_nodes/ComfyUI-Chatterbox/nodes.py")
+        .is_file()
+        && comfy
+            .join("custom_nodes/Kestrel-Whisper/nodes.py")
+            .is_file();
+    let speech_marker = comfy
+        .join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready")
+        .is_file();
+    let speech_ready = comfy.join("main.py").is_file()
+        && generic_launcher
+        && speech_nodes
+        && speech_files
+        && speech_marker;
+    let speech_partial = speech_nodes
+        || speech_marker
+        || speech_assets()
+            .iter()
+            .any(|asset| comfy.join(asset.relative).is_file());
 
     let ffmpeg = resolve_program(&research.ffmpeg_path, "ffmpeg.exe");
     let ffprobe = resolve_program(&research.ffprobe_path, "ffprobe.exe");
@@ -223,10 +250,22 @@ pub fn snapshot(
             } else if comfy.join("main.py").is_file() && !music_nodes {
                 "ComfyUI must be updated to 0.33.0 or newer before Kestrel can install the native music workflow."
             } else {
-                "Optional: about 12 GB for the official low-VRAM model, text encoder, and full-quality decoder."
+                "Optional: about 12 GB for the verified INT8 model, text encoder, full-quality decoder, and dedicated GPU profile."
             },
             &research.comfy_root,
             (11_915_469_696, true),
+        ),
+        component(
+            "speech",
+            "Local voice and dictation",
+            (speech_ready, speech_partial),
+            if speech_ready {
+                "Ready for private Chatterbox narration and timestamped Whisper dictation across Kestrel."
+            } else {
+                "Optional: installs a local Chatterbox voice and Kestrel's commercially distributable Whisper adapter; no browser or system speech fallback."
+            },
+            &research.comfy_root,
+            (4_810_176_394, true),
         ),
     ];
     SetupSnapshot {
@@ -248,6 +287,10 @@ fn available_space_for(path: &Path) -> u64 {
         current = parent;
     }
     fs2::available_space(current).unwrap_or(0)
+}
+
+fn file_has_size(path: &Path, bytes: u64) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() == bytes)
 }
 
 fn component(
@@ -332,6 +375,7 @@ pub async fn install_component(
         "media" => install_media(app, settings, &root, cancel).await,
         "studio" => install_studio(app, settings, &root, cancel).await,
         "music" => install_music(app, settings, &root, cancel).await,
+        "speech" => install_speech(app, settings, &root, cancel).await,
         other => Err(SetupError::Download {
             name: other.into(),
             details: "unknown setup component".into(),
@@ -735,6 +779,270 @@ async fn install_music(
     Ok(())
 }
 
+async fn install_speech(
+    app: &AppHandle,
+    settings: &mut ResearchSettings,
+    root: &Path,
+    cancel: CancellationToken,
+) -> Result<(), SetupError> {
+    if crate::services::gpu_snapshot().await.is_none() {
+        return Err(SetupError::Dependency {
+            name: "local voice and dictation".into(),
+            details: "no NVIDIA GPU was detected. Kestrel never substitutes browser, Windows, or remote speech; install this component on a supported NVIDIA production computer.".into(),
+        });
+    }
+    let configured = PathBuf::from(settings.comfy_root.trim());
+    let comfy = if configured.join("main.py").is_file() {
+        configured
+    } else {
+        install_comfy_portable(app, root, "speech", false, &cancel).await?
+    };
+    let downloads = root.join("downloads");
+    fs::create_dir_all(&downloads)?;
+    let chatterbox_node = Asset::new(
+        "ComfyUI Chatterbox node",
+        &format!(
+            "https://github.com/wildminder/ComfyUI-Chatterbox/archive/{CHATTERBOX_NODE_REVISION}.zip"
+        ),
+        "ComfyUI-Chatterbox-f0300cf.zip",
+        267_765,
+        "a7ad3a531ba5b2b546d27f5dcd8fe4f490a024089f6cb409e5ff27df99c4dc97",
+    );
+    let chatterbox_archive = downloads.join(&chatterbox_node.file_name);
+    download(
+        app,
+        "speech",
+        &chatterbox_node,
+        &chatterbox_archive,
+        &cancel,
+    )
+    .await?;
+    install_chatterbox_node(&chatterbox_archive, &comfy)?;
+    install_kestrel_whisper_node(&comfy)?;
+    for asset in speech_assets() {
+        let destination = comfy.join(asset.relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        download(app, "speech", &asset.download, &destination, &cancel).await?;
+    }
+    ensure_speech_python(app, &comfy, &cancel).await?;
+    ensure_comfy_launcher(&comfy)?;
+    fs::write(
+        comfy.join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready"),
+        format!(
+            "{KESTREL_WHISPER_ADAPTER_REVISION}\nchatterbox-node={CHATTERBOX_NODE_REVISION}\nchatterbox-model={CHATTERBOX_MODEL_REVISION}\n"
+        ),
+    )?;
+    settings.comfy_root = comfy.to_string_lossy().into_owned();
+    emit(
+        app,
+        "speech",
+        "complete",
+        "Local Chatterbox narration and timestamped Whisper dictation are installed and verified.",
+        1,
+        1,
+        0,
+    );
+    Ok(())
+}
+
+fn install_chatterbox_node(archive: &Path, comfy: &Path) -> Result<(), SetupError> {
+    let custom_nodes = comfy.join("custom_nodes");
+    let target = custom_nodes.join("ComfyUI-Chatterbox");
+    let installed_revision = read_bounded_text(&target.join(".kestrel-managed-revision"), 256);
+    let target_ready =
+        target.join("nodes.py").is_file() && target.join("src/chatterbox/tts.py").is_file();
+    if target_ready
+        && installed_revision
+            .as_deref()
+            .is_none_or(|revision| revision.trim() == CHATTERBOX_NODE_REVISION)
+    {
+        return Ok(());
+    }
+    if target.exists() && installed_revision.is_none() {
+        return Err(SetupError::Dependency {
+            name: "ComfyUI Chatterbox node".into(),
+            details: format!(
+                "{} is incomplete and was not overwritten. Move or remove that folder, then choose Resume in Setup.",
+                target.display()
+            ),
+        });
+    }
+    fs::create_dir_all(&custom_nodes)?;
+    let staging = custom_nodes.join(format!(
+        ".kestrel-chatterbox-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    unzip(archive, &staging, "ComfyUI Chatterbox node")?;
+    let source = staging.join(format!("ComfyUI-Chatterbox-{CHATTERBOX_NODE_REVISION}"));
+    if !source.join("nodes.py").is_file() || !source.join("LICENSE").is_file() {
+        return Err(SetupError::Extract {
+            name: "ComfyUI Chatterbox node".into(),
+            details: format!(
+                "the verified source archive did not contain the pinned node under {}",
+                source.display()
+            ),
+        });
+    }
+    let backup = custom_nodes.join(format!(
+        ".kestrel-chatterbox-backup-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    if target.exists() {
+        fs::rename(&target, &backup)?;
+    }
+    if let Err(error) = fs::rename(&source, &target) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, &target);
+        }
+        return Err(SetupError::Extract {
+            name: "ComfyUI Chatterbox node".into(),
+            details: format!(
+                "the pinned node could not replace the prior Kestrel-managed revision ({error}); the prior revision was restored"
+            ),
+        });
+    }
+    let _ = fs::remove_dir(&staging);
+    fs::write(
+        target.join(".kestrel-managed-revision"),
+        CHATTERBOX_NODE_REVISION,
+    )?;
+    if backup.exists() {
+        let _ = fs::remove_dir_all(&backup);
+    }
+    Ok(())
+}
+
+fn install_kestrel_whisper_node(comfy: &Path) -> Result<(), SetupError> {
+    let target = comfy.join("custom_nodes/Kestrel-Whisper");
+    fs::create_dir_all(&target)?;
+    fs::write(
+        target.join("__init__.py"),
+        include_str!("../resources/kestrel_whisper/__init__.py"),
+    )?;
+    fs::write(
+        target.join("nodes.py"),
+        include_str!("../resources/kestrel_whisper/nodes.py"),
+    )?;
+    fs::write(
+        target.join("LICENSE"),
+        include_str!("../resources/kestrel_whisper/LICENSE"),
+    )?;
+    fs::write(
+        target.join("THIRD_PARTY_NOTICES.md"),
+        include_str!("../resources/kestrel_whisper/THIRD_PARTY_NOTICES.md"),
+    )?;
+    Ok(())
+}
+
+async fn ensure_speech_python(
+    app: &AppHandle,
+    comfy: &Path,
+    cancel: &CancellationToken,
+) -> Result<(), SetupError> {
+    let python = comfy_python(comfy).ok_or_else(|| SetupError::Dependency {
+        name: "local speech Python runtime".into(),
+        details: format!(
+            "ComfyUI's private Python runtime is missing beside {}. Resume Movie Studio, Music Production, or Local voice and dictation from Setup.",
+            comfy.display()
+        ),
+    })?;
+    if speech_python_ready(&python).await {
+        return Ok(());
+    }
+    emit(
+        app,
+        "speech",
+        "dependencies",
+        "Installing pinned speech support inside ComfyUI's private Python runtime…",
+        0,
+        0,
+        0,
+    );
+    let mut command = tokio::process::Command::new(&python);
+    command.args([
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--upgrade-strategy",
+        "only-if-needed",
+        "openai-whisper==20250625",
+        "s3tokenizer==0.3.0",
+        "conformer==0.3.2",
+        "librosa==0.11.0",
+        "soundfile==0.14.0",
+    ]);
+    command
+        .current_dir(comfy)
+        .env("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+        .env("PIP_NO_INPUT", "1")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = tokio::select! {
+        result = command.output() => result?,
+        _ = cancel.cancelled() => return Err(SetupError::Cancelled),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(SetupError::Dependency {
+            name: "local speech Python packages".into(),
+            details: bounded_setup_detail(if stderr.trim().is_empty() {
+                stdout.as_ref()
+            } else {
+                stderr.as_ref()
+            }),
+        });
+    }
+    if !speech_python_ready(&python).await {
+        return Err(SetupError::Dependency {
+            name: "local speech Python packages".into(),
+            details: "the package installer reported success, but ComfyUI still cannot import Whisper, Chatterbox's tokenizer, or its decoder support. Choose Resume to repair the private environment.".into(),
+        });
+    }
+    Ok(())
+}
+
+async fn speech_python_ready(python: &Path) -> bool {
+    let mut command = tokio::process::Command::new(python);
+    command.args([
+        "-c",
+        "import whisper,s3tokenizer,conformer,librosa,soundfile; print('kestrel-speech-ready')",
+    ]);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    command
+        .output()
+        .await
+        .is_ok_and(|output| output.status.success())
+}
+
+fn comfy_python(comfy: &Path) -> Option<PathBuf> {
+    [
+        comfy.join(".venv/Scripts/python.exe"),
+        comfy
+            .parent()
+            .unwrap_or(comfy)
+            .join("python_embeded/python.exe"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+fn bounded_setup_detail(value: &str) -> String {
+    let value = value.trim();
+    if value.chars().count() <= 4_000 {
+        value.to_string()
+    } else {
+        format!("{}…", value.chars().take(4_000).collect::<String>())
+    }
+}
+
 fn is_kestrel_managed_comfy_root(comfy: &Path, install_root: &Path) -> bool {
     let launcher = comfy.join("Start-Kestrel-ComfyUI.ps1");
     let launcher_managed = read_bounded_text(&launcher, 64 * 1024)
@@ -894,6 +1202,80 @@ fn music_assets() -> Vec<MusicAsset> {
     ]
 }
 
+struct SpeechAsset {
+    relative: &'static str,
+    download: Asset,
+}
+
+fn speech_assets() -> Vec<SpeechAsset> {
+    let chatterbox = |name: &'static str, bytes: u64, sha256: &'static str| {
+        SpeechAsset {
+        relative: match name {
+            "conds.pt" => "models/tts/chatterbox/resembleai_default_voice/conds.pt",
+            "s3gen.safetensors" => {
+                "models/tts/chatterbox/resembleai_default_voice/s3gen.safetensors"
+            }
+            "t3_cfg.safetensors" => {
+                "models/tts/chatterbox/resembleai_default_voice/t3_cfg.safetensors"
+            }
+            "tokenizer.json" => {
+                "models/tts/chatterbox/resembleai_default_voice/tokenizer.json"
+            }
+            "ve.safetensors" => {
+                "models/tts/chatterbox/resembleai_default_voice/ve.safetensors"
+            }
+            _ => unreachable!("fixed Chatterbox setup asset"),
+        },
+        download: Asset::new(
+            name,
+            &format!(
+                "https://huggingface.co/ResembleAI/chatterbox/resolve/{CHATTERBOX_MODEL_REVISION}/{name}"
+            ),
+            name,
+            bytes,
+            sha256,
+        ),
+    }
+    };
+    vec![
+        chatterbox(
+            "conds.pt",
+            107_374,
+            "6552d70568833628ba019c6b03459e77fe71ca197d5c560cef9411bee9d87f4e",
+        ),
+        chatterbox(
+            "s3gen.safetensors",
+            1_056_484_620,
+            "2b78103c654207393955e4900aac14a12de8ef25f4b09424f1ef91941f161d4e",
+        ),
+        chatterbox(
+            "t3_cfg.safetensors",
+            2_129_653_744,
+            "914cb1696f47527fe8852ca8f1fe1fa63cb34f76f9c715e84e067b744dd0da81",
+        ),
+        chatterbox(
+            "tokenizer.json",
+            25_470,
+            "d71e3a44eabb1784df9a68e9f95b251ecbf1a7af6a9f50835856b2ca9d8c14a5",
+        ),
+        chatterbox(
+            "ve.safetensors",
+            5_695_784,
+            "f0921cab452fa278bc25cd23ffd59d36f816d7dc5181dd1bef9751a7fb61f63c",
+        ),
+        SpeechAsset {
+            relative: "models/stt/whisper/large-v3-turbo.pt",
+            download: Asset::new(
+                "Whisper large-v3-turbo",
+                "https://openaipublic.azureedge.net/main/whisper/models/aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a/large-v3-turbo.pt",
+                "large-v3-turbo.pt",
+                1_617_941_637,
+                "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a",
+            ),
+        },
+    ]
+}
+
 struct H3Asset {
     relative: &'static str,
     bytes: u64,
@@ -982,8 +1364,10 @@ fn managed_preview_node_ready(comfy: &Path) -> bool {
 }
 
 fn h3_live_preview_ready(comfy: &Path) -> bool {
-    comfy.join("models/vae_approx/taeh3.safetensors").is_file()
-        && (bundled_preview_node_ready(comfy) || managed_preview_node_ready(comfy))
+    file_has_size(
+        &comfy.join("models/vae_approx/taeh3.safetensors"),
+        h3_preview_decoder().bytes,
+    ) && (bundled_preview_node_ready(comfy) || managed_preview_node_ready(comfy))
 }
 
 async fn ensure_h3_preview_node(
@@ -1297,24 +1681,37 @@ fn unzip(archive: &Path, destination: &Path, name: &str) -> Result<(), SetupErro
 }
 
 async fn extract_7z(archive: &Path, destination: &Path, name: &str) -> Result<(), SetupError> {
-    let mut command = tokio::process::Command::new("tar.exe");
-    command.arg("-xf").arg(archive).arg("-C").arg(destination);
-    #[cfg(windows)]
-    command.creation_flags(0x08000000);
-    let output = command
-        .output()
-        .await
+    let archive = archive.to_path_buf();
+    let destination = destination.to_path_buf();
+    let label = name.to_string();
+    tokio::task::spawn_blocking(move || {
+        sevenz_rust::decompress_file_with_extract_fn(
+            &archive,
+            &destination,
+            |entry, reader, output| {
+                let relative = Path::new(entry.name());
+                if relative.is_absolute()
+                    || relative
+                        .components()
+                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    return Err(sevenz_rust::Error::other("archive contains an unsafe path"));
+                }
+                sevenz_rust::default_entry_extract_fn(entry, reader, output)
+            },
+        )
         .map_err(|error| SetupError::Extract {
-            name: name.into(),
-            details: format!("Windows archive support could not start: {error}"),
-        })?;
-    if !output.status.success() {
-        return Err(SetupError::Extract {
-            name: name.into(),
-            details: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
-    }
-    Ok(())
+            name: label,
+            details: format!(
+                "Kestrel's built-in 7z reader could not unpack the verified archive: {error}"
+            ),
+        })
+    })
+    .await
+    .map_err(|error| SetupError::Extract {
+        name: name.into(),
+        details: format!("the archive worker stopped unexpectedly: {error}"),
+    })?
 }
 
 pub fn ensure_comfy_launcher(comfy: &Path) -> Result<(), SetupError> {
@@ -1344,6 +1741,9 @@ $arguments=@(
 )
 $env:PYTHONUTF8='1'
 $env:CUDA_VISIBLE_DEVICES='0'
+$env:HF_HOME=(Join-Path $root '.cache\huggingface')
+$env:HF_HUB_OFFLINE='1'
+$env:TRANSFORMERS_OFFLINE='1'
 & $python @arguments
 exit $LASTEXITCODE
 "#;
@@ -1388,6 +1788,9 @@ $arguments=@(
 )
 $env:PYTHONUTF8='1'
 $env:CUDA_VISIBLE_DEVICES='0'
+$env:HF_HOME=(Join-Path $root '.cache\huggingface')
+$env:HF_HUB_OFFLINE='1'
+$env:TRANSFORMERS_OFFLINE='1'
 & $python -c 'import sageattention' 2>$null
 if($LASTEXITCODE -eq 0){ $arguments += '--use-sage-attention' }
 & $python @arguments
@@ -1453,6 +1856,9 @@ $arguments=@(
 )
 $env:PYTHONUTF8='1'
 $env:CUDA_VISIBLE_DEVICES='0'
+$env:HF_HOME=(Join-Path $root '.cache\huggingface')
+$env:HF_HUB_OFFLINE='1'
+$env:TRANSFORMERS_OFFLINE='1'
 & $python @arguments
 exit $LASTEXITCODE
 "#;
@@ -1586,7 +1992,11 @@ mod tests {
             wikipedia.join("kiwix-serve.exe"),
             wikipedia.join("archive.zim"),
             comfy.join("main.py"),
+            comfy.join("Start-Kestrel-ComfyUI.ps1"),
             comfy.join("Start-ComfyUI-MiniMax-H3.ps1"),
+            comfy.join("custom_nodes/ComfyUI-Chatterbox/nodes.py"),
+            comfy.join("custom_nodes/Kestrel-Whisper/nodes.py"),
+            comfy.join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready"),
         ] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"x").unwrap();
@@ -1594,11 +2004,25 @@ mod tests {
         for asset in h3_assets() {
             let path = comfy.join("models").join(asset.relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, b"x").unwrap();
+            fs::File::create(path)
+                .unwrap()
+                .set_len(asset.bytes)
+                .unwrap();
+        }
+        for asset in speech_assets() {
+            let path = comfy.join(asset.relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::File::create(path)
+                .unwrap()
+                .set_len(asset.download.bytes)
+                .unwrap();
         }
         let decoder = comfy.join("models/vae_approx/taeh3.safetensors");
         fs::create_dir_all(decoder.parent().unwrap()).unwrap();
-        fs::write(decoder, b"x").unwrap();
+        fs::File::create(decoder)
+            .unwrap()
+            .set_len(h3_preview_decoder().bytes)
+            .unwrap();
         let preview = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes");
         fs::create_dir_all(&preview).unwrap();
         fs::write(
@@ -1630,6 +2054,15 @@ mod tests {
                 .components
                 .iter()
                 .find(|item| item.id == "assistant")
+                .unwrap()
+                .status
+                == "ready"
+        );
+        assert!(
+            value
+                .components
+                .iter()
+                .find(|item| item.id == "speech")
                 .unwrap()
                 .status
                 == "ready"
@@ -1688,9 +2121,52 @@ mod tests {
         assert!(music.contains("'--enable-dynamic-vram'"));
         assert!(music.contains("'--reserve-vram','1.0'"));
         assert!(!music.contains("'--lowvram'"));
+        assert!(music.contains("$env:HF_HUB_OFFLINE='1'"));
 
         let shared = fs::read_to_string(root.path().join("Start-Kestrel-ComfyUI.ps1")).unwrap();
         assert!(shared.contains("[int]$Port = 8188"));
         assert!(shared.contains("'--lowvram'"));
+        assert!(shared.contains("$env:HF_HUB_OFFLINE='1'"));
+    }
+
+    #[test]
+    fn kestrel_whisper_installer_writes_the_owned_offline_adapter() {
+        let root = tempfile::tempdir().unwrap();
+        install_kestrel_whisper_node(root.path()).unwrap();
+
+        let node =
+            fs::read_to_string(root.path().join("custom_nodes/Kestrel-Whisper/nodes.py")).unwrap();
+        assert!(node.contains("class KestrelWhisper"));
+        assert!(node.contains("EXPECTED_MODELS"));
+        assert!(node.contains("/kestrel/speech/free"));
+        assert!(!node.contains("http://"));
+        assert!(!node.contains("https://"));
+        assert!(root
+            .path()
+            .join("custom_nodes/Kestrel-Whisper/THIRD_PARTY_NOTICES.md")
+            .is_file());
+    }
+
+    #[test]
+    #[ignore = "writes the owned adapter into KESTREL_LIVE_COMFY_ROOT for local acceptance"]
+    fn live_install_kestrel_whisper_adapter_into_configured_comfy() {
+        let root = std::env::var_os("KESTREL_LIVE_COMFY_ROOT")
+            .map(PathBuf::from)
+            .expect("KESTREL_LIVE_COMFY_ROOT is required");
+        assert!(root.join("main.py").is_file());
+        install_kestrel_whisper_node(&root).unwrap();
+        ensure_comfy_launcher(&root).unwrap();
+        let python = comfy_python(&root).expect("ComfyUI Python is required");
+        let status = std::process::Command::new(python)
+            .args([
+                "-m",
+                "py_compile",
+                root.join("custom_nodes/Kestrel-Whisper/nodes.py")
+                    .to_str()
+                    .unwrap(),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 }

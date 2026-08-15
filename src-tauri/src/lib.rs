@@ -1833,16 +1833,31 @@ async fn get_setup_snapshot(state: State<'_, AppState>) -> Result<setup::SetupSn
 }
 
 #[tauri::command]
-async fn open_comfy_ui(state: State<'_, AppState>) -> Result<(), String> {
+async fn open_comfy_ui(workload: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+    ensure_workspace_idle(&state)?;
     let settings = state
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
-    services::start_comfy(&settings.comfy_root)
+    let music = workload.as_deref() == Some("music");
+    release_all_comfy_memory(&state).await;
+    state
+        .runtime
+        .stop_managed()
+        .await
+        .map_err(|error| error.to_string())?;
+    services::stop_bonsai(&settings.bonsai_root)
+        .await
+        .map_err(|error| error.to_string())?;
+    services::start_comfy(&settings.comfy_root, music)
         .await
         .map_err(|error| error.to_string())?;
     std::process::Command::new("explorer.exe")
-        .arg("http://127.0.0.1:8188/")
+        .arg(if music {
+            "http://127.0.0.1:8189/"
+        } else {
+            "http://127.0.0.1:8188/"
+        })
         .spawn()
         .map(|_| ())
         .map_err(|error| {
@@ -1868,8 +1883,8 @@ async fn save_setup_locations(
         .map_err(|error| error.to_string())?;
     let comfy_root = std::path::Path::new(&research.comfy_root);
     if comfy_root.join("main.py").is_file()
-        && !comfy_root.join("Start-Kestrel-ComfyUI.ps1").is_file()
-        && !comfy_root.join("Start-ComfyUI-MiniMax-H3.ps1").is_file()
+        && (!comfy_root.join("Start-Kestrel-ComfyUI.ps1").is_file()
+            || !comfy_root.join("Start-Kestrel-ComfyUI-Music.ps1").is_file())
     {
         setup::ensure_comfy_launcher(comfy_root).map_err(|error| error.to_string())?;
     }
