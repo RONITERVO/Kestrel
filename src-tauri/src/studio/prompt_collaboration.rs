@@ -158,16 +158,7 @@ impl PromptDraftJob {
         };
         let existing = request.existing_text.trim_end();
         let messages = build_messages(&request);
-        let output_limit = target_limit(request.target);
-        let separator_bytes =
-            usize::from(request.mode == PromptDraftMode::Continue && !existing.is_empty()) * 2;
-        let remaining_bytes = if request.mode == PromptDraftMode::Continue {
-            output_limit
-                .saturating_sub(request.existing_text.len())
-                .saturating_sub(separator_bytes)
-        } else {
-            output_limit
-        };
+        let remaining_bytes = output_byte_limit(&request, existing);
         let allowance = prompt_inference_allowance(&settings);
         let max_tokens = allowance.generation_limit();
         let thinking_budget_tokens = allowance.thinking_budget_tokens;
@@ -472,6 +463,19 @@ fn target_limit(target: PromptDraftTarget) -> usize {
     }
 }
 
+fn output_byte_limit(request: &PromptDraftRequest, existing: &str) -> usize {
+    let limit = target_limit(request.target);
+    if request.mode == PromptDraftMode::Continue
+        && request.target != PromptDraftTarget::ImageComposition
+    {
+        limit
+            .saturating_sub(request.existing_text.len())
+            .saturating_sub(usize::from(!existing.is_empty()) * 2)
+    } else {
+        limit
+    }
+}
+
 pub fn validate_request(request: &PromptDraftRequest, models: &[ModelInfo]) -> Result<(), String> {
     uuid::Uuid::parse_str(&request.request_id)
         .map_err(|_| "Prompt generation request ID is invalid.".to_string())?;
@@ -504,7 +508,9 @@ pub fn validate_request(request: &PromptDraftRequest, models: &[ModelInfo]) -> R
     if request.mode == PromptDraftMode::Continue && request.existing_text.trim().is_empty() {
         return Err("Continue exact draft requires existing text. Choose Develop idea / notes for an empty field.".into());
     }
-    if request.mode == PromptDraftMode::Continue {
+    if request.mode == PromptDraftMode::Continue
+        && request.target != PromptDraftTarget::ImageComposition
+    {
         let separator_bytes = usize::from(!request.existing_text.trim_end().is_empty()) * 2;
         if limit
             .saturating_sub(request.existing_text.len())
@@ -685,6 +691,24 @@ mod tests {
         assert!(validate_request(&near_full, &models).is_err());
         near_full.mode = PromptDraftMode::Develop;
         assert!(validate_request(&near_full, &models).is_ok());
+    }
+
+    #[test]
+    fn image_composition_continuation_reserves_a_complete_replacement_object() {
+        let models = vec![model()];
+        let mut composition = request(
+            PromptDraftTarget::ImageComposition,
+            PromptDraftMode::Continue,
+        );
+        composition.existing_text = "x".repeat(MAX_MOVIE_PROMPT_BYTES - 128);
+        assert!(validate_request(&composition, &models).is_ok());
+        assert_eq!(
+            output_byte_limit(&composition, composition.existing_text.trim_end()),
+            MAX_MOVIE_PROMPT_BYTES
+        );
+
+        composition.target = PromptDraftTarget::Story;
+        assert!(validate_request(&composition, &models).is_err());
     }
 
     #[test]

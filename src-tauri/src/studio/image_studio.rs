@@ -4,7 +4,7 @@
 //! never accepts executable workflow JSON from a model or producer. Completed PNGs, prompt JSON,
 //! graph receipts, hashes, and earlier takes are immutable backend truth.
 
-use super::{comfy_execution_error, truncate, MovieStudio, StudioError, COMFY_BASE};
+use super::{comfy_execution_error, truncate, ComfyWorkload, MovieStudio, StudioError, COMFY_BASE};
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -820,8 +820,14 @@ impl ImageProgressSession {
         take_id: &str,
     ) -> Option<Self> {
         let app = app?.clone();
-        let url = format!("ws://127.0.0.1:8188/ws?clientId={client_id}");
-        let (stream, _) = tokio_tungstenite::connect_async(&url).await.ok()?;
+        let mut url = url::Url::parse(COMFY_BASE).ok()?;
+        url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
+            .ok()?;
+        url.set_port(Some(ComfyWorkload::Shared.port())).ok()?;
+        url.set_path("/ws");
+        url.set_query(None);
+        url.query_pairs_mut().append_pair("clientId", client_id);
+        let (stream, _) = tokio_tungstenite::connect_async(url.as_str()).await.ok()?;
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let task_app = app.clone();
@@ -1088,7 +1094,7 @@ fn preset_parameters(preset: &str) -> (u32, f64, f64) {
     match preset {
         "quality" => (48, 0.0, 1.5),
         "turbo" => (12, 0.5, 1.75),
-        _ => (20, 0.5, 1.75),
+        _ => (20, 0.0, 1.75),
     }
 }
 
@@ -1623,7 +1629,7 @@ mod tests {
             "test",
         );
         assert_eq!(standard["11"]["inputs"]["steps"], 20);
-        assert_eq!(standard["11"]["inputs"]["mu"], 0.5);
+        assert_eq!(standard["11"]["inputs"]["mu"], 0.0);
         assert_eq!(standard["11"]["inputs"]["std"], 1.75);
     }
 

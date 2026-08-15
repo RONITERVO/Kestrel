@@ -39,6 +39,16 @@ describe("ImageStudio", () => {
     expect(proposal.style.mode).toBe("photo");
   });
 
+  it("accepts an Ideogram proposal wrapped in a JSON Markdown fence", () => {
+    const proposal = parseImageProposal("\n```json\n" + JSON.stringify({
+      high_level_description: "A quiet portrait.",
+      style_description: { aesthetics: "Editorial", lighting: "Window light", photo: "Natural detail", medium: "Photograph" },
+      compositional_deconstruction: { background: "A pale studio wall.", elements: [] },
+    }) + "\n```\n");
+
+    expect(proposal.style.mode).toBe("photo");
+  });
+
   it("accepts artwork styling, normalizes palettes, and compiles the exclusive ordered schema", () => {
     const proposal = parseImageProposal(JSON.stringify({
       high_level_description: "A geometric editorial bird poster.",

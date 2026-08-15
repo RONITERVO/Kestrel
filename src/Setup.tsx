@@ -3,7 +3,7 @@ import {
   Library, LoaderCircle, MessageSquare, Mic2, RefreshCw, Settings2, ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import {
   cancelSetupInstall, installSetupComponent, onSetupProgress, openComfyUi, pickSetupFile,
@@ -25,8 +25,15 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const [ideogramLicenseOpen, setIdeogramLicenseOpen] = useState(false);
   const [ideogramLicenseAccepted, setIdeogramLicenseAccepted] = useState(false);
   const [locations, setLocations] = useState<SetupLocations>(() => fromSnapshot(snapshot));
+  const ideogramLicenseDialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => setLocations(fromSnapshot(snapshot)), [snapshot.settings]);
+  useEffect(() => {
+    const dialog = ideogramLicenseDialogRef.current;
+    if (!ideogramLicenseOpen || !dialog || dialog.open) return;
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }, [ideogramLicenseOpen]);
   useEffect(() => {
     let dispose: (() => void) | undefined;
     void onSetupProgress(setProgress).then((unlisten) => { dispose = unlisten; });
@@ -211,7 +218,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
       <button onClick={() => void cancelSetupInstall()}><CircleStop /> Pause safely</button>
     </section>}
 
-    {ideogramLicenseOpen && <dialog open className="setup-license-dialog" aria-labelledby="ideogram-license-title"><div className="setup-license-icon"><ImageIcon /></div><div><span className="eyebrow">Separate model terms</span><h2 id="ideogram-license-title">Ideogram 4 is non-commercial.</h2><p>The published agreement does not permit client deliverables, promotion, advertising, or other revenue-generating use without separate rights from Ideogram. Kestrel’s MIT license does not change those model terms.</p><a href="https://github.com/ideogram-oss/ideogram4/blob/main/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL" target="_blank" rel="noreferrer">Read the complete Ideogram 4 agreement</a><label><input type="checkbox" checked={ideogramLicenseAccepted} onChange={(event) => setIdeogramLicenseAccepted(event.target.checked)} /> I have read and accept the Ideogram Non-Commercial Model Agreement for this installation.</label></div><footer><button disabled={!!busy} onClick={() => setIdeogramLicenseOpen(false)}>Cancel</button><button className="primary-button" disabled={!!busy || !ideogramLicenseAccepted} onClick={() => { setIdeogramLicenseOpen(false); void runInstall("image", true); }}><Download /> Accept and install</button></footer></dialog>}
+    {ideogramLicenseOpen && <dialog ref={ideogramLicenseDialogRef} className="setup-license-dialog" aria-labelledby="ideogram-license-title" onCancel={() => setIdeogramLicenseOpen(false)}><div className="setup-license-icon"><ImageIcon /></div><div><span className="eyebrow">Separate model terms</span><h2 id="ideogram-license-title">Ideogram 4 is non-commercial.</h2><p>The published agreement does not permit client deliverables, promotion, advertising, or other revenue-generating use without separate rights from Ideogram. Kestrel’s MIT license does not change those model terms.</p><a href="https://github.com/ideogram-oss/ideogram4/blob/main/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL" target="_blank" rel="noreferrer">Read the complete Ideogram 4 agreement</a><label><input type="checkbox" checked={ideogramLicenseAccepted} onChange={(event) => setIdeogramLicenseAccepted(event.target.checked)} /> I have read and accept the Ideogram Non-Commercial Model Agreement for this installation.</label></div><footer><button disabled={!!busy} onClick={() => setIdeogramLicenseOpen(false)}>Cancel</button><button className="primary-button" disabled={!!busy || !ideogramLicenseAccepted} onClick={() => { setIdeogramLicenseOpen(false); void runInstall("image", true); }}><Download /> Accept and install</button></footer></dialog>}
 
     <button className="setup-advanced-toggle" onClick={() => setAdvanced((value) => !value)}><Settings2 /> Use existing files or choose every location <ChevronDown className={advanced ? "open" : ""} /></button>
     {advanced && <section className="setup-advanced-panel">

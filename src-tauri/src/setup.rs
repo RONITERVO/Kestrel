@@ -798,7 +798,7 @@ async fn install_comfy_portable(
             }
             mark_kestrel_managed_comfy_root(&comfy)?;
         } else {
-            replace_managed_comfy_portable(&archive, root, &portable.name).await?;
+            replace_managed_comfy_portable(&archive, root, &portable.name, requirement).await?;
         }
     }
     if !requirement.available_in(&comfy) {
@@ -1254,6 +1254,7 @@ async fn replace_managed_comfy_portable(
     archive: &Path,
     install_root: &Path,
     name: &str,
+    requirement: ComfyRequirement,
 ) -> Result<(), SetupError> {
     let nonce = uuid::Uuid::new_v4();
     let staging = install_root.join(format!(".kestrel-comfy-update-{nonce}"));
@@ -1263,16 +1264,13 @@ async fn replace_managed_comfy_portable(
     fs::create_dir_all(&staging)?;
     extract_7z(archive, &staging, name).await?;
     let staged_comfy = staged_portable.join("ComfyUI");
-    if !staged_comfy.join("main.py").is_file()
-        || !staged_comfy
-            .join("comfy_extras/nodes_minimax_music.py")
-            .is_file()
-    {
+    if !staged_comfy.join("main.py").is_file() || !requirement.available_in(&staged_comfy) {
         return Err(SetupError::Extract {
             name: name.into(),
             details: format!(
-                "the replacement was unpacked to {}, but its native Music 3 files are missing; the existing installation was not changed",
-                staging.display()
+                "the replacement was unpacked to {}, but {}; the existing installation was not changed",
+                staging.display(),
+                requirement.missing_detail()
             ),
         });
     }

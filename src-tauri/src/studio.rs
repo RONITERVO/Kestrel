@@ -222,6 +222,22 @@ fn read_media_response(
         .header("Content-Type", content_type)
         .header("Access-Control-Allow-Origin", "*")
         .header("Accept-Ranges", "bytes");
+    if request
+        .uri()
+        .query()
+        .is_some_and(|query| query.split('&').any(|parameter| parameter == "download=1"))
+    {
+        let filename = target
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("kestrel-media");
+        let encoded =
+            percent_encoding::utf8_percent_encode(filename, percent_encoding::NON_ALPHANUMERIC);
+        builder = builder.header(
+            "Content-Disposition",
+            format!("attachment; filename*=UTF-8''{encoded}"),
+        );
+    }
     if request.method() == tauri::http::Method::HEAD {
         return builder
             .header("Content-Length", length)

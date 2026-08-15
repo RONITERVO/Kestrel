@@ -503,14 +503,15 @@ export function musicMediaUrl(path: string): string {
   return `http://kestrel-media.localhost/music/${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 
-export function imageMediaUrl(path: string): string {
+export function imageMediaUrl(path: string, download = false): string {
   if (!path || !isTauri()) return "";
   const normalized = path.replaceAll("\\", "/");
   const marker = "/images/";
   const offset = normalized.toLowerCase().lastIndexOf(marker);
   if (offset < 0) return "";
   const relative = normalized.slice(offset + marker.length);
-  return `http://kestrel-media.localhost/images/${relative.split("/").map(encodeURIComponent).join("/")}`;
+  const url = `http://kestrel-media.localhost/images/${relative.split("/").map(encodeURIComponent).join("/")}`;
+  return download ? `${url}?download=1` : url;
 }
 
 export async function onRuntimeProgress(
