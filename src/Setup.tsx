@@ -8,6 +8,7 @@ import {
   cancelSetupInstall, installSetupComponent, onSetupProgress, openComfyUi, pickSetupFile,
   pickSetupFolder, saveSetupLocations,
 } from "./api";
+import { ModelDownloader } from "./ModelDownloader";
 import type { AppSnapshot, SetupLocations, SetupProgress } from "./types";
 
 export function SetupConsole({ snapshot, onChanged, onError }: {
@@ -36,6 +37,9 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     : item), [snapshot.setup.components, edition]);
 
   const saveLocations = async (): Promise<AppSnapshot> => {
+    if (locations.enginePath.trim() && !/(?:^|[\\/])llama-server\.exe$/i.test(locations.enginePath.trim())) {
+      throw new Error("The model engine path must end with llama-server.exe. Choose the verified local engine before saving.");
+    }
     const next = await saveSetupLocations(locations);
     onChanged(next);
     return next;
@@ -126,6 +130,19 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
 
     {!snapshot.setup.gpuName && <div className="setup-hardware-note"><TriangleAlert /><div><strong>No NVIDIA graphics card was detected.</strong><span>The assistant and Wikipedia can still work, although Bonsai may be slow on a laptop processor. Movie Studio stays optional because MiniMax H3 is not practical on this hardware.</span></div></div>}
     {snapshot.setup.gpuName && <div className="setup-hardware-note compatible"><Check /><div><strong>{snapshot.setup.gpuName}</strong><span>{formatBytes(snapshot.setup.gpuMemoryBytes)} graphics memory detected. Kestrel will use the NVIDIA Bonsai engine; H3 remains an optional large install.</span></div></div>}
+
+    <section className="setup-model-library" aria-labelledby="setup-model-library-title">
+      <div className="setup-model-library-heading">
+        <span><span className="eyebrow">Your model library</span><h2 id="setup-model-library-title">Add another local model</h2></span>
+        <p>Paste a public Hugging Face model link. Kestrel will inspect compatible GGUF files first, then download only the quantization you choose with visible progress and safe resume.</p>
+      </div>
+      <ModelDownloader
+        variant="setup"
+        gpuTotalMib={snapshot.setup.gpuMemoryBytes / 1024 / 1024}
+        onCatalogChanged={(control) => onChanged({ ...snapshot, control })}
+        onError={onError}
+      />
+    </section>
 
     <section className="setup-components" aria-label="Kestrel components">
       {components.map((component) => <article className={`setup-component ${component.status}`} key={component.id}>

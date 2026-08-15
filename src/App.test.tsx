@@ -92,6 +92,31 @@ describe("Kestrel research experience", () => {
     expect(await screen.findByText("Your research")).toBeInTheDocument();
   });
 
+  it("keeps every section in the shared one-window workspace frame", async () => {
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "The Antikythera mechanism" })).toBeInTheDocument();
+    const shell = document.querySelector(".app-shell");
+    const workspace = document.querySelector(".workspace");
+    const stage = document.querySelector(".main-stage");
+    expect(shell).toHaveAttribute("data-view", "research");
+
+    for (const [label, view] of [
+      ["Setup", "setup"],
+      ["Control", "control"],
+      ["Research", "research"],
+      ["Studio", "studio"],
+      ["Developer", "developer"],
+      ["System", "system"],
+    ] as const) {
+      const button = screen.getByRole("button", { name: label });
+      fireEvent.click(button);
+      await waitFor(() => expect(shell).toHaveAttribute("data-view", view));
+      expect(workspace).toHaveClass(`workspace-${view}`);
+      expect(stage).toHaveClass(`main-stage-${view}`);
+      expect(button).toHaveAttribute("aria-current", "page");
+    }
+  });
+
   it("displays safe exports and explains clipboard failures", async () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
     render(<App />);
@@ -134,11 +159,15 @@ describe("Kestrel research experience", () => {
     expect(screen.getByText("SESSION INSPECTOR")).toBeInTheDocument();
     expect(screen.getByText(/one inference lease/i)).toBeInTheDocument();
     expect(screen.getByText(/private, persistent workspace/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Chat generation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Save complete profile/i })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Observed model downloader" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Attach local context/i })).toBeInTheDocument();
     expect(screen.getByText("Vision")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Add local model folder/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Computer/i }));
     expect(screen.getByRole("heading", { name: /bounded objective/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Computer Tasks policy" })).toBeInTheDocument();
     expect(screen.getByText(/Every decision, tool call, result, error, and artifact/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Attach files as context/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Start visible task/i })).toBeDisabled();
@@ -153,9 +182,11 @@ describe("Kestrel research experience", () => {
 
   it("rejects a manually entered non-llama engine", async () => {
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: /^Control$/i }));
-    fireEvent.change(await screen.findByRole("combobox", { name: "llama-server" }), { target: { value: "C:\\Tools\\program.exe" } });
-    fireEvent.click(screen.getByRole("button", { name: /Save complete profile/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Setup$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Use existing files/i }));
+    expect(await screen.findByRole("heading", { name: "Use files already on this PC" })).toBeInTheDocument();
+    fireEvent.change(await screen.findByRole("textbox", { name: /llama-server\.exe/i }), { target: { value: "C:\\Tools\\program.exe" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save & check again/i }));
     expect(await screen.findByText(/must end with llama-server\.exe/i)).toBeInTheDocument();
   });
 });

@@ -11,6 +11,8 @@ describe("SetupConsole", () => {
     expect(screen.getByRole("heading", { name: "Kestrel is ready." })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Bonsai assistant" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax H3 Movie Studio" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Add another local model" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Observed model downloader" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Use existing files/ })).toBeInTheDocument();
   });
 

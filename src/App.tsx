@@ -176,7 +176,7 @@ function App() {
   if (!snapshot) return <AppBoot error={error} onRetry={refresh} />;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell app-shell-${view}`} data-view={view}>
       <AppHeader
         status={snapshot.status}
         view={view}
@@ -194,7 +194,7 @@ function App() {
           }
         }}
       />
-      <div className={`workspace ${view !== "research" ? "system-workspace" : ""}`}>
+      <div className={`workspace workspace-${view} ${view !== "research" ? "system-workspace" : ""}`}>
         {view === "research" && <LibrarySidebar
           open={sidebarOpen}
           reports={visibleReports}
@@ -206,7 +206,7 @@ function App() {
           onNew={() => setNewResearchOpen(true)}
           onReveal={() => void revealLibrary()}
         />}
-        <main className="main-stage">
+        <main className={`main-stage main-stage-${view}`}>
           {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
           {view === "setup" ? (
             <SetupConsole snapshot={snapshot} onChanged={setSnapshot} onError={(message) => setError(message)} />
@@ -282,25 +282,27 @@ function AppHeader({
   onPrepare: () => void;
 }) {
   const allReady = status.bonsai === "ready" && status.wikipedia === "ready";
+  const sectionLabel = view === "setup" ? "Setup" : view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research";
   return (
-    <header className="app-header">
+    <header className={`app-header app-header-${view}`}>
       <div className="header-left">
+        <div className="window-controls" aria-hidden="true"><span /><span /><span /></div>
         <button className="icon-button menu-button" aria-label="Toggle library" onClick={onMenu}><Menu /></button>
         <div className="brand-mark"><Feather size={19} /></div>
-        <div className="brand-copy"><strong>Kestrel</strong><span>{view === "setup" ? "Setup" : view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research"}</span></div>
+        <div className="brand-copy"><strong>Kestrel</strong><span>{sectionLabel}</span></div>
       </div>
       <nav className="view-switcher" aria-label="Kestrel sections">
-        <button className={view === "setup" ? "active" : ""} onClick={() => onView("setup")}><Download size={14} /> Setup</button>
-        <button className={view === "control" ? "active" : ""} onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
-        <button className={view === "research" ? "active" : ""} onClick={() => onView("research")}><Library size={14} /> Research</button>
-        <button className={view === "studio" ? "active" : ""} onClick={() => onView("studio")}><Clapperboard size={14} /> Studio</button>
-        <button className={view === "developer" ? "active" : ""} onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
-        <button className={view === "system" ? "active" : ""} onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
+        <button className={view === "setup" ? "active" : ""} aria-current={view === "setup" ? "page" : undefined} title="Setup" onClick={() => onView("setup")}><Download size={14} /> Setup</button>
+        <button className={view === "control" ? "active" : ""} aria-current={view === "control" ? "page" : undefined} title="Control" onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
+        <button className={view === "research" ? "active" : ""} aria-current={view === "research" ? "page" : undefined} title="Research" onClick={() => onView("research")}><Library size={14} /> Research</button>
+        <button className={view === "studio" ? "active" : ""} aria-current={view === "studio" ? "page" : undefined} title="Studio" onClick={() => onView("studio")}><Clapperboard size={14} /> Studio</button>
+        <button className={view === "developer" ? "active" : ""} aria-current={view === "developer" ? "page" : undefined} title="Developer" onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
+        <button className={view === "system" ? "active" : ""} aria-current={view === "system" ? "page" : undefined} title="System" onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
       </nav>
       <div className="header-status" role="status">
         <StatusPill state={status.wikipedia} label={status.archive} />
         <StatusPill state={status.bonsai} label={status.model} />
-        <div className="privacy-pill"><ShieldCheck size={14} /> Offline only</div>
+        <div className="privacy-pill" aria-label="Offline only" title="Offline only"><ShieldCheck size={14} /> Offline only</div>
       </div>
       <div className="header-actions">
         {!allReady && <button className="quiet-button" onClick={onPrepare}>Prepare services</button>}
@@ -311,7 +313,7 @@ function AppHeader({
 }
 
 function StatusPill({ state, label }: { state: ServiceState; label: string }) {
-  return <div className={`status-pill status-${state}`}><span className="status-dot" />{label}</div>;
+  return <div className={`status-pill status-${state}`} aria-label={`${label}: ${state}`} title={`${label}: ${state}`}><span className="status-dot" />{label}</div>;
 }
 
 function LibrarySidebar({
