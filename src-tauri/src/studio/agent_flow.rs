@@ -65,6 +65,9 @@ pub(super) async fn run(
     progress: MovieAgentProgress<'_>,
 ) -> Result<MovieAgentOutcome, StudioError> {
     let MovieAgentProgress { project, app } = progress;
+    let director_runtime = request
+        .runtime_settings
+        .for_model(request.director_model_id);
     let workspace_root = studio.project_dir(&project.id).join("agent-workspace");
     let resuming_existing_workspace = workspace_root.join("movie.json").is_file();
     let transcript_path = workspace_root.join("agent-transcript.json");
@@ -140,7 +143,7 @@ pub(super) async fn run(
                 messages: &request_messages,
                 tools: &tools,
                 settings: request.settings,
-                runtime_max_output_tokens: request.runtime_settings.max_output_tokens,
+                runtime_max_output_tokens: director_runtime.max_output_tokens,
                 cancel: request.cancel,
                 project_id: &project.id,
                 position: lifecycle.position(),
@@ -443,6 +446,9 @@ async fn review_submission(
         ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
         _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
     };
+    let reviewer_runtime = request
+        .runtime_settings
+        .for_model(request.reviewer_model_id);
     studio.emit_planning(
         &project.id,
         PlanningEventKind::TurnStart,
@@ -459,7 +465,7 @@ async fn review_submission(
             plan: &plan,
             connection: &lease.connection,
             settings: request.settings,
-            runtime_max_output_tokens: request.runtime_settings.max_output_tokens,
+            runtime_max_output_tokens: reviewer_runtime.max_output_tokens,
             cancel: request.cancel,
             app: request.app,
             position: lifecycle.position(),

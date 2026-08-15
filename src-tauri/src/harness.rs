@@ -23,6 +23,7 @@ struct CompletionOptions {
 }
 use uuid::Uuid;
 
+#[cfg(test)]
 const MODEL_LABEL: &str = "Ternary Bonsai 27B Q2_0";
 #[cfg(test)]
 const ARCHIVE_LABEL: &str = "English Wikipedia · 12 January 2024";
@@ -48,6 +49,7 @@ struct ReportContext<'a> {
     sources: Vec<Source>,
     expedition: bool,
     settings: &'a ResearchSettings,
+    model_label: &'a str,
 }
 
 #[derive(Debug, Error)]
@@ -56,9 +58,9 @@ pub enum ResearchError {
     InvalidQuery,
     #[error("research was stopped safely")]
     Cancelled,
-    #[error("Bonsai is not ready: {0}")]
+    #[error("the selected local model is not ready: {0}")]
     Model(String),
-    #[error("Bonsai returned an invalid research document: {0}")]
+    #[error("the selected local model returned an invalid research document: {0}")]
     InvalidModelOutput(String),
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -216,7 +218,7 @@ impl ResearchHarness {
                 "searching",
                 "Mapping the research",
                 &format!(
-                    "Bonsai is dividing the question into {} coordinated evidence lanes",
+                    "The selected local model is dividing the question into {} coordinated evidence lanes",
                     settings.research_lanes
                 ),
                 2,
@@ -254,7 +256,12 @@ impl ResearchHarness {
         } else {
             "No preplanned lanes; use the tools adaptively.".into()
         };
-        let system = system_prompt(thorough, expedition, &settings);
+        let system = system_prompt(
+            thorough,
+            expedition,
+            &settings,
+            &connection.model_label,
+        );
         let user = format!(
             "Research question: {query}\n\nExisting-library matches:\n{related_context}\n\nShared lane memory (candidate references, not evidence until opened):\n{lane_context}\n\nUse search_archive and read_source. Inspect at least {required_wikipedia} distinct relevant Wikipedia articles. If prior research exists, inspect it and make a concrete improvement. Distinguish sourced statements from inference, explain specialist terms, preserve uncertainty, and remember the archive cutoff. Do not claim the result is final or the best possible."
         );
@@ -270,7 +277,7 @@ impl ResearchHarness {
             started,
             "searching",
             "Searching the archive",
-            "Bonsai is choosing useful article paths—not merely matching titles",
+            "The selected local model is choosing useful article paths—not merely matching titles",
             2,
         )?;
         for turn in 0..max_turns {
@@ -480,6 +487,7 @@ impl ResearchHarness {
                 sources: evidence,
                 expedition,
                 settings: &settings,
+                model_label: &connection.model_label,
             },
         );
 
@@ -750,9 +758,14 @@ fn response_message(response: &Value) -> Result<Value, ResearchError> {
         })
 }
 
-fn system_prompt(thorough: bool, expedition: bool, settings: &ResearchSettings) -> String {
+fn system_prompt(
+    thorough: bool,
+    expedition: bool,
+    settings: &ResearchSettings,
+    model_label: &str,
+) -> String {
     format!(
-        "You are Kestrel's offline research model, running as {MODEL_LABEL}. You have two tools only: search_archive finds both immutable Kestrel reports and the January 2024 English Wikipedia archive; read_source opens one result. Work entirely from these tools. Never imply internet access or knowledge newer than the archive. Read before citing. Wikipedia is tertiary: attribute it and preserve disputes, uncertainty, dates, and the snapshot cutoff. Search with multiple phrasings when useful. Related prior research is context to improve, never authority. Always make at least one concrete improvement and identify open questions; never call a report final or best possible. Use simple explanations first and define specialist language. Research depth: {}. {} Harness: {HARNESS_VERSION}.",
+        "You are Kestrel's offline research model, running as {model_label}. You have two tools only: search_archive finds both immutable Kestrel reports and the configured English Wikipedia archive; read_source opens one result. Work entirely from these tools. Never imply internet access or knowledge newer than the archive. Read before citing. Wikipedia is tertiary: attribute it and preserve disputes, uncertainty, dates, and the snapshot cutoff. Search with multiple phrasings when useful. Related prior research is context to improve, never authority. Always make at least one concrete improvement and identify open questions; never call a report final or best possible. Use simple explanations first and define specialist language. Research depth: {}. {} Harness: {HARNESS_VERSION}.",
         if expedition { "solo expedition" } else if thorough { "thorough" } else { "focused" },
         if expedition { format!("Act as one lead researcher coordinating {} complementary lanes inside one shared GPU context. Treat the supplied lane map as candidate memory, inspect before citing, keep a coverage checklist, resolve duplication and disagreement, and aim for at least {} distinct Wikipedia sources.", settings.research_lanes, settings.source_target) } else { String::new() }
     )
@@ -1049,6 +1062,7 @@ fn normalize_report(draft: ResearchDraft, context: ReportContext<'_>) -> Researc
         sources,
         expedition,
         settings,
+        model_label,
     } = context;
     let valid = sources
         .iter()
@@ -1135,7 +1149,7 @@ fn normalize_report(draft: ResearchDraft, context: ReportContext<'_>) -> Researc
         edition,
         parent_id,
         improvement,
-        model: MODEL_LABEL.into(),
+        model: model_label.into(),
         archive_snapshot: format!("English Wikipedia · {}", settings.wikipedia_snapshot),
         findings,
         sections,
@@ -1262,6 +1276,7 @@ mod tests {
                 sources,
                 expedition: false,
                 settings: &settings,
+                model_label: "Test model",
             },
         );
         assert_eq!(report.findings[0].citations, vec!["S1"]);

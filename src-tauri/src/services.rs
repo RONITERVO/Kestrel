@@ -1,16 +1,17 @@
+#[cfg(test)]
 use crate::config::without_utf8_bom;
 use crate::kiwix::KiwixClient;
 use crate::models::{
-    GpuSnapshot, ResearchSettings, RuntimeSnapshot, ServiceStatus, SystemSnapshot,
+    ControlSettings, GpuSnapshot, ManagedRuntimeSnapshot, ResearchSettings, RuntimeSnapshot,
+    ServiceStatus, SystemSnapshot,
 };
 use crate::studio::ComfyWorkload;
 use reqwest::Client;
+#[cfg(test)]
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use thiserror::Error;
 use tokio::process::Command;
-
-const BONSAI_HEALTH: &str = "http://127.0.0.1:8080/health";
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
@@ -25,26 +26,12 @@ pub enum ServiceError {
 }
 
 pub async fn status(settings: &ResearchSettings) -> ServiceStatus {
-    let client = Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .expect("HTTP client");
-    let bonsai_check = client.get(BONSAI_HEALTH).send();
     let kiwix = KiwixClient::new(settings.wikipedia_book.clone());
-    let (bonsai, wikipedia) = tokio::join!(bonsai_check, kiwix.health());
+    let wikipedia = kiwix.health().await;
     ServiceStatus {
-        bonsai: if bonsai
-            .map(|response| response.status().is_success())
-            .unwrap_or(false)
-        {
-            "ready"
-        } else {
-            "stopped"
-        }
-        .into(),
+        model_runtime: "stopped".into(),
         wikipedia: if wikipedia { "ready" } else { "stopped" }.into(),
-        model: "Ternary Bonsai 27B".into(),
+        model: "No local model selected".into(),
         archive: format!("Wikipedia EN · {}", settings.wikipedia_snapshot),
         offline_only: true,
     }
@@ -55,31 +42,17 @@ pub async fn prepare(settings: &ResearchSettings) -> Result<(), ServiceError> {
         .await
         .map_err(|_| ServiceError::StartFailed {
             name: "local service check".into(),
-            details: "Bonsai/Wikipedia status did not finish within 15 seconds".into(),
+            details: "offline Wikipedia status did not finish within 15 seconds".into(),
         })?;
     if current.wikipedia != "ready" {
         start_kiwix(settings).await?;
     }
-    if current.bonsai != "ready" {
-        let script = Path::new(&settings.bonsai_root).join("Start-BonsaiServer.ps1");
-        if script.is_file() {
-            run_script("Bonsai", &script).await?;
-        }
-    }
     Ok(())
 }
 
-pub async fn restart_bonsai(bonsai_root: &str) -> Result<(), ServiceError> {
-    run_script(
-        "Bonsai",
-        &Path::new(bonsai_root).join("Start-BonsaiServer.ps1"),
-    )
-    .await
-}
-
-/// Stop the configured Bonsai server and telemetry proxy, but no other model host. Executable
-/// paths and the server's private backend port are verified inside the fixed PowerShell program.
-pub async fn stop_bonsai(bonsai_root: &str) -> Result<Vec<u32>, ServiceError> {
+/// Migration cleanup for releases that could launch the old standalone Bonsai service. Current
+/// releases never start it; executable paths and its old private port remain strictly verified.
+pub async fn stop_legacy_bonsai_service(bonsai_root: &str) -> Result<Vec<u32>, ServiceError> {
     const SCRIPT: &str = r#"$ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath($env:KESTREL_BONSAI_ROOT)
 $server=[IO.Path]::GetFullPath((Join-Path $root 'runtime\llama-server.exe'))
@@ -131,15 +104,15 @@ foreach($item in $targets){
 pub async fn system_snapshot(settings: ResearchSettings) -> SystemSnapshot {
     let status = status(&settings).await;
     let gpu = gpu_snapshot().await;
-    let mut runtime = runtime_snapshot(&settings);
-    if status.bonsai != "ready" {
-        runtime.model_vram_mib = 0;
-    }
+    let runtime = runtime_snapshot(&settings);
     SystemSnapshot {
         status,
         gpu,
         runtime,
         settings,
+        control: ControlSettings::default(),
+        models: Vec::new(),
+        managed_runtime: ManagedRuntimeSnapshot::default(),
     }
 }
 
@@ -285,22 +258,13 @@ foreach($item in $targets){ Stop-Process -Id $item.ProcessId -Force -ErrorAction
 }
 
 fn runtime_snapshot(settings: &ResearchSettings) -> RuntimeSnapshot {
-    let root = PathBuf::from(&settings.bonsai_root);
-    let runtime_settings = read_json(&root.join("settings.json"));
-    let vram = read_json(&root.join("logs").join("vram-session.json"));
     RuntimeSnapshot {
-        context_window: number(&runtime_settings, "ContextWindow")
-            .unwrap_or(settings.context_window as u64) as u32,
-        max_output_tokens: number(&runtime_settings, "MainMaxOutputTokens")
-            .unwrap_or(settings.max_output_tokens as u64) as u32,
+        context_window: settings.context_window,
+        max_output_tokens: settings.max_output_tokens,
         parallel_slots: 1,
-        kv_cache: format!(
-            "{} / {}",
-            text_at(&vram, "/KvKeyType").unwrap_or("q4_0"),
-            text_at(&vram, "/KvValueType").unwrap_or("q4_0")
-        ),
-        model_vram_mib: number(&vram, "BonsaiLoadedDeltaMiB").unwrap_or(0),
-        model_root: settings.bonsai_root.clone(),
+        kv_cache: "managed per model".into(),
+        model_vram_mib: 0,
+        model_root: String::new(),
     }
 }
 
@@ -330,6 +294,7 @@ pub async fn gpu_snapshot() -> Option<GpuSnapshot> {
     })
 }
 
+#[cfg(test)]
 fn read_json(path: &Path) -> Value {
     std::fs::read(path)
         .ok()
@@ -337,55 +302,9 @@ fn read_json(path: &Path) -> Value {
         .unwrap_or(Value::Null)
 }
 
+#[cfg(test)]
 fn number(value: &Value, key: &str) -> Option<u64> {
     value.get(key).and_then(Value::as_u64)
-}
-
-fn text_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
-    value.pointer(pointer).and_then(Value::as_str)
-}
-
-async fn run_script(name: &str, script: &Path) -> Result<(), ServiceError> {
-    if !script.is_file() {
-        return Err(ServiceError::MissingScript(script.display().to_string()));
-    }
-    let mut command = Command::new("powershell.exe");
-    command
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(script);
-    #[cfg(windows)]
-    {
-        command.creation_flags(0x08000000);
-    }
-    let output = command.output().await?;
-    if !output.status.success() {
-        let details = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(ServiceError::StartFailed {
-            name: name.into(),
-            details: if details.is_empty() {
-                String::from_utf8_lossy(&output.stdout).trim().to_owned()
-            } else {
-                details
-            },
-        });
-    }
-    Ok(())
-}
-
-impl From<std::io::Error> for ServiceError {
-    fn from(error: std::io::Error) -> Self {
-        ServiceError::StartFailed {
-            name: "PowerShell".into(),
-            details: error.to_string(),
-        }
-    }
 }
 
 #[cfg(test)]

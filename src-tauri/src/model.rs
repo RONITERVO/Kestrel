@@ -237,7 +237,7 @@ fn inspect(path: &Path) -> io::Result<ModelInfo> {
     let file_type = metadata.get("general.file_type").and_then(Value::as_u64);
     let lower = format!("{} {}", name, path.display()).to_lowercase();
     let recommendation = if lower.contains("ternary-bonsai-27b") {
-        "Validated Bonsai profile: one slot, Q4 KV, flash attention, full GPU, visible context restart"
+        "Included local GGUF; uses the same app-wide and per-model runtime policy as every other model"
     } else {
         "Use embedded GGUF template and native context; keep placement explicit"
     };

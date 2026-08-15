@@ -1,7 +1,7 @@
 export type ServiceState = "ready" | "starting" | "stopped" | "unavailable";
 
 export interface ServiceStatus {
-  bonsai: ServiceState;
+  modelRuntime: ServiceState;
   wikipedia: ServiceState;
   model: string;
   archive: string;
@@ -1060,11 +1060,19 @@ export interface ControlSettings {
   contextWindow: number;
   maxOutputTokens: number;
   threads: number;
+  modelOverrides: ModelRuntimeOverride[];
   projectRoot: string;
   agentWorkspaceRoots: string[];
   allowFullAccessAgent: boolean;
   agentMaxSteps: number;
   agentMaxOutputTokens: number;
+}
+
+export interface ModelRuntimeOverride {
+  modelId: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  threads?: number;
 }
 
 export interface ManagedRuntimeSnapshot {
@@ -1275,6 +1283,9 @@ export interface SystemSnapshot {
   gpu?: GpuSnapshot;
   runtime: RuntimeSnapshot;
   settings: ResearchSettings;
+  control: ControlSettings;
+  models: ModelInfo[];
+  managedRuntime: ManagedRuntimeSnapshot;
 }
 
 export type ProgressStage =

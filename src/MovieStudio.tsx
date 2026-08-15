@@ -644,7 +644,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       {promptDraftReceipt && <details className="prompt-draft-receipt wide"><summary>Last prompt collaborator request — everything the model received</summary><div><span>Target / behavior</span><code>{promptDraftReceipt.target} · {promptDraftReceipt.mode}</code><span>Exact local API request</span><pre>{JSON.stringify(promptDraftReceipt.exactRequest, null, 2)}</pre></div></details>}
     </div>}
     <label className="wide producer-pause-toggle"><span><input type="checkbox" checked={pauseAfterPlan} onChange={(event) => onPauseAfterPlan(event.target.checked)} /> Review the plan before rendering</span><small>Recommended. Edit scenes or redirect the Director before any H3 clip is rendered.</small></label>
-    <div className="movie-capabilities"><span><Check />98,304 context</span><span><Check />32,768 max thinking</span><span><Check />32,768 output</span><span><Check />Untouched H3 audio</span><span><Check />Crash-safe masters</span></div>
+    <div className="movie-capabilities"><span><Check />System model policy</span><span><Check />Per-model exceptions</span><span><Check />Live reasoning stream</span><span><Check />Untouched H3 audio</span><span><Check />Crash-safe masters</span></div>
     </section>}
     </div>
     <footer className="studio-launch-footer">

@@ -21,7 +21,7 @@ and must not acquire authority implicitly.
   runtime is unloaded from the GPU.
 - Director and Reviewer bindings are durable project data. Missing pinned models fail visibly; an
   explicit checkpointed role change records provenance and forces producer review.
-- Non-Bonsai models must pass the current local Studio protocol check before standard-mode unattended
+- Every local model must pass the current local Studio protocol check before standard-mode unattended
   planning. Advanced mode may run an unverified compatible model only with forced producer review.
 
 ## Module ownership

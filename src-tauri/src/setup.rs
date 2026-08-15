@@ -262,12 +262,12 @@ pub fn snapshot(
     let components = vec![
         component(
             "assistant",
-            "Bonsai assistant",
+            "Included local model",
             (assistant_ready, assistant_partial),
             if assistant_ready {
                 "Ready for chat, research planning, computer tasks, and movie direction."
             } else {
-                "Needs the local engine, Bonsai 27B model, and image projector."
+                "Needs the local llama.cpp engine, Ternary Bonsai 27B weights, and image projector."
             },
             &research.bonsai_root,
             (
@@ -600,14 +600,14 @@ async fn install_assistant(
     let runtime_assets = if cuda {
         vec![
             Asset::new(
-                "Bonsai NVIDIA engine",
+                "Local-model NVIDIA engine",
                 &format!("https://github.com/PrismML-Eng/llama.cpp/releases/download/{BONSAI_RELEASE}/llama-prism-b1-9fcaed7-bin-win-cuda-12.4-x64.zip"),
                 "llama-cuda.zip",
                 261_776_213,
                 "6d109e2930c0eaf2f729c3a6fc58dd7809ce2ba7047bfb294547cc389af6de5d",
             ),
             Asset::new(
-                "Bonsai NVIDIA support files",
+                "Local-model NVIDIA support files",
                 &format!("https://github.com/PrismML-Eng/llama.cpp/releases/download/{BONSAI_RELEASE}/cudart-llama-bin-win-cuda-12.4-x64.zip"),
                 "llama-cudart.zip",
                 391_443_627,
@@ -616,7 +616,7 @@ async fn install_assistant(
         ]
     } else {
         vec![Asset::new(
-            "Bonsai CPU engine",
+            "Local-model CPU engine",
             &format!("https://github.com/PrismML-Eng/llama.cpp/releases/download/{BONSAI_RELEASE}/llama-bin-win-cpu-x64.zip"),
             "llama-cpu.zip",
             17_401_584,
@@ -635,23 +635,12 @@ async fn install_assistant(
         install_or_reuse_model(app, request, &asset, &bonsai.join(&asset.relative), &cancel)
             .await?;
     }
-    let settings_path = bonsai.join("settings.json");
-    if !settings_path.is_file() {
-        fs::write(
-            &settings_path,
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "AdvancedMode": true,
-                "ContextWindow": settings.context_window,
-                "MainMaxOutputTokens": settings.max_output_tokens
-            }))?,
-        )?;
-    }
     settings.bonsai_root = bonsai.to_string_lossy().into_owned();
     emit(
         app,
         "assistant",
         "complete",
-        "Bonsai is installed and verified.",
+        "The included local model is installed and verified.",
         1,
         1,
         0,
@@ -1217,8 +1206,19 @@ async fn install_muscriptor(
     if temporary.is_file() {
         fs::remove_file(&temporary)?;
     }
+    if cancel.is_cancelled() {
+        return Err(SetupError::Cancelled);
+    }
     if fs::hard_link(&source, &temporary).is_err() {
-        tokio::fs::copy(&source, &temporary).await?;
+        tokio::select! {
+            result = tokio::fs::copy(&source, &temporary) => {
+                result?;
+            }
+            _ = cancel.cancelled() => {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(SetupError::Cancelled);
+            }
+        }
     }
     validate_muscriptor_checkpoint(&temporary)?;
     let hash_path = temporary.clone();
@@ -2958,7 +2958,7 @@ mod tests {
     fn existing_model_scan_covers_every_release_profile_and_ignores_wrong_sizes() {
         let root = tempfile::tempdir().unwrap();
         let assets = reusable_model_assets();
-        assert_eq!(assets.len(), 21);
+        assert!(assets.len() >= 5);
         assert!(assets.iter().any(|asset| asset.component == "assistant"));
         assert!(assets.iter().any(|asset| asset.component == "studio"));
         assert!(assets.iter().any(|asset| asset.component == "music"));

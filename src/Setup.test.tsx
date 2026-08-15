@@ -31,7 +31,7 @@ describe("SetupConsole", () => {
   it("keeps installed components and editable expert locations visible", () => {
     render(<SetupConsole snapshot={demoSnapshot} onChanged={vi.fn()} onError={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Kestrel essentials are ready." })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Bonsai assistant" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Included local model" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax H3 Movie Studio" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ideogram 4 Image Studio" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax Music 3 Production" })).toBeInTheDocument();

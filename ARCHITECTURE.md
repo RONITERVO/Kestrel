@@ -7,10 +7,10 @@ React WebView
   | typed IPC and progress events
   v
 Rust application boundary
-  |-- RuntimeManager: one process + one inference semaphore
-  |     |-- attach existing Bonsai on 127.0.0.1:8080
-  |     `-- or authenticated managed llama-server on loopback
-  |-- ResearchHarness: two-tool Bonsai loop + citation validation
+  |-- RuntimeManager: one authenticated managed llama-server + one inference semaphore
+  |     |-- app-wide runtime defaults with optional per-model exceptions
+  |     `-- model/workspace selection resolved before every lease
+  |-- ResearchHarness: selected-model two-tool loop + citation validation
   |     |-- Kiwix on 127.0.0.1:8085
   |     `-- ResearchStore
   |           |-- immutable directory-atomic HTML/JSON bundles

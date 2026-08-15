@@ -5475,8 +5475,7 @@ mod tests {
         };
         let models = crate::model::scan(&[Path::new(&research.bonsai_root).join("models")]);
         let model_id = models
-            .iter()
-            .find(|model| crate::model_roles::is_bonsai(model))
+            .first()
             .expect("installed Bonsai model")
             .id
             .clone();
@@ -6083,11 +6082,12 @@ mod tests {
         let exchange_prompt = studio.movie_plan_exchange_prompt(&project.id).unwrap();
         let runtime = Arc::new(RuntimeManager::new());
         let research = ResearchSettings::default();
+        let (control, models, model_id) = live_bonsai_studio_context(&research);
         studio.release_comfy_memory().await;
 
         let result: Result<MoviePlan, String> = async {
             let lease = runtime
-                .lease_research(&research)
+                .lease_research(&model_id, &models, &control, &research, None)
                 .await
                 .map_err(|error| error.to_string())?;
             let body = json!({
@@ -7082,7 +7082,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let project = result.unwrap();
         let plan = project.plan.as_ref().unwrap();
         assert_eq!(plan.clips.len(), 2);
@@ -7123,12 +7123,12 @@ mod tests {
             studio.plan(&project.id, MovieModelRuntime { runtime: &runtime, models: &models, settings: &runtime_settings, director_model_id: &model_id, reviewer_model_id: &model_id }, &cancel, None).await.map_err(|error| error.to_string())?;
             eprintln!("live movie: returning the Studio runtime and GPU");
             runtime.stop_managed().await.map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root).await.map_err(|error| error.to_string())?;
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await.map_err(|error| error.to_string())?;
             eprintln!("live movie: rendering and assembling with MiniMax H3");
             studio.render(&project.id, &cancel, None).await.map_err(|error| error.to_string())
         }.await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let project = result.unwrap();
         assert_eq!(project.status, "complete");
         assert!(Path::new(&project.final_path).is_file());
@@ -7268,7 +7268,7 @@ mod tests {
                 .stop_managed()
                 .await
                 .map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root)
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             eprintln!("live reference movie: rendering with installed H3 ref2va");
@@ -7279,7 +7279,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let project = result.unwrap();
         assert_eq!(project.status, "complete");
         assert_eq!(project.references.len(), 2);
@@ -7513,7 +7513,7 @@ mod tests {
                 .stop_managed()
                 .await
                 .map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root)
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             eprintln!("AFRICA ACCEPTANCE: planning complete; MiniMax H3 rendering begins");
@@ -7525,7 +7525,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let (project, plan) = result.unwrap();
         let planned_seconds = plan
             .clips
@@ -7779,7 +7779,7 @@ mod tests {
                 .stop_managed()
                 .await
                 .map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root)
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             eprintln!("MOON CAT ACCEPTANCE: planning complete; MiniMax H3 rendering begins");
@@ -7791,7 +7791,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let (project, plan) = result.unwrap();
         let planned_seconds = plan
             .clips
@@ -8001,7 +8001,7 @@ mod tests {
                 .stop_managed()
                 .await
                 .map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root)
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             eprintln!("FOOTBALL CIRCUS ACCEPTANCE: unattended plan accepted; MiniMax H3 rendering begins");
@@ -8013,7 +8013,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let (project, plan) = result.unwrap();
         let planned_seconds = plan
             .clips

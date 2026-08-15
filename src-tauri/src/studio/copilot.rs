@@ -146,6 +146,7 @@ impl MovieCopilotJob {
             .get(&request.project_id)
             .map_err(|error| error.to_string())?;
         validate_request(&request, &models, &project)?;
+        let settings = settings.for_model(&request.model_id);
         let model = models
             .iter()
             .find(|candidate| candidate.id == request.model_id)

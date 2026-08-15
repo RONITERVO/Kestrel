@@ -577,15 +577,18 @@ export async function getSystemSnapshot(): Promise<SystemSnapshot> {
         parallelSlots: 1,
         kvCache: "q4_0 / q4_0",
         modelVramMib: 9_964,
-        modelRoot: "D:\\LocalAI\\Bonsai27B",
+        modelRoot: "C:\\Kestrel Preview\\Bonsai",
       },
       gpu: {
-        name: "NVIDIA GeForce RTX 5070",
+        name: "Detected NVIDIA GPU (preview)",
         totalMib: 12_227,
         usedMib: 11_128,
         freeMib: 816,
         utilizationPercent: 7,
       },
+      control: demoSnapshot.control.settings,
+      models: demoSnapshot.control.models,
+      managedRuntime: demoSnapshot.control.runtime,
     };
   }
   return invoke<SystemSnapshot>("get_system_snapshot");
@@ -599,14 +602,10 @@ export async function saveResearchSettings(
 }
 
 export async function applyModelRuntime(
-  settings: ResearchSettings,
+  settings: ControlSettings,
 ): Promise<SystemSnapshot> {
   if (!isTauri()) return getSystemSnapshot();
   return invoke<SystemSnapshot>("apply_model_runtime", { settings });
-}
-
-export async function openBonsaiControlCenter(): Promise<void> {
-  if (isTauri()) await invoke("open_bonsai_control_center");
 }
 
 export async function getControlSnapshot(
@@ -659,9 +658,24 @@ export async function exportSetupProfile(): Promise<ProfileTransfer> {
   return invoke<ProfileTransfer>("export_setup_profile");
 }
 
+export async function getSetupProfileText(): Promise<string> {
+  if (!isTauri()) return JSON.stringify({ schemaVersion: 1, preview: true }, null, 2);
+  return invoke<string>("get_setup_profile_text");
+}
+
+export async function exportSetupProfileText(text: string): Promise<ProfileTransfer> {
+  if (!isTauri()) return exportSetupProfile();
+  return invoke<ProfileTransfer>("export_setup_profile_text", { text });
+}
+
 export async function importSetupProfile(path: string): Promise<AppSnapshot> {
   if (!isTauri()) return demoSnapshot;
   return invoke<AppSnapshot>("import_setup_profile", { path });
+}
+
+export async function importSetupProfileText(text: string): Promise<AppSnapshot> {
+  if (!isTauri()) return demoSnapshot;
+  return invoke<AppSnapshot>("import_setup_profile_text", { text });
 }
 
 export async function saveControlSettings(

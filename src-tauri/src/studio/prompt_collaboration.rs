@@ -135,6 +135,7 @@ impl PromptDraftJob {
             cancel,
         } = self;
         validate_request(&request, &models)?;
+        let settings = settings.for_model(&request.model_id);
         let model = models
             .iter()
             .find(|model| model.id == request.model_id)

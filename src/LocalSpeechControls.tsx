@@ -304,6 +304,15 @@ export function completeRecordingBlob(chunks: Blob[], mimeType: string): Blob {
   return new Blob(chunks, { type: mimeType });
 }
 
+// Each provisional WebM needs the recording header, so live updates use a logarithmically bounded
+// checkpoint schedule. The complete chunk list remains untouched for the final timestamped pass.
+export const LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS = [4, 12, 28, 60, 124, 252, 508, 780] as const;
+
+export function advanceLiveTranscriptionCheckpoint(elapsedSeconds: number, nextIndex: number): number {
+  const checkpoint = LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS[nextIndex];
+  return checkpoint !== undefined && elapsedSeconds >= checkpoint ? nextIndex + 1 : nextIndex;
+}
+
 function utf8Tail(value: string, maximumBytes: number): string {
   const bytes = new TextEncoder().encode(value);
   if (bytes.length <= maximumBytes) return value;
@@ -335,6 +344,8 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
   const mimeRef = useRef("");
   const pendingRef = useRef<Promise<void> | null>(null);
   const timerRef = useRef<number | null>(null);
+  const liveElapsedSecondsRef = useRef(0);
+  const liveCheckpointIndexRef = useRef(0);
   const timeoutRefs = useRef(new Set<number>());
   const mountedRef = useRef(true);
 
@@ -363,8 +374,8 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
       ? releaseLocalSpeechMemory().catch(() => undefined).finally(() => onActiveChange?.(false))
       : Promise.resolve();
     // MediaRecorder emits one WebM stream split across Blob events. Later events are not
-    // standalone files because they omit the stream header, so every provisional pass must send
-    // the complete recording accumulated so far. The final pass uses those same source bytes.
+    // standalone files because they omit the stream header. Bounded provisional checkpoints and
+    // the final pass therefore use the complete recording accumulated at their respective times.
     const chunks = chunksRef.current;
     if (!chunks.length) return emptyFinal();
     const blob = completeRecordingBlob(chunks, mimeRef.current);
@@ -436,36 +447,58 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
       throw new Error("This desktop WebView cannot capture microphone audio.");
     }
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-    const mime = recorderMimeType();
-    const recorder = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 32_000 });
-    chunksRef.current = [];
-    provisionalTranscriptRef.current = "";
-    initialRef.current = value;
-    recordingIdRef.current = id("recording");
-    modelIdRef.current = model.id;
-    mimeRef.current = recorder.mimeType || mime || "audio/webm";
-    recorderRef.current = recorder;
     streamRef.current = stream;
-    recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
-    recorder.onerror = () => { setFailed(true); setDetail("Microphone recording failed."); stop(); };
-    recorder.onstop = () => {
-      stream.getTracks().forEach((track) => track.stop());
-      const finish = async () => {
-        if (pendingRef.current) await pendingRef.current;
-        await transcribe(true);
+    try {
+      const mime = recorderMimeType();
+      const recorder = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 32_000 });
+      chunksRef.current = [];
+      provisionalTranscriptRef.current = "";
+      initialRef.current = value;
+      recordingIdRef.current = id("recording");
+      modelIdRef.current = model.id;
+      mimeRef.current = recorder.mimeType || mime || "audio/webm";
+      liveElapsedSecondsRef.current = 0;
+      liveCheckpointIndexRef.current = 0;
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
+      recorder.onerror = () => { setFailed(true); setDetail("Microphone recording failed."); stop(); };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        recorderRef.current = null;
+        const finish = async () => {
+          if (pendingRef.current) await pendingRef.current;
+          await transcribe(true);
+        };
+        scheduleTimeout(() => void finish(), 100);
       };
-      scheduleTimeout(() => void finish(), 100);
-    };
-    recorder.start(500);
-    setRecording(true);
-    setFailed(false);
-    onActiveChange?.(true);
-    setDetail("Listening locally…");
-    timerRef.current = window.setInterval(() => {
-      if (recorder.state === "recording") recorder.requestData();
-      scheduleTimeout(() => void transcribe(false), 100);
-    }, 4_000);
-    scheduleTimeout(() => { if (recorder.state === "recording") stop(); }, 15 * 60 * 1_000);
+      recorder.start(500);
+      setRecording(true);
+      setFailed(false);
+      onActiveChange?.(true);
+      setDetail("Listening locally…");
+      timerRef.current = window.setInterval(() => {
+        liveElapsedSecondsRef.current += 4;
+        const previousIndex = liveCheckpointIndexRef.current;
+        const nextIndex = advanceLiveTranscriptionCheckpoint(liveElapsedSecondsRef.current, previousIndex);
+        if (nextIndex === previousIndex) {
+          const finalCheckpoint = LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS.at(-1) ?? 0;
+          if (previousIndex === LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS.length && liveElapsedSecondsRef.current === finalCheckpoint + 4) {
+            setDetail("Listening locally · full recording will finalize when you stop");
+          }
+          return;
+        }
+        liveCheckpointIndexRef.current = nextIndex;
+        if (recorder.state === "recording") recorder.requestData();
+        scheduleTimeout(() => void transcribe(false), 100);
+      }, 4_000);
+      scheduleTimeout(() => { if (recorder.state === "recording") stop(); }, 15 * 60 * 1_000);
+    } catch (error) {
+      recorderRef.current = null;
+      streamRef.current = null;
+      stream.getTracks().forEach((track) => track.stop());
+      throw error;
+    }
   };
 
   const begin = async () => {

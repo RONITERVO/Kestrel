@@ -27,7 +27,6 @@ import {
   Plus,
   RefreshCw,
   Search,
-  Settings2,
   ShieldCheck,
   Sparkles,
   TriangleAlert,
@@ -41,17 +40,20 @@ import {
   bootstrap,
   cancelResearch,
   applyModelRuntime,
-  exportSetupProfile,
+  exportSetupProfileText,
+  getControlSnapshot,
   getReport,
+  getSetupProfileText,
   getSystemSnapshot,
   importSetupProfile,
+  importSetupProfileText,
   onProgress,
-  openBonsaiControlCenter,
   openStandalone,
   prepareServices,
   releaseAiMemory,
   revealLibrary,
   runResearch,
+  saveControlSettings,
   saveResearchSettings,
 } from "./api";
 import { ControlPlane, DeveloperConsole } from "./ControlPlane";
@@ -62,6 +64,8 @@ import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { SetupConsole } from "./Setup";
 import type {
   AppSnapshot,
+  ControlSettings,
+  ControlSnapshot,
   ProgressStage,
   ReportSummary,
   ResearchProgress,
@@ -224,11 +228,11 @@ function App() {
               onError={(message) => setError(message)}
             />
           ) : view === "studio" ? (
-            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode || snapshot.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
+            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
           ) : view === "music" ? (
-            <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} installRoot={snapshot.settings.installRoot} muscriptorSetupReady={snapshot.setup.components.find((component) => component.id === "muscriptor")?.status === "ready"} advancedEnabled={snapshot.control.settings.advancedMode || snapshot.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
+            <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} installRoot={snapshot.settings.installRoot} muscriptorSetupReady={snapshot.setup.components.find((component) => component.id === "muscriptor")?.status === "ready"} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
           ) : view === "image" ? (
-            <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode || snapshot.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
+            <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
           ) : view === "developer" ? (
             <DeveloperConsole
               control={snapshot.control}
@@ -238,7 +242,9 @@ function App() {
           ) : view === "system" ? (
             <SystemConsole
               initialSettings={snapshot.settings}
+              initialControl={snapshot.control.settings}
               onSaved={(settings) => setSnapshot((current) => current ? { ...current, settings } : current)}
+              onControlSaved={(control) => setSnapshot((current) => current ? { ...current, control } : current)}
               onImported={(next) => setSnapshot(next)}
               onError={(message) => setError(message)}
             />
@@ -292,7 +298,7 @@ function AppHeader({
   onNew: () => void;
   onPrepare: () => void;
 }) {
-  const allReady = status.bonsai === "ready" && status.wikipedia === "ready";
+  const allReady = status.modelRuntime === "ready" && status.wikipedia === "ready";
   const sectionLabel = view === "setup" ? "Setup" : view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "image" ? "Image Studio" : view === "music" ? "Music Production" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research";
   return (
     <header className={`app-header app-header-${view}`}>
@@ -314,7 +320,7 @@ function AppHeader({
       </nav>
       <div className="header-status" role="status">
         <StatusPill state={status.wikipedia} label={status.archive} />
-        <StatusPill state={status.bonsai} label={status.model} />
+        <StatusPill state={status.modelRuntime} label={status.model} />
         <div className="privacy-pill" aria-label="Offline only" title="Offline only"><ShieldCheck size={14} /> Offline only</div>
       </div>
       <div className="header-actions">
@@ -510,16 +516,22 @@ function CitationRow({ ids, onFocus, labels }: { ids: string[]; onFocus: (id: st
   return <div className="citation-row" aria-label="Citations">{ids.map((id) => <button key={id} onClick={() => onFocus(id)} title={labels?.get(id)?.title ?? `Source ${id}`}>{id}</button>)}</div>;
 }
 
-function SystemConsole({ initialSettings, onSaved, onImported, onError }: { initialSettings: ResearchSettings; onSaved: (settings: ResearchSettings) => void; onImported: (snapshot: AppSnapshot) => void; onError: (message: string) => void }) {
+function SystemConsole({ initialSettings, initialControl, onSaved, onControlSaved, onImported, onError }: { initialSettings: ResearchSettings; initialControl: ControlSettings; onSaved: (settings: ResearchSettings) => void; onControlSaved: (control: ControlSnapshot) => void; onImported: (snapshot: AppSnapshot) => void; onError: (message: string) => void }) {
   const [system, setSystem] = useState<SystemSnapshot | null>(null);
-  const [draft, setDraft] = useState<ResearchSettings>(initialSettings);
-  const [busy, setBusy] = useState<"save" | "apply" | "release" | "export" | "import" | null>(null);
+  const [researchDraft, setResearchDraft] = useState(initialSettings);
+  const [controlDraft, setControlDraft] = useState(initialControl);
+  const [tab, setTab] = useState<"models" | "research" | "portable">("models");
+  const [overrideModelId, setOverrideModelId] = useState(initialControl.selectedModelId ?? "");
+  const [busy, setBusy] = useState<"save-models" | "save-research" | "apply" | "release" | "export" | "import" | "refresh-profile" | null>(null);
   const [profilePath, setProfilePath] = useState("");
+  const [profileText, setProfileText] = useState("");
   const [profileStatus, setProfileStatus] = useState("");
 
   const refreshSystem = useCallback(async () => {
     try {
-      setSystem(await getSystemSnapshot());
+      const next = await getSystemSnapshot();
+      setSystem(next);
+      setOverrideModelId((current) => current || next.control.selectedModelId || next.models[0]?.id || "");
     } catch (cause) {
       onError(String(cause));
     }
@@ -527,17 +539,56 @@ function SystemConsole({ initialSettings, onSaved, onImported, onError }: { init
 
   useEffect(() => {
     void refreshSystem();
+    void getSetupProfileText().then(setProfileText).catch((cause) => onError(String(cause)));
     const timer = window.setInterval(() => void refreshSystem(), 2_500);
     return () => window.clearInterval(timer);
-  }, [refreshSystem]);
+  }, [refreshSystem, onError]);
 
-  const updateNumber = (key: keyof ResearchSettings, value: string) => {
-    setDraft((current) => ({ ...current, [key]: Number.parseInt(value, 10) || 0 }));
+  const updateResearchNumber = (key: keyof ResearchSettings, value: string) => {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) setResearchDraft((current) => ({ ...current, [key]: parsed }));
   };
-  const save = async () => {
-    setBusy("save");
+  const updateControlNumber = (key: "contextWindow" | "maxOutputTokens" | "threads", value: string) => {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) setControlDraft((current) => ({ ...current, [key]: parsed }));
+  };
+  const modelOverride = controlDraft.modelOverrides.find((item) => item.modelId === overrideModelId);
+  const updateOverrideNumber = (key: "contextWindow" | "maxOutputTokens" | "threads", value: string) => {
+    const parsed = Number.parseInt(value, 10);
+    if (!overrideModelId || !Number.isFinite(parsed) || parsed <= 0) return;
+    setControlDraft((current) => {
+      const known = current.modelOverrides.find((item) => item.modelId === overrideModelId) ?? { modelId: overrideModelId };
+      return { ...current, modelOverrides: [...current.modelOverrides.filter((item) => item.modelId !== overrideModelId), { ...known, [key]: parsed }] };
+    });
+  };
+  const toggleOverride = (enabled: boolean) => {
+    if (!overrideModelId) return;
+    setControlDraft((current) => ({
+      ...current,
+      modelOverrides: enabled
+        ? [...current.modelOverrides.filter((item) => item.modelId !== overrideModelId), { modelId: overrideModelId, contextWindow: current.contextWindow, maxOutputTokens: current.maxOutputTokens, threads: current.threads }]
+        : current.modelOverrides.filter((item) => item.modelId !== overrideModelId),
+    }));
+  };
+  const saveModels = async () => {
+    setBusy("save-models");
     try {
-      const saved = await saveResearchSettings(draft);
+      const saved = await saveControlSettings(controlDraft);
+      setControlDraft(saved.settings);
+      onControlSaved(saved);
+      setProfileStatus("App-wide model policy saved. A loaded model keeps its current launch until restarted.");
+      await refreshSystem();
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const saveResearch = async () => {
+    setBusy("save-research");
+    try {
+      const saved = await saveResearchSettings(researchDraft);
+      setResearchDraft(saved);
       onSaved(saved);
       setSystem((current) => current ? { ...current, settings: saved } : current);
     } catch (cause) {
@@ -547,27 +598,21 @@ function SystemConsole({ initialSettings, onSaved, onImported, onError }: { init
     }
   };
   const apply = async () => {
-    if (!window.confirm("Apply these context/output values and restart the local Bonsai model? Active research will be interrupted.")) return;
+    if (!window.confirm("Save this app-wide policy and restart the selected local model? Active local-model work will be interrupted.")) return;
     setBusy("apply");
     try {
-      const next = await applyModelRuntime(draft);
+      const next = await applyModelRuntime(controlDraft);
       setSystem(next);
-      onSaved(next.settings);
+      setControlDraft(next.control);
+      onControlSaved(await getControlSnapshot(false));
     } catch (cause) {
       onError(String(cause));
     } finally {
       setBusy(null);
     }
   };
-  const openControls = async () => {
-    try {
-      await openBonsaiControlCenter();
-    } catch (cause) {
-      onError(String(cause));
-    }
-  };
   const releaseMemory = async () => {
-    if (!window.confirm("Release all AI memory controlled by Kestrel? Active Kestrel work will stop, the configured Bonsai service will shut down, and unrelated model apps will be left alone.")) return;
+    if (!window.confirm("Release all AI memory controlled by Kestrel? Active local work will stop; unrelated model applications are left alone.")) return;
     setBusy("release");
     try {
       await releaseAiMemory();
@@ -578,33 +623,55 @@ function SystemConsole({ initialSettings, onSaved, onImported, onError }: { init
       setBusy(null);
     }
   };
-  const exportProfile = async () => {
-    setBusy("export");
+  const refreshProfileText = async () => {
+    setBusy("refresh-profile");
     try {
-      const transfer = await exportSetupProfile();
-      setProfilePath(transfer.path);
-      setProfileStatus(transfer.message);
-      try {
-        await navigator.clipboard.writeText(transfer.path);
-      } catch {
-        setProfileStatus(`${transfer.message} Copy the displayed path manually.`);
-      }
+      setProfileText(await getSetupProfileText());
+      setProfileStatus("Editable JSON refreshed from the current app-wide setup.");
     } catch (cause) {
       onError(String(cause));
     } finally {
       setBusy(null);
     }
   };
-  const importProfile = async () => {
+  const exportProfile = async () => {
+    setBusy("export");
+    try {
+      const transfer = await exportSetupProfileText(profileText);
+      setProfilePath(transfer.path);
+      setProfileStatus(transfer.message);
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const acceptImported = async (next: AppSnapshot, message: string) => {
+    setResearchDraft(next.settings);
+    setControlDraft(next.control.settings);
+    setOverrideModelId(next.control.settings.selectedModelId ?? next.control.models[0]?.id ?? "");
+    onImported(next);
+    setProfileText(await getSetupProfileText());
+    setProfileStatus(message);
+    await refreshSystem();
+  };
+  const importProfilePath = async () => {
     const path = profilePath.trim();
-    if (!path || !window.confirm("Import this setup profile? Local developer/workspace paths stay unchanged and Full Access will be locked.")) return;
+    if (!path || !window.confirm("Import this setup profile? Existing local paths are used only when they validate, and trust grants remain locked.")) return;
     setBusy("import");
     try {
-      const next = await importSetupProfile(path);
-      setDraft(next.settings);
-      onImported(next);
-      setProfileStatus("Profile imported. Model paths were rescanned, the engine was rediscovered locally, and Full Access remains locked.");
-      await refreshSystem();
+      await acceptImported(await importSetupProfile(path), "Profile imported, local components rescanned, and trust grants left unchanged.");
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const importProfileText = async () => {
+    if (!profileText.trim() || !window.confirm("Apply the edited setup JSON? Kestrel validates every value and local path before saving.")) return;
+    setBusy("import");
+    try {
+      await acceptImported(await importSetupProfileText(profileText), "Edited setup JSON validated and applied across Kestrel.");
     } catch (cause) {
       onError(String(cause));
     } finally {
@@ -613,50 +680,66 @@ function SystemConsole({ initialSettings, onSaved, onImported, onError }: { init
   };
   const gpu = system?.gpu;
   const usedPercent = gpu ? Math.min(100, (gpu.usedMib / gpu.totalMib) * 100) : 0;
+  const models = system?.models ?? [];
+  const activeModel = system?.managedRuntime.modelName ?? models.find((item) => item.id === controlDraft.selectedModelId)?.name ?? "No model selected";
 
   return (
     <div className="system-console">
       <header className="system-hero">
-        <div><span className="eyebrow">Local engine & research capacity</span><h1>System</h1><p>See what occupies the GPU, tune the solo researcher, and move back to Research from the header without losing a running job.</p></div>
+        <div><span className="eyebrow">One runtime policy · every local model</span><h1>System</h1><p>Choose app-wide defaults once. Explicit per-model and workspace settings override them without creating a second server or a hidden model-specific control path.</p></div>
         <div className="system-hero-actions"><button className="quiet-button" disabled={!!busy} onClick={() => void releaseMemory()}>{busy === "release" ? <LoaderCircle className="spin" size={15}/> : <CircleStop size={15}/>} Release AI memory</button><button className="quiet-button" onClick={() => void refreshSystem()}><RefreshCw size={15} /> Refresh</button></div>
       </header>
 
       <section className="telemetry-grid" aria-label="Live system telemetry">
         <article className="telemetry-card gpu-card">
-          <div className="telemetry-title"><Gauge /><span><small>GPU memory</small><strong>{gpu?.name ?? "GPU telemetry unavailable"}</strong></span></div>
+          <div className="telemetry-title"><Gauge /><span><small>Detected GPU</small><strong>{gpu?.name ?? "GPU telemetry unavailable"}</strong></span></div>
           {gpu && <><div className="vram-number"><strong>{formatMib(gpu.usedMib)}</strong><span>of {formatMib(gpu.totalMib)} used</span></div><div className="vram-track"><span style={{ width: `${usedPercent}%` }} /></div><div className="telemetry-foot"><span>{formatMib(gpu.freeMib)} free</span><span>{gpu.utilizationPercent}% compute</span></div></>}
         </article>
-        <article className="telemetry-card"><div className="telemetry-title"><MemoryStick /><span><small>Loaded model footprint</small><strong>{formatMib(system?.runtime.modelVramMib ?? 0)}</strong></span></div><p>Measured VRAM delta at model load. Other GPU applications can affect the live total.</p></article>
-        <article className="telemetry-card"><div className="telemetry-title"><Cpu /><span><small>Active runtime</small><strong>{(system?.runtime.contextWindow ?? 0).toLocaleString()} context</strong></span></div><div className="runtime-facts"><span>{(system?.runtime.maxOutputTokens ?? 0).toLocaleString()} max answer</span><span>{system?.runtime.parallelSlots ?? 1} GPU slot</span><span>{system?.runtime.kvCache ?? "—"} KV</span></div></article>
+        <article className="telemetry-card"><div className="telemetry-title"><MemoryStick /><span><small>Local model</small><strong>{activeModel}</strong></span></div><p>{system?.managedRuntime.detail ?? "No managed runtime is loaded."}</p></article>
+        <article className="telemetry-card"><div className="telemetry-title"><Cpu /><span><small>Effective runtime</small><strong>{(system?.runtime.contextWindow ?? controlDraft.contextWindow).toLocaleString()} context</strong></span></div><div className="runtime-facts"><span>{(system?.runtime.maxOutputTokens ?? controlDraft.maxOutputTokens).toLocaleString()} max output</span><span>1 inference slot</span><span>{controlDraft.modelOverrides.length} model exception{controlDraft.modelOverrides.length === 1 ? "" : "s"}</span></div></article>
       </section>
 
-      <section className="single-context-note"><Zap /><div><strong>Why Kestrel uses one model researcher</strong><p>Your current 98K context leaves little spare VRAM. Multiple model workers would duplicate KV state and compete for one server slot. Solo expedition instead runs archive searches concurrently, then lets one long-lived GPU context coordinate every lane through a shared, compact candidate ledger.</p></div></section>
+      <nav className="system-tabs" aria-label="System settings sections"><button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Cpu size={15}/> Model policy</button><button className={tab === "research" ? "active" : ""} onClick={() => setTab("research")}><Library size={15}/> Research policy</button><button className={tab === "portable" ? "active" : ""} onClick={() => setTab("portable")}><ShieldCheck size={15}/> Portable setup</button></nav>
 
-      <section className="settings-panel">
-        <div className="settings-heading"><div><span className="eyebrow">Opt-in expert controls</span><h2>Solo researcher profile</h2><p>Standard research keeps tested internal budgets. Enable advanced mode to expose every runtime and orchestration value.</p></div><label className="advanced-toggle"><input type="checkbox" checked={draft.advancedMode} onChange={(event) => setDraft((current) => ({ ...current, advancedMode: event.target.checked }))} /><span /><strong>Advanced mode</strong></label></div>
-
-        <div className={`advanced-settings ${draft.advancedMode ? "enabled" : "disabled"}`}>
-          <label className="wide-field"><span>Bonsai installation root</span><input value={draft.bonsaiRoot} disabled={!draft.advancedMode} onChange={(event) => setDraft((current) => ({ ...current, bonsaiRoot: event.target.value }))} /></label>
-          <NumberSetting label="Context window" hint="Model server startup" value={draft.contextWindow} disabled={!draft.advancedMode} onChange={(value) => updateNumber("contextWindow", value)} />
-          <NumberSetting label="Maximum answer" hint="Per model response" value={draft.maxOutputTokens} disabled={!draft.advancedMode} onChange={(value) => updateNumber("maxOutputTokens", value)} />
-          <NumberSetting label="Research lanes" hint="Distinct planning angles" value={draft.researchLanes} disabled={!draft.advancedMode} onChange={(value) => updateNumber("researchLanes", value)} />
-          <NumberSetting label="Results per lane" hint="Compact candidate memory" value={draft.resultsPerLane} disabled={!draft.advancedMode} onChange={(value) => updateNumber("resultsPerLane", value)} />
-          <NumberSetting label="Source target" hint="Wikipedia pages to inspect" value={draft.sourceTarget} disabled={!draft.advancedMode} onChange={(value) => updateNumber("sourceTarget", value)} />
-          <NumberSetting label="Tool turns" hint="Adaptive read/search rounds" value={draft.toolTurns} disabled={!draft.advancedMode} onChange={(value) => updateNumber("toolTurns", value)} />
-          <NumberSetting label="Thinking budget" hint="Tokens per reasoning pass" value={draft.thinkingBudget} disabled={!draft.advancedMode} onChange={(value) => updateNumber("thinkingBudget", value)} />
-          <NumberSetting label="Source characters" hint="Maximum per opened section" value={draft.maxSourceChars} disabled={!draft.advancedMode} onChange={(value) => updateNumber("maxSourceChars", value)} />
+      {tab === "models" && <section className="settings-panel system-tab-panel">
+        <div className="settings-heading"><div><span className="eyebrow">Fallback everywhere</span><h2>App-wide local model policy</h2><p>Chat, Computer Tasks, Research, and every Studio inherit these values unless their selected model or workspace has an explicit override.</p></div><label className="advanced-toggle"><input type="checkbox" checked={controlDraft.advancedMode} onChange={(event) => setControlDraft((current) => ({ ...current, advancedMode: event.target.checked }))}/><span/><strong>Allow uncapped values</strong></label></div>
+        <div className="system-policy-grid">
+          <div className="system-policy-column">
+            <label className="wide-field"><span>Default local model</span><select value={controlDraft.selectedModelId ?? ""} onChange={(event) => { const value = event.target.value || undefined; setControlDraft((current) => ({ ...current, selectedModelId: value })); setOverrideModelId(event.target.value); }}><option value="">First available model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+            <label className="wide-field"><span>llama.cpp engine</span><input value={controlDraft.enginePath} onChange={(event) => setControlDraft((current) => ({ ...current, enginePath: event.target.value }))}/></label>
+            <div className="model-runtime-row"><NumberSetting label="Context" hint="Global fallback" value={controlDraft.contextWindow} disabled={false} onChange={(value) => updateControlNumber("contextWindow", value)}/><NumberSetting label="Max output" hint="Global fallback" value={controlDraft.maxOutputTokens} disabled={false} onChange={(value) => updateControlNumber("maxOutputTokens", value)}/><NumberSetting label="CPU threads" hint="Global fallback" value={controlDraft.threads} disabled={false} onChange={(value) => updateControlNumber("threads", value)}/></div>
+          </div>
+          <div className="system-policy-column model-exception-card">
+            <div className="model-exception-heading"><div><span className="eyebrow">More specific wins</span><strong>Per-model exception</strong></div><label><input type="checkbox" checked={!!modelOverride} disabled={!overrideModelId} onChange={(event) => toggleOverride(event.target.checked)}/> Override this model</label></div>
+            <label className="wide-field"><span>Model</span><select value={overrideModelId} onChange={(event) => setOverrideModelId(event.target.value)}><option value="">Choose a model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+            <div className="model-runtime-row"><NumberSetting label="Context" hint="Model only" value={modelOverride?.contextWindow ?? controlDraft.contextWindow} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("contextWindow", value)}/><NumberSetting label="Max output" hint="Model only" value={modelOverride?.maxOutputTokens ?? controlDraft.maxOutputTokens} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("maxOutputTokens", value)}/><NumberSetting label="CPU threads" hint="Model only" value={modelOverride?.threads ?? controlDraft.threads} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("threads", value)}/></div>
+          </div>
         </div>
+        <div className="advanced-warning"><TriangleAlert/><div><strong>No GPU model is assumed.</strong><span>Kestrel uses detected telemetry and the values you save. Uncapped or oversized settings can still exceed a model or machine limit.</span></div></div>
+        <div className="settings-actions"><span/><button className="quiet-button" disabled={!!busy} onClick={() => void saveModels()}>{busy === "save-models" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Save app-wide policy</button><button className="primary-button" disabled={!!busy || models.length === 0} onClick={() => void apply()}>{busy === "apply" ? <LoaderCircle className="spin" size={15}/> : <Zap size={15}/>} Save & restart selected model</button></div>
+      </section>}
 
-        <div className="advanced-warning"><TriangleAlert /><div><strong>Expert values are intentionally uncapped.</strong><span>Warning: invalid or oversized values can stop startup or exhaust VRAM. The model runtime still enforces its physical and architectural limits.</span></div></div>
-        <div className="settings-actions"><button className="quiet-button" onClick={() => void openControls()}><Settings2 size={15} /> Open Bonsai controls</button><span /><button className="quiet-button" disabled={!!busy} onClick={() => void save()}>{busy === "save" ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save research profile</button><button className="primary-button" disabled={!draft.advancedMode || !!busy} onClick={() => void apply()}>{busy === "apply" ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />} Apply & restart model</button></div>
-      </section>
+      {tab === "research" && <section className="settings-panel system-tab-panel">
+        <div className="settings-heading"><div><span className="eyebrow">Workspace-specific override</span><h2>Offline Research policy</h2><p>Standard Research inherits the selected model's System policy. Enable this only when research genuinely needs a different context/output budget or deeper orchestration.</p></div><label className="advanced-toggle"><input type="checkbox" checked={researchDraft.advancedMode} onChange={(event) => setResearchDraft((current) => ({ ...current, advancedMode: event.target.checked }))}/><span/><strong>Research override</strong></label></div>
+        <div className={`advanced-settings ${researchDraft.advancedMode ? "enabled" : "disabled"}`}>
+          <NumberSetting label="Context override" hint="Research only" value={researchDraft.contextWindow} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("contextWindow", value)}/>
+          <NumberSetting label="Output override" hint="Research only" value={researchDraft.maxOutputTokens} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("maxOutputTokens", value)}/>
+          <NumberSetting label="Research lanes" hint="Distinct planning angles" value={researchDraft.researchLanes} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("researchLanes", value)}/>
+          <NumberSetting label="Results per lane" hint="Compact candidate memory" value={researchDraft.resultsPerLane} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("resultsPerLane", value)}/>
+          <NumberSetting label="Source target" hint="Wikipedia pages" value={researchDraft.sourceTarget} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("sourceTarget", value)}/>
+          <NumberSetting label="Tool turns" hint="Search/read rounds" value={researchDraft.toolTurns} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("toolTurns", value)}/>
+          <NumberSetting label="Thinking budget" hint="Per reasoning pass" value={researchDraft.thinkingBudget} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("thinkingBudget", value)}/>
+          <NumberSetting label="Source characters" hint="Per opened section" value={researchDraft.maxSourceChars} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("maxSourceChars", value)}/>
+        </div>
+        <div className="single-context-note"><Zap/><div><strong>One selected model, one inference lease</strong><p>Research searches the local archive concurrently, then coordinates evidence through the same managed runtime used by the rest of Kestrel. It never launches or attaches to a separate model-specific server.</p></div></div>
+        <div className="settings-actions"><span/><button className="primary-button" disabled={!!busy} onClick={() => void saveResearch()}>{busy === "save-research" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Save Research policy</button></div>
+      </section>}
 
-      <section className="settings-panel portability-panel">
-        <div className="settings-heading"><div><span className="eyebrow">Safe machine transfer</span><h2>Portable setup</h2><p>Move tuning and path-independent model identities to another offline PC. Profiles never contain weights, chats, research, credentials, developer paths, or Full Access authority.</p></div><ShieldCheck /></div>
-        <label className="wide-field"><span>Profile JSON path</span><input value={profilePath} onChange={(event) => setProfilePath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\setup-profiles\\kestrel-profile-….json" /></label>
-        {profileStatus && <div className="profile-status" role="status">{profileStatus}</div>}
-        <div className="settings-actions"><button className="quiet-button" disabled={!!busy} onClick={() => void exportProfile()}>{busy === "export" ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} Export safe profile</button><span /><button className="quiet-button" disabled={!!busy || !profilePath.trim()} onClick={() => void importProfile()}>{busy === "import" ? <LoaderCircle className="spin" size={15} /> : <Upload size={15} />} Import profile</button></div>
-      </section>
+      {tab === "portable" && <section className="settings-panel portability-panel system-tab-panel">
+        <div className="settings-heading"><div><span className="eyebrow">Entire safe app setup</span><h2>Portable setup JSON</h2><p>This editable document covers component locations, archive settings, global model policy, per-model exceptions, Research policy, and every discovered model identity. It intentionally excludes weights, projects, conversations, developer paths, credentials, and access grants.</p></div><ShieldCheck/></div>
+        <div className="portable-editor-grid"><label className="portable-json"><span>Editable profile text</span><textarea value={profileText} onChange={(event) => setProfileText(event.target.value)} spellCheck={false} aria-label="Editable portable setup JSON"/></label><div className="portable-file-controls"><label className="wide-field"><span>Import an existing profile path</span><input value={profilePath} onChange={(event) => setProfilePath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\setup-profiles\\kestrel-profile.json"/></label>{profileStatus && <div className="profile-status" role="status">{profileStatus}</div>}<button className="quiet-button" disabled={!!busy} onClick={() => void refreshProfileText()}>{busy === "refresh-profile" ? <LoaderCircle className="spin" size={15}/> : <RefreshCw size={15}/>} Refresh text from app</button><button className="quiet-button" disabled={!!busy || !profilePath.trim()} onClick={() => void importProfilePath()}><Upload size={15}/> Import file</button></div></div>
+        <div className="settings-actions"><button className="quiet-button" disabled={!!busy || !profileText.trim()} onClick={() => void importProfileText()}>{busy === "import" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Validate & apply edited text</button><span/><button className="primary-button" disabled={!!busy || !profileText.trim()} onClick={() => void exportProfile()}>{busy === "export" ? <LoaderCircle className="spin" size={15}/> : <Download size={15}/>} Export edited JSON</button></div>
+      </section>}
     </div>
   );
 }
@@ -688,7 +771,7 @@ function NewResearchDialog({ advancedEnabled, onClose, onSubmit }: { advancedEna
         <div className="depth-picker">
           <button className={depth === "focused" ? "selected" : ""} onClick={() => setDepth("focused")}><strong>Focused</strong><span>A concise brief from the most relevant sources</span></button>
           <button className={depth === "thorough" ? "selected" : ""} onClick={() => setDepth("thorough")}><strong>Thorough</strong><span>Broader reading, nuance, gaps, and a timeline</span></button>
-          {advancedEnabled && <button className={`expedition-choice ${depth === "expedition" ? "selected" : ""}`} onClick={() => setDepth("expedition")}><strong><Layers3 size={14} /> Solo expedition</strong><span>One shared 98K-capable GPU context coordinates many archive lanes and a longer synthesis</span></button>}
+          {advancedEnabled && <button className={`expedition-choice ${depth === "expedition" ? "selected" : ""}`} onClick={() => setDepth("expedition")}><strong><Layers3 size={14} /> Solo expedition</strong><span>The selected model's Research profile coordinates many archive lanes and a longer synthesis</span></button>}
         </div>
         <div className="dialog-assurance"><ShieldCheck size={16} /><span>No web requests. Model, archive, research, and HTML stay on this computer.</span></div>
         <div className="dialog-actions"><span><kbd>Ctrl</kbd> + <kbd>Enter</kbd></span><button className="primary-button" disabled={query.trim().length < 4} onClick={submit}>Begin research <ChevronRight size={16} /></button></div>
@@ -702,7 +785,7 @@ function ProgressPanel({ progress, activity, onCancel }: { progress: ResearchPro
   const percent = Math.min(100, Math.max(4, progress.total ? (progress.current / progress.total) * 100 : ((activeIndex + 0.35) / stageOrder.length) * 100));
   return (
     <div className="progress-drawer" role="status" aria-live="polite">
-      <div className="progress-header"><div className="progress-spinner"><LoaderCircle className="spin" /></div><div><span className="eyebrow">Bonsai is researching</span><h2>{progress.title}</h2></div><button className="icon-button" aria-label="Stop research" onClick={onCancel}><CircleStop /></button></div>
+      <div className="progress-header"><div className="progress-spinner"><LoaderCircle className="spin" /></div><div><span className="eyebrow">Local model is researching</span><h2>{progress.title}</h2></div><button className="icon-button" aria-label="Stop research" onClick={onCancel}><CircleStop /></button></div>
       <p className="progress-detail">{progress.detail}</p>
       <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
       <div className="stage-row">{stageOrder.map((stage, index) => <div className={index < activeIndex ? "done" : index === activeIndex ? "active" : ""} key={stage}><span>{index < activeIndex ? <Check size={12} /> : index + 1}</span><small>{stageNames[stage]}</small></div>)}</div>

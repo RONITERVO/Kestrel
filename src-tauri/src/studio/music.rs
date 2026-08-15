@@ -744,7 +744,10 @@ impl MusicStudio {
         let revisions = midi_session.join("revisions");
         fs::create_dir_all(&revisions)?;
         let mut command = tokio::process::Command::new(&project.midi.executable_path);
-        if is_managed_muscriptor_uvx(Path::new(&project.midi.executable_path)) {
+        if is_managed_muscriptor_uvx(
+            Path::new(&project.midi.executable_path),
+            Path::new(&project.midi.model_path),
+        ) {
             let root = Path::new(&project.midi.executable_path)
                 .parent()
                 .and_then(Path::parent)
@@ -1526,10 +1529,22 @@ fn muscriptor_executable_candidates(root: &Path) -> [PathBuf; 2] {
     ]
 }
 
-fn is_managed_muscriptor_uvx(path: &Path) -> bool {
-    path.file_name()
+fn is_managed_muscriptor_uvx(executable: &Path, model: &Path) -> bool {
+    let Some(runtime) = executable.parent() else {
+        return false;
+    };
+    let Some(root) = runtime.parent() else {
+        return false;
+    };
+    executable
+        .file_name()
         .and_then(|value| value.to_str())
         .is_some_and(|value| value.eq_ignore_ascii_case("uvx.exe"))
+        && runtime
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("runtime"))
+        && model == root.join("models/model.safetensors")
 }
 
 async fn verify_music_nodes(http: &Client, tiled_decode: bool) -> Result<(), StudioError> {
@@ -1810,12 +1825,19 @@ mod tests {
 
     #[test]
     fn only_the_managed_uvx_runner_selects_the_pinned_offline_invocation() {
-        assert!(is_managed_muscriptor_uvx(Path::new(
-            r"C:\Kestrel AI\MuScriptor\runtime\uvx.exe"
-        )));
-        assert!(!is_managed_muscriptor_uvx(Path::new(
-            r"C:\Tools\muscriptor.exe"
-        )));
+        let managed_model = Path::new(r"C:\Kestrel AI\MuScriptor\models\model.safetensors");
+        assert!(is_managed_muscriptor_uvx(
+            Path::new(r"C:\Kestrel AI\MuScriptor\runtime\uvx.exe"),
+            managed_model,
+        ));
+        assert!(!is_managed_muscriptor_uvx(
+            Path::new(r"C:\Tools\uvx.exe"),
+            managed_model,
+        ));
+        assert!(!is_managed_muscriptor_uvx(
+            Path::new(r"C:\Tools\muscriptor.exe"),
+            managed_model,
+        ));
     }
 
     #[test]

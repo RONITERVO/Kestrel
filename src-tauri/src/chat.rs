@@ -42,6 +42,7 @@ impl ChatStreamJob {
             settings,
             cancel,
         } = self;
+        let settings = settings.for_model(&request.model_id);
         emit(app.as_ref(), &request_id, &session_id, "queued", None, None);
         let session = store.get_chat(&session_id)?;
         let max_output_tokens = if settings.advanced_mode {
