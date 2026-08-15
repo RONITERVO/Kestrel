@@ -605,6 +605,51 @@ export interface ModelInfo {
   recommendation: string;
 }
 
+export interface ModelDownloadRequest {
+  url: string;
+  expectedSha256?: string;
+}
+
+export interface ModelDownloadCandidate {
+  filePath: string;
+  fileName: string;
+  url: string;
+  bytes: number;
+  sha256?: string;
+  kind: "model" | "model-shard" | "projector" | string;
+}
+
+export interface ModelDownloadInspection {
+  repository: string;
+  revision: string;
+  candidates: ModelDownloadCandidate[];
+  detail: string;
+}
+
+export interface ModelDownloadRecord {
+  id: string;
+  status: "inspecting" | "downloading" | "retrying" | "verifying" | "paused" | "interrupted" | "source-changed" | "failed" | "complete" | string;
+  sourceUrl: string;
+  repository: string;
+  revision: string;
+  fileName: string;
+  destinationPath: string;
+  partialPath: string;
+  totalBytes: number;
+  downloadedBytes: number;
+  bytesPerSecond: number;
+  etaSeconds?: number;
+  expectedSha256?: string;
+  actualSha256?: string;
+  sourceEtag?: string;
+  checksumSource: string;
+  retryCount: number;
+  createdAt: string;
+  updatedAt: string;
+  detail: string;
+  error?: string;
+}
+
 export interface ContextAttachment {
   id: string;
   name: string;

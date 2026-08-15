@@ -9,6 +9,7 @@ mod harness;
 mod html;
 mod kiwix;
 mod model;
+mod model_download;
 mod models;
 mod profile;
 mod runtime;
@@ -23,6 +24,9 @@ use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
 use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
+use model_download::{
+    ModelDownloadInspection, ModelDownloadManager, ModelDownloadRecord, ModelDownloadRequest,
+};
 use models::{
     AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess,
     ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
@@ -59,6 +63,7 @@ struct AppState {
     research_settings: SettingsStore,
     control_settings: ControlSettingsStore,
     model_catalog: ModelCatalogStore,
+    model_downloads: ModelDownloadManager,
     models: RwLock<Vec<ModelInfo>>,
     engine_candidates: RwLock<Vec<models::EngineCandidate>>,
     runtime: Arc<RuntimeManager>,
@@ -73,6 +78,7 @@ struct AppState {
     movie_jobs: Mutex<HashMap<String, CancellationToken>>,
     image_asset_jobs: Mutex<HashMap<String, CancellationToken>>,
     setup_job: Mutex<Option<CancellationToken>>,
+    model_download_job: Mutex<Option<CancellationToken>>,
 }
 
 struct ResearchGuard<'a> {
@@ -1095,7 +1101,7 @@ async fn install_setup_component(
             .control_settings
             .save(&control)
             .map_err(|error| error.to_string())?;
-        let roots = default_roots(&control.extra_model_roots, &research.bonsai_root);
+        let roots = model_roots(&state, &control, &research);
         let found = tokio::task::spawn_blocking(move || model::scan(&roots))
             .await
             .map_err(|error| format!("model scan failed after setup: {error}"))?;
@@ -1154,7 +1160,7 @@ async fn scan_local_models(state: State<'_, AppState>) -> Result<ControlSnapshot
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let roots = default_roots(&control.extra_model_roots, &research.bonsai_root);
+    let roots = model_roots(&state, &control, &research);
     let found = tokio::task::spawn_blocking(move || model::scan(&roots))
         .await
         .map_err(|error| format!("model scan failed: {error}"))?;
@@ -1165,6 +1171,111 @@ async fn scan_local_models(state: State<'_, AppState>) -> Result<ControlSnapshot
     }
     *state.models.write().await = found;
     control_snapshot(&state, true).await
+}
+
+#[tauri::command]
+fn list_model_downloads(state: State<'_, AppState>) -> Result<Vec<ModelDownloadRecord>, String> {
+    state.model_downloads.list()
+}
+
+#[tauri::command]
+async fn inspect_model_download(
+    url: String,
+    state: State<'_, AppState>,
+) -> Result<ModelDownloadInspection, String> {
+    if state
+        .setup_job
+        .lock()
+        .map_err(|_| "setup job registry is unavailable".to_string())?
+        .is_some()
+    {
+        return Err(
+            "A setup download is active. Stop or finish it before inspecting a public model repository."
+                .into(),
+        );
+    }
+    let _guard = claim_workspace(&state).map_err(|_| {
+        "Chat, research, a computer task, or a model transfer is active. Stop or finish it before inspecting a public model repository.".to_string()
+    })?;
+    state.model_downloads.inspect(&url).await
+}
+
+#[tauri::command]
+async fn start_model_download(
+    request: ModelDownloadRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ModelDownloadRecord, String> {
+    run_model_download(Some(request), None, app, state).await
+}
+
+#[tauri::command]
+async fn resume_model_download(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ModelDownloadRecord, String> {
+    run_model_download(None, Some(id), app, state).await
+}
+
+#[tauri::command]
+fn cancel_model_download(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .model_download_job
+        .lock()
+        .map_err(|_| "model download job registry is unavailable".to_string())?
+        .as_ref()
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+async fn run_model_download(
+    request: Option<ModelDownloadRequest>,
+    resume_id: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ModelDownloadRecord, String> {
+    if state
+        .setup_job
+        .lock()
+        .map_err(|_| "setup job registry is unavailable".to_string())?
+        .is_some()
+    {
+        return Err(
+            "A setup download is active. Stop or finish it before starting a model transfer."
+                .into(),
+        );
+    }
+    let _guard = claim_workspace(&state).map_err(|_| {
+        "Chat, research, a computer task, or another model transfer is active. Stop or finish it before using the public model downloader.".to_string()
+    })?;
+    let _awake = model_download::SystemAwakeGuard::acquire()?;
+    let cancel = CancellationToken::new();
+    {
+        let mut active = state
+            .model_download_job
+            .lock()
+            .map_err(|_| "model download job registry is unavailable".to_string())?;
+        if active.is_some() {
+            return Err("Another model transfer is already active.".into());
+        }
+        *active = Some(cancel.clone());
+    }
+    let result = match (request, resume_id) {
+        (Some(request), None) => state.model_downloads.start(request, &app, &cancel).await,
+        (None, Some(id)) => state.model_downloads.resume(&id, &app, &cancel).await,
+        _ => Err("invalid model download action".into()),
+    };
+    if let Ok(mut active) = state.model_download_job.lock() {
+        *active = None;
+    }
+    let record = result?;
+    if record.status == "complete" {
+        refresh_model_catalog(&state, Some(&app)).await?;
+    }
+    Ok(record)
 }
 
 #[tauri::command]
@@ -1197,10 +1308,7 @@ async fn import_setup_profile(
         &state.control_settings,
     )
     .map_err(|error| error.to_string())?;
-    let roots = default_roots(
-        &imported.control.extra_model_roots,
-        &imported.research.bonsai_root,
-    );
+    let roots = model_roots(&state, &imported.control, &imported.research);
     match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
         Ok(found) => {
             if let Err(error) = state.model_catalog.save(&found) {
@@ -2043,9 +2151,47 @@ async fn refresh_engine_candidates(
     }
 }
 
+fn model_roots(
+    state: &AppState,
+    control: &ControlSettings,
+    research: &ResearchSettings,
+) -> Vec<std::path::PathBuf> {
+    let mut roots = default_roots(&control.extra_model_roots, &research.bonsai_root);
+    roots.push(state.model_downloads.models_root().to_path_buf());
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+async fn refresh_model_catalog(
+    state: &AppState,
+    app: Option<&AppHandle>,
+) -> Result<Vec<ModelInfo>, String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let roots = model_roots(state, &control, &research);
+    let found = tokio::task::spawn_blocking(move || model::scan(&roots))
+        .await
+        .map_err(|error| format!("model scan failed after download: {error}"))?;
+    state.model_catalog.save(&found).map_err(|error| {
+        format!("the model downloaded, but its catalog could not be saved: {error}")
+    })?;
+    *state.models.write().await = found.clone();
+    if let Some(app) = app {
+        let _ = app.emit("model-catalog-updated", &found);
+    }
+    Ok(found)
+}
+
 fn ensure_workspace_idle(state: &AppState) -> Result<(), String> {
     if state.work_active.load(Ordering::Acquire) {
-        Err("Chat, research, or a computer task is active. Stop or finish it before changing runtime or developer state.".into())
+        Err("Chat, research, a computer task, movie production, or a model transfer is active. Stop or finish it before changing runtime or developer state.".into())
     } else {
         Ok(())
     }
@@ -2056,7 +2202,7 @@ fn claim_workspace(state: &AppState) -> Result<WorkGuard<'_>, String> {
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| {
-            "Chat, research, or a computer task is active. Stop or finish it before changing runtime or developer state.".to_string()
+            "Chat, research, a computer task, movie production, or a model transfer is active. Stop or finish it before changing runtime or developer state.".to_string()
         })?;
     Ok(WorkGuard(&state.work_active))
 }
@@ -2127,6 +2273,8 @@ pub fn run() {
             }
             // Startup reads only the validated cache; the full scan runs after the window opens.
             let model_catalog = ModelCatalogStore::new(store.root());
+            let model_downloads =
+                ModelDownloadManager::new(store.root()).map_err(|error| error.to_string())?;
             let models = model_catalog.load().unwrap_or_else(|error| {
                 eprintln!("Kestrel could not restore its disposable model catalog: {error}");
                 Vec::new()
@@ -2142,6 +2290,7 @@ pub fn run() {
                 research_settings,
                 control_settings,
                 model_catalog,
+                model_downloads,
                 models: RwLock::new(models),
                 engine_candidates: RwLock::new(engine_candidates),
                 runtime: Arc::new(RuntimeManager::new()),
@@ -2156,6 +2305,7 @@ pub fn run() {
                 movie_jobs: Mutex::new(HashMap::new()),
                 image_asset_jobs: Mutex::new(HashMap::new()),
                 setup_job: Mutex::new(None),
+                model_download_job: Mutex::new(None),
             });
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -2171,7 +2321,7 @@ pub fn run() {
                     Ok(value) => value,
                     Err(_) => return,
                 };
-                let roots = default_roots(&control.extra_model_roots, &research.bonsai_root);
+                let roots = model_roots(&state, &control, &research);
                 let found = match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
                     Ok(value) => value,
                     Err(error) => {
@@ -2235,6 +2385,11 @@ pub fn run() {
             get_system_snapshot,
             get_control_snapshot,
             scan_local_models,
+            list_model_downloads,
+            inspect_model_download,
+            start_model_download,
+            resume_model_download,
+            cancel_model_download,
             export_setup_profile,
             import_setup_profile,
             save_research_settings,
@@ -2265,7 +2420,13 @@ pub fn run() {
         .expect("error while building Kestrel Local");
     application.run(|handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
-            let runtime = handle.state::<AppState>().runtime.clone();
+            let state = handle.state::<AppState>();
+            if let Ok(active) = state.model_download_job.lock() {
+                if let Some(cancel) = active.as_ref() {
+                    cancel.cancel();
+                }
+            }
+            let runtime = state.runtime.clone();
             let _ = tauri::async_runtime::block_on(runtime.stop_managed());
         }
     });

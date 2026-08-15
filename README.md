@@ -30,6 +30,8 @@ Kestrel reads these assets in place. It does not copy the model or 102.3 GiB arc
 
 Subsequent starts merge an integrity-checked `model-catalog.json` cache with an immediate Bonsai scan, then refresh all configured roots in the background. Missing or size-changed weights are discarded from the cache. A corrupt cache is quarantined and rebuilt without blocking startup.
 
+Control also provides an explicit observed Hugging Face GGUF downloader. A producer may paste a public repository or exact file page, inspect bounded GGUF choices with publisher sizes and LFS checksums, and start one durable transfer. Kestrel uses byte-range checkpoints, visible speed/ETA/retry state, free-space checks, SHA-256 plus GGUF validation, and an automatically scanned managed-model folder. Windows is kept awake only while that approved transfer is active (the display may turn off). Stop, shutdown, sleep, and network loss preserve partial bytes; restart marks the transfer interrupted and never resumes public-network work without a new producer action. Model inspection and transfer hold the same process-wide work gate as research, so strict research cannot overlap this network exception.
+
 ## Runtime design
 
 One `RuntimeManager` owns Kestrel-managed model processes and one semaphore owns inference. Research and chat share that lease, so a 12 GiB GPU cannot accidentally receive duplicate Kestrel loads or simultaneous generations. If the installed Bonsai endpoint is already healthy, Kestrel attaches without launching another model.
