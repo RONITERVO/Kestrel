@@ -258,6 +258,7 @@ export function ModelDownloader({
                 </span>
                 {resumable && !active && (
                   <button
+                    type="button"
                     disabled={submitting}
                     onClick={() => void run(() => resumeModelDownload(record.id))}
                   >

@@ -100,7 +100,8 @@ impl ModelQualificationStore {
         settings: &ControlSettings,
     ) -> Result<ModelCompatibility, String> {
         let receipt = self.receipt(&model.id)?;
-        assess_model(model, settings, receipt)
+        let current_engine = engine_identity(Path::new(&settings.engine_path))?;
+        assess_model(model, settings, receipt, &current_engine)
     }
 
     pub fn assess_all(
@@ -108,9 +109,13 @@ impl ModelQualificationStore {
         models: &[ModelInfo],
         settings: &ControlSettings,
     ) -> Result<Vec<ModelCompatibility>, String> {
+        let current_engine = engine_identity(Path::new(&settings.engine_path))?;
         models
             .iter()
-            .map(|model| self.assess(model, settings))
+            .map(|model| {
+                let receipt = self.receipt(&model.id)?;
+                assess_model(model, settings, receipt, &current_engine)
+            })
             .collect()
     }
 }
@@ -146,6 +151,7 @@ fn assess_model(
     model: &ModelInfo,
     settings: &ControlSettings,
     receipt: Option<ModelQualificationReceipt>,
+    current_engine: &str,
 ) -> Result<ModelCompatibility, String> {
     let mut tier = "unverified";
     let mut studio_ready = false;
@@ -168,7 +174,6 @@ fn assess_model(
         requires_qualification = false;
         detail = "Bundled Kestrel baseline with full Studio acceptance coverage.".into();
     } else if let Some(known) = receipt.as_ref().filter(|known| known.passed) {
-        let current_engine = engine_identity(Path::new(&settings.engine_path))?;
         if known.protocol_revision == STUDIO_PROTOCOL_REVISION
             && known.engine_sha256 == current_engine
             && known.context_window == settings.context_window
@@ -221,33 +226,42 @@ fn engine_identity(path: &Path) -> Result<String, String> {
 }
 
 fn read_ledger(path: &Path) -> Result<Vec<ModelQualificationReceipt>, String> {
+    enum ReadError {
+        Oversized(String),
+        Corrupt,
+    }
+
     let backup = path.with_extension("json.backup");
-    let read = |candidate: &Path| -> Result<QualificationLedger, String> {
+    let read = |candidate: &Path| -> Result<QualificationLedger, ReadError> {
         if fs::metadata(candidate)
-            .map_err(|error| error.to_string())?
+            .map_err(|_| ReadError::Corrupt)?
             .len()
             > MAX_STORE_BYTES
         {
-            return Err("model qualification store exceeds 2 MiB".into());
+            return Err(ReadError::Oversized(
+                "model qualification store exceeds 2 MiB".into(),
+            ));
         }
-        serde_json::from_slice(&fs::read(candidate).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())
+        serde_json::from_slice(&fs::read(candidate).map_err(|_| ReadError::Corrupt)?)
+            .map_err(|_| ReadError::Corrupt)
     };
     let ledger = if path.is_file() {
         match read(path) {
             Ok(value) => Some(value),
-            Err(_) if backup.is_file() => match read(&backup) {
+            Err(ReadError::Oversized(error)) => return Err(error),
+            Err(ReadError::Corrupt) if backup.is_file() => match read(&backup) {
                 Ok(value) => {
                     fs::copy(&backup, path).map_err(|error| error.to_string())?;
                     Some(value)
                 }
-                Err(_) => {
+                Err(ReadError::Oversized(error)) => return Err(error),
+                Err(ReadError::Corrupt) => {
                     quarantine(path);
                     quarantine(&backup);
                     None
                 }
             },
-            Err(_) => {
+            Err(ReadError::Corrupt) => {
                 quarantine(path);
                 None
             }
@@ -258,7 +272,8 @@ fn read_ledger(path: &Path) -> Result<Vec<ModelQualificationReceipt>, String> {
                 fs::copy(&backup, path).map_err(|error| error.to_string())?;
                 Some(value)
             }
-            Err(_) => {
+            Err(ReadError::Oversized(error)) => return Err(error),
+            Err(ReadError::Corrupt) => {
                 quarantine(&backup);
                 None
             }
@@ -358,14 +373,19 @@ mod tests {
     fn bonsai_is_release_validated_but_generic_models_require_a_matching_receipt() {
         let temp = tempfile::tempdir().unwrap();
         let settings = settings(temp.path());
+        let engine = engine_identity(Path::new(&settings.engine_path)).unwrap();
         let bonsai = model(temp.path(), "Ternary Bonsai 27B", true);
         assert_eq!(
-            assess_model(&bonsai, &settings, None).unwrap().tier,
+            assess_model(&bonsai, &settings, None, &engine)
+                .unwrap()
+                .tier,
             "release-validated"
         );
         let generic = model(temp.path(), "Qwen", true);
         assert_eq!(
-            assess_model(&generic, &settings, None).unwrap().tier,
+            assess_model(&generic, &settings, None, &engine)
+                .unwrap()
+                .tier,
             "unverified"
         );
         let receipt = qualification_receipt(
@@ -377,7 +397,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            assess_model(&generic, &settings, Some(receipt))
+            assess_model(&generic, &settings, Some(receipt), &engine)
                 .unwrap()
                 .tier,
             "protocol-ready"
@@ -392,8 +412,9 @@ mod tests {
         let receipt =
             qualification_receipt(&generic, &settings, true, vec![], "passed".into()).unwrap();
         settings.context_window += 1;
+        let engine = engine_identity(Path::new(&settings.engine_path)).unwrap();
         assert_eq!(
-            assess_model(&generic, &settings, Some(receipt))
+            assess_model(&generic, &settings, Some(receipt), &engine)
                 .unwrap()
                 .tier,
             "unverified"
@@ -431,5 +452,27 @@ mod tests {
 
         assert!(recovered.receipts.lock().unwrap().is_empty());
         assert!(!path.is_file());
+    }
+
+    #[test]
+    fn oversized_store_is_reported_without_quarantine() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("model-qualifications.json");
+        fs::write(&path, vec![b' '; MAX_STORE_BYTES as usize + 1]).unwrap();
+
+        let error = match ModelQualificationStore::new(temp.path()) {
+            Ok(_) => panic!("oversized qualification store should be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("exceeds 2 MiB"));
+        assert!(path.is_file());
+        assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("corrupt-")
+        }));
     }
 }

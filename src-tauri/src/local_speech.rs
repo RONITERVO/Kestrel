@@ -4,6 +4,7 @@
 //! adapters target ComfyUI-Chatterbox for narration and ComfyUI-Whisper for timestamped microphone
 //! transcription. Additional ComfyUI adapters belong here rather than in individual product UIs.
 
+use crate::store::default_research_root;
 use base64::Engine as _;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -321,6 +322,13 @@ impl LocalSpeech {
                 .join("logs/comfy-speech.stderr.log")
                 .display()
         )))
+    }
+
+    pub async fn stop_comfy(&self) {
+        if let Some(mut child) = self.comfy_child.lock().await.take() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
     }
 
     pub async fn synthesize(
@@ -852,13 +860,7 @@ fn read_media_response(
     if !safe_relative_path(relative.as_ref()) {
         return Err((403, "unsafe local speech audio path".into()));
     }
-    let root = directories::UserDirs::new()
-        .map(|dirs| {
-            dirs.home_dir()
-                .join("Kestrel Research")
-                .join("speech-cache")
-        })
-        .ok_or_else(|| (500, "local speech audio cache is unavailable".to_string()))?;
+    let root = default_research_root().join("speech-cache");
     let canonical_root = fs::canonicalize(&root)
         .map_err(|_| (404, "local speech audio cache does not exist".to_string()))?;
     let target = fs::canonicalize(root.join(relative.as_ref()))
@@ -1104,7 +1106,7 @@ fn safe_identifier(value: &str, label: &str) -> Result<(), SpeechError> {
         || value.len() > MAX_ID_BYTES
         || !value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
         return Err(SpeechError::Invalid(format!("unsafe {label}")));
     }
@@ -1952,6 +1954,7 @@ mod tests {
         assert!(safe_relative_path("report/hash.flac"));
         assert!(!safe_relative_path("../report/hash.flac"));
         assert!(!safe_relative_path(r"report\hash.flac"));
+        assert!(safe_identifier("chat:session", "speech source ID").is_err());
     }
 
     #[tokio::test]

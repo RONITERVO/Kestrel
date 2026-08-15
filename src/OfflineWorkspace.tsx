@@ -536,10 +536,15 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
     try {
       const root = await pickLocalModelFolder();
       if (root && !settings.extraModelRoots.includes(root)) {
-        setSettings((current) => ({
-          ...current,
-          extraModelRoots: [...current.extraModelRoots, root],
-        }));
+        const nextSettings = {
+          ...settings,
+          selectedModelId: selectedId || undefined,
+          extraModelRoots: [...settings.extraModelRoots, root],
+        };
+        setSettings(nextSettings);
+        const next = await saveControlSettings(nextSettings);
+        setSettings(next.settings);
+        onChanged(next);
       }
     } catch (cause) {
       onError(String(cause));
@@ -854,11 +859,20 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
           {settings.extraModelRoots.map((root) => <div key={root}>
             <span title={root}>{root}</span>
             <button
+              type="button"
               aria-label={`Remove model folder ${root}`}
-              onClick={() => setSettings((current) => ({
-                ...current,
-                extraModelRoots: current.extraModelRoots.filter((value) => value !== root),
-              }))}
+              onClick={() => {
+                const nextSettings = {
+                  ...settings,
+                  selectedModelId: selectedId || undefined,
+                  extraModelRoots: settings.extraModelRoots.filter((value) => value !== root),
+                };
+                setSettings(nextSettings);
+                void saveControlSettings(nextSettings).then((next) => {
+                  setSettings(next.settings);
+                  onChanged(next);
+                }).catch((cause) => onError(String(cause)));
+              }}
             ><X /></button>
           </div>)}
         </div>}

@@ -1801,11 +1801,7 @@ impl MovieStudio {
                 "the model's qualification omitted a required protocol check".into(),
             ));
         }
-        Ok(vec![
-            "structured-tool-call".into(),
-            "exact-nonce".into(),
-            "typed-repair-loop".into(),
-        ])
+        Ok(vec!["structured-tool-call".into(), "exact-nonce".into()])
     }
 
     pub async fn plan(
@@ -2076,7 +2072,14 @@ impl MovieStudio {
             return Ok(project);
         }
         let prior = project.model_roles.clone();
-        project.model = format!("Kestrel Director · {}", model_roles.director.model_name);
+        project.model = if project.model.starts_with("Producer-authored") {
+            format!(
+                "Producer-authored · Kestrel Director available with {}",
+                model_roles.director.model_name
+            )
+        } else {
+            format!("Kestrel Director · {}", model_roles.director.model_name)
+        };
         project.model_roles = model_roles.clone();
         project.producer_review_required = true;
         project.producer_approved_at.clear();
@@ -3072,6 +3075,15 @@ fn selected_clip_source<'a>(
 
 fn normalize_movie_project(project: &mut MovieProject) {
     project.schema_version = SCHEMA_VERSION;
+    project.producer_review_required |=
+        [&project.model_roles.director, &project.model_roles.reviewer]
+            .iter()
+            .any(|binding| {
+                !matches!(
+                    binding.compatibility_tier.as_str(),
+                    "release-validated" | "protocol-ready"
+                )
+            });
     if project.edit.export_preset.is_empty() {
         project.edit.export_preset = default_export_preset();
     }
@@ -5734,6 +5746,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(updated.model_roles, roles);
+        assert!(updated.model.starts_with("Producer-authored"));
         assert!(updated.producer_review_required);
         assert!(updated.producer_approved_at.is_empty());
         assert_eq!(
@@ -5741,6 +5754,42 @@ mod tests {
             "model-role-change"
         );
         assert_eq!(studio.get(&project.id).unwrap().model_roles, roles);
+    }
+
+    #[test]
+    fn normalization_requires_review_for_unverified_project_roles() {
+        let ready_binding = MovieModelBinding {
+            model_id: "ready".into(),
+            model_name: "Ready model".into(),
+            compatibility_tier: "protocol-ready".into(),
+            protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
+            bound_at: Utc::now().to_rfc3339(),
+        };
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let mut project = studio
+            .create_manual(
+                StartMovieRequest {
+                    prompt: "A producer-owned compatibility check".into(),
+                    settings: MovieSettings::default(),
+                    references: vec![],
+                    pause_after_plan: false,
+                    model_roles: MovieModelRoleRequest::default(),
+                },
+                false,
+                MovieModelRoles {
+                    director: ready_binding.clone(),
+                    reviewer: ready_binding.clone(),
+                },
+            )
+            .unwrap();
+        project.producer_review_required = false;
+        normalize_movie_project(&mut project);
+        assert!(!project.producer_review_required);
+
+        project.model_roles.reviewer.compatibility_tier = "unverified".into();
+        normalize_movie_project(&mut project);
+        assert!(project.producer_review_required);
     }
 
     #[test]

@@ -30,11 +30,7 @@ pub struct ResearchStore {
 
 impl ResearchStore {
     pub fn open_default() -> Result<Self, StoreError> {
-        let root = UserDirs::new()
-            .map(|dirs| dirs.home_dir().to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Kestrel Research");
-        Self::open(root)
+        Self::open(default_research_root())
     }
 
     pub fn open(root: PathBuf) -> Result<Self, StoreError> {
@@ -331,6 +327,13 @@ impl ResearchStore {
         }
         write_atomic(&self.root.join("catalog.jsonl"), output.as_bytes())
     }
+}
+
+pub(crate) fn default_research_root() -> PathBuf {
+    UserDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Kestrel Research")
 }
 
 fn provenance(report: &ResearchReport) -> serde_json::Value {

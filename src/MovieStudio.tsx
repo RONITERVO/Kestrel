@@ -95,6 +95,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const activeProjectId = useRef<string | undefined>(undefined);
   const promptDraftActiveRef = useRef<ActivePromptDraft | undefined>(undefined);
   const imageRequestId = useRef<string | undefined>(undefined);
+  const modelIds = models.map((model) => model.id).join("\u0000");
   const handleCopilotHistory = useCallback((history: MovieProject["copilotHistory"]) => {
     setProject((current) => current ? { ...current, copilotHistory: history } : current);
   }, []);
@@ -111,18 +112,15 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
     let active = true;
     void listStudioModelCompatibility().then((compatibility) => {
       if (!active) return;
-      const resolved = compatibility.length ? compatibility : models.map((model) => {
-        const releaseValidated = `${model.name} ${model.path}`.toLowerCase().includes("bonsai");
-        return {
+      const resolved = compatibility.length ? compatibility : models.map((model) => ({
           modelId: model.id,
           modelName: model.name,
-          tier: releaseValidated ? "release-validated" : "unverified",
-          studioReady: releaseValidated,
-          requiresQualification: !releaseValidated,
-          detail: releaseValidated ? "Bundled Kestrel baseline with full Studio acceptance coverage." : "This model has not been checked by the native desktop Studio runtime.",
-          protocolRevision: "kestrel-studio-model-role-v1",
-        } satisfies ModelCompatibility;
-      });
+          tier: "unverified",
+          studioReady: false,
+          requiresQualification: true,
+          detail: "Compatibility has not been confirmed by the native desktop Studio runtime.",
+          protocolRevision: "",
+        } satisfies ModelCompatibility));
       setModelCompatibility(resolved);
       const usable = (id: string) => models.some((model) => model.id === id)
         && (advancedEnabled || resolved.some((entry) => entry.modelId === id && entry.studioReady));
@@ -136,7 +134,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
       if (active) onError(`Studio model compatibility could not be loaded: ${String(error)}`);
     });
     return () => { active = false; };
-  }, [advancedEnabled, models, onError, selectedModelId]);
+  }, [advancedEnabled, modelIds, onError, selectedModelId]);
 
   useEffect(() => {
     let dispose: (() => void) | undefined;
@@ -806,12 +804,15 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [directorModelId, setDirectorModelId] = useState(() => project.modelRoles?.director.modelId || selectedModelId || models[0]?.id || "");
   const [reviewerModelId, setReviewerModelId] = useState(() => project.modelRoles?.reviewer.modelId || "");
+  const availableModelIds = models.map((model) => model.id).join("\u0000");
+  const persistedDirectorModelId = project.modelRoles?.director.modelId || "";
+  const persistedReviewerModelId = project.modelRoles?.reviewer.modelId || "";
   useEffect(() => setDraftPlan(project.plan), [project.id, project.plan]);
   useEffect(() => setWorkspace(preferredProjectWorkspace(project)), [project.id]);
   useEffect(() => {
-    setDirectorModelId(project.modelRoles?.director.modelId || selectedModelId || models[0]?.id || "");
-    setReviewerModelId(project.modelRoles?.reviewer.modelId || "");
-  }, [models, project.id, project.modelRoles, selectedModelId]);
+    setDirectorModelId(persistedDirectorModelId || selectedModelId || models[0]?.id || "");
+    setReviewerModelId(persistedReviewerModelId);
+  }, [availableModelIds, persistedDirectorModelId, persistedReviewerModelId, project.id, selectedModelId]);
   useEffect(() => {
     if (project.status === "awaiting-review" || project.status === "planning-checkpoint") setWorkspace("plan");
     else if (project.status === "running") setWorkspace(project.phase.includes("render") || project.clips.length ? "generate" : "plan");

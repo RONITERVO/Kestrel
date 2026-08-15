@@ -288,17 +288,17 @@ function AppHeader({
     <header className={`app-header app-header-${view}`}>
       <div className="header-left">
         <div className="window-controls" aria-hidden="true"><span /><span /><span /></div>
-        <button className="icon-button menu-button" aria-label="Toggle library" onClick={onMenu}><Menu /></button>
+        <button type="button" className="icon-button menu-button" aria-label="Toggle library" onClick={onMenu}><Menu /></button>
         <div className="brand-mark"><Feather size={19} /></div>
         <div className="brand-copy"><strong>Kestrel</strong><span>{sectionLabel}</span></div>
       </div>
       <nav className="view-switcher" aria-label="Kestrel sections">
-        <button className={view === "setup" ? "active" : ""} aria-current={view === "setup" ? "page" : undefined} title="Setup" onClick={() => onView("setup")}><Download size={14} /> Setup</button>
-        <button className={view === "control" ? "active" : ""} aria-current={view === "control" ? "page" : undefined} title="Control" onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
-        <button className={view === "research" ? "active" : ""} aria-current={view === "research" ? "page" : undefined} title="Research" onClick={() => onView("research")}><Library size={14} /> Research</button>
-        <button className={view === "studio" ? "active" : ""} aria-current={view === "studio" ? "page" : undefined} title="Studio" onClick={() => onView("studio")}><Clapperboard size={14} /> Studio</button>
-        <button className={view === "developer" ? "active" : ""} aria-current={view === "developer" ? "page" : undefined} title="Developer" onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
-        <button className={view === "system" ? "active" : ""} aria-current={view === "system" ? "page" : undefined} title="System" onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
+        <button type="button" className={view === "setup" ? "active" : ""} aria-current={view === "setup" ? "page" : undefined} title="Setup" onClick={() => onView("setup")}><Download size={14} /> Setup</button>
+        <button type="button" className={view === "control" ? "active" : ""} aria-current={view === "control" ? "page" : undefined} title="Control" onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
+        <button type="button" className={view === "research" ? "active" : ""} aria-current={view === "research" ? "page" : undefined} title="Research" onClick={() => onView("research")}><Library size={14} /> Research</button>
+        <button type="button" className={view === "studio" ? "active" : ""} aria-current={view === "studio" ? "page" : undefined} title="Studio" onClick={() => onView("studio")}><Clapperboard size={14} /> Studio</button>
+        <button type="button" className={view === "developer" ? "active" : ""} aria-current={view === "developer" ? "page" : undefined} title="Developer" onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
+        <button type="button" className={view === "system" ? "active" : ""} aria-current={view === "system" ? "page" : undefined} title="System" onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
       </nav>
       <div className="header-status" role="status">
         <StatusPill state={status.wikipedia} label={status.archive} />

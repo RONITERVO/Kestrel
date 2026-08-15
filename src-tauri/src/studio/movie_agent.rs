@@ -121,6 +121,7 @@ struct WorkspaceFileWrite {
 enum WorkspaceFileContent {
     Text(String),
     Object(serde_json::Map<String, Value>),
+    Other(Value),
 }
 
 impl Default for WorkspaceFileContent {
@@ -130,10 +131,16 @@ impl Default for WorkspaceFileContent {
 }
 
 impl WorkspaceFileContent {
-    fn into_json_text(self) -> Result<String, StudioError> {
+    fn into_json_text(self, path: &str) -> Result<String, StudioError> {
         match self {
             Self::Text(content) => Ok(content),
             Self::Object(content) => Ok(serde_json::to_string(&content)?),
+            Self::Other(value) => {
+                drop(value);
+                Err(StudioError::Invalid(format!(
+                    "workspace file content for {path} must be a string or object"
+                )))
+            }
         }
     }
 }
@@ -387,7 +394,7 @@ impl MovieAgentWorkspace {
                 Ok(self.result(WorkspaceOutcome::Observed, output, None))
             }
             WorkspaceAction::Write => {
-                let content = request.content.into_json_text()?;
+                let content = request.content.into_json_text(&request.path)?;
                 self.write_file(&request.path, &content)?;
                 Ok(self.result(
                     WorkspaceOutcome::Mutated,
@@ -406,7 +413,10 @@ impl MovieAgentWorkspace {
                 let files = request
                     .files
                     .into_iter()
-                    .map(|file| Ok((file.path, file.content.into_json_text()?)))
+                    .map(|file| {
+                        let content = file.content.into_json_text(&file.path)?;
+                        Ok((file.path, content))
+                    })
                     .collect::<Result<Vec<_>, StudioError>>()?;
                 // Validate the entire batch before changing durable state.
                 for (path, content) in &files {
@@ -989,6 +999,34 @@ mod tests {
         let stored: Value =
             serde_json::from_str(&workspace.read_file("scenes/001.json").unwrap()).unwrap();
         assert_eq!(stored["title"], "Discovery");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_rejects_non_document_content_with_the_affected_path() {
+        let root = temp_workspace();
+        let mut workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a compact test film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let request: WorkspaceToolRequest = serde_json::from_value(json!({
+            "action":"write",
+            "path":"scenes/001.json",
+            "content":["not", "a", "document"]
+        }))
+        .unwrap();
+
+        let result = workspace.execute(request);
+
+        assert_eq!(result.outcome, WorkspaceOutcome::Rejected);
+        assert!(result.message.contains("scenes/001.json"));
+        assert!(result.message.contains("must be a string or object"));
         fs::remove_dir_all(root).unwrap();
     }
 

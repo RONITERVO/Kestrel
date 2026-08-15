@@ -1,7 +1,7 @@
 :root {
   color: #272822;
   background: #f4f0e8;
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Inter", ui-sans-serif, -apple-system, "BlinkMacSystemFont", "Segoe UI", sans-serif;
   font-synthesis: none;
   --ink: #282923;
   --muted: #747268;
@@ -16,7 +16,7 @@
   --amber: #9d682d;
   --amber-wash: #f3e8d8;
   --red: #9b4339;
-  --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sans: "Inter", ui-sans-serif, -apple-system, "BlinkMacSystemFont", "Segoe UI", sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --serif: Georgia, "Times New Roman", serif;
 }
@@ -115,7 +115,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .setup-hardware-note span { color: #6d6a61; font-size: 9px; line-height: 1.45; }
 .setup-model-library { margin: 0 0 12px; padding: 20px; border: 1px solid #c8d8cd; border-radius: 13px; background: linear-gradient(145deg,rgba(255,253,248,.86),rgba(235,242,236,.78)); }
 .setup-model-library-heading { display: grid; grid-template-columns: minmax(220px,.7fr) minmax(320px,1fr); align-items: end; gap: 24px; }
-.setup-model-library-heading > span { display: grid; gap: 4px; }
+.setup-model-library-heading > div { display: grid; gap: 4px; }
 .setup-model-library-heading h2 { margin: 0; font: 600 23px var(--serif); }
 .setup-model-library-heading p { margin: 0; color: #69675f; font-size: 11px; line-height: 1.55; }
 .setup-component { min-height: 130px; padding: 20px; display: grid; grid-template-columns: 47px minmax(0, 1fr) auto; gap: 17px; align-items: center; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,253,248,.72); }

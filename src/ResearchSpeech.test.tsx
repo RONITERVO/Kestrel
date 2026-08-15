@@ -31,7 +31,7 @@ beforeEach(() => {
     transcriptionAvailable: true,
     comfyReady: true,
     voices: [{ id: "chatterbox:local_narrator", name: "Local Narrator", provider: "ComfyUI Chatterbox" }],
-    transcribers: [{ id: "whisper:large-v3-turbo.pt", name: "Whisper Large V3 Turbo", provider: "ComfyUI Whisper" }],
+    transcribers: [{ id: "whisper:large-v3-turbo", name: "Whisper Large V3 Turbo", provider: "ComfyUI Whisper" }],
     detail: "ComfyUI TTS is ready.",
   });
   speechApi.synthesize.mockReset().mockImplementation(async (request: { passageId: string; jobId: string; modelId: string }) => ({
@@ -59,7 +59,7 @@ beforeEach(() => {
     transcriptionAvailable: true,
     comfyReady: true,
     voices: [{ id: "chatterbox:local_narrator", name: "Local Narrator", provider: "ComfyUI Chatterbox" }],
-    transcribers: [{ id: "whisper:large-v3-turbo.pt", name: "Whisper Large V3 Turbo", provider: "ComfyUI Whisper" }],
+    transcribers: [{ id: "whisper:large-v3-turbo", name: "Whisper Large V3 Turbo", provider: "ComfyUI Whisper" }],
     detail: "ComfyUI TTS is ready.",
   });
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
@@ -114,7 +114,7 @@ describe("Research speech", () => {
     await waitFor(() => expect(speechApi.align).toHaveBeenCalledWith(expect.objectContaining({
       sourceKind: "research",
       sourceId: demoReport.id,
-      alignmentModelId: "whisper:large-v3-turbo.pt",
+      alignmentModelId: "whisper:large-v3-turbo",
     })));
     expect(screen.getByRole("slider", { name: "Current passage position" })).toBeInTheDocument();
     expect(onPassageChange).toHaveBeenCalledWith("report-overview");
@@ -130,6 +130,32 @@ describe("Research speech", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop report" }));
     expect(onPassageChange).toHaveBeenLastCalledWith(null);
     expect(speechApi.release).toHaveBeenCalled();
+  });
+
+  it("cancels pending alignment instead of delaying producer navigation", async () => {
+    let finishAlignment: ((value: unknown) => void) | undefined;
+    speechApi.align.mockImplementationOnce((request: { jobId: string; passageId: string; relativePath: string; voiceModelId: string }) => new Promise((resolve) => {
+      finishAlignment = resolve;
+    }));
+    const onPassageChange = vi.fn();
+    render(<ResearchSpeechPlayer report={demoReport} onPassageChange={onPassageChange} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Play report" }));
+    await waitFor(() => expect(speechApi.align).toHaveBeenCalled());
+    const alignmentJob = speechApi.align.mock.calls[0][0].jobId;
+
+    fireEvent.click(screen.getByRole("button", { name: "Next passage" }));
+
+    expect(speechApi.cancel).toHaveBeenCalledWith(alignmentJob);
+    await waitFor(() => expect(onPassageChange).toHaveBeenLastCalledWith("short-answer"));
+    finishAlignment?.({
+      jobId: alignmentJob,
+      passageId: "overview",
+      relativePath: "generated/research/overview.flac",
+      modelId: "chatterbox:local_narrator",
+      cacheHit: false,
+      segments: [],
+      words: [],
+    });
   });
 
   it("never offers a browser or system voice fallback", async () => {

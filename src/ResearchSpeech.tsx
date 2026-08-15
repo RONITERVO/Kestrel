@@ -83,13 +83,16 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
   const clipPathsRef = useRef(new Map<string, string>());
   const pendingClipsRef = useRef(new Map<string, Promise<string>>());
   const pendingAlignmentsRef = useRef(new Map<string, Promise<void>>());
+  const alignmentJobsRef = useRef(new Map<string, string>());
   const mountedRef = useRef(true);
   const startAtRef = useRef<(index: number) => Promise<void>>(async () => undefined);
   const passages = useMemo(() => buildResearchSpeechPassages(report, scope), [report, scope]);
   const selectedModel = snapshot?.voices.find((model) => model.id === modelId) ?? snapshot?.voices[0] ?? null;
 
-  currentIndexRef.current = currentIndex;
-  rateRef.current = rate;
+  useEffect(() => {
+    currentIndexRef.current = currentIndex;
+    rateRef.current = rate;
+  }, [currentIndex, rate]);
 
   useEffect(() => {
     let active = true;
@@ -98,11 +101,9 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
         if (!active) return;
         setSnapshot(next);
         setDetail(next.detail);
-        setModelId((current) => {
-          const selected = next.voices.find((model) => model.id === current) ?? next.voices[0];
-          if (selected) savePreference(MODEL_KEY, selected.id);
-          return selected?.id ?? "";
-        });
+        const selected = next.voices.find((model) => model.id === modelId) ?? next.voices[0];
+        setModelId(selected?.id ?? "");
+        if (selected) savePreference(MODEL_KEY, selected.id);
         if (next.narrationAvailable && !next.comfyReady) {
           setDetail("Starting the private ComfyUI voice engine in the background...");
           void prepareLocalSpeech().then((ready) => {
@@ -148,6 +149,7 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
     activeJobsRef.current.clear();
     pendingClipsRef.current.clear();
     pendingAlignmentsRef.current.clear();
+    alignmentJobsRef.current.clear();
   }, []);
 
   const resetPlayback = useCallback(() => {
@@ -247,6 +249,7 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
     if (!relativePath) return Promise.resolve();
     const alignmentJob = jobId();
     activeJobsRef.current.add(alignmentJob);
+    alignmentJobsRef.current.set(key, alignmentJob);
     const task = alignLocalSpeech({
       jobId: alignmentJob,
       sourceKind: "research",
@@ -261,6 +264,7 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
       if (mountedRef.current && clipKey(currentIndexRef.current) === key) setSpeechTimings(aligned.words);
     }).catch(() => undefined).finally(() => {
       activeJobsRef.current.delete(alignmentJob);
+      alignmentJobsRef.current.delete(key);
       pendingAlignmentsRef.current.delete(key);
     });
     pendingAlignmentsRef.current.set(key, task);
@@ -311,11 +315,15 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
       void releaseLocalSpeechMemory().catch(() => undefined);
     }
   }, [alignClip, clipKey, ensureClip, onPassageChange, passages, selectedModel, snapshot?.narrationAvailable]);
-  startAtRef.current = startAt;
+  useEffect(() => {
+    startAtRef.current = startAt;
+  }, [startAt]);
 
   const navigateTo = (index: number) => {
-    const alignment = pendingAlignmentsRef.current.get(clipKey(currentIndexRef.current)) ?? Promise.resolve();
-    void alignment.finally(() => startAt(index));
+    const key = clipKey(currentIndexRef.current);
+    const alignmentJob = alignmentJobsRef.current.get(key);
+    if (alignmentJob) void cancelLocalSpeech(alignmentJob);
+    void startAt(index);
   };
 
   const togglePlayback = () => {

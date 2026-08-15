@@ -113,6 +113,19 @@ pub(super) async fn run(
             announce_turn(studio, project, &lifecycle, app)?;
             let request_messages =
                 transcript.request_messages(workspace.authoritative_story_memory()?);
+            if request.director_model_id != request.reviewer_model_id
+                && request.runtime.snapshot().await.model_id.as_deref()
+                    == Some(request.reviewer_model_id)
+            {
+                studio.emit_planning(
+                    &project.id,
+                    PlanningEventKind::Activity,
+                    PlanningStage::Planning,
+                    "Kestrel is switching from the independent Reviewer to the Director. The local model reload can pause briefly while GPU memory changes hands.",
+                    lifecycle.position(),
+                    app,
+                );
+            }
             let lease = tokio::select! {
                 result = request.runtime.lease_model(
                     request.director_model_id,
@@ -199,6 +212,7 @@ pub(super) async fn run(
                             runtime: request.runtime,
                             models: request.models,
                             runtime_settings: request.runtime_settings,
+                            director_model_id: request.director_model_id,
                             reviewer_model_id: request.reviewer_model_id,
                             cancel: request.cancel,
                             app,
@@ -388,6 +402,7 @@ struct SubmissionReview<'a> {
     runtime: &'a Arc<RuntimeManager>,
     models: &'a [ModelInfo],
     runtime_settings: &'a ControlSettings,
+    director_model_id: &'a str,
     reviewer_model_id: &'a str,
     cancel: &'a CancellationToken,
     app: Option<&'a AppHandle>,
@@ -407,6 +422,18 @@ async fn review_submission(
         plan.clips.len()
     );
     studio.persist_emit(project, request.app)?;
+    if request.director_model_id != request.reviewer_model_id
+        && request.runtime.snapshot().await.model_id.as_deref() == Some(request.director_model_id)
+    {
+        studio.emit_planning(
+            &project.id,
+            PlanningEventKind::Activity,
+            PlanningStage::Planning,
+            "Kestrel is switching from the Director to the independent Reviewer. The local model reload can pause briefly while GPU memory changes hands.",
+            lifecycle.position(),
+            request.app,
+        );
+    }
     let lease = tokio::select! {
         result = request.runtime.lease_model(
             request.reviewer_model_id,

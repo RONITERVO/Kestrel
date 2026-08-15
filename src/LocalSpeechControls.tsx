@@ -322,12 +322,30 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const submittedChunkCountRef = useRef(0);
+  const provisionalTranscriptRef = useRef("");
   const initialRef = useRef("");
   const recordingIdRef = useRef("");
   const modelIdRef = useRef("");
   const mimeRef = useRef("");
   const pendingRef = useRef<Promise<void> | null>(null);
   const timerRef = useRef<number | null>(null);
+  const timeoutRefs = useRef(new Set<number>());
+  const mountedRef = useRef(true);
+
+  const clearTimeouts = useCallback(() => {
+    for (const timeout of timeoutRefs.current) window.clearTimeout(timeout);
+    timeoutRefs.current.clear();
+  }, []);
+
+  const scheduleTimeout = useCallback((callback: () => void, milliseconds: number) => {
+    if (!mountedRef.current) return;
+    const timeout = window.setTimeout(() => {
+      timeoutRefs.current.delete(timeout);
+      if (mountedRef.current) callback();
+    }, milliseconds);
+    timeoutRefs.current.add(timeout);
+  }, []);
 
   const applyTranscript = useCallback((transcript: string) => {
     const spoken = transcript.trim();
@@ -339,8 +357,12 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
     const emptyFinal = () => finalPass
       ? releaseLocalSpeechMemory().catch(() => undefined).finally(() => onActiveChange?.(false))
       : Promise.resolve();
-    if (!chunksRef.current.length) return emptyFinal();
-    const blob = new Blob(chunksRef.current, { type: mimeRef.current });
+    const chunkEnd = chunksRef.current.length;
+    const chunks = finalPass
+      ? chunksRef.current
+      : chunksRef.current.slice(submittedChunkCountRef.current, chunkEnd);
+    if (!chunks.length) return emptyFinal();
+    const blob = new Blob(chunks, { type: mimeRef.current });
     if (blob.size < 128) return emptyFinal();
     const task = (async () => {
       setTranscribing(true);
@@ -357,7 +379,15 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
         prompt: utf8Tail(initialRef.current, 4_000),
         finalPass,
       });
-      applyTranscript(result.text);
+      if (finalPass) {
+        provisionalTranscriptRef.current = result.text.trim();
+      } else {
+        submittedChunkCountRef.current = chunkEnd;
+        provisionalTranscriptRef.current = [provisionalTranscriptRef.current, result.text.trim()]
+          .filter(Boolean)
+          .join(" ");
+      }
+      applyTranscript(provisionalTranscriptRef.current);
       setDetail(finalPass ? "Saved locally with word timestamps" : "Listening · live text updated");
     })().catch((error) => setDetail(`Dictation stopped: ${String(error)}`)).finally(async () => {
       if (finalPass) await releaseLocalSpeechMemory().catch(() => undefined);
@@ -372,16 +402,22 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
   const stop = useCallback(() => {
     if (timerRef.current !== null) window.clearInterval(timerRef.current);
     timerRef.current = null;
+    clearTimeouts();
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== "inactive") recorder.stop();
     else streamRef.current?.getTracks().forEach((track) => track.stop());
     setRecording(false);
-  }, []);
+  }, [clearTimeouts]);
 
-  useEffect(() => () => {
-    stop();
-    onActiveChange?.(false);
-  }, [onActiveChange, stop]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      stop();
+      clearTimeouts();
+      onActiveChange?.(false);
+    };
+  }, [clearTimeouts, onActiveChange, stop]);
 
   const start = async () => {
     const ready = snapshot?.transcriptionAvailable ? snapshot : await prepare();
@@ -394,6 +430,8 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
     const mime = recorderMimeType();
     const recorder = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 32_000 });
     chunksRef.current = [];
+    submittedChunkCountRef.current = 0;
+    provisionalTranscriptRef.current = "";
     initialRef.current = value;
     recordingIdRef.current = id("recording");
     modelIdRef.current = model.id;
@@ -408,7 +446,7 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
         if (pendingRef.current) await pendingRef.current;
         await transcribe(true);
       };
-      window.setTimeout(() => void finish(), 100);
+      scheduleTimeout(() => void finish(), 100);
     };
     recorder.start(500);
     setRecording(true);
@@ -416,9 +454,9 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
     setDetail("Listening locally…");
     timerRef.current = window.setInterval(() => {
       if (recorder.state === "recording") recorder.requestData();
-      window.setTimeout(() => void transcribe(false), 100);
+      scheduleTimeout(() => void transcribe(false), 100);
     }, 4_000);
-    window.setTimeout(() => { if (recorder.state === "recording") stop(); }, 15 * 60 * 1_000);
+    scheduleTimeout(() => { if (recorder.state === "recording") stop(); }, 15 * 60 * 1_000);
   };
 
   return <span className={`speech-dictation ${recording ? "recording" : ""}`}>

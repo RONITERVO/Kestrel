@@ -191,11 +191,16 @@ async fn restore_runtime_after_speech(state: &AppState, app: &AppHandle) -> Resu
         .await
         .iter()
         .find(|model| model.id == restore.model_id)
-        .cloned()
-        .ok_or_else(|| {
+        .cloned();
+    let Some(model) = model else {
+        if let Ok(mut pending) = state.speech_restore_model.lock() {
+            *pending = Some(restore);
+        }
+        return Err(
             "The model used before local speech is no longer in the catalog. Rescan it in Control."
-                .to_string()
-        })?;
+                .into(),
+        );
+    };
     let result: Result<(), String> = async {
         if restore.attached {
             let research = state
@@ -284,13 +289,30 @@ async fn prepare_local_speech(state: State<'_, AppState>) -> Result<SpeechSnapsh
     if (!initial.narration_available && !initial.transcription_available) || initial.comfy_ready {
         return Ok(initial);
     }
-    let cancel = CancellationToken::new();
-    state
-        .speech
-        .ensure_comfy(&settings.comfy_root, &cancel)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(state.speech.snapshot(&settings.comfy_root).await)
+    const JOB_ID: &str = "prepare-local-speech";
+    let cancel = register_speech_job(&state, JOB_ID)?;
+    let result: Result<SpeechSnapshot, String> = async {
+        let _turn = wait_for_speech_turn(&state, &cancel).await?;
+        let _guard = claim_workspace(&state)?;
+        remember_runtime_for_speech(&state).await;
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+        services::stop_bonsai(&settings.bonsai_root)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .ensure_comfy(&settings.comfy_root, &cancel)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(state.speech.snapshot(&settings.comfy_root).await)
+    }
+    .await;
+    finish_speech_job(&state, JOB_ID);
+    result
 }
 
 #[tauri::command]
@@ -458,6 +480,7 @@ async fn release_local_speech_memory(
 ) -> Result<(), String> {
     let _guard = claim_workspace_after_speech(&state).await?;
     state.speech.release_model_memory().await;
+    state.speech.stop_comfy().await;
     restore_runtime_after_speech(&state, &app).await
 }
 
@@ -3149,7 +3172,11 @@ pub fn run() {
                 }
             }
             let runtime = state.runtime.clone();
-            let _ = tauri::async_runtime::block_on(runtime.stop_managed());
+            let speech = state.speech.clone();
+            let _ = tauri::async_runtime::block_on(async move {
+                speech.stop_comfy().await;
+                runtime.stop_managed().await
+            });
         }
     });
 }

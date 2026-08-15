@@ -103,7 +103,7 @@ The project directory is the source of truth. Important planning files include:
 | `agent-workspace/state.json` | Workspace revision and clean-check gate |
 | `agent-workspace/agent-transcript*.json` | Lossless accepted conversation by context session |
 | `agent-workspace/agent-last-request.json` | Exact last planning request envelope for audit |
-| `../model-qualifications.json` | Recoverable protocol receipts bound to model, engine, runtime profile, and protocol revision |
+| `../../model-qualifications.json` | Recoverable protocol receipts bound to model, engine, runtime profile, and protocol revision |
 
 Atomic replacement and recovery copies are deliberate. Do not trade them for in-memory convenience.
 The advanced UI reads bounded redacted views; the unmodified files remain available as durable truth.
