@@ -1,6 +1,6 @@
 # Kestrel architecture
 
-The executable is one Tauri application with six explicit native authorities:
+The executable is one Tauri application with seven explicit native authorities:
 
 ```text
 React WebView
@@ -19,6 +19,9 @@ Rust application boundary
   |-- Services: installed scripts and NVIDIA telemetry
   |-- AttachmentStore: immutable local objects + bounded document extraction
   |     `-- native image/audio blocks only for advertised projector capabilities
+  |-- ModelDownloadManager: explicit public Hugging Face GGUF transfer
+  |     |-- bounded repository inspection + HTTPS host allowlist
+  |     `-- durable byte ranges, checksums, recovery, and managed model root
   |-- MovieStudio: durable orchestration + non-destructive edit decisions
   |     |-- same single Bonsai inference lease for creative direction
   |     |-- one project-local movie_workspace tool; no research/archive tools
@@ -28,7 +31,7 @@ Rust application boundary
   `-- DeveloperAssistant: optional, user-triggered Codex child
 ```
 
-`work_active` is the process-wide strict lock for chat, research, Computer Tasks, and movie production. Model changes, runtime restarts, native diagnostics, and Codex repair are rejected while work is active. All Bonsai inference is additionally serialized by `RuntimeManager`; MiniMax H3 begins only after the lease is returned and Bonsai is stopped.
+`work_active` is the process-wide strict lock for chat, research, Computer Tasks, movie production, and the explicit model-download network exception. Model downloads therefore cannot overlap strict research, and an interrupted transfer never auto-resumes. Model changes, runtime restarts, native diagnostics, and Codex repair are rejected while work is active. All Bonsai inference is additionally serialized by `RuntimeManager`; MiniMax H3 begins only after the lease is returned and Bonsai is stopped.
 
 The research prefix has only `search_archive` and `read_source`. Candidate references are compact shared memory, not evidence. Citation IDs are issued on successful reads and validated natively. FTS similarity proposes existing editions; deterministic code owns report IDs, parent linkage, edition numbers, and output paths.
 

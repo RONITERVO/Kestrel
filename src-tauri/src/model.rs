@@ -276,6 +276,12 @@ fn inspect(path: &Path) -> io::Result<ModelInfo> {
     })
 }
 
+/// Validate one explicit GGUF before a managed download becomes visible to the disposable catalog.
+/// Discovery remains read-only; the downloader owns the final rename only after this succeeds.
+pub(crate) fn inspect_file(path: &Path) -> io::Result<ModelInfo> {
+    inspect(path)
+}
+
 fn content_identity(path: &Path, bytes: u64) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();

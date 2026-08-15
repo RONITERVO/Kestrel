@@ -43,6 +43,9 @@ import type {
   MovieProject,
   MovieRenderPreviewEvent,
   MovieReferenceImport,
+  ModelDownloadRecord,
+  ModelDownloadRequest,
+  ModelDownloadInspection,
   MovieSummary,
   StartMovieRequest,
   PromptDraftEvent,
@@ -390,6 +393,35 @@ export async function getControlSnapshot(
 export async function scanLocalModels(): Promise<ControlSnapshot> {
   if (!isTauri()) return demoSnapshot.control;
   return invoke<ControlSnapshot>("scan_local_models");
+}
+
+export async function listModelDownloads(): Promise<ModelDownloadRecord[]> {
+  if (!isTauri()) return [];
+  return invoke<ModelDownloadRecord[]>("list_model_downloads");
+}
+
+export async function inspectModelDownload(url: string): Promise<ModelDownloadInspection> {
+  if (!isTauri()) return { repository: "preview/model", revision: "main", candidates: [], detail: "Desktop inspection only." };
+  return invoke<ModelDownloadInspection>("inspect_model_download", { url });
+}
+
+export async function startModelDownload(request: ModelDownloadRequest): Promise<ModelDownloadRecord> {
+  if (!isTauri()) throw new Error("Model downloads require the desktop application.");
+  return invoke<ModelDownloadRecord>("start_model_download", { request });
+}
+
+export async function resumeModelDownload(id: string): Promise<ModelDownloadRecord> {
+  if (!isTauri()) throw new Error("Model downloads require the desktop application.");
+  return invoke<ModelDownloadRecord>("resume_model_download", { id });
+}
+
+export async function cancelModelDownload(): Promise<void> {
+  if (isTauri()) await invoke("cancel_model_download");
+}
+
+export async function onModelDownload(callback: (record: ModelDownloadRecord) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<ModelDownloadRecord>("model-download", (event) => callback(event.payload));
+  return () => undefined;
 }
 
 export async function exportSetupProfile(): Promise<ProfileTransfer> {

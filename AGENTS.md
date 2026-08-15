@@ -27,6 +27,7 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `kiwix.rs`: bounded local Wikipedia search/read and URL validation.
 - `store.rs`: immutable directory-atomic bundles, recovery, FTS catalog.
 - `model.rs`: bounded read-only GGUF discovery/metadata plus the disposable recoverable model cache.
+- `model_download.rs`: explicit allowlisted Hugging Face GGUF inspection/download, durable byte-range recovery, and no automatic resume.
 - `profile.rs`: bounded portable setup import/export; never restore developer paths or Full Access.
 - `config.rs`: recoverable settings and explicit Bonsai runtime application.
 - `services.rs`: installed Bonsai/Kiwix scripts and live GPU telemetry.

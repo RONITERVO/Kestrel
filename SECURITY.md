@@ -2,6 +2,8 @@
 
 Research queries, excerpts, model output, telemetry, and reports are private local data. Strict research has only two HTTP authorities: Bonsai at `127.0.0.1:8080` and Kiwix at `127.0.0.1:8085`.
 
+The Control room has one separate producer-triggered network exception for public Hugging Face GGUF inspection and download. It accepts only `https://huggingface.co` repository/file URLs, rejects embedded credentials, bounds metadata, follows redirects only to approved Hugging Face/Xet CDN hosts, records publisher LFS SHA-256 when available, and never starts or resumes automatically. The process-wide work gate prevents this exception from overlapping research. A scoped Windows execution-state request prevents system sleep only while an approved transfer is active and is released on stop or completion.
+
 Enforced controls:
 
 - WebView CSP blocks external connections, scripts, images, fonts, and CDNs.
@@ -12,6 +14,7 @@ Enforced controls:
 - Model text cannot choose report paths, IDs, SQL, processes, or network targets.
 - Managed model servers bind to loopback and use a random per-launch API key that is redacted from UI launch proof.
 - One inference lease prevents duplicate Kestrel loads and simultaneous generations.
+- Model downloads use recoverable ledgers and partial files; size, byte range, source identity, SHA-256, and GGUF metadata are checked before catalog activation.
 - Reports are HTML-escaped, directory-atomically published, immutable by ID, and recoverable without SQLite.
 
 Codex is a separate developer-only exception, never a research dependency. It requires an explicit confirmed action, a validated Kestrel Git root, installed/authenticated Codex CLI, an ephemeral workspace-write sandbox, and a fixed post-edit verification suite. It cannot run during strict research, uses no shell-composed command, and never commits. Native diagnostics remain available offline.
