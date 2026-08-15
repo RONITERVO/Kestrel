@@ -30,7 +30,13 @@ describe("Kestrel Movie Studio", () => {
   });
 
   it("keeps full-context and expert production controls discoverable", () => {
-    render(<MovieStudio advancedEnabled onError={vi.fn()} />);
+    render(
+      <MovieStudio
+        initialComfyRoot={"C:\\Configured\\ComfyUI"}
+        advancedEnabled
+        onError={vi.fn()}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /SetupQuality and controls/i }));
     expect(screen.getByText("98,304 context")).toBeInTheDocument();
     expect(screen.getByText("32,768 max thinking")).toBeInTheDocument();
@@ -40,7 +46,7 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByLabelText("Thinking mode is fixed at maximum")).toHaveValue(
       "Maximum · 32,768",
     );
-    expect(screen.getByLabelText("ComfyUI root")).toHaveValue("D:\\AI\\ComfyUI");
+    expect(screen.getByLabelText("ComfyUI root")).toHaveValue("C:\\Configured\\ComfyUI");
     expect(screen.getByLabelText("Reference image fidelity")).toHaveValue("match");
     const checkpoint = screen.getByLabelText(/Review the plan before rendering/i);
     expect(checkpoint).toBeChecked();
@@ -48,6 +54,13 @@ describe("Kestrel Movie Studio", () => {
     expect(checkpoint).not.toBeChecked();
     expect(screen.getByText(/before any H3 clip is rendered/i)).toBeInTheDocument();
     expect(screen.queryByLabelText("Research")).not.toBeInTheDocument();
+  });
+
+  it("does not invent a machine-specific ComfyUI location", () => {
+    render(<MovieStudio advancedEnabled onError={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /SetupQuality and controls/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Advanced production controls/i }));
+    expect(screen.getByLabelText("ComfyUI root")).toHaveValue("");
   });
 
   it("lets producers explicitly develop notes or continue exact text with any local model", () => {

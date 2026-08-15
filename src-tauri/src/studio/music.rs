@@ -27,6 +27,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 const MUSIC_SCHEMA_VERSION: u32 = 1;
+const MUSCRIPTOR_MODEL_BYTES: u64 = 5_465_642_136;
 const MAX_MUSIC_TEXT_BYTES: usize = 64 * 1024;
 const MAX_SECTIONS: usize = 64;
 const MAX_TAKES: usize = 128;
@@ -687,6 +688,10 @@ impl MusicStudio {
         request: MusicMidiRequest,
     ) -> Result<MusicProject, StudioError> {
         let mut project = self.get(&request.project_id)?;
+        if repair_muscriptor_settings(&mut project.midi) {
+            project.updated_at = Utc::now().to_rfc3339();
+            self.persist(&project)?;
+        }
         validate_muscriptor_settings(&project.midi)?;
         let take_index = project
             .takes
@@ -1177,13 +1182,18 @@ fn validate_muscriptor_settings(settings: &MusicMidiSettings) -> Result<(), Stud
     let model = Path::new(settings.model_path.trim());
     if !executable.is_absolute() || !executable.is_file() {
         return Err(StudioError::Invalid(
-            "choose the local muscriptor executable before transcribing to MIDI".into(),
+            format!(
+                "MuScriptor runner was not found at {}. Choose the existing muscriptor.exe or finish MuScriptor in Setup before transcribing.",
+                executable.display()
+            ),
         ));
     }
-    if !model.is_absolute() || !model.is_file() {
+    if !is_muscriptor_checkpoint(model) {
         return Err(StudioError::Invalid(
-            "choose a locally accepted MuScriptor .safetensors checkpoint before transcribing"
-                .into(),
+            format!(
+                "The official {MUSCRIPTOR_MODEL_BYTES}-byte MuScriptor model.safetensors checkpoint was not found at {}. Choose that completed file or finish MuScriptor in Setup.",
+                model.display()
+            ),
         ));
     }
     if settings.instruments.len() > 2_000
@@ -1197,6 +1207,88 @@ fn validate_muscriptor_settings(settings: &MusicMidiSettings) -> Result<(), Stud
         ));
     }
     Ok(())
+}
+
+/// Repair a stale companion path only within the producer-selected MuScriptor installation.
+/// This handles common source installs (`.venv/Scripts/muscriptor.exe` plus
+/// `models/muscriptor-large/model.safetensors`) and Kestrel's isolated layout without searching
+/// unrelated drives or accepting another model with the same filename.
+fn repair_muscriptor_settings(settings: &mut MusicMidiSettings) -> bool {
+    let executable = PathBuf::from(settings.executable_path.trim());
+    let model = PathBuf::from(settings.model_path.trim());
+    let mut changed = false;
+
+    if executable.is_file() && !is_muscriptor_checkpoint(&model) {
+        if let Some(root) = muscriptor_root_from_executable(&executable) {
+            if let Some(found) = muscriptor_model_candidates(&root)
+                .into_iter()
+                .find(|path| is_muscriptor_checkpoint(path))
+            {
+                settings.model_path = found.to_string_lossy().into_owned();
+                changed = true;
+            }
+        }
+    }
+
+    if !Path::new(settings.executable_path.trim()).is_file()
+        && is_muscriptor_checkpoint(Path::new(settings.model_path.trim()))
+    {
+        if let Some(root) = muscriptor_root_from_model(Path::new(settings.model_path.trim())) {
+            if let Some(found) = muscriptor_executable_candidates(&root)
+                .into_iter()
+                .find(|path| path.is_file())
+            {
+                settings.executable_path = found.to_string_lossy().into_owned();
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn is_muscriptor_checkpoint(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("model.safetensors"))
+        && fs::metadata(path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == MUSCRIPTOR_MODEL_BYTES)
+}
+
+fn muscriptor_root_from_executable(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    if name.eq_ignore_ascii_case("uvx.exe") {
+        return path.parent()?.parent().map(Path::to_path_buf);
+    }
+    if name.eq_ignore_ascii_case("muscriptor.exe") {
+        return path.parent()?.parent()?.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+fn muscriptor_root_from_model(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    if parent.file_name()?.to_str()?.eq_ignore_ascii_case("models") {
+        return parent.parent().map(Path::to_path_buf);
+    }
+    let models = parent.parent()?;
+    if models.file_name()?.to_str()?.eq_ignore_ascii_case("models") {
+        return models.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+fn muscriptor_model_candidates(root: &Path) -> [PathBuf; 2] {
+    [
+        root.join("models/model.safetensors"),
+        root.join("models/muscriptor-large/model.safetensors"),
+    ]
+}
+
+fn muscriptor_executable_candidates(root: &Path) -> [PathBuf; 2] {
+    [
+        root.join("runtime/uvx.exe"),
+        root.join(".venv/Scripts/muscriptor.exe"),
+    ]
 }
 
 fn is_managed_muscriptor_uvx(path: &Path) -> bool {
@@ -1474,6 +1566,35 @@ mod tests {
         assert!(!is_managed_muscriptor_uvx(Path::new(
             r"C:\Tools\muscriptor.exe"
         )));
+    }
+
+    #[test]
+    fn repairs_a_stale_checkpoint_from_the_selected_source_install() {
+        let root = TempDir::new().unwrap();
+        let executable = root.path().join(".venv/Scripts/muscriptor.exe");
+        let checkpoint = root
+            .path()
+            .join("models/muscriptor-large/model.safetensors");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+        fs::write(&executable, b"test runner").unwrap();
+        fs::File::create(&checkpoint)
+            .unwrap()
+            .set_len(MUSCRIPTOR_MODEL_BYTES)
+            .unwrap();
+        let mut settings = MusicMidiSettings {
+            executable_path: executable.to_string_lossy().into_owned(),
+            model_path: root
+                .path()
+                .join("old-location/model.safetensors")
+                .to_string_lossy()
+                .into_owned(),
+            instruments: String::new(),
+        };
+
+        assert!(repair_muscriptor_settings(&mut settings));
+        assert_eq!(Path::new(&settings.model_path), checkpoint);
+        validate_muscriptor_settings(&settings).unwrap();
     }
 
     #[test]

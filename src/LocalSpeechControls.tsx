@@ -300,6 +300,10 @@ function blobBase64(blob: Blob): Promise<string> {
   });
 }
 
+export function completeRecordingBlob(chunks: Blob[], mimeType: string): Blob {
+  return new Blob(chunks, { type: mimeType });
+}
+
 function utf8Tail(value: string, maximumBytes: number): string {
   const bytes = new TextEncoder().encode(value);
   if (bytes.length <= maximumBytes) return value;
@@ -324,7 +328,6 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  const submittedChunkCountRef = useRef(0);
   const provisionalTranscriptRef = useRef("");
   const initialRef = useRef("");
   const recordingIdRef = useRef("");
@@ -359,12 +362,12 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
     const emptyFinal = () => finalPass
       ? releaseLocalSpeechMemory().catch(() => undefined).finally(() => onActiveChange?.(false))
       : Promise.resolve();
-    const chunkEnd = chunksRef.current.length;
-    const chunks = finalPass
-      ? chunksRef.current
-      : chunksRef.current.slice(submittedChunkCountRef.current, chunkEnd);
+    // MediaRecorder emits one WebM stream split across Blob events. Later events are not
+    // standalone files because they omit the stream header, so every provisional pass must send
+    // the complete recording accumulated so far. The final pass uses those same source bytes.
+    const chunks = chunksRef.current;
     if (!chunks.length) return emptyFinal();
-    const blob = new Blob(chunks, { type: mimeRef.current });
+    const blob = completeRecordingBlob(chunks, mimeRef.current);
     if (blob.size < 128) return emptyFinal();
     const task = (async () => {
       setTranscribing(true);
@@ -385,16 +388,16 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
       if (finalPass) {
         provisionalTranscriptRef.current = result.text.trim();
       } else {
-        submittedChunkCountRef.current = chunkEnd;
-        provisionalTranscriptRef.current = [provisionalTranscriptRef.current, result.text.trim()]
-          .filter(Boolean)
-          .join(" ");
+        provisionalTranscriptRef.current = result.text.trim();
       }
       applyTranscript(provisionalTranscriptRef.current);
       setDetail(finalPass ? "Saved locally with word timestamps" : "Listening · live text updated");
     })().catch((error) => {
-      setFailed(true);
-      setDetail(`Dictation stopped: ${error instanceof Error ? error.message : String(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      setFailed(finalPass);
+      setDetail(finalPass
+        ? `Dictation stopped: ${message}`
+        : `Still listening · live update will retry: ${message}`);
     }).finally(async () => {
       if (finalPass) await releaseLocalSpeechMemory().catch(() => undefined);
       pendingRef.current = null;
@@ -436,7 +439,6 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
     const mime = recorderMimeType();
     const recorder = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 32_000 });
     chunksRef.current = [];
-    submittedChunkCountRef.current = 0;
     provisionalTranscriptRef.current = "";
     initialRef.current = value;
     recordingIdRef.current = id("recording");

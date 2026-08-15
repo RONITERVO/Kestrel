@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LocalSpeechProvider, SpeechDictationButton, SpeechLiveCaption, SpeechPlaybackButton, splitSpeechText } from "./LocalSpeechControls";
+import { completeRecordingBlob, LocalSpeechProvider, SpeechDictationButton, SpeechLiveCaption, SpeechPlaybackButton, splitSpeechText } from "./LocalSpeechControls";
 
 const speechApi = vi.hoisted(() => ({
   snapshot: vi.fn(),
@@ -104,6 +104,16 @@ describe("shared local speech controls", () => {
     ]} />);
     fireEvent.click(screen.getByRole("button", { name: "Start from sentence." }));
     expect(onSeek).toHaveBeenCalledWith(.4);
+  });
+
+  it("keeps the WebM header in every growing provisional recording", async () => {
+    const header = new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: "audio/webm" });
+    const laterFragment = new Blob([new Uint8Array([0x81, 0x82, 0x83])], { type: "audio/webm" });
+    const firstPass = new Uint8Array(await completeRecordingBlob([header], "audio/webm").arrayBuffer());
+    const nextPass = new Uint8Array(await completeRecordingBlob([header, laterFragment], "audio/webm").arrayBuffer());
+
+    expect([...firstPass]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
+    expect([...nextPass]).toEqual([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x82, 0x83]);
   });
 
   it("speaks only after the user requests a saved model response", async () => {

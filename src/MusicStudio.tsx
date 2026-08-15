@@ -37,6 +37,7 @@ interface CollaborationDraft {
 export function MusicStudio({
   initialComfyRoot,
   installRoot,
+  muscriptorSetupReady = false,
   advancedEnabled,
   models = [],
   selectedModelId,
@@ -44,6 +45,7 @@ export function MusicStudio({
 }: {
   initialComfyRoot?: string;
   installRoot?: string;
+  muscriptorSetupReady?: boolean;
   advancedEnabled: boolean;
   models?: ModelInfo[];
   selectedModelId?: string;
@@ -416,7 +418,7 @@ export function MusicStudio({
             <summary><span><FileMusic /> Audio → editable MIDI</span><ChevronDown /></summary>
             <p>Optional MuScriptor pass under separate gated non-commercial terms. Setup can prepare its isolated NVIDIA runner; this project then uses it offline without command-line work.</p>
             <fieldset disabled={busy}>
-              <div className="music-midi-setup"><a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Official model terms</a><button disabled={!installRoot} onClick={() => { const paths = managedMuscriptorPaths(installRoot ?? ""); mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: paths.executable, modelPath: paths.model } })); }}><FileMusic /> Use Kestrel Setup</button></div>
+              <div className="music-midi-setup"><a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Official model terms</a><button disabled={!installRoot || !muscriptorSetupReady} title={muscriptorSetupReady ? "Use the runner and checkpoint verified by Kestrel Setup" : "Finish MuScriptor preparation in Setup, or choose your existing runner and checkpoint below"} onClick={() => { const paths = managedMuscriptorPaths(installRoot ?? ""); mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: paths.executable, modelPath: paths.model } })); }}><FileMusic /> {muscriptorSetupReady ? "Use Kestrel Setup" : "Setup not ready"}</button></div>
               <div className="music-path-field"><label>MuScriptor runner<input value={project.midi.executablePath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: event.target.value } }))} /></label><button aria-label="Browse for muscriptor executable" onClick={() => void pickSetupFile("muscriptor").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
               <div className="music-path-field"><label>Accepted checkpoint<input value={project.midi.modelPath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: event.target.value } }))} /></label><button aria-label="Browse for MuScriptor checkpoint" onClick={() => void pickSetupFile("muscriptorModel").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
               <label>Expected instruments<input value={project.midi.instruments} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, instruments: event.target.value } }))} placeholder="acoustic_piano,acoustic_guitar,acoustic_bass" /></label>

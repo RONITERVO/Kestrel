@@ -48,7 +48,7 @@ const defaultSettings: MovieSettings = {
   topK: 20,
   thinkingBudget: 32768,
   maxOutputTokens: 32768,
-  comfyRoot: "D:\\AI\\ComfyUI",
+  comfyRoot: "",
   refImageSize: "match",
 };
 
