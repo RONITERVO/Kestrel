@@ -99,9 +99,10 @@ impl ModelQualificationStore {
         model: &ModelInfo,
         settings: &ControlSettings,
     ) -> Result<ModelCompatibility, String> {
+        let settings = settings.for_model(&model.id);
         let receipt = self.receipt(&model.id)?;
         let current_engine = engine_identity(Path::new(&settings.engine_path))?;
-        assess_model(model, settings, receipt, &current_engine)
+        assess_model(model, &settings, receipt, &current_engine)
     }
 
     pub fn assess_all(
@@ -114,7 +115,8 @@ impl ModelQualificationStore {
             .iter()
             .map(|model| {
                 let receipt = self.receipt(&model.id)?;
-                assess_model(model, settings, receipt, &current_engine)
+                let settings = settings.for_model(&model.id);
+                assess_model(model, &settings, receipt, &current_engine)
             })
             .collect()
     }
@@ -127,6 +129,7 @@ pub fn qualification_receipt(
     checks: Vec<String>,
     detail: String,
 ) -> Result<ModelQualificationReceipt, String> {
+    let settings = settings.for_model(&model.id);
     Ok(ModelQualificationReceipt {
         model_id: model.id.clone(),
         model_name: model.name.clone(),
@@ -139,12 +142,6 @@ pub fn qualification_receipt(
         detail,
         checked_at: Utc::now().to_rfc3339(),
     })
-}
-
-pub fn is_bonsai(model: &ModelInfo) -> bool {
-    format!("{} {}", model.name, model.path)
-        .to_ascii_lowercase()
-        .contains("bonsai")
 }
 
 fn assess_model(
@@ -168,11 +165,6 @@ fn assess_model(
             "This model advertises only {} tokens of context; durable Studio planning requires at least 32,768.",
             model.context_length.unwrap_or_default()
         );
-    } else if is_bonsai(model) {
-        tier = "release-validated";
-        studio_ready = true;
-        requires_qualification = false;
-        detail = "Bundled Kestrel baseline with full Studio acceptance coverage.".into();
     } else if let Some(known) = receipt.as_ref().filter(|known| known.passed) {
         if known.protocol_revision == STUDIO_PROTOCOL_REVISION
             && known.engine_sha256 == current_engine
@@ -370,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn bonsai_is_release_validated_but_generic_models_require_a_matching_receipt() {
+    fn every_model_requires_a_matching_local_receipt() {
         let temp = tempfile::tempdir().unwrap();
         let settings = settings(temp.path());
         let engine = engine_identity(Path::new(&settings.engine_path)).unwrap();
@@ -379,7 +371,7 @@ mod tests {
             assess_model(&bonsai, &settings, None, &engine)
                 .unwrap()
                 .tier,
-            "release-validated"
+            "unverified"
         );
         let generic = model(temp.path(), "Qwen", true);
         assert_eq!(

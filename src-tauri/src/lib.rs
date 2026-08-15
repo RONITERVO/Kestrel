@@ -34,8 +34,7 @@ use model_download::{
     ModelDownloadInspection, ModelDownloadManager, ModelDownloadRecord, ModelDownloadRequest,
 };
 use model_roles::{
-    is_bonsai, qualification_receipt, ModelCompatibility, ModelQualificationStore,
-    STUDIO_PROTOCOL_REVISION,
+    qualification_receipt, ModelCompatibility, ModelQualificationStore, STUDIO_PROTOCOL_REVISION,
 };
 use models::{
     AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess,
@@ -54,12 +53,14 @@ use std::{
 };
 use store::ResearchStore;
 use studio::{
-    ComfyWorkload, CreateMusicProjectRequest, MovieClipAssistRequest, MovieClipRenderRequest,
-    MovieClipSuggestion, MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
+    ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
+    ImageSummary, MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion,
+    MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
     MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest,
     MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot,
-    MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest, MusicProject,
-    MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest, StartMovieRequest,
+    MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest,
+    MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, PromptDraftJob,
+    PromptDraftRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -92,8 +93,10 @@ struct AppState {
     interactive_jobs: Mutex<HashMap<String, CancellationToken>>,
     studio: MovieStudio,
     music: MusicStudio,
+    images: ImageStudio,
     movie_jobs: Mutex<HashMap<String, CancellationToken>>,
     music_jobs: Mutex<HashMap<String, CancellationToken>>,
+    image_generation_jobs: Mutex<HashMap<String, CancellationToken>>,
     image_asset_jobs: Mutex<HashMap<String, CancellationToken>>,
     setup_job: Mutex<Option<CancellationToken>>,
     model_download_job: Mutex<Option<CancellationToken>>,
@@ -109,7 +112,6 @@ async fn release_all_comfy_memory(state: &AppState) {
 #[derive(Clone)]
 struct SpeechRuntimeRestore {
     model_id: String,
-    attached: bool,
 }
 
 struct ResearchGuard<'a> {
@@ -141,14 +143,6 @@ impl Drop for WorkGuard<'_> {
 
 #[tauri::command]
 async fn bootstrap(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
-    if state.runtime.snapshot().await.phase == "stopped" {
-        let settings = state
-            .research_settings
-            .load()
-            .map_err(|error| error.to_string())?;
-        let _ = state.runtime.attach_external_if_ready(&settings).await;
-        identify_attached_bonsai(&state).await;
-    }
     snapshot(&state).await
 }
 
@@ -175,7 +169,6 @@ async fn remember_runtime_for_speech(state: &AppState) {
         if restore.is_none() {
             *restore = Some(SpeechRuntimeRestore {
                 model_id,
-                attached: snapshot.mode == "attached",
             });
         }
     }
@@ -211,29 +204,11 @@ async fn restore_runtime_after_speech(state: &AppState, app: &AppHandle) -> Resu
         );
     };
     let result: Result<(), String> = async {
-        if restore.attached {
-            let research = state
-                .research_settings
-                .load()
-                .map_err(|error| error.to_string())?;
-            services::restart_bonsai(&research.bonsai_root)
-                .await
-                .map_err(|error| error.to_string())?;
-            state
-                .runtime
-                .attach_external_if_ready(&research)
-                .await
-                .ok_or_else(|| {
-                    "the configured attached Bonsai service did not become ready".to_string()
-                })?;
-            state.runtime.identify_attached_model(&model).await;
-        } else {
-            state
-                .runtime
-                .start_model(&model, &settings, Some(app))
-                .await
-                .map_err(|error| error.to_string())?;
-        }
+        state
+            .runtime
+            .start_model(&model, &settings, Some(app))
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
     .await;
@@ -309,9 +284,6 @@ async fn prepare_local_speech(state: State<'_, AppState>) -> Result<SpeechSnapsh
             .stop_managed()
             .await
             .map_err(|error| error.to_string())?;
-        services::stop_bonsai(&settings.bonsai_root)
-            .await
-            .map_err(|error| error.to_string())?;
         state
             .speech
             .ensure_comfy(&settings.comfy_root, &cancel)
@@ -356,9 +328,6 @@ async fn synthesize_local_speech(
         state
             .runtime
             .stop_managed()
-            .await
-            .map_err(|error| error.to_string())?;
-        services::stop_bonsai(&settings.bonsai_root)
             .await
             .map_err(|error| error.to_string())?;
         state
@@ -408,9 +377,6 @@ async fn transcribe_local_speech(
         state
             .runtime
             .stop_managed()
-            .await
-            .map_err(|error| error.to_string())?;
-        services::stop_bonsai(&settings.bonsai_root)
             .await
             .map_err(|error| error.to_string())?;
         state
@@ -463,9 +429,6 @@ async fn align_local_speech(
             .stop_managed()
             .await
             .map_err(|error| error.to_string())?;
-        services::stop_bonsai(&settings.bonsai_root)
-            .await
-            .map_err(|error| error.to_string())?;
         state
             .speech
             .ensure_comfy(&settings.comfy_root, &cancel)
@@ -514,13 +477,24 @@ async fn run_research(
         research: &state.research_active,
         work: &state.work_active,
     };
-    let settings = state
+    let mut settings = state
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let models = state.models.read().await.clone();
+    let model = default_runtime_model(&models, &control)?;
+    if !settings.advanced_mode {
+        let effective = control.for_model(&model.id);
+        settings.context_window = effective.context_window;
+        settings.max_output_tokens = effective.max_output_tokens;
+    }
     let lease = state
         .runtime
-        .lease_research(&settings)
+        .lease_research(&model.id, &models, &control, &settings, Some(&app))
         .await
         .map_err(|error| error.to_string())?;
     let job_id = uuid::Uuid::new_v4().to_string();
@@ -657,18 +631,11 @@ async fn start_movie_image_asset(
     tauri::async_runtime::spawn(async move {
         let managed = app_for_task.state::<AppState>();
         let _guard = WorkGuard(&managed.work_active);
-        let renderer_ready: Result<(), String> = async {
-            managed
-                .runtime
-                .stop_managed()
-                .await
-                .map_err(|error| error.to_string())?;
-            services::stop_bonsai(&research.bonsai_root)
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        }
-        .await;
+        let renderer_ready = managed
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string());
         if let Err(error) = renderer_ready {
             studio::emit_image_asset_error(&app_for_task, &task_id, error);
         } else {
@@ -697,15 +664,6 @@ fn cancel_movie_image_asset(request_id: String, state: State<'_, AppState>) -> R
     Ok(())
 }
 
-fn studio_runtime_settings(
-    mut control: ControlSettings,
-    research: &ResearchSettings,
-) -> ControlSettings {
-    control.context_window = research.context_window;
-    control.max_output_tokens = research.max_output_tokens;
-    control
-}
-
 async fn studio_model_context(
     state: &AppState,
 ) -> Result<(ResearchSettings, ControlSettings, Vec<ModelInfo>), String> {
@@ -718,11 +676,7 @@ async fn studio_model_context(
         .load()
         .map_err(|error| error.to_string())?;
     let models = state.models.read().await.clone();
-    Ok((
-        research.clone(),
-        studio_runtime_settings(control, &research),
-        models,
-    ))
+    Ok((research, control, models))
 }
 
 fn model_binding(model: &ModelInfo, compatibility: &ModelCompatibility) -> MovieModelBinding {
@@ -748,10 +702,7 @@ fn select_default_studio_model<'a>(
             return Ok(Some(selected));
         }
     }
-    Ok(models
-        .iter()
-        .find(|model| is_bonsai(model))
-        .or_else(|| models.first()))
+    Ok(models.first())
 }
 
 fn resolve_movie_model_roles(
@@ -829,18 +780,20 @@ fn project_model_ids(
     qualifications: &ModelQualificationStore,
     advanced: bool,
 ) -> Result<(String, String), String> {
-    let legacy_bonsai = || {
-        models
-            .iter()
-            .find(|model| is_bonsai(model))
+    let legacy_default = || {
+        settings
+            .selected_model_id
+            .as_deref()
+            .and_then(|id| models.iter().find(|model| model.id == id))
+            .or_else(|| models.first())
             .map(|model| model.id.clone())
             .ok_or_else(|| {
-                "This legacy Studio project requires its Bonsai model. Scan or restore that model before resuming.".to_string()
+                "This legacy Studio project has no pinned model. Select a local model in Control before resuming.".to_string()
             })
     };
     let resolve = |role: &str, model_id: &str| -> Result<String, String> {
         let resolved = if model_id.trim().is_empty() {
-            legacy_bonsai()?
+            legacy_default()?
         } else {
             model_id.to_string()
         };
@@ -890,7 +843,7 @@ async fn qualify_studio_model(
     state: State<'_, AppState>,
 ) -> Result<ModelCompatibility, String> {
     let _guard = claim_workspace(&state)?;
-    let (research, settings, models) = studio_model_context(&state).await?;
+    let (_, settings, models) = studio_model_context(&state).await?;
     let model = models
         .iter()
         .find(|model| model.id == model_id)
@@ -905,17 +858,15 @@ async fn qualify_studio_model(
         .stop_managed()
         .await
         .map_err(|error| error.to_string())?;
-    services::stop_bonsai(&research.bonsai_root)
-        .await
-        .map_err(|error| error.to_string())?;
     let lease = state
         .runtime
         .lease_model(&model_id, &models, &settings, Some(&app))
         .await
         .map_err(|error| error.to_string())?;
+    let effective = settings.for_model(&model.id);
     let checked = state
         .studio
-        .qualify_model_protocol(&lease.connection, settings.max_output_tokens)
+        .qualify_model_protocol(&lease.connection, effective.max_output_tokens)
         .await;
     drop(lease);
     let _ = state.runtime.stop_managed().await;
@@ -1071,9 +1022,6 @@ fn spawn_movie(
                     .stop_managed()
                     .await
                     .map_err(|error| error.to_string())?;
-                services::stop_bonsai(&research.bonsai_root)
-                    .await
-                    .map_err(|error| error.to_string())?;
                 let planned = managed
                     .studio
                     .plan(
@@ -1095,7 +1043,6 @@ fn spawn_movie(
                     "awaiting-review" | "planning-checkpoint"
                 ) {
                     let _ = managed.runtime.stop_managed().await;
-                    let _ = services::stop_bonsai(&research.bonsai_root).await;
                     return Ok(());
                 }
             }
@@ -1103,9 +1050,6 @@ fn spawn_movie(
             managed
                 .runtime
                 .stop_managed()
-                .await
-                .map_err(|error| error.to_string())?;
-            services::stop_bonsai(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             managed
@@ -1447,9 +1391,6 @@ async fn revise_movie_plan(
         .stop_managed()
         .await
         .map_err(|error| error.to_string())?;
-    services::stop_bonsai(&research.bonsai_root)
-        .await
-        .map_err(|error| error.to_string())?;
     let cancel = CancellationToken::new();
     state
         .movie_jobs
@@ -1477,7 +1418,6 @@ async fn revise_movie_plan(
     }
     .await;
     let _ = state.runtime.stop_managed().await;
-    let _ = services::stop_bonsai(&research.bonsai_root).await;
     if let Ok(mut jobs) = state.movie_jobs.lock() {
         jobs.remove(&request.id);
     }
@@ -1523,6 +1463,7 @@ async fn approve_movie_plan(
 #[tauri::command]
 async fn ask_movie_director_clip(
     request: MovieClipAssistRequest,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<MovieClipSuggestion, String> {
     let _guard = claim_workspace(&state)?;
@@ -1548,9 +1489,7 @@ async fn ask_movie_director_clip(
         .stop_managed()
         .await
         .map_err(|error| error.to_string())?;
-    services::stop_bonsai(&research.bonsai_root)
-        .await
-        .map_err(|error| error.to_string())?;
+    let director_runtime = runtime_settings.for_model(&director_model_id);
     let result: Result<MovieClipSuggestion, String> = async {
         let lease = state
             .runtime
@@ -1560,18 +1499,16 @@ async fn ask_movie_director_clip(
         state
             .studio
             .assist_clip(
-                &request.id,
-                &request.clip_id,
-                &request.feedback,
+                &request,
                 &lease.connection,
-                runtime_settings.max_output_tokens,
+                director_runtime.max_output_tokens,
+                Some(&app),
             )
             .await
             .map_err(|error| error.to_string())
     }
     .await;
     let _ = state.runtime.stop_managed().await;
-    let _ = services::stop_bonsai(&research.bonsai_root).await;
     result
 }
 
@@ -1582,12 +1519,7 @@ async fn render_movie_clip_version(
     state: State<'_, AppState>,
 ) -> Result<MovieProject, String> {
     let _guard = claim_workspace(&state)?;
-    let research = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
     let _ = state.runtime.stop_managed().await;
-    let _ = services::stop_bonsai(&research.bonsai_root).await;
     let cancel = CancellationToken::new();
     state
         .movie_jobs
@@ -1635,10 +1567,24 @@ fn get_music_project(id: String, state: State<'_, AppState>) -> Result<MusicProj
 
 #[tauri::command]
 fn create_music_project(
-    request: CreateMusicProjectRequest,
+    mut request: CreateMusicProjectRequest,
     state: State<'_, AppState>,
 ) -> Result<MusicProject, String> {
     let _guard = claim_workspace(&state)?;
+    if request.muscriptor_executable_path.trim().is_empty()
+        && request.muscriptor_model_path.trim().is_empty()
+    {
+        let settings = state
+            .research_settings
+            .load()
+            .map_err(|error| error.to_string())?;
+        let (executable, model, marker) =
+            setup::managed_muscriptor_paths(std::path::Path::new(&settings.install_root));
+        if executable.is_file() && model.is_file() && marker.is_file() {
+            request.muscriptor_executable_path = executable.to_string_lossy().into_owned();
+            request.muscriptor_model_path = model.to_string_lossy().into_owned();
+        }
+    }
     state
         .music
         .create(request)
@@ -1688,16 +1634,11 @@ async fn start_music_generation(
     tauri::async_runtime::spawn(async move {
         let managed = app.state::<AppState>();
         let _guard = WorkGuard(&managed.work_active);
-        let research = managed.research_settings.load();
         let result: Result<(), String> = async {
-            let research = research.map_err(|error| error.to_string())?;
             release_all_comfy_memory(&managed).await;
             managed
                 .runtime
                 .stop_managed()
-                .await
-                .map_err(|error| error.to_string())?;
-            services::stop_bonsai(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             managed
@@ -1740,17 +1681,10 @@ async fn transcribe_music_midi(
     state: State<'_, AppState>,
 ) -> Result<MusicProject, String> {
     let _guard = claim_workspace(&state)?;
-    let research = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
     release_all_comfy_memory(&state).await;
     state
         .runtime
         .stop_managed()
-        .await
-        .map_err(|error| error.to_string())?;
-    services::stop_bonsai(&research.bonsai_root)
         .await
         .map_err(|error| error.to_string())?;
     state
@@ -1761,9 +1695,188 @@ async fn transcribe_music_midi(
 }
 
 #[tauri::command]
+fn get_music_midi_document(
+    request: MusicMidiRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicMidiSaveResult, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .load_midi_document(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_music_midi_document(
+    request: SaveMusicMidiDocumentRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicMidiSaveResult, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .save_midi_document(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn export_music_midi(
+    request: MusicMidiRequest,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let (_, title) = state
+        .music
+        .midi_artifact(&request)
+        .map_err(|error| error.to_string())?;
+    let filename = format!("{}.mid", safe_export_filename(&title));
+    let Some(destination) = rfd::AsyncFileDialog::new()
+        .set_title("Export editable MIDI")
+        .set_file_name(&filename)
+        .add_filter("Standard MIDI file", &["mid", "midi"])
+        .save_file()
+        .await
+    else {
+        return Ok(None);
+    };
+    let path = destination.path().to_path_buf();
+    state
+        .music
+        .export_midi_artifact(&request, &path)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+fn reveal_music_midi(request: MusicMidiRequest, state: State<'_, AppState>) -> Result<(), String> {
+    let (path, _) = state
+        .music
+        .midi_artifact(&request)
+        .map_err(|error| error.to_string())?;
+    reveal_with_explorer(&path)
+}
+
+#[tauri::command]
 fn reveal_music_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let path = state
         .music
+        .reveal_path(&id)
+        .map_err(|error| error.to_string())?;
+    open_with_explorer(&path)
+}
+
+#[tauri::command]
+fn list_image_projects(state: State<'_, AppState>) -> Result<Vec<ImageSummary>, String> {
+    state.images.list().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_image_project(id: String, state: State<'_, AppState>) -> Result<ImageProject, String> {
+    state.images.get(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_image_project(
+    request: CreateImageProjectRequest,
+    state: State<'_, AppState>,
+) -> Result<ImageProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .images
+        .create(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_image_project(
+    project: ImageProject,
+    state: State<'_, AppState>,
+) -> Result<ImageProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .images
+        .save_editable(project)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn start_image_generation(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ImageProject, String> {
+    ensure_workspace_idle(&state)?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI or media job is already active.".to_string())?;
+    let (project, take_ids) = state
+        .images
+        .begin_generation(&id, Some(&app))
+        .map_err(|error| {
+            state.work_active.store(false, Ordering::Release);
+            error.to_string()
+        })?;
+    let cancel = CancellationToken::new();
+    match state.image_generation_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("image job registry is unavailable".into());
+        }
+    }
+    tauri::async_runtime::spawn(async move {
+        let managed = app.state::<AppState>();
+        let _guard = WorkGuard(&managed.work_active);
+        let result: Result<(), String> = async {
+            release_all_comfy_memory(&managed).await;
+            managed
+                .runtime
+                .stop_managed()
+                .await
+                .map_err(|error| error.to_string())?;
+            managed
+                .images
+                .render(&id, &take_ids, &managed.studio, &cancel, Some(&app))
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        .await;
+        release_all_comfy_memory(&managed).await;
+        if let Err(error) = result {
+            managed.images.fail_generation(
+                &id,
+                &take_ids,
+                error,
+                cancel.is_cancelled(),
+                Some(&app),
+            );
+        }
+        if let Ok(mut jobs) = managed.image_generation_jobs.lock() {
+            jobs.remove(&id);
+        };
+    });
+    Ok(project)
+}
+
+#[tauri::command]
+fn cancel_image_generation(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .image_generation_jobs
+        .lock()
+        .map_err(|_| "image job registry is unavailable".to_string())?
+        .get(&id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_image_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let path = state
+        .images
         .reveal_path(&id)
         .map_err(|error| error.to_string())?;
     open_with_explorer(&path)
@@ -1782,40 +1895,33 @@ async fn prepare_services(
     services::prepare(&settings)
         .await
         .map_err(|error| error.to_string())?;
-    if state
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let models = state.models.read().await.clone();
+    let model = default_runtime_model(&models, &control)?;
+    state
         .runtime
-        .attach_external_if_ready(&settings)
+        .start_model(model, &control, Some(&app))
         .await
-        .is_none()
-    {
-        let control = state
-            .control_settings
-            .load()
-            .map_err(|error| error.to_string())?;
-        let model = runtime_bonsai_model(&state).await?;
-        state
-            .runtime
-            .start_model(&model, &control, Some(&app))
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    identify_attached_bonsai(&state).await;
+        .map_err(|error| error.to_string())?;
     snapshot(&state).await
 }
 
-async fn runtime_bonsai_model(state: &AppState) -> Result<ModelInfo, String> {
-    state
-        .models
-        .read()
-        .await
-        .iter()
-        .find(|model| {
-            format!("{} {}", model.name, model.path)
-                .to_lowercase()
-                .contains("bonsai")
+fn default_runtime_model<'a>(
+    models: &'a [ModelInfo],
+    settings: &ControlSettings,
+) -> Result<&'a ModelInfo, String> {
+    settings
+        .selected_model_id
+        .as_deref()
+        .and_then(|id| models.iter().find(|model| model.id == id))
+        .or_else(|| models.first())
+        .ok_or_else(|| {
+            "No local model is available. Install or locate a GGUF model in Setup, then rescan in Control."
+                .into()
         })
-        .cloned()
-        .ok_or_else(|| "Bonsai is not installed or has not been scanned. Open Setup and install or locate the assistant first.".into())
 }
 
 #[tauri::command]
@@ -1847,9 +1953,6 @@ async fn open_comfy_ui(workload: Option<String>, state: State<'_, AppState>) -> 
         .stop_managed()
         .await
         .map_err(|error| error.to_string())?;
-    services::stop_bonsai(&settings.bonsai_root)
-        .await
-        .map_err(|error| error.to_string())?;
     services::start_comfy(&settings.comfy_root, workload)
         .await
         .map_err(|error| error.to_string())?;
@@ -1867,7 +1970,7 @@ async fn save_setup_locations(
     locations: setup::SetupLocations,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    ensure_workspace_idle(&state)?;
+    let _guard = claim_workspace(&state)?;
     let mut research = state
         .research_settings
         .load()
@@ -1901,7 +2004,7 @@ async fn save_setup_locations(
 #[tauri::command]
 async fn pick_setup_folder() -> Result<String, String> {
     Ok(rfd::AsyncFileDialog::new()
-        .set_title("Choose where Kestrel should keep its AI components")
+        .set_title("Choose a local AI model or Kestrel component folder")
         .pick_folder()
         .await
         .map(|folder| folder.path().to_string_lossy().into_owned())
@@ -1917,6 +2020,8 @@ async fn pick_setup_file(kind: String) -> Result<String, String> {
             dialog.add_filter("Windows program", &["exe"])
         }
         "muscriptorModel" => dialog.add_filter("MuScriptor checkpoint", &["safetensors"]),
+        "whisperModel" => dialog.add_filter("OpenAI Whisper checkpoint", &["pt"]),
+        "modelAsset" => dialog.add_filter("Local AI model", &["safetensors", "gguf", "pt", "json"]),
         _ => dialog,
     };
     Ok(dialog
@@ -1927,12 +2032,23 @@ async fn pick_setup_file(kind: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn scan_setup_model_folder(
+    path: String,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let root = std::path::PathBuf::from(path);
+    tokio::task::spawn_blocking(move || setup::scan_existing_model_folder(&root))
+        .await
+        .map_err(|error| format!("existing model search could not finish: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn install_setup_component(
     request: setup::SetupInstallRequest,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    ensure_workspace_idle(&state)?;
+    let _guard = claim_workspace(&state)?;
     let mut research = state
         .research_settings
         .load()
@@ -2001,15 +2117,7 @@ fn cancel_setup_install(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn get_system_snapshot(state: State<'_, AppState>) -> Result<SystemSnapshot, String> {
-    let settings = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let mut value = services::system_snapshot(settings).await;
-    if state.runtime.snapshot().await.phase == "ready" {
-        value.status.bonsai = "ready".into();
-    }
-    Ok(value)
+    system_console_snapshot(&state).await
 }
 
 #[tauri::command]
@@ -2165,11 +2273,33 @@ async fn export_setup_profile(state: State<'_, AppState>) -> Result<ProfileTrans
 }
 
 #[tauri::command]
+async fn get_setup_profile_text(state: State<'_, AppState>) -> Result<String, String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let models = state.models.read().await.clone();
+    profile::preview(&research, &control, &models).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn export_setup_profile_text(
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<ProfileTransfer, String> {
+    profile::export_text(state.store.root(), &text).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn import_setup_profile(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    ensure_workspace_idle(&state)?;
+    let _guard = claim_workspace(&state)?;
     if !std::path::Path::new(&path).is_absolute() {
         return Err("setup profile path must be absolute".into());
     }
@@ -2179,7 +2309,35 @@ async fn import_setup_profile(
         &state.control_settings,
     )
     .map_err(|error| error.to_string())?;
-    let roots = model_roots(&state, &imported.control, &imported.research);
+    finish_profile_import(&state, imported).await
+}
+
+#[tauri::command]
+async fn import_setup_profile_text(
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let _guard = claim_workspace(&state)?;
+    let imported = profile::import_text(
+        &text,
+        &state.research_settings,
+        &state.control_settings,
+    )
+    .map_err(|error| error.to_string())?;
+    finish_profile_import(&state, imported).await
+}
+
+async fn finish_profile_import(
+    state: &AppState,
+    imported: profile::ImportedProfile,
+) -> Result<AppSnapshot, String> {
+    state
+        .runtime
+        .stop_managed()
+        .await
+        .map_err(|error| error.to_string())?;
+    apply_media_paths(&imported.research);
+    let roots = model_roots(state, &imported.control, &imported.research);
     match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
         Ok(found) => {
             if let Err(error) = state.model_catalog.save(&found) {
@@ -2191,8 +2349,8 @@ async fn import_setup_profile(
             eprintln!("Kestrel imported the profile, but its follow-up model scan could not finish: {error}");
         }
     }
-    refresh_engine_candidates(&state, &imported.control, &imported.research).await;
-    snapshot(&state).await
+    refresh_engine_candidates(state, &imported.control, &imported.research).await;
+    snapshot(state).await
 }
 
 #[tauri::command]
@@ -2208,15 +2366,9 @@ async fn save_research_settings(
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let mut control = state
+    let control = state
         .control_settings
         .load()
-        .map_err(|error| error.to_string())?;
-    control.context_window = settings.context_window;
-    control.max_output_tokens = settings.max_output_tokens;
-    state
-        .control_settings
-        .save(&control)
         .map_err(|error| error.to_string())?;
     refresh_engine_candidates(&state, &control, &settings).await;
     Ok(settings)
@@ -2242,15 +2394,9 @@ async fn save_control_settings(
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let mut research = state
+    let research = state
         .research_settings
         .load()
-        .map_err(|error| error.to_string())?;
-    research.context_window = settings.context_window;
-    research.max_output_tokens = settings.max_output_tokens;
-    state
-        .research_settings
-        .save(&research)
         .map_err(|error| error.to_string())?;
     refresh_engine_candidates(&state, &settings, &research).await;
     control_snapshot(&state, true).await
@@ -2258,56 +2404,44 @@ async fn save_control_settings(
 
 #[tauri::command]
 async fn apply_model_runtime(
-    settings: ResearchSettings,
+    settings: ControlSettings,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SystemSnapshot, String> {
     let _guard = claim_workspace(&state)?;
+    let engine_path = std::path::Path::new(&settings.engine_path);
+    if engine_path.is_file() && !runtime::is_llama_server_file(engine_path) {
+        return Err(format!(
+            "model engine must be a file named llama-server.exe: {}",
+            engine_path.display()
+        ));
+    }
     state
-        .research_settings
+        .control_settings
         .save(&settings)
         .map_err(|error| error.to_string())?;
     let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let research = state
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let mut control = state
-        .control_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    control.context_window = settings.context_window;
-    control.max_output_tokens = settings.max_output_tokens;
-    state
-        .control_settings
-        .save(&control)
-        .map_err(|error| error.to_string())?;
-    refresh_engine_candidates(&state, &control, &settings).await;
+    refresh_engine_candidates(&state, &settings, &research).await;
     state
         .runtime
         .stop_managed()
         .await
         .map_err(|error| error.to_string())?;
-    config::apply_bonsai_runtime(&settings).map_err(|error| error.to_string())?;
-    let script = std::path::Path::new(&settings.bonsai_root).join("Start-BonsaiServer.ps1");
-    if script.is_file() {
-        services::restart_bonsai(&settings.bonsai_root)
-            .await
-            .map_err(|error| error.to_string())?;
-        let _ = state.runtime.attach_external_if_ready(&settings).await;
-    } else {
-        let model = runtime_bonsai_model(&state).await?;
-        state
-            .runtime
-            .start_model(&model, &control, Some(&app))
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    identify_attached_bonsai(&state).await;
-    let mut value = services::system_snapshot(settings).await;
-    if state.runtime.snapshot().await.phase == "ready" {
-        value.status.bonsai = "ready".into();
-    }
-    Ok(value)
+    let models = state.models.read().await.clone();
+    let model = default_runtime_model(&models, &settings)?;
+    state
+        .runtime
+        .start_model(model, &settings, Some(&app))
+        .await
+        .map_err(|error| error.to_string())?;
+    system_console_snapshot(&state).await
 }
 
 #[tauri::command]
@@ -2384,6 +2518,13 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        let images = state
+            .image_generation_jobs
+            .lock()
+            .map_err(|_| "image job registry is unavailable".to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         let speech = state
             .speech_jobs
             .lock()
@@ -2396,6 +2537,7 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .chain(interactive)
             .chain(image_assets)
             .chain(music)
+            .chain(images)
             .chain(speech)
             .collect::<Vec<_>>()
     };
@@ -2436,7 +2578,7 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
         .stop_managed()
         .await
         .map_err(|error| error.to_string())?;
-    services::stop_bonsai(&research.bonsai_root)
+    services::stop_legacy_bonsai_service(&research.bonsai_root)
         .await
         .map_err(|error| error.to_string())?;
     release_all_comfy_memory(&state).await;
@@ -2958,25 +3100,6 @@ async fn run_codex_repair(
 }
 
 #[tauri::command]
-fn open_bonsai_control_center(state: State<'_, AppState>) -> Result<(), String> {
-    let settings = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let path = std::path::Path::new(&settings.bonsai_root).join("BonsaiLauncher.exe");
-    if !path.is_file() {
-        return Err(format!(
-            "Bonsai control center is missing: {}",
-            path.display()
-        ));
-    }
-    std::process::Command::new(&path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("could not open {}: {error}", path.display()))
-}
-
-#[tauri::command]
 fn open_standalone_report(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let path = state
         .store
@@ -2999,11 +3122,9 @@ async fn snapshot(state: &AppState) -> Result<AppSnapshot, String> {
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let mut status = services::status(&settings).await;
-    if state.runtime.snapshot().await.phase == "ready" {
-        status.bonsai = "ready".into();
-    }
     let control = control_snapshot(state, false).await?;
+    let mut status = services::status(&settings).await;
+    apply_model_status(&mut status, &control.runtime, &control.settings, &control.models);
     let setup = setup::snapshot(&settings, &control.settings, control.gpu.as_ref());
     Ok(AppSnapshot {
         status,
@@ -3013,6 +3134,86 @@ async fn snapshot(state: &AppState) -> Result<AppSnapshot, String> {
         control,
         setup,
     })
+}
+
+async fn system_console_snapshot(state: &AppState) -> Result<SystemSnapshot, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let models = state.models.read().await.clone();
+    let managed_runtime = state.runtime.snapshot().await;
+    let mut value = services::system_snapshot(settings).await;
+    apply_model_status(
+        &mut value.status,
+        &managed_runtime,
+        &control,
+        &models,
+    );
+    let selected = managed_runtime
+        .model_id
+        .as_deref()
+        .and_then(|id| models.iter().find(|model| model.id == id))
+        .or_else(|| {
+            control
+                .selected_model_id
+                .as_deref()
+                .and_then(|id| models.iter().find(|model| model.id == id))
+        })
+        .or_else(|| models.first());
+    let effective = selected
+        .map(|model| control.for_model(&model.id))
+        .unwrap_or_else(|| control.clone());
+    value.runtime.context_window = if managed_runtime.context_window > 0 {
+        managed_runtime.context_window
+    } else {
+        effective.context_window
+    };
+    value.runtime.max_output_tokens = effective.max_output_tokens;
+    value.runtime.model_root = selected
+        .and_then(|model| std::path::Path::new(&model.path).parent())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    value.runtime.kv_cache = if managed_runtime.phase == "ready" {
+        "managed by llama.cpp".into()
+    } else {
+        "not loaded".into()
+    };
+    value.control = control;
+    value.models = models;
+    value.managed_runtime = managed_runtime;
+    Ok(value)
+}
+
+fn apply_model_status(
+    status: &mut models::ServiceStatus,
+    runtime: &models::ManagedRuntimeSnapshot,
+    settings: &ControlSettings,
+    models: &[ModelInfo],
+) {
+    status.model_runtime = if runtime.phase == "ready" {
+        "ready"
+    } else {
+        "stopped"
+    }
+    .into();
+    status.model = runtime
+        .model_name
+        .clone()
+        .or_else(|| {
+            settings.selected_model_id.as_deref().and_then(|id| {
+                models
+                    .iter()
+                    .find(|model| model.id == id)
+                    .map(|model| model.name.clone())
+            })
+        })
+        .or_else(|| models.first().map(|model| model.name.clone()))
+        .unwrap_or_else(|| "No local model selected".into());
 }
 
 async fn control_snapshot(
@@ -3112,29 +3313,41 @@ fn claim_workspace(state: &AppState) -> Result<WorkGuard<'_>, String> {
     Ok(WorkGuard(&state.work_active))
 }
 
-async fn identify_attached_bonsai(state: &AppState) {
-    let model = state
-        .models
-        .read()
-        .await
-        .iter()
-        .find(|model| {
-            format!("{} {}", model.name, model.path)
-                .to_lowercase()
-                .contains("bonsai")
-        })
-        .cloned();
-    if let Some(model) = model {
-        state.runtime.identify_attached_model(&model).await;
-    }
-}
-
 fn open_with_explorer(path: &std::path::Path) -> Result<(), String> {
     std::process::Command::new("explorer.exe")
         .arg(path)
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("could not open {}: {error}", path.display()))
+}
+
+fn reveal_with_explorer(path: &std::path::Path) -> Result<(), String> {
+    let mut selection = std::ffi::OsString::from("/select,");
+    selection.push(path.as_os_str());
+    std::process::Command::new("explorer.exe")
+        .arg(selection)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("could not reveal {}: {error}", path.display()))
+}
+
+fn safe_export_filename(value: &str) -> String {
+    let value = value
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, ' ' | '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let value = value.trim_matches([' ', '.']).trim();
+    if value.is_empty() {
+        "Kestrel MIDI".into()
+    } else {
+        value.chars().take(120).collect()
+    }
 }
 
 fn apply_media_paths(settings: &ResearchSettings) {
@@ -3195,6 +3408,7 @@ pub fn run() {
             let attachments = AttachmentStore::new(&store.root().join("workspace"))?;
             let studio = MovieStudio::new(store.root()).map_err(|error| error.to_string())?;
             let music = MusicStudio::new(store.root()).map_err(|error| error.to_string())?;
+            let images = ImageStudio::new(store.root()).map_err(|error| error.to_string())?;
             let speech = LocalSpeech::new(store.root()).map_err(|error| error.to_string())?;
             app.manage(AppState {
                 store,
@@ -3220,8 +3434,10 @@ pub fn run() {
                 interactive_jobs: Mutex::new(HashMap::new()),
                 studio,
                 music,
+                images,
                 movie_jobs: Mutex::new(HashMap::new()),
                 music_jobs: Mutex::new(HashMap::new()),
+                image_generation_jobs: Mutex::new(HashMap::new()),
                 image_asset_jobs: Mutex::new(HashMap::new()),
                 setup_job: Mutex::new(None),
                 model_download_job: Mutex::new(None),
@@ -3308,13 +3524,25 @@ pub fn run() {
             start_music_generation,
             cancel_music_generation,
             transcribe_music_midi,
+            get_music_midi_document,
+            save_music_midi_document,
+            export_music_midi,
+            reveal_music_midi,
             reveal_music_project,
+            list_image_projects,
+            get_image_project,
+            create_image_project,
+            save_image_project,
+            start_image_generation,
+            cancel_image_generation,
+            reveal_image_project,
             prepare_services,
             get_setup_snapshot,
             open_comfy_ui,
             save_setup_locations,
             pick_setup_folder,
             pick_setup_file,
+            scan_setup_model_folder,
             install_setup_component,
             cancel_setup_install,
             open_standalone_report,
@@ -3328,7 +3556,10 @@ pub fn run() {
             resume_model_download,
             cancel_model_download,
             export_setup_profile,
+            get_setup_profile_text,
+            export_setup_profile_text,
             import_setup_profile,
+            import_setup_profile_text,
             save_research_settings,
             save_control_settings,
             apply_model_runtime,
@@ -3351,7 +3582,6 @@ pub fn run() {
             open_task_artifact,
             run_native_diagnostics,
             run_codex_repair,
-            open_bonsai_control_center,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Kestrel Local");

@@ -6,7 +6,7 @@ use crate::model::ModelInfo;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceStatus {
-    pub bonsai: String,
+    pub model_runtime: String,
     pub wikipedia: String,
     pub model: String,
     pub archive: String,
@@ -34,11 +34,44 @@ pub struct ControlSettings {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub threads: u32,
+    pub model_overrides: Vec<ModelRuntimeOverride>,
     pub project_root: String,
     pub agent_workspace_roots: Vec<String>,
     pub allow_full_access_agent: bool,
     pub agent_max_steps: u32,
     pub agent_max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ModelRuntimeOverride {
+    pub model_id: String,
+    pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub threads: Option<u32>,
+}
+
+impl ControlSettings {
+    /// Resolve app-wide defaults for one model. Feature-specific overrides are applied after this.
+    pub fn for_model(&self, model_id: &str) -> Self {
+        let mut effective = self.clone();
+        if let Some(model) = self
+            .model_overrides
+            .iter()
+            .find(|candidate| candidate.model_id == model_id)
+        {
+            if let Some(value) = model.context_window {
+                effective.context_window = value;
+            }
+            if let Some(value) = model.max_output_tokens {
+                effective.max_output_tokens = value;
+            }
+            if let Some(value) = model.threads {
+                effective.threads = value;
+            }
+        }
+        effective
+    }
 }
 
 impl Default for ControlSettings {
@@ -71,6 +104,7 @@ impl Default for ControlSettings {
             threads: std::thread::available_parallelism()
                 .map(|value| value.get() as u32)
                 .unwrap_or(4),
+            model_overrides: Vec::new(),
             project_root,
             agent_workspace_roots: workspace_roots,
             allow_full_access_agent: false,
@@ -420,6 +454,9 @@ pub struct SystemSnapshot {
     pub gpu: Option<GpuSnapshot>,
     pub runtime: RuntimeSnapshot,
     pub settings: ResearchSettings,
+    pub control: ControlSettings,
+    pub models: Vec<ModelInfo>,
+    pub managed_runtime: ManagedRuntimeSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

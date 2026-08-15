@@ -4,6 +4,7 @@ use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -19,11 +20,18 @@ const BONSAI_RELEASE: &str = "prism-b9596-9fcaed7";
 const H3_REVISION: &str = "0bd506d2e895983a9663037febda27aa3948cf48";
 const COMFY_VERSION: &str = "v0.33.1";
 const MUSIC_REVISION: &str = "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6";
+const IDEOGRAM_REVISION: &str = "9d0e686d42c1b1e575f0de15104d68e9157f59a0";
+const QWEN3_VL_REVISION: &str = "d3f437bd7bd2df08e77c8fe5c51ca4239f753aa3";
+const FLUX2_REVISION: &str = "06029c966dd5b73929c909f046cbd29303b98879";
+const IDEOGRAM_LICENSE_REVISION: &str = "990fe1c4e950bb9e9dc90e01c0ad98ba434f83c2";
 const KJ_PREVIEW_REVISION: &str = "5219cd171cb44e2edce9e4daad6cc42c41eded5c";
 const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
 const CHATTERBOX_NODE_REVISION: &str = "f0300cf84ee1b8fc9cbd38cb68cb3bace1895063";
 const CHATTERBOX_MODEL_REVISION: &str = "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd";
 const KESTREL_WHISPER_ADAPTER_REVISION: &str = "kestrel-whisper-v1";
+const MUSCRIPTOR_PACKAGE: &str = "muscriptor==0.3.0";
+const MUSCRIPTOR_SETUP_REVISION: &str = "muscriptor-0.3.0-uv-0.11.30-cu128-v1";
+const MUSCRIPTOR_MODEL_BYTES: u64 = 5_465_642_136;
 const KESTREL_MANAGED_COMFY_MARKER: &str = ".kestrel-managed-portable";
 const KESTREL_MANAGED_COMFY_MARKER_CONTENT: &str = "Kestrel-managed ComfyUI portable\n";
 const SPEECH_PYTHON_PACKAGES: [&str; 5] = [
@@ -48,6 +56,18 @@ pub struct SetupComponent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetupModelAsset {
+    pub id: String,
+    pub component: String,
+    pub label: String,
+    pub file_name: String,
+    pub bytes: u64,
+    pub recognized: bool,
+    pub installed_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetupSnapshot {
     pub ready: bool,
     pub install_root: String,
@@ -55,6 +75,7 @@ pub struct SetupSnapshot {
     pub gpu_name: Option<String>,
     pub gpu_memory_bytes: u64,
     pub components: Vec<SetupComponent>,
+    pub model_assets: Vec<SetupModelAsset>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,6 +98,16 @@ pub struct SetupInstallRequest {
     pub install_root: String,
     #[serde(default = "compact_wikipedia")]
     pub wikipedia_edition: String,
+    #[serde(default)]
+    pub accept_ideogram_non_commercial_license: bool,
+    #[serde(default)]
+    pub whisper_checkpoint_path: String,
+    #[serde(default)]
+    pub muscriptor_checkpoint_path: String,
+    #[serde(default)]
+    pub accept_muscriptor_non_commercial_license: bool,
+    #[serde(default)]
+    pub existing_model_paths: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,6 +200,17 @@ pub fn snapshot(
         || music_assets()
             .iter()
             .any(|asset| comfy.join("models").join(asset.relative).is_file());
+    let image_files = ideogram_assets()
+        .iter()
+        .all(|asset| file_has_size(&comfy.join(asset.relative), asset.download.bytes));
+    let image_nodes = comfy.join("comfy_extras/nodes_ideogram4.py").is_file()
+        && comfy.join("comfy_extras/nodes_custom_sampler.py").is_file();
+    let image_ready =
+        comfy.join("main.py").is_file() && generic_launcher && image_nodes && image_files;
+    let image_partial = image_nodes
+        || ideogram_assets()
+            .iter()
+            .any(|asset| comfy.join(asset.relative).is_file());
     let speech_files = speech_assets()
         .iter()
         .all(|asset| file_has_size(&comfy.join(asset.relative), asset.download.bytes));
@@ -189,23 +231,56 @@ pub fn snapshot(
         || speech_assets()
             .iter()
             .any(|asset| comfy.join(asset.relative).is_file());
+    let (muscriptor_executable, muscriptor_model, muscriptor_marker) =
+        managed_muscriptor_paths(Path::new(&research.install_root));
+    let muscriptor_ready = muscriptor_executable.is_file()
+        && fs::metadata(&muscriptor_model)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == MUSCRIPTOR_MODEL_BYTES)
+        && read_bounded_text(&muscriptor_marker, 256)
+            .is_some_and(|value| value.trim() == MUSCRIPTOR_SETUP_REVISION);
+    let muscriptor_partial = muscriptor_executable.is_file()
+        || muscriptor_model.is_file()
+        || muscriptor_marker.is_file();
 
     let ffmpeg = resolve_program(&research.ffmpeg_path, "ffmpeg.exe");
     let ffprobe = resolve_program(&research.ffprobe_path, "ffprobe.exe");
     let media_ready = ffmpeg.is_some() && ffprobe.is_some();
+    let model_assets = setup_model_assets(research);
+    let missing_model_bytes = |component: &str| {
+        model_assets
+            .iter()
+            .filter(|asset| asset.component == component && !asset.recognized)
+            .map(|asset| asset.bytes)
+            .sum::<u64>()
+    };
+    let missing_comfy_bytes = if comfy.join("main.py").is_file() {
+        0
+    } else {
+        2_133_107_036
+    };
 
     let components = vec![
         component(
             "assistant",
-            "Bonsai assistant",
+            "Included local model",
             (assistant_ready, assistant_partial),
             if assistant_ready {
                 "Ready for chat, research planning, computer tasks, and movie direction."
             } else {
-                "Needs the local engine, Bonsai 27B model, and image projector."
+                "Needs the local llama.cpp engine, Ternary Bonsai 27B weights, and image projector."
             },
             &research.bonsai_root,
-            (8_447_588_320, false),
+            (
+                missing_model_bytes("assistant")
+                    + if engine_ready {
+                        0
+                    } else if gpu.is_some() {
+                        653_219_840
+                    } else {
+                        17_401_584
+                    },
+                false,
+            ),
         ),
         component(
             "wikipedia",
@@ -246,7 +321,7 @@ pub fn snapshot(
                 "Optional: about 61 GB plus ComfyUI, the full H3 decoders, and a pinned live-preview decoder; intended for a capable NVIDIA PC."
             },
             &research.comfy_root,
-            (65_550_000_000, true),
+            (missing_model_bytes("studio") + missing_comfy_bytes, true),
         ),
         component(
             "music",
@@ -260,19 +335,70 @@ pub fn snapshot(
                 "Optional: about 12 GB for the verified INT8 model, text encoder, full-quality decoder, and dedicated GPU profile."
             },
             &research.comfy_root,
-            (11_915_469_696, true),
+            (missing_model_bytes("music") + missing_comfy_bytes, true),
+        ),
+        component(
+            "image",
+            "Ideogram 4 Image Studio",
+            (image_ready, image_partial),
+            if image_ready {
+                "Ready for private non-commercial image design with structured layout and typography control."
+            } else if comfy.join("main.py").is_file() && !image_nodes {
+                "ComfyUI must be updated to 0.33.1 or newer before Kestrel can install the native Ideogram 4 workflow."
+            } else {
+                "Optional: about 16.4 GiB for the 12 GB NVIDIA profile. Ideogram's license permits non-commercial work only."
+            },
+            &research.comfy_root,
+            (
+                missing_model_bytes("image")
+                    + missing_comfy_bytes
+                    + if file_has_size(
+                        &comfy
+                            .join("models/diffusion_models/IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt"),
+                        13_646,
+                    ) {
+                        0
+                    } else {
+                        13_646
+                    },
+                true,
+            ),
         ),
         component(
             "speech",
-            "Local voice and dictation",
+            "Whisper dictation + local voice",
             (speech_ready, speech_partial),
             if speech_ready {
                 "Ready for private Chatterbox narration and timestamped Whisper dictation across Kestrel."
             } else {
-                "Optional: installs a local Chatterbox voice and Kestrel's commercially distributable Whisper adapter; no browser or system speech fallback."
+                "Optional: downloads the verified 1.6 GB Whisper large-v3-turbo checkpoint for dictation plus a local Chatterbox voice; no browser or system speech fallback."
             },
             &research.comfy_root,
-            (4_810_176_394, true),
+            (
+                missing_model_bytes("speech")
+                    + missing_comfy_bytes
+                    + if comfy
+                        .join("custom_nodes/ComfyUI-Chatterbox/nodes.py")
+                        .is_file()
+                    {
+                        0
+                    } else {
+                        267_765
+                    },
+                true,
+            ),
+        ),
+        component(
+            "muscriptor",
+            "MuScriptor audio to MIDI",
+            (muscriptor_ready, muscriptor_partial),
+            if muscriptor_ready {
+                "Ready for offline, GPU-accelerated transcription from a preserved music take to editable MIDI."
+            } else {
+                "Optional non-commercial extension. Setup prepares the official Windows GPU runner after you accept the separate terms and choose the gated large checkpoint."
+            },
+            muscriptor_executable.to_string_lossy().as_ref(),
+            (3_500_000_000, true),
         ),
     ];
     SetupSnapshot {
@@ -282,6 +408,7 @@ pub fn snapshot(
         gpu_name: gpu.map(|value| value.name.clone()),
         gpu_memory_bytes: gpu.map(|value| value.total_mib * 1024 * 1024).unwrap_or(0),
         components,
+        model_assets,
     }
 }
 
@@ -368,6 +495,7 @@ pub async fn install_component(
     request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
+    validate_existing_model_paths(request)?;
     let root = PathBuf::from(request.install_root.trim());
     if !root.is_absolute() {
         return Err(SetupError::InvalidPath(request.install_root.clone()));
@@ -375,14 +503,50 @@ pub async fn install_component(
     fs::create_dir_all(&root)?;
     settings.install_root = root.to_string_lossy().into_owned();
     match request.component.as_str() {
-        "assistant" => install_assistant(app, settings, &root, cancel).await,
+        "assistant" => install_assistant(app, settings, &root, request, cancel).await,
         "wikipedia" => {
             install_wikipedia(app, settings, &root, &request.wikipedia_edition, cancel).await
         }
         "media" => install_media(app, settings, &root, cancel).await,
-        "studio" => install_studio(app, settings, &root, cancel).await,
-        "music" => install_music(app, settings, &root, cancel).await,
-        "speech" => install_speech(app, settings, &root, cancel).await,
+        "studio" => install_studio(app, settings, &root, request, cancel).await,
+        "music" => install_music(app, settings, &root, request, cancel).await,
+        "image" => {
+            install_image(
+                app,
+                settings,
+                &root,
+                request,
+                request.accept_ideogram_non_commercial_license,
+                cancel,
+            )
+            .await
+        }
+        "speech" => {
+            install_speech(
+                app,
+                settings,
+                &root,
+                request,
+                &request.whisper_checkpoint_path,
+                cancel,
+            )
+            .await
+        }
+        "muscriptor" => {
+            install_muscriptor(
+                app,
+                &root,
+                request
+                    .existing_model_paths
+                    .get("muscriptor:model.safetensors")
+                    .map(String::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(&request.muscriptor_checkpoint_path),
+                request.accept_muscriptor_non_commercial_license,
+                cancel,
+            )
+            .await
+        }
         other => Err(SetupError::Download {
             name: other.into(),
             details: "unknown setup component".into(),
@@ -390,10 +554,40 @@ pub async fn install_component(
     }
 }
 
+fn validate_existing_model_paths(request: &SetupInstallRequest) -> Result<(), SetupError> {
+    if request.existing_model_paths.len() > 32 {
+        return Err(SetupError::Dependency {
+            name: "existing model selection".into(),
+            details: "at most 32 supported model files can be selected for one setup run".into(),
+        });
+    }
+    let mut ids = reusable_model_assets()
+        .into_iter()
+        .map(|asset| asset.id())
+        .collect::<Vec<_>>();
+    ids.push("muscriptor:model.safetensors".into());
+    for (id, path) in &request.existing_model_paths {
+        if !ids.contains(id) {
+            return Err(SetupError::Dependency {
+                name: "existing model selection".into(),
+                details: format!("{id} is not a supported Setup model asset"),
+            });
+        }
+        if path.chars().count() > 32_767 {
+            return Err(SetupError::Dependency {
+                name: "existing model selection".into(),
+                details: format!("the selected path for {id} is too long"),
+            });
+        }
+    }
+    Ok(())
+}
+
 async fn install_assistant(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     let bonsai = root.join("Bonsai");
@@ -406,14 +600,14 @@ async fn install_assistant(
     let runtime_assets = if cuda {
         vec![
             Asset::new(
-                "Bonsai NVIDIA engine",
+                "Local-model NVIDIA engine",
                 &format!("https://github.com/PrismML-Eng/llama.cpp/releases/download/{BONSAI_RELEASE}/llama-prism-b1-9fcaed7-bin-win-cuda-12.4-x64.zip"),
                 "llama-cuda.zip",
                 261_776_213,
                 "6d109e2930c0eaf2f729c3a6fc58dd7809ce2ba7047bfb294547cc389af6de5d",
             ),
             Asset::new(
-                "Bonsai NVIDIA support files",
+                "Local-model NVIDIA support files",
                 &format!("https://github.com/PrismML-Eng/llama.cpp/releases/download/{BONSAI_RELEASE}/cudart-llama-bin-win-cuda-12.4-x64.zip"),
                 "llama-cudart.zip",
                 391_443_627,
@@ -422,7 +616,7 @@ async fn install_assistant(
         ]
     } else {
         vec![Asset::new(
-            "Bonsai CPU engine",
+            "Local-model CPU engine",
             &format!("https://github.com/PrismML-Eng/llama.cpp/releases/download/{BONSAI_RELEASE}/llama-bin-win-cpu-x64.zip"),
             "llama-cpu.zip",
             17_401_584,
@@ -434,53 +628,19 @@ async fn install_assistant(
         download(app, "assistant", &asset, &archive, &cancel).await?;
         unzip(&archive, &runtime, &asset.name)?;
     }
-    let model = Asset::new(
-        "Bonsai 27B model",
-        &format!("https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/{BONSAI_REVISION}/Ternary-Bonsai-27B-Q2_0.gguf"),
-        "Ternary-Bonsai-27B-Q2_0.gguf",
-        7_165_121_600,
-        "868c11714cf8fe47f5ec9eeb2be0ab1a337112886f92ee0ede6b855c4fa31757",
-    );
-    download(
-        app,
-        "assistant",
-        &model,
-        &models.join(&model.file_name),
-        &cancel,
-    )
-    .await?;
-    let projector = Asset::new(
-        "Bonsai image understanding",
-        &format!("https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/{BONSAI_REVISION}/Ternary-Bonsai-27B-mmproj-Q8_0.gguf"),
-        "Ternary-Bonsai-27B-mmproj-Q8_0.gguf",
-        629_246_880,
-        "eb561d41a7bbeb0fcf04883c8af11078ef6cae0a66862a0b68443cfca495269d",
-    );
-    download(
-        app,
-        "assistant",
-        &projector,
-        &models.join(&projector.file_name),
-        &cancel,
-    )
-    .await?;
-    let settings_path = bonsai.join("settings.json");
-    if !settings_path.is_file() {
-        fs::write(
-            &settings_path,
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "AdvancedMode": true,
-                "ContextWindow": settings.context_window,
-                "MainMaxOutputTokens": settings.max_output_tokens
-            }))?,
-        )?;
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "assistant")
+    {
+        install_or_reuse_model(app, request, &asset, &bonsai.join(&asset.relative), &cancel)
+            .await?;
     }
     settings.bonsai_root = bonsai.to_string_lossy().into_owned();
     emit(
         app,
         "assistant",
         "complete",
-        "Bonsai is installed and verified.",
+        "The included local model is installed and verified.",
         1,
         1,
         0,
@@ -646,6 +806,7 @@ async fn install_studio(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     if crate::services::gpu_snapshot().await.is_none() {
@@ -654,30 +815,18 @@ async fn install_studio(
             details: "no NVIDIA GPU was detected. H3 is optional and is not practical on this computer; the rest of Kestrel can still be installed.".into(),
         });
     }
-    let comfy = install_comfy_portable(app, root, "studio", false, &cancel).await?;
-    for asset in h3_assets() {
-        let destination = comfy.join("models").join(asset.relative);
+    let comfy =
+        install_comfy_portable(app, root, "studio", ComfyRequirement::Base, &cancel).await?;
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "studio")
+    {
+        let destination = comfy.join(&asset.relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        download(
-            app,
-            "studio",
-            &asset.download_asset(),
-            &destination,
-            &cancel,
-        )
-        .await?;
+        install_or_reuse_model(app, request, &asset, &destination, &cancel).await?;
     }
-    let decoder = h3_preview_decoder();
-    download(
-        app,
-        "studio",
-        &decoder,
-        &comfy.join("models/vae_approx/taeh3.safetensors"),
-        &cancel,
-    )
-    .await?;
     ensure_h3_preview_node(app, &comfy, &cancel).await?;
     ensure_comfy_launcher(&comfy)?;
     settings.comfy_root = comfy.to_string_lossy().into_owned();
@@ -693,11 +842,39 @@ async fn install_studio(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ComfyRequirement {
+    Base,
+    Music,
+    Ideogram,
+}
+
+impl ComfyRequirement {
+    fn available_in(self, comfy: &Path) -> bool {
+        match self {
+            Self::Base => true,
+            Self::Music => comfy.join("comfy_extras/nodes_minimax_music.py").is_file(),
+            Self::Ideogram => {
+                comfy.join("comfy_extras/nodes_ideogram4.py").is_file()
+                    && comfy.join("comfy_extras/nodes_custom_sampler.py").is_file()
+            }
+        }
+    }
+
+    fn missing_detail(self) -> &'static str {
+        match self {
+            Self::Base => "the installed ComfyUI is incomplete",
+            Self::Music => "the installed ComfyUI does not contain native MiniMax Music 3 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.0+, then resume",
+            Self::Ideogram => "the installed ComfyUI does not contain native Ideogram 4 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.1+, then resume",
+        }
+    }
+}
+
 async fn install_comfy_portable(
     app: &AppHandle,
     root: &Path,
     component: &str,
-    require_music_nodes: bool,
+    requirement: ComfyRequirement,
     cancel: &CancellationToken,
 ) -> Result<PathBuf, SetupError> {
     let portable = Asset::new(
@@ -711,8 +888,7 @@ async fn install_comfy_portable(
     let comfy = portable_root.join("ComfyUI");
     let needs_extraction = !comfy.join("main.py").is_file();
     let needs_replacement = !needs_extraction
-        && require_music_nodes
-        && !comfy.join("comfy_extras/nodes_minimax_music.py").is_file()
+        && !requirement.available_in(&comfy)
         && is_kestrel_managed_comfy_root(&comfy, root);
     if needs_extraction || needs_replacement {
         let downloads = root.join("downloads");
@@ -729,13 +905,13 @@ async fn install_comfy_portable(
             }
             mark_kestrel_managed_comfy_root(&comfy)?;
         } else {
-            replace_managed_comfy_portable(&archive, root, &portable.name).await?;
+            replace_managed_comfy_portable(&archive, root, &portable.name, requirement).await?;
         }
     }
-    if require_music_nodes && !comfy.join("comfy_extras/nodes_minimax_music.py").is_file() {
+    if !requirement.available_in(&comfy) {
         return Err(SetupError::Extract {
             name: portable.name,
-            details: "the installed ComfyUI does not contain native MiniMax Music 3 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.0+, then resume".into(),
+            details: requirement.missing_detail().into(),
         });
     }
     Ok(comfy)
@@ -745,6 +921,7 @@ async fn install_music(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     if crate::services::gpu_snapshot().await.is_none() {
@@ -760,7 +937,7 @@ async fn install_music(
             .is_file()
         {
             if is_kestrel_managed_comfy_root(&configured, root) {
-                install_comfy_portable(app, root, "music", true, &cancel).await?
+                install_comfy_portable(app, root, "music", ComfyRequirement::Music, &cancel).await?
             } else {
                 return Err(SetupError::Download {
                     name: "MiniMax Music 3 Production".into(),
@@ -774,14 +951,17 @@ async fn install_music(
             configured
         }
     } else {
-        install_comfy_portable(app, root, "music", true, &cancel).await?
+        install_comfy_portable(app, root, "music", ComfyRequirement::Music, &cancel).await?
     };
-    for asset in music_assets() {
-        let destination = comfy.join("models").join(asset.relative);
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "music")
+    {
+        let destination = comfy.join(&asset.relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        download(app, "music", &asset.download_asset(), &destination, &cancel).await?;
+        install_or_reuse_model(app, request, &asset, &destination, &cancel).await?;
     }
     ensure_comfy_launcher(&comfy)?;
     settings.comfy_root = comfy.to_string_lossy().into_owned();
@@ -797,10 +977,87 @@ async fn install_music(
     Ok(())
 }
 
+async fn install_image(
+    app: &AppHandle,
+    settings: &mut ResearchSettings,
+    root: &Path,
+    request: &SetupInstallRequest,
+    accepted_license: bool,
+    cancel: CancellationToken,
+) -> Result<(), SetupError> {
+    if !accepted_license {
+        return Err(SetupError::Dependency {
+            name: "Ideogram 4 Image Studio".into(),
+            details: "Ideogram 4 is available only under Ideogram's Non-Commercial Model Agreement. Read and explicitly accept that agreement in Setup before downloading the model.".into(),
+        });
+    }
+    if crate::services::gpu_snapshot().await.is_none() {
+        return Err(SetupError::Download {
+            name: "Ideogram 4 Image Studio".into(),
+            details: "no NVIDIA GPU was detected. Keep using the rest of Kestrel, or configure a supported local ComfyUI computer before installing image generation.".into(),
+        });
+    }
+    let configured = PathBuf::from(settings.comfy_root.trim());
+    let comfy = if configured.join("main.py").is_file() {
+        if !ComfyRequirement::Ideogram.available_in(&configured) {
+            if is_kestrel_managed_comfy_root(&configured, root) {
+                install_comfy_portable(app, root, "image", ComfyRequirement::Ideogram, &cancel)
+                    .await?
+            } else {
+                return Err(SetupError::Download {
+                    name: "Ideogram 4 Image Studio".into(),
+                    details: format!(
+                        "{} is older than ComfyUI 0.33.1. Update this producer-managed installation first; Kestrel will not overwrite it.",
+                        configured.display()
+                    ),
+                });
+            }
+        } else {
+            configured
+        }
+    } else {
+        install_comfy_portable(app, root, "image", ComfyRequirement::Ideogram, &cancel).await?
+    };
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "image")
+    {
+        let destination = comfy.join(&asset.relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        install_or_reuse_model(app, request, &asset, &destination, &cancel).await?;
+    }
+    for asset in ideogram_assets()
+        .into_iter()
+        .filter(|asset| !asset.relative.ends_with(".safetensors"))
+    {
+        let destination = comfy.join(asset.relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        download(app, "image", &asset.download, &destination, &cancel).await?;
+    }
+    ensure_comfy_launcher(&comfy)?;
+    settings.comfy_root = comfy.to_string_lossy().into_owned();
+    emit(
+        app,
+        "image",
+        "complete",
+        "Ideogram 4 is installed and verified for offline non-commercial image production.",
+        1,
+        1,
+        0,
+    );
+    Ok(())
+}
+
 async fn install_speech(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    request: &SetupInstallRequest,
+    whisper_checkpoint_path: &str,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     if crate::services::gpu_snapshot().await.is_none() {
@@ -813,7 +1070,7 @@ async fn install_speech(
     let comfy = if configured.join("main.py").is_file() {
         configured
     } else {
-        install_comfy_portable(app, root, "speech", false, &cancel).await?
+        install_comfy_portable(app, root, "speech", ComfyRequirement::Base, &cancel).await?
     };
     let kestrel_managed = is_kestrel_managed_comfy_root(&comfy, root);
     ensure_speech_python(app, &comfy, kestrel_managed, &cancel).await?;
@@ -839,12 +1096,30 @@ async fn install_speech(
     .await?;
     install_chatterbox_node(&chatterbox_archive, &comfy)?;
     install_kestrel_whisper_node(&comfy)?;
-    for asset in speech_assets() {
-        let destination = comfy.join(asset.relative);
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "speech")
+    {
+        let destination = comfy.join(&asset.relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        download(app, "speech", &asset.download, &destination, &cancel).await?;
+        if asset.relative == "models/stt/whisper/large-v3-turbo.pt"
+            && !whisper_checkpoint_path.trim().is_empty()
+            && !request.existing_model_paths.contains_key(&asset.id())
+            && !verified(&destination, &asset.download).await?
+        {
+            import_verified_asset(
+                app,
+                "speech",
+                Path::new(whisper_checkpoint_path.trim()),
+                &destination,
+                &asset.download,
+            )
+            .await?;
+        } else {
+            install_or_reuse_model(app, request, &asset, &destination, &cancel).await?;
+        }
     }
     ensure_comfy_launcher(&comfy)?;
     fs::write(
@@ -861,6 +1136,260 @@ async fn install_speech(
         1,
         0,
     );
+    Ok(())
+}
+
+pub(crate) fn managed_muscriptor_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let muscriptor = root.join("MuScriptor");
+    (
+        muscriptor.join("runtime/uvx.exe"),
+        muscriptor.join("models/model.safetensors"),
+        muscriptor.join(".kestrel-muscriptor-ready"),
+    )
+}
+
+async fn install_muscriptor(
+    app: &AppHandle,
+    root: &Path,
+    checkpoint_path: &str,
+    accepted_license: bool,
+    cancel: CancellationToken,
+) -> Result<(), SetupError> {
+    if !accepted_license {
+        return Err(SetupError::Dependency {
+            name: "MuScriptor audio to MIDI".into(),
+            details: "MuScriptor weights use separate gated CC BY-NC 4.0 terms. Accept those terms on the official model page and confirm them in Setup before preparing this extension.".into(),
+        });
+    }
+    if crate::services::gpu_snapshot().await.is_none() {
+        return Err(SetupError::Dependency {
+            name: "MuScriptor audio to MIDI".into(),
+            details: "no NVIDIA GPU was detected. The official Windows GPU profile cannot be prepared on this computer.".into(),
+        });
+    }
+    let source = PathBuf::from(checkpoint_path.trim());
+    validate_muscriptor_checkpoint(&source)?;
+
+    let muscriptor = root.join("MuScriptor");
+    let runtime = muscriptor.join("runtime");
+    let downloads = muscriptor.join("downloads");
+    let (uvx, model, marker) = managed_muscriptor_paths(root);
+    fs::create_dir_all(&downloads)?;
+    fs::create_dir_all(model.parent().expect("fixed MuScriptor model parent"))?;
+    let uv = Asset::new(
+        "MuScriptor isolated Python runner",
+        "https://github.com/astral-sh/uv/releases/download/0.11.30/uv-x86_64-pc-windows-msvc.zip",
+        "uv-x86_64-pc-windows-msvc-0.11.30.zip",
+        25_710_044,
+        "be8d78c992312212e5cc05e9f9de3fa996db73b7c86a186dfb9231eb9f91d33e",
+    );
+    let archive = downloads.join(&uv.file_name);
+    download(app, "muscriptor", &uv, &archive, &cancel).await?;
+    unzip(&archive, &runtime, &uv.name)?;
+    if !uvx.is_file() {
+        return Err(SetupError::Extract {
+            name: uv.name,
+            details: "the verified Windows archive did not contain uvx.exe".into(),
+        });
+    }
+
+    emit(
+        app,
+        "muscriptor",
+        "importing",
+        "Copying the producer-approved MuScriptor large checkpoint into the offline extension…",
+        0,
+        MUSCRIPTOR_MODEL_BYTES,
+        0,
+    );
+    let temporary = model.with_extension("safetensors.importing");
+    if temporary.is_file() {
+        fs::remove_file(&temporary)?;
+    }
+    if cancel.is_cancelled() {
+        return Err(SetupError::Cancelled);
+    }
+    if fs::hard_link(&source, &temporary).is_err() {
+        tokio::select! {
+            result = tokio::fs::copy(&source, &temporary) => {
+                result?;
+            }
+            _ = cancel.cancelled() => {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(SetupError::Cancelled);
+            }
+        }
+    }
+    validate_muscriptor_checkpoint(&temporary)?;
+    let hash_path = temporary.clone();
+    let model_sha256 = tokio::task::spawn_blocking(move || sha256_file(&hash_path))
+        .await
+        .map_err(|error| SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: error.to_string(),
+        })??;
+    let backup = model.with_extension("safetensors.kestrel-backup");
+    if backup.is_file() {
+        fs::remove_file(&backup)?;
+    }
+    if model.is_file() {
+        fs::rename(&model, &backup)?;
+    }
+    if let Err(error) = fs::rename(&temporary, &model) {
+        if backup.is_file() {
+            let _ = fs::rename(&backup, &model);
+        }
+        return Err(error.into());
+    }
+    if backup.is_file() {
+        fs::remove_file(backup)?;
+    }
+
+    emit(
+        app,
+        "muscriptor",
+        "dependencies",
+        "Preparing the pinned official MuScriptor package and CUDA runtime for later offline use…",
+        0,
+        0,
+        0,
+    );
+    run_muscriptor_probe(&uvx, &muscriptor, false, &cancel).await?;
+    run_muscriptor_probe(&uvx, &muscriptor, true, &cancel).await?;
+    fs::write(&marker, format!("{MUSCRIPTOR_SETUP_REVISION}\n"))?;
+    fs::write(
+        muscriptor.join("install.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "revision": MUSCRIPTOR_SETUP_REVISION,
+            "package": MUSCRIPTOR_PACKAGE,
+            "runner": "uv 0.11.30 x86_64-pc-windows-msvc",
+            "model": "MuScriptor/muscriptor-large",
+            "modelBytes": MUSCRIPTOR_MODEL_BYTES,
+            "modelSha256": model_sha256,
+            "license": "CC-BY-NC-4.0 plus the producer-accepted gated model conditions",
+        }))?,
+    )?;
+    emit(
+        app,
+        "muscriptor",
+        "complete",
+        "MuScriptor large and its isolated NVIDIA runtime are installed and verified for offline use.",
+        1,
+        1,
+        0,
+    );
+    Ok(())
+}
+
+async fn run_muscriptor_probe(
+    uvx: &Path,
+    root: &Path,
+    offline: bool,
+    cancel: &CancellationToken,
+) -> Result<(), SetupError> {
+    let mut command = tokio::process::Command::new(uvx);
+    if offline {
+        command.arg("--offline");
+    }
+    command.args([
+        "--python",
+        "3.12",
+        "--torch-backend",
+        "cu128",
+        "--from",
+        MUSCRIPTOR_PACKAGE,
+        "muscriptor",
+        "--help",
+    ]);
+    command
+        .current_dir(root)
+        .env("UV_CACHE_DIR", root.join("cache"))
+        .env("UV_PYTHON_INSTALL_DIR", root.join("python"))
+        .env("UV_NO_PROGRESS", "1")
+        .env("UV_LINK_MODE", "copy")
+        .env("PYTHONUTF8", "1")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = tokio::select! {
+        result = command.output() => result?,
+        _ = cancel.cancelled() => return Err(SetupError::Cancelled),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(SetupError::Dependency {
+            name: "MuScriptor isolated runtime".into(),
+            details: bounded_setup_detail(if stderr.trim().is_empty() {
+                stdout.as_ref()
+            } else {
+                stderr.as_ref()
+            }),
+        });
+    }
+    Ok(())
+}
+
+fn validate_muscriptor_checkpoint(path: &Path) -> Result<(), SetupError> {
+    let metadata = fs::metadata(path).map_err(|_| SetupError::Dependency {
+        name: "MuScriptor large checkpoint".into(),
+        details: format!(
+            "choose the completed model.safetensors file downloaded from the official MuScriptor/muscriptor-large page; {} is unavailable",
+            path.display()
+        ),
+    })?;
+    if !metadata.is_file() || metadata.len() != MUSCRIPTOR_MODEL_BYTES {
+        return Err(SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: format!(
+                "expected the official {MUSCRIPTOR_MODEL_BYTES}-byte model.safetensors file, but {} contains {} bytes. Wait for the browser download to finish before choosing it.",
+                path.display(),
+                metadata.len()
+            ),
+        });
+    }
+    let mut file = fs::File::open(path)?;
+    let mut length = [0_u8; 8];
+    file.read_exact(&mut length)?;
+    let header_bytes = u64::from_le_bytes(length);
+    if header_bytes == 0 || header_bytes > 16 * 1024 * 1024 {
+        return Err(SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: "the selected file does not contain a bounded safetensors header".into(),
+        });
+    }
+    let mut header = vec![0_u8; header_bytes as usize];
+    file.read_exact(&mut header)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&header).map_err(|error| SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: format!("the safetensors header is invalid: {error}"),
+        })?;
+    let tensor_found = value.as_object().is_some_and(|entries| {
+        entries.iter().any(|(name, value)| {
+            name != "__metadata__"
+                && value
+                    .get("dtype")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                && value
+                    .get("shape")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some()
+                && value
+                    .get("data_offsets")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|offsets| offsets.len() == 2)
+        })
+    });
+    if !tensor_found {
+        return Err(SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: "the selected safetensors file contains no tensor entries".into(),
+        });
+    }
     Ok(())
 }
 
@@ -962,7 +1491,7 @@ async fn ensure_speech_python(
     let python = comfy_python(comfy).ok_or_else(|| SetupError::Dependency {
         name: "local speech Python runtime".into(),
         details: format!(
-            "ComfyUI's private Python runtime is missing beside {}. Resume Movie Studio, Music Production, or Local voice and dictation from Setup.",
+            "ComfyUI's private Python runtime is missing beside {}. Resume Movie Studio, Music Production, or Whisper dictation + local voice from Setup.",
             comfy.display()
         ),
     })?;
@@ -1124,6 +1653,7 @@ async fn replace_managed_comfy_portable(
     archive: &Path,
     install_root: &Path,
     name: &str,
+    requirement: ComfyRequirement,
 ) -> Result<(), SetupError> {
     let nonce = uuid::Uuid::new_v4();
     let staging = install_root.join(format!(".kestrel-comfy-update-{nonce}"));
@@ -1133,16 +1663,13 @@ async fn replace_managed_comfy_portable(
     fs::create_dir_all(&staging)?;
     extract_7z(archive, &staging, name).await?;
     let staged_comfy = staged_portable.join("ComfyUI");
-    if !staged_comfy.join("main.py").is_file()
-        || !staged_comfy
-            .join("comfy_extras/nodes_minimax_music.py")
-            .is_file()
-    {
+    if !staged_comfy.join("main.py").is_file() || !requirement.available_in(&staged_comfy) {
         return Err(SetupError::Extract {
             name: name.into(),
             details: format!(
-                "the replacement was unpacked to {}, but its native Music 3 files are missing; the existing installation was not changed",
-                staging.display()
+                "the replacement was unpacked to {}, but {}; the existing installation was not changed",
+                staging.display(),
+                requirement.missing_detail()
             ),
         });
     }
@@ -1251,6 +1778,76 @@ fn music_assets() -> Vec<MusicAsset> {
             relative: "vae/minimax_music3_dav.safetensors",
             bytes: 216_696_128,
             sha256: "2a32155b769be01445fcc2a8663b910fc9e1751e18dc1c3ec528064512d9ef0c",
+        },
+    ]
+}
+
+struct IdeogramAsset {
+    relative: &'static str,
+    download: Asset,
+}
+
+fn ideogram_assets() -> Vec<IdeogramAsset> {
+    vec![
+        IdeogramAsset {
+            relative: "models/diffusion_models/ideogram4_nvfp4_mixed.safetensors",
+            download: Asset::new(
+                "Ideogram 4 conditional NVFP4 model",
+                &format!(
+                    "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/{IDEOGRAM_REVISION}/diffusion_models/ideogram4_nvfp4_mixed.safetensors"
+                ),
+                "ideogram4_nvfp4_mixed.safetensors",
+                5_490_550_037,
+                "e7923b4b0a1129ae5afcc09e63046185688c8b09eb9a1a748cccdbde5d381609",
+            ),
+        },
+        IdeogramAsset {
+            relative: "models/diffusion_models/ideogram4_unconditional_nvfp4_mixed.safetensors",
+            download: Asset::new(
+                "Ideogram 4 unconditional NVFP4 model",
+                &format!(
+                    "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/{IDEOGRAM_REVISION}/diffusion_models/ideogram4_unconditional_nvfp4_mixed.safetensors"
+                ),
+                "ideogram4_unconditional_nvfp4_mixed.safetensors",
+                5_490_550_037,
+                "639e37bd1dd7ee35e23c7cfccf93a518ddc7f4587818956ec42b31e659fd6ac0",
+            ),
+        },
+        IdeogramAsset {
+            relative: "models/text_encoders/qwen3vl_8b_nvfp4.safetensors",
+            download: Asset::new(
+                "Ideogram 4 Qwen3-VL text encoder",
+                &format!(
+                    "https://huggingface.co/Comfy-Org/Qwen3-VL/resolve/{QWEN3_VL_REVISION}/text_encoders/qwen3vl_8b_nvfp4.safetensors"
+                ),
+                "qwen3vl_8b_nvfp4.safetensors",
+                6_305_221_764,
+                "e462e9e0c3b9313ae17f82040d7c77beb92d7aef3e40692d7803228dab7c3b98",
+            ),
+        },
+        IdeogramAsset {
+            relative: "models/vae/flux2-vae.safetensors",
+            download: Asset::new(
+                "Ideogram 4 Flux 2 decoder",
+                &format!(
+                    "https://huggingface.co/Comfy-Org/flux2-dev/resolve/{FLUX2_REVISION}/split_files/vae/flux2-vae.safetensors"
+                ),
+                "flux2-vae.safetensors",
+                336_213_556,
+                "d64f3a68e1cc4f9f4e29b6e0da38a0204fe9a49f2d4053f0ec1fa1ca02f9c4b5",
+            ),
+        },
+        IdeogramAsset {
+            relative: "models/diffusion_models/IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt",
+            download: Asset::new(
+                "Ideogram 4 Non-Commercial Model Agreement",
+                &format!(
+                    "https://raw.githubusercontent.com/ideogram-oss/ideogram4/{IDEOGRAM_LICENSE_REVISION}/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL"
+                ),
+                "IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt",
+                13_646,
+                "8e631193e8cab3632f93fc4e72689f6e41fb6e2e1b9fab5ab8cb17b5909bc8b2",
+            ),
         },
     ]
 }
@@ -1512,6 +2109,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {"ModelPreviewOverrideKJ": "Model Preview Override 
     Ok(())
 }
 
+#[derive(Clone)]
 struct Asset {
     name: String,
     url: String,
@@ -1530,6 +2128,231 @@ impl Asset {
             sha256: sha256.into(),
         }
     }
+}
+
+struct ReusableModelAsset {
+    component: &'static str,
+    relative: String,
+    download: Asset,
+}
+
+impl ReusableModelAsset {
+    fn id(&self) -> String {
+        format!(
+            "{}:{}",
+            self.component,
+            self.download.file_name.to_ascii_lowercase()
+        )
+    }
+}
+
+fn bonsai_model_asset() -> Asset {
+    Asset::new(
+        "Bonsai 27B model",
+        &format!(
+            "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/{BONSAI_REVISION}/Ternary-Bonsai-27B-Q2_0.gguf"
+        ),
+        "Ternary-Bonsai-27B-Q2_0.gguf",
+        7_165_121_600,
+        "868c11714cf8fe47f5ec9eeb2be0ab1a337112886f92ee0ede6b855c4fa31757",
+    )
+}
+
+fn bonsai_projector_asset() -> Asset {
+    Asset::new(
+        "Bonsai image understanding",
+        &format!(
+            "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/{BONSAI_REVISION}/Ternary-Bonsai-27B-mmproj-Q8_0.gguf"
+        ),
+        "Ternary-Bonsai-27B-mmproj-Q8_0.gguf",
+        629_246_880,
+        "eb561d41a7bbeb0fcf04883c8af11078ef6cae0a66862a0b68443cfca495269d",
+    )
+}
+
+fn reusable_model_assets() -> Vec<ReusableModelAsset> {
+    let mut assets = vec![
+        ReusableModelAsset {
+            component: "assistant",
+            relative: "models/Ternary-Bonsai-27B-Q2_0.gguf".into(),
+            download: bonsai_model_asset(),
+        },
+        ReusableModelAsset {
+            component: "assistant",
+            relative: "models/Ternary-Bonsai-27B-mmproj-Q8_0.gguf".into(),
+            download: bonsai_projector_asset(),
+        },
+    ];
+    assets.extend(h3_assets().into_iter().map(|asset| ReusableModelAsset {
+        component: "studio",
+        relative: format!("models/{}", asset.relative),
+        download: asset.download_asset(),
+    }));
+    assets.push(ReusableModelAsset {
+        component: "studio",
+        relative: "models/vae_approx/taeh3.safetensors".into(),
+        download: h3_preview_decoder(),
+    });
+    assets.extend(music_assets().into_iter().map(|asset| ReusableModelAsset {
+        component: "music",
+        relative: format!("models/{}", asset.relative),
+        download: asset.download_asset(),
+    }));
+    assets.extend(
+        ideogram_assets()
+            .into_iter()
+            .filter(|asset| asset.relative.ends_with(".safetensors"))
+            .map(|asset| ReusableModelAsset {
+                component: "image",
+                relative: asset.relative.into(),
+                download: asset.download,
+            }),
+    );
+    assets.extend(speech_assets().into_iter().map(|asset| ReusableModelAsset {
+        component: "speech",
+        relative: asset.relative.into(),
+        download: asset.download,
+    }));
+    assets
+}
+
+fn configured_model_destination(
+    research: &ResearchSettings,
+    asset: &ReusableModelAsset,
+) -> PathBuf {
+    let root = if asset.component == "assistant" {
+        Path::new(&research.bonsai_root)
+    } else {
+        Path::new(&research.comfy_root)
+    };
+    root.join(&asset.relative)
+}
+
+fn setup_model_assets(research: &ResearchSettings) -> Vec<SetupModelAsset> {
+    let mut assets = reusable_model_assets()
+        .into_iter()
+        .map(|asset| {
+            let destination = configured_model_destination(research, &asset);
+            SetupModelAsset {
+                id: asset.id(),
+                component: asset.component.into(),
+                label: asset.download.name,
+                file_name: asset.download.file_name,
+                bytes: asset.download.bytes,
+                recognized: file_has_size(&destination, asset.download.bytes),
+                installed_path: destination.to_string_lossy().into_owned(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let (_, muscriptor_model, _) = managed_muscriptor_paths(Path::new(&research.install_root));
+    assets.push(SetupModelAsset {
+        id: "muscriptor:model.safetensors".into(),
+        component: "muscriptor".into(),
+        label: "MuScriptor large checkpoint".into(),
+        file_name: "model.safetensors".into(),
+        bytes: MUSCRIPTOR_MODEL_BYTES,
+        recognized: file_has_size(&muscriptor_model, MUSCRIPTOR_MODEL_BYTES),
+        installed_path: muscriptor_model.to_string_lossy().into_owned(),
+    });
+    assets
+}
+
+pub fn scan_existing_model_folder(root: &Path) -> Result<BTreeMap<String, String>, SetupError> {
+    const MAX_SCAN_ENTRIES: usize = 50_000;
+    if !root.is_absolute() || !root.is_dir() {
+        return Err(SetupError::InvalidPath(root.to_string_lossy().into_owned()));
+    }
+    let mut expected = reusable_model_assets()
+        .into_iter()
+        .map(|asset| {
+            (
+                asset.download.file_name.to_ascii_lowercase(),
+                (asset.id(), asset.download.bytes),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    expected.insert(
+        "model.safetensors".into(),
+        (
+            "muscriptor:model.safetensors".into(),
+            MUSCRIPTOR_MODEL_BYTES,
+        ),
+    );
+    let mut matches = BTreeMap::new();
+    for (index, entry) in walkdir::WalkDir::new(root)
+        .max_depth(10)
+        .follow_links(false)
+        .into_iter()
+        .enumerate()
+    {
+        if index >= MAX_SCAN_ENTRIES {
+            return Err(SetupError::Dependency {
+                name: "existing model search".into(),
+                details: format!(
+                    "{} contains more than {MAX_SCAN_ENTRIES} entries. Choose a narrower AI model folder, then scan again.",
+                    root.display()
+                ),
+            });
+        }
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Some(file_name) = entry.file_name().to_str() else {
+            continue;
+        };
+        let Some((id, bytes)) = expected.get(&file_name.to_ascii_lowercase()) else {
+            continue;
+        };
+        if entry
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() == *bytes)
+        {
+            matches
+                .entry(id.clone())
+                .or_insert_with(|| entry.path().to_string_lossy().into_owned());
+        }
+    }
+    Ok(matches)
+}
+
+async fn install_or_reuse_model(
+    app: &AppHandle,
+    request: &SetupInstallRequest,
+    asset: &ReusableModelAsset,
+    destination: &Path,
+    cancel: &CancellationToken,
+) -> Result<(), SetupError> {
+    if verified(destination, &asset.download).await? {
+        emit(
+            app,
+            asset.component,
+            "verified",
+            &format!("{} is already complete.", asset.download.name),
+            asset.download.bytes,
+            asset.download.bytes,
+            0,
+        );
+        return Ok(());
+    }
+    if let Some(source) = request
+        .existing_model_paths
+        .get(&asset.id())
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        import_verified_asset(
+            app,
+            asset.component,
+            Path::new(source),
+            destination,
+            &asset.download,
+        )
+        .await?;
+        return Ok(());
+    }
+    download(app, asset.component, &asset.download, destination, cancel).await
 }
 
 async fn download(
@@ -1686,6 +2509,103 @@ async fn verified(path: &Path, asset: &Asset) -> Result<bool, SetupError> {
             details: error.to_string(),
         })??;
     Ok(actual.eq_ignore_ascii_case(&asset.sha256))
+}
+
+async fn import_verified_asset(
+    app: &AppHandle,
+    component: &str,
+    source: &Path,
+    destination: &Path,
+    asset: &Asset,
+) -> Result<(), SetupError> {
+    if !source.is_absolute() || !source.is_file() {
+        return Err(SetupError::Dependency {
+            name: asset.name.clone(),
+            details: format!(
+                "the selected existing checkpoint is not a local file: {}",
+                source.display()
+            ),
+        });
+    }
+    emit(
+        app,
+        component,
+        "verifying",
+        &format!("Checking existing {}", asset.name),
+        0,
+        asset.bytes,
+        0,
+    );
+    if fs::metadata(source)?.len() != asset.bytes {
+        return Err(SetupError::Integrity {
+            name: asset.name.clone(),
+            details: format!(
+                "{} is not the supported verified {} checkpoint. Leave the field empty to let Setup download the correct file.",
+                source.display(),
+                asset.file_name
+            ),
+        });
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = destination.with_extension(format!(
+        "{}.kestrel-importing",
+        destination
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("model")
+    ));
+    if temporary.is_file() {
+        fs::remove_file(&temporary)?;
+    }
+    if fs::hard_link(source, &temporary).is_err() {
+        let available =
+            fs2::available_space(destination.parent().unwrap_or_else(|| Path::new(".")))
+                .unwrap_or(u64::MAX);
+        if asset.bytes > available {
+            return Err(SetupError::InsufficientSpace {
+                name: asset.name.clone(),
+                needed: human_bytes(asset.bytes),
+                available: human_bytes(available),
+            });
+        }
+        tokio::fs::copy(source, &temporary).await?;
+    }
+    if !verified(&temporary, asset).await? {
+        let _ = fs::remove_file(&temporary);
+        return Err(SetupError::Integrity {
+            name: asset.name.clone(),
+            details: format!(
+                "{} is not the supported verified {} checkpoint. Leave the field empty to let Setup download the correct file.",
+                source.display(),
+                asset.file_name
+            ),
+        });
+    }
+    let backup = destination.with_extension(format!(
+        "{}.kestrel-backup",
+        destination
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("model")
+    ));
+    if backup.is_file() {
+        fs::remove_file(&backup)?;
+    }
+    if destination.is_file() {
+        fs::rename(destination, &backup)?;
+    }
+    if let Err(error) = fs::rename(&temporary, destination) {
+        if backup.is_file() {
+            let _ = fs::rename(&backup, destination);
+        }
+        return Err(error.into());
+    }
+    if backup.is_file() {
+        fs::remove_file(backup)?;
+    }
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String, SetupError> {
@@ -2035,6 +2955,40 @@ mod tests {
     }
 
     #[test]
+    fn existing_model_scan_covers_every_release_profile_and_ignores_wrong_sizes() {
+        let root = tempfile::tempdir().unwrap();
+        let assets = reusable_model_assets();
+        assert!(assets.len() >= 5);
+        assert!(assets.iter().any(|asset| asset.component == "assistant"));
+        assert!(assets.iter().any(|asset| asset.component == "studio"));
+        assert!(assets.iter().any(|asset| asset.component == "music"));
+        assert!(assets.iter().any(|asset| asset.component == "image"));
+        assert!(assets.iter().any(|asset| asset.component == "speech"));
+
+        let music = assets
+            .iter()
+            .find(|asset| asset.download.file_name == "minimax_music3_dit_int8_convrot.safetensors")
+            .unwrap();
+        let nested = root.path().join("ComfyUI/models/diffusion_models");
+        fs::create_dir_all(&nested).unwrap();
+        fs::File::create(nested.join(&music.download.file_name))
+            .unwrap()
+            .set_len(music.download.bytes)
+            .unwrap();
+        fs::File::create(nested.join("large-v3-turbo.pt"))
+            .unwrap()
+            .set_len(1)
+            .unwrap();
+
+        let matches = scan_existing_model_folder(root.path()).unwrap();
+        assert!(matches.get(&music.id()).is_some_and(|path| paths_equal(
+            Path::new(path),
+            &nested.join(&music.download.file_name)
+        )));
+        assert!(!matches.contains_key("speech:large-v3-turbo.pt"));
+    }
+
+    #[test]
     fn setup_snapshot_recognizes_a_complete_local_layout() {
         let root = tempfile::tempdir().unwrap();
         let bonsai = root.path().join("Bonsai");
@@ -2075,6 +3029,21 @@ mod tests {
                 .unwrap()
                 .set_len(asset.download.bytes)
                 .unwrap();
+        }
+        for asset in ideogram_assets() {
+            let path = comfy.join(asset.relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::File::create(path)
+                .unwrap()
+                .set_len(asset.download.bytes)
+                .unwrap();
+        }
+        for path in [
+            comfy.join("comfy_extras/nodes_ideogram4.py"),
+            comfy.join("comfy_extras/nodes_custom_sampler.py"),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"x").unwrap();
         }
         let decoder = comfy.join("models/vae_approx/taeh3.safetensors");
         fs::create_dir_all(decoder.parent().unwrap()).unwrap();
@@ -2144,6 +3113,15 @@ mod tests {
                 .status
                 == "ready"
         );
+        assert_eq!(
+            value
+                .components
+                .iter()
+                .find(|item| item.id == "image")
+                .unwrap()
+                .status,
+            "ready"
+        );
         fs::write(
             comfy.join("custom_nodes/Kestrel-Whisper/.kestrel-speech-ready"),
             "kestrel-whisper-old\nchatterbox-node=old\nchatterbox-model=old\n",
@@ -2194,6 +3172,45 @@ mod tests {
     }
 
     #[test]
+    fn setup_recognizes_only_a_complete_managed_muscriptor_install() {
+        let root = tempfile::tempdir().unwrap();
+        let (executable, model, marker) = managed_muscriptor_paths(root.path());
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(model.parent().unwrap()).unwrap();
+        fs::write(&executable, b"runner").unwrap();
+        fs::File::create(&model)
+            .unwrap()
+            .set_len(MUSCRIPTOR_MODEL_BYTES)
+            .unwrap();
+        fs::write(&marker, format!("{MUSCRIPTOR_SETUP_REVISION}\n")).unwrap();
+        let research = ResearchSettings {
+            install_root: root.path().to_string_lossy().into_owned(),
+            ..ResearchSettings::default()
+        };
+        let value = snapshot(&research, &ControlSettings::default(), None);
+        assert_eq!(
+            value
+                .components
+                .iter()
+                .find(|item| item.id == "muscriptor")
+                .unwrap()
+                .status,
+            "ready"
+        );
+        fs::write(&marker, "stale").unwrap();
+        let stale = snapshot(&research, &ControlSettings::default(), None);
+        assert_eq!(
+            stale
+                .components
+                .iter()
+                .find(|item| item.id == "muscriptor")
+                .unwrap()
+                .status,
+            "partial"
+        );
+    }
+
+    #[test]
     fn music_launcher_gets_a_dedicated_gpu_resident_profile() {
         let root = tempfile::tempdir().unwrap();
         ensure_comfy_launcher(root.path()).unwrap();
@@ -2211,6 +3228,27 @@ mod tests {
         assert!(shared.contains("[int]$Port = 8188"));
         assert!(shared.contains("'--lowvram'"));
         assert!(shared.contains("$env:HF_HUB_OFFLINE='1'"));
+    }
+
+    #[test]
+    fn ideogram_assets_are_pinned_and_match_the_setup_download_budget() {
+        let assets = ideogram_assets();
+        assert_eq!(assets.len(), 5);
+        assert_eq!(
+            assets.iter().map(|asset| asset.download.bytes).sum::<u64>(),
+            17_622_549_040
+        );
+        assert!(assets.iter().all(|asset| asset.download.sha256.len() == 64));
+        assert!(assets.iter().any(|asset| {
+            asset
+                .relative
+                .ends_with("IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt")
+                && asset.download.url.contains(IDEOGRAM_LICENSE_REVISION)
+        }));
+        assert!(assets.iter().any(|asset| {
+            asset.relative.ends_with("qwen3vl_8b_nvfp4.safetensors")
+                && asset.download.url.contains(QWEN3_VL_REVISION)
+        }));
     }
 
     #[test]

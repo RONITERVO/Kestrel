@@ -42,6 +42,7 @@ impl ChatStreamJob {
             settings,
             cancel,
         } = self;
+        let settings = settings.for_model(&request.model_id);
         emit(app.as_ref(), &request_id, &session_id, "queued", None, None);
         let session = store.get_chat(&session_id)?;
         let max_output_tokens = if settings.advanced_mode {
@@ -270,8 +271,14 @@ impl ChatStreamJob {
                 }
                 if let Some(token) = value
                     .pointer("/choices/0/delta/reasoning_content")
-                    .or_else(|| value.pointer("/choices/0/delta/reasoning"))
                     .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        value
+                            .pointer("/choices/0/delta/reasoning")
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.is_empty())
+                    })
                 {
                     reasoning.push_str(token);
                     emit(

@@ -1,8 +1,8 @@
 //! Single-owner local inference runtime.
 //!
 //! Research, chat, and future local tools must obtain an `InferenceLease`. The semaphore is the
-//! VRAM/KV safety boundary: one 12 GiB GPU never receives competing generations or duplicate
-//! Kestrel-managed Bonsai processes. An already-running Bonsai service is attached read-only.
+//! VRAM/KV safety boundary: the detected GPU never receives competing Kestrel generations or
+//! duplicate Kestrel-managed model processes. Every catalog model uses the same managed path.
 
 use crate::model::ModelInfo;
 use crate::models::{
@@ -27,16 +27,15 @@ use tokio::{
     sync::{Mutex, OwnedSemaphorePermit, Semaphore},
 };
 
-const EXTERNAL_ENDPOINT: &str = "http://127.0.0.1:8080/v1";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(300);
 const ENGINE_SOURCE_CONFIGURED: &str = "Configured";
-const ENGINE_SOURCE_BONSAI: &str = "Bonsai installation";
+const ENGINE_SOURCE_BUNDLED: &str = "Kestrel bundled engine";
 const ENGINE_SOURCE_JAN: &str = "Jan backend";
 const ENGINE_SOURCE_PATH: &str = "Windows PATH";
 
 /// Finds only well-known local engine locations. It never searches whole drives and never
 /// downloads or executes a candidate during discovery.
-pub fn detect_engines(configured: &str, bonsai_root: &str) -> Vec<EngineCandidate> {
+pub fn detect_engines(configured: &str, bundled_model_root: &str) -> Vec<EngineCandidate> {
     let mut candidates = Vec::new();
     push_engine(
         &mut candidates,
@@ -45,10 +44,10 @@ pub fn detect_engines(configured: &str, bonsai_root: &str) -> Vec<EngineCandidat
     );
     push_engine(
         &mut candidates,
-        Path::new(bonsai_root)
+        Path::new(bundled_model_root)
             .join("runtime")
             .join("llama-server.exe"),
-        ENGINE_SOURCE_BONSAI,
+        ENGINE_SOURCE_BUNDLED,
     );
     if let Some(base) = directories::BaseDirs::new() {
         let jan = base
@@ -98,18 +97,16 @@ fn engine_rank(candidate: &EngineCandidate) -> (u8, u8, String) {
     let path = candidate.path.to_lowercase();
     let source = match candidate.source.as_str() {
         ENGINE_SOURCE_CONFIGURED => 0,
-        ENGINE_SOURCE_BONSAI => 1,
+        ENGINE_SOURCE_BUNDLED => 1,
         ENGINE_SOURCE_JAN => 2,
         _ => 3,
     };
-    let backend = if path.contains("bonsai") {
+    let backend = if path.contains("cuda") {
         0
-    } else if path.contains("cuda") {
-        1
     } else if path.contains("vulkan") {
-        2
+        1
     } else {
-        3
+        2
     };
     (source, backend, path)
 }
@@ -234,73 +231,21 @@ impl RuntimeManager {
             .collect()
     }
 
-    pub async fn attach_external_if_ready(
-        &self,
-        settings: &ResearchSettings,
-    ) -> Option<ModelConnection> {
-        let connection = ModelConnection {
-            endpoint: EXTERNAL_ENDPOINT.into(),
-            api_key: None,
-            model_id: "bonsai-27b".into(),
-            model_label: "Ternary Bonsai 27B Q2_0".into(),
-        };
-        if !self.health(&connection).await {
-            return None;
-        }
-        let mut process = self.process.lock().await;
-        let snapshot = ManagedRuntimeSnapshot {
-            phase: "ready".into(),
-            mode: "attached".into(),
-            model_id: Some(connection.model_id.clone()),
-            model_name: Some(connection.model_label.clone()),
-            endpoint: Some(connection.endpoint.clone()),
-            pid: None,
-            context_window: settings.context_window,
-            launch_args: Vec::new(),
-            detail: "Using the existing Bonsai control-center runtime; Kestrel will not load a duplicate model.".into(),
-            inference_busy: self.gate.available_permits() == 0,
-        };
-        *process = Some(RuntimeProcess {
-            child: None,
-            api_key_file: None,
-            connection: connection.clone(),
-            snapshot,
-        });
-        Some(connection)
-    }
-
     pub async fn lease_research(
         self: &Arc<Self>,
-        settings: &ResearchSettings,
+        model_id: &str,
+        models: &[ModelInfo],
+        control: &ControlSettings,
+        research: &ResearchSettings,
+        app: Option<&AppHandle>,
     ) -> Result<InferenceLease, RuntimeError> {
-        let connection = if let Some(connection) = self.current_healthy().await {
-            connection
-        } else if let Some(connection) = self.attach_external_if_ready(settings).await {
-            connection
-        } else {
-            let model = bonsai_model(settings)?;
-            let control = ControlSettings {
-                engine_path: Path::new(&settings.bonsai_root)
-                    .join("runtime")
-                    .join("llama-server.exe")
-                    .to_string_lossy()
-                    .into_owned(),
-                context_window: settings.context_window,
-                max_output_tokens: settings.max_output_tokens,
-                ..ControlSettings::default()
-            };
-            self.start_managed(&model, &control, None).await?
-        };
-        let permit = self
-            .gate
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("inference gate is never closed");
-        Ok(InferenceLease {
-            connection,
-            _permit: permit,
-        })
+        let mut effective = control.for_model(model_id);
+        if research.advanced_mode {
+            effective.context_window = research.context_window;
+            effective.max_output_tokens = research.max_output_tokens;
+        }
+        effective.model_overrides.clear();
+        self.lease_model(model_id, models, &effective, app).await
     }
 
     pub async fn start_model(
@@ -309,35 +254,9 @@ impl RuntimeManager {
         settings: &ControlSettings,
         app: Option<&AppHandle>,
     ) -> Result<ManagedRuntimeSnapshot, RuntimeError> {
-        if is_bonsai(model) {
-            let research = ResearchSettings {
-                context_window: settings.context_window,
-                max_output_tokens: settings.max_output_tokens,
-                ..ResearchSettings::default()
-            };
-            if self.attach_external_if_ready(&research).await.is_some() {
-                let mut process = self.process.lock().await;
-                if let Some(current) = process.as_mut() {
-                    current.snapshot.model_id = Some(model.id.clone());
-                    current.snapshot.model_name = Some(model.name.clone());
-                }
-                drop(process);
-                return Ok(self.snapshot().await);
-            }
-        }
-        self.start_managed(model, settings, app).await?;
+        let effective = settings.for_model(&model.id);
+        self.start_managed(model, &effective, app).await?;
         Ok(self.snapshot().await)
-    }
-
-    pub async fn identify_attached_model(&self, model: &ModelInfo) {
-        let mut process = self.process.lock().await;
-        if let Some(current) = process
-            .as_mut()
-            .filter(|current| current.child.is_none() && current.snapshot.mode == "attached")
-        {
-            current.snapshot.model_id = Some(model.id.clone());
-            current.snapshot.model_name = Some(model.name.clone());
-        }
     }
 
     async fn start_managed(
@@ -399,16 +318,6 @@ impl RuntimeManager {
                 "--mmproj".into(),
                 projector.clone(),
                 "--mmproj-offload".into(),
-            ]);
-        }
-        if is_bonsai(model) {
-            args.extend([
-                "-ctk".into(),
-                "q4_0".into(),
-                "-ctv".into(),
-                "q4_0".into(),
-                "-fa".into(),
-                "on".into(),
             ]);
         }
         let visible_args = args.clone();
@@ -583,7 +492,11 @@ foreach($item in $all){
             .iter()
             .find(|model| model.id == model_id)
             .ok_or_else(|| RuntimeError::MissingModel(model_id.to_string()))?;
-        let connection = match self.current_for_model(&model.id).await {
+        let effective = settings.for_model(&model.id);
+        let connection = match self
+            .current_for_model(&model.id, effective.context_window)
+            .await
+        {
             Some(current) => current,
             None => {
                 self.start_model(model, settings, app).await?;
@@ -614,11 +527,15 @@ foreach($item in $all){
         self.health(&connection).await.then_some(connection)
     }
 
-    async fn current_for_model(&self, catalog_id: &str) -> Option<ModelConnection> {
+    async fn current_for_model(
+        &self,
+        catalog_id: &str,
+        context_window: u32,
+    ) -> Option<ModelConnection> {
         let (connection, matches) = self.process.lock().await.as_ref().map(|value| {
             (
                 value.connection.clone(),
-                value.snapshot.model_id.as_deref() == Some(catalog_id),
+                process_matches(&value.snapshot, catalog_id, context_window),
             )
         })?;
         (matches && self.health(&connection).await).then_some(connection)
@@ -635,6 +552,15 @@ foreach($item in $all){
     }
 }
 
+fn process_matches(
+    snapshot: &ManagedRuntimeSnapshot,
+    catalog_id: &str,
+    context_window: u32,
+) -> bool {
+    snapshot.model_id.as_deref() == Some(catalog_id)
+        && snapshot.context_window == context_window
+}
+
 pub fn authorized(
     builder: reqwest::RequestBuilder,
     connection: &ModelConnection,
@@ -643,20 +569,6 @@ pub fn authorized(
         Some(key) => builder.bearer_auth(key),
         None => builder,
     }
-}
-
-fn bonsai_model(settings: &ResearchSettings) -> Result<ModelInfo, RuntimeError> {
-    let model_dir = Path::new(&settings.bonsai_root).join("models");
-    crate::model::scan(&[model_dir])
-        .into_iter()
-        .find(is_bonsai)
-        .ok_or_else(|| RuntimeError::MissingModel(format!("{}\\models", settings.bonsai_root)))
-}
-
-fn is_bonsai(model: &ModelInfo) -> bool {
-    format!("{} {}", model.name, model.path)
-        .to_lowercase()
-        .contains("bonsai")
 }
 
 fn emit_runtime(app: Option<&AppHandle>, phase: &str, detail: &str) {
@@ -744,17 +656,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authorization_is_optional_for_attached_local_services() {
-        let attached = ModelConnection {
-            endpoint: EXTERNAL_ENDPOINT.into(),
-            api_key: None,
+    fn authorization_is_present_for_managed_local_services() {
+        let managed = ModelConnection {
+            endpoint: "http://127.0.0.1:10000/v1".into(),
+            api_key: Some("secret".into()),
             model_id: "x".into(),
             model_label: "x".into(),
-        };
-        assert!(attached.api_key.is_none());
-        let managed = ModelConnection {
-            api_key: Some("secret".into()),
-            ..attached
         };
         assert_eq!(managed.api_key.as_deref(), Some("secret"));
     }
@@ -791,6 +698,19 @@ mod tests {
         assert!(!candidates
             .iter()
             .any(|candidate| candidate.path == program.to_string_lossy()));
+    }
+
+    #[test]
+    fn runtime_reuse_requires_the_same_model_and_context_window() {
+        let snapshot = ManagedRuntimeSnapshot {
+            model_id: Some("model-a".into()),
+            context_window: 32_768,
+            ..ManagedRuntimeSnapshot::default()
+        };
+
+        assert!(process_matches(&snapshot, "model-a", 32_768));
+        assert!(!process_matches(&snapshot, "model-a", 98_304));
+        assert!(!process_matches(&snapshot, "model-b", 32_768));
     }
 
     #[tokio::test]
@@ -837,18 +757,4 @@ mod tests {
         assert_eq!(manager.logs().await.len(), 5);
     }
 
-    #[tokio::test]
-    #[ignore = "requires the user's live Bonsai service on 127.0.0.1:8080"]
-    async fn live_bonsai_is_attached_without_a_child_process() {
-        let manager = RuntimeManager::new();
-        let connection = manager
-            .attach_external_if_ready(&ResearchSettings::default())
-            .await
-            .expect("Bonsai endpoint should be healthy");
-        assert_eq!(connection.endpoint, EXTERNAL_ENDPOINT);
-        let snapshot = manager.snapshot().await;
-        assert_eq!(snapshot.mode, "attached");
-        assert_eq!(snapshot.phase, "ready");
-        assert!(snapshot.pid.is_none());
-    }
 }

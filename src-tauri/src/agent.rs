@@ -44,6 +44,7 @@ pub async fn run(
     cancel: CancellationToken,
     continuation: Option<String>,
 ) -> Result<(), String> {
+    let settings = settings.for_model(&request.model_id);
     let access = request.access;
     if access == Access::Full && !settings.allow_full_access_agent {
         return Err("Full computer access is locked in the runtime profile.".into());
@@ -257,9 +258,14 @@ pub async fn run(
             .ok_or_else(|| "computer task model returned no message".to_string())?;
         if let Some(reasoning) = message
             .get("reasoning_content")
-            .or_else(|| message.get("reasoning"))
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
+            .or_else(|| {
+                message
+                    .get("reasoning")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+            })
         {
             event(
                 &app,

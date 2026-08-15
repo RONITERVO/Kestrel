@@ -278,6 +278,7 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .offline-workspace .control-chat article > span button { color: #111; }
 .offline-workspace .control-chat article > span button:hover { color: #111; background: var(--control-wash); }
 .rich-message { color: #242a2e; }
+.offline-workspace .control-chat article .rich-message p { color: #242a2e; }
 .rich-message code { color: #111; border: 1px solid #111; background: var(--tech-yellow-soft); }
 .rich-message > pre { color: #f3f7f5; border: var(--tech-rule); background: #111416; }
 .stream-cursor::after { background: var(--control-accent); }

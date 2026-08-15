@@ -35,6 +35,7 @@ import type {
   SetupLocations,
   SetupProgress,
   SetupSnapshot,
+  MovieClipAssistEvent,
   MovieClipRenderRequest,
   MovieClipSuggestion,
   MovieCopilotEvent,
@@ -57,8 +58,13 @@ import type {
   ModelDownloadInspection,
   MovieSummary,
   MusicGenerationEvent,
+  MusicMidiDocument,
+  MusicMidiSaveResult,
   MusicProject,
   MusicSummary,
+  ImageGenerationEvent,
+  ImageProject,
+  ImageSummary,
   StartMovieRequest,
   PromptDraftEvent,
   PromptDraftRequest,
@@ -105,7 +111,7 @@ export async function getSetupSnapshot(): Promise<SetupSnapshot> {
   return invoke<SetupSnapshot>("get_setup_snapshot");
 }
 
-export async function openComfyUi(workload: "studio" | "music"): Promise<void> {
+export async function openComfyUi(workload: "studio" | "music" | "image"): Promise<void> {
   if (isTauri()) await invoke("open_comfy_ui", { workload });
 }
 
@@ -122,6 +128,11 @@ export async function pickSetupFolder(): Promise<string> {
 export async function pickSetupFile(kind: string): Promise<string> {
   if (!isTauri()) return "";
   return invoke<string>("pick_setup_file", { kind });
+}
+
+export async function scanSetupModelFolder(path: string): Promise<Record<string, string>> {
+  if (!isTauri()) return {};
+  return invoke<Record<string, string>>("scan_setup_model_folder", { path });
 }
 
 export async function installSetupComponent(request: SetupInstallRequest): Promise<AppSnapshot> {
@@ -245,6 +256,49 @@ export async function onMusicGeneration(callback: (event: MusicGenerationEvent) 
 
 export async function onMusicProjectUpdated(callback: (project: MusicProject) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MusicProject>("music-project-updated", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function listImageProjects(): Promise<ImageSummary[]> {
+  if (!isTauri()) return [];
+  return invoke<ImageSummary[]>("list_image_projects");
+}
+
+export async function getImageProject(id: string): Promise<ImageProject> {
+  if (!isTauri()) throw new Error("Image projects require the desktop application.");
+  return invoke<ImageProject>("get_image_project", { id });
+}
+
+export async function createImageProject(request: { title: string; idea: string; comfyRoot: string }): Promise<ImageProject> {
+  if (!isTauri()) throw new Error("Image projects require the desktop application.");
+  return invoke<ImageProject>("create_image_project", { request });
+}
+
+export async function saveImageProject(project: ImageProject): Promise<ImageProject> {
+  if (!isTauri()) throw new Error("Image projects require the desktop application.");
+  return invoke<ImageProject>("save_image_project", { project });
+}
+
+export async function startImageGeneration(id: string): Promise<ImageProject> {
+  if (!isTauri()) throw new Error("Local Ideogram image generation requires the desktop application.");
+  return invoke<ImageProject>("start_image_generation", { id });
+}
+
+export async function cancelImageGeneration(id: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_image_generation", { id });
+}
+
+export async function revealImageProject(id: string): Promise<void> {
+  if (isTauri()) await invoke("reveal_image_project", { id });
+}
+
+export async function onImageGeneration(callback: (event: ImageGenerationEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<ImageGenerationEvent>("image-generation", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function onImageProjectUpdated(callback: (project: ImageProject) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<ImageProject>("image-project-updated", (event) => callback(event.payload));
   return () => undefined;
 }
 
@@ -388,9 +442,33 @@ export async function approveMoviePlan(id: string): Promise<MovieProject> {
   return invoke<MovieProject>("approve_movie_plan", { id });
 }
 
-export async function askMovieDirectorClip(id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
+export async function askMovieDirectorClip(requestId: string, id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
   if (!isTauri()) throw new Error("Studio scene assistance requires the desktop application.");
-  return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { id, clipId, feedback } });
+  return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { requestId, id, clipId, feedback } });
+}
+
+export async function getMusicMidiDocument(projectId: string, takeId: string): Promise<MusicMidiSaveResult> {
+  if (!isTauri()) throw new Error("The MIDI editor requires the desktop application.");
+  return invoke<MusicMidiSaveResult>("get_music_midi_document", { request: { projectId, takeId } });
+}
+
+export async function saveMusicMidiDocument(projectId: string, takeId: string, document: MusicMidiDocument): Promise<MusicMidiSaveResult> {
+  if (!isTauri()) throw new Error("Saving MIDI requires the desktop application.");
+  return invoke<MusicMidiSaveResult>("save_music_midi_document", { request: { projectId, takeId, document } });
+}
+
+export async function exportMusicMidi(projectId: string, takeId: string): Promise<string | undefined> {
+  if (!isTauri()) throw new Error("Exporting MIDI requires the desktop application.");
+  return (await invoke<string | null>("export_music_midi", { request: { projectId, takeId } })) ?? undefined;
+}
+
+export async function revealMusicMidi(projectId: string, takeId: string): Promise<void> {
+  if (isTauri()) await invoke("reveal_music_midi", { request: { projectId, takeId } });
+}
+
+export async function onMovieClipAssist(callback: (event: MovieClipAssistEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieClipAssistEvent>("movie-clip-assist", (event) => callback(event.payload));
+  return () => undefined;
 }
 
 export async function setMovieModelRoles(id: string, modelRoles: MovieModelRoleRequest): Promise<MovieProject> {
@@ -457,6 +535,17 @@ export function musicMediaUrl(path: string): string {
   return `http://kestrel-media.localhost/music/${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 
+export function imageMediaUrl(path: string, download = false): string {
+  if (!path || !isTauri()) return "";
+  const normalized = path.replaceAll("\\", "/");
+  const marker = "/images/";
+  const offset = normalized.toLowerCase().lastIndexOf(marker);
+  if (offset < 0) return "";
+  const relative = normalized.slice(offset + marker.length);
+  const url = `http://kestrel-media.localhost/images/${relative.split("/").map(encodeURIComponent).join("/")}`;
+  return download ? `${url}?download=1` : url;
+}
+
 export async function onRuntimeProgress(
   callback: (progress: OperationProgress) => void,
 ): Promise<UnlistenFn> {
@@ -488,15 +577,18 @@ export async function getSystemSnapshot(): Promise<SystemSnapshot> {
         parallelSlots: 1,
         kvCache: "q4_0 / q4_0",
         modelVramMib: 9_964,
-        modelRoot: "D:\\LocalAI\\Bonsai27B",
+        modelRoot: "C:\\Kestrel Preview\\Bonsai",
       },
       gpu: {
-        name: "NVIDIA GeForce RTX 5070",
+        name: "Detected NVIDIA GPU (preview)",
         totalMib: 12_227,
         usedMib: 11_128,
         freeMib: 816,
         utilizationPercent: 7,
       },
+      control: demoSnapshot.control.settings,
+      models: demoSnapshot.control.models,
+      managedRuntime: demoSnapshot.control.runtime,
     };
   }
   return invoke<SystemSnapshot>("get_system_snapshot");
@@ -510,14 +602,10 @@ export async function saveResearchSettings(
 }
 
 export async function applyModelRuntime(
-  settings: ResearchSettings,
+  settings: ControlSettings,
 ): Promise<SystemSnapshot> {
   if (!isTauri()) return getSystemSnapshot();
   return invoke<SystemSnapshot>("apply_model_runtime", { settings });
-}
-
-export async function openBonsaiControlCenter(): Promise<void> {
-  if (isTauri()) await invoke("open_bonsai_control_center");
 }
 
 export async function getControlSnapshot(
@@ -570,9 +658,24 @@ export async function exportSetupProfile(): Promise<ProfileTransfer> {
   return invoke<ProfileTransfer>("export_setup_profile");
 }
 
+export async function getSetupProfileText(): Promise<string> {
+  if (!isTauri()) return JSON.stringify({ schemaVersion: 1, preview: true }, null, 2);
+  return invoke<string>("get_setup_profile_text");
+}
+
+export async function exportSetupProfileText(text: string): Promise<ProfileTransfer> {
+  if (!isTauri()) return exportSetupProfile();
+  return invoke<ProfileTransfer>("export_setup_profile_text", { text });
+}
+
 export async function importSetupProfile(path: string): Promise<AppSnapshot> {
   if (!isTauri()) return demoSnapshot;
   return invoke<AppSnapshot>("import_setup_profile", { path });
+}
+
+export async function importSetupProfileText(text: string): Promise<AppSnapshot> {
+  if (!isTauri()) return demoSnapshot;
+  return invoke<AppSnapshot>("import_setup_profile_text", { text });
 }
 
 export async function saveControlSettings(

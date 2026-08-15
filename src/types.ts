@@ -1,7 +1,7 @@
 export type ServiceState = "ready" | "starting" | "stopped" | "unavailable";
 
 export interface ServiceStatus {
-  bonsai: ServiceState;
+  modelRuntime: ServiceState;
   wikipedia: ServiceState;
   model: string;
   archive: string;
@@ -102,6 +102,16 @@ export interface SetupComponent {
   optional: boolean;
 }
 
+export interface SetupModelAsset {
+  id: string;
+  component: string;
+  label: string;
+  fileName: string;
+  bytes: number;
+  recognized: boolean;
+  installedPath: string;
+}
+
 export interface SetupSnapshot {
   ready: boolean;
   installRoot: string;
@@ -109,6 +119,7 @@ export interface SetupSnapshot {
   gpuName?: string;
   gpuMemoryBytes: number;
   components: SetupComponent[];
+  modelAssets: SetupModelAsset[];
 }
 
 export interface SetupLocations {
@@ -126,6 +137,11 @@ export interface SetupInstallRequest {
   component: string;
   installRoot: string;
   wikipediaEdition: "compact" | "complete";
+  acceptIdeogramNonCommercialLicense?: boolean;
+  whisperCheckpointPath?: string;
+  muscriptorCheckpointPath?: string;
+  acceptMuscriptorNonCommercialLicense?: boolean;
+  existingModelPaths?: Record<string, string>;
 }
 
 export interface SetupProgress {
@@ -375,6 +391,15 @@ export interface MovieClipSuggestion {
   clip: PlannedClip;
 }
 
+export interface MovieClipAssistEvent {
+  requestId: string;
+  projectId: string;
+  clipId: string;
+  kind: "reasoning" | string;
+  content: string;
+  at: string;
+}
+
 export interface MovieClipRenderRequest {
   id: string;
   suggestion: MovieClipSuggestion;
@@ -556,6 +581,101 @@ export interface StartMovieRequest {
   modelRoles: MovieModelRoleRequest;
 }
 
+export interface ImageStyle {
+  mode: "photo" | "art";
+  aesthetics: string;
+  lighting: string;
+  photo: string;
+  artStyle: string;
+  medium: string;
+  colorPalette: string[];
+}
+
+export interface ImageElement {
+  id: string;
+  kind: "obj" | "text";
+  /** Ideogram coordinates: [top, left, bottom, right], normalized to 0..1000. */
+  bbox: [number, number, number, number];
+  text: string;
+  description: string;
+  colorPalette: string[];
+}
+
+export interface ImageSettings {
+  width: number;
+  height: number;
+  preset: "quality" | "standard" | "turbo";
+  seed: number;
+  batchSize: number;
+  comfyRoot: string;
+}
+
+export interface ImageTake {
+  id: string;
+  createdAt: string;
+  status: string;
+  detail: string;
+  error: string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  width: number;
+  height: number;
+  preset: ImageSettings["preset"];
+  seed: number;
+  batchIndex: number;
+  batchSize: number;
+  promptId: string;
+  exactPrompt: unknown;
+  exactPromptText: string;
+  exactGraph: unknown;
+  modelProfile: string;
+  licenseNotice: string;
+}
+
+export interface ImageProject {
+  schemaVersion: number;
+  id: string;
+  title: string;
+  idea: string;
+  highLevelDescription: string;
+  style: ImageStyle;
+  background: string;
+  elements: ImageElement[];
+  settings: ImageSettings;
+  takes: ImageTake[];
+  activeTakeId: string;
+  status: string;
+  phase: string;
+  detail: string;
+  error: string;
+  licenseNotice: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ImageSummary {
+  id: string;
+  title: string;
+  status: string;
+  updatedAt: string;
+  takeCount: number;
+  activeTakePath: string;
+}
+
+export interface ImageGenerationEvent {
+  projectId: string;
+  takeId: string;
+  kind: "queued" | "progress" | "complete" | "cancelled" | "error" | string;
+  phase: string;
+  detail: string;
+  step?: number;
+  total?: number;
+  percent?: number;
+  etaSeconds?: number;
+  at: string;
+}
+
 export interface MusicSettings {
   maxDurationSeconds: number;
   steps: number;
@@ -600,6 +720,56 @@ export interface MusicTake {
   exactGraph: unknown;
   midiPath: string;
   midiReceiptPath: string;
+  midiSourcePath: string;
+  midiDocumentPath: string;
+  midiRevision: number;
+}
+
+export interface MusicMidiTempo {
+  tick: number;
+  microsecondsPerQuarter: number;
+}
+
+export interface MusicMidiTimeSignature {
+  tick: number;
+  numerator: number;
+  denominator: number;
+}
+
+export interface MusicMidiNote {
+  id: string;
+  pitch: number;
+  startTick: number;
+  durationTicks: number;
+  velocity: number;
+  channel: number;
+}
+
+export interface MusicMidiTrack {
+  id: string;
+  name: string;
+  channel: number;
+  program: number;
+  muted: boolean;
+  notes: MusicMidiNote[];
+}
+
+export interface MusicMidiDocument {
+  schemaVersion: number;
+  takeId: string;
+  sourceSha256: string;
+  revision: number;
+  ticksPerQuarter: number;
+  durationTicks: number;
+  durationSeconds: number;
+  tempos: MusicMidiTempo[];
+  timeSignatures: MusicMidiTimeSignature[];
+  tracks: MusicMidiTrack[];
+}
+
+export interface MusicMidiSaveResult {
+  project: MusicProject;
+  document: MusicMidiDocument;
 }
 
 export interface MusicProject {
@@ -767,7 +937,7 @@ export interface ModelCompatibility {
   receipt?: ModelQualificationReceipt;
 }
 
-export type PromptDraftTarget = "story" | "imageAsset" | "referenceDescription" | "musicCaption" | "musicLyrics";
+export type PromptDraftTarget = "story" | "imageAsset" | "imageComposition" | "referenceDescription" | "musicCaption" | "musicLyrics";
 export type PromptDraftMode = "develop" | "continue";
 
 export interface PromptDraftRequest {
@@ -890,11 +1060,19 @@ export interface ControlSettings {
   contextWindow: number;
   maxOutputTokens: number;
   threads: number;
+  modelOverrides: ModelRuntimeOverride[];
   projectRoot: string;
   agentWorkspaceRoots: string[];
   allowFullAccessAgent: boolean;
   agentMaxSteps: number;
   agentMaxOutputTokens: number;
+}
+
+export interface ModelRuntimeOverride {
+  modelId: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  threads?: number;
 }
 
 export interface ManagedRuntimeSnapshot {
@@ -1105,6 +1283,9 @@ export interface SystemSnapshot {
   gpu?: GpuSnapshot;
   runtime: RuntimeSnapshot;
   settings: ResearchSettings;
+  control: ControlSettings;
+  models: ModelInfo[];
+  managedRuntime: ManagedRuntimeSnapshot;
 }
 
 export type ProgressStage =

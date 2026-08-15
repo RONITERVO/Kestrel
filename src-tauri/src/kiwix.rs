@@ -148,11 +148,11 @@ fn normalize_reference(input: &str, book: &str) -> Result<String, KiwixError> {
         return Err(KiwixError::UnsafePath);
     }
     let segments = path.split('/').collect::<Vec<_>>();
-    if segments.len() < 5
+    if segments.len() < 4
         || !segments[0].is_empty()
         || segments[1] != "content"
-        || segments[3].is_empty()
-        || segments[4].is_empty()
+        || segments[2].is_empty()
+        || segments[3..].iter().any(|segment| segment.is_empty())
     {
         return Err(KiwixError::UnsafePath);
     }
@@ -312,8 +312,14 @@ mod tests {
             .unwrap(),
             format!("/content/{BOOK}/A/Antikythera_mechanism")
         );
+        assert_eq!(
+            normalize_reference("/content/wikipedia_en_simple_2026-06/Jungle", BOOK).unwrap(),
+            format!("/content/{BOOK}/Jungle")
+        );
         assert!(normalize_reference("https://example.com/content/book/A/Test", BOOK).is_err());
         assert!(normalize_reference("/content/book/A/../secret", BOOK).is_err());
+        assert!(normalize_reference("/content/book", BOOK).is_err());
+        assert!(normalize_reference("/content/book/", BOOK).is_err());
         assert!(normalize_reference("/search?pattern=test", BOOK).is_err());
     }
 

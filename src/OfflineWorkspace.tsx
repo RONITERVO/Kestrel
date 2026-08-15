@@ -111,6 +111,9 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   const [runtimeProgress, setRuntimeProgress] = useState<string | null>(null);
   const [newRoot, setNewRoot] = useState("");
   const selected = control.models.find((model) => model.id === selectedId);
+  const selectedOverride = settings.modelOverrides.find((item) => item.modelId === selectedId);
+  const effectiveContext = selectedOverride?.contextWindow ?? settings.contextWindow;
+  const effectiveMaxOutput = selectedOverride?.maxOutputTokens ?? settings.maxOutputTokens;
   const chatRequestRef = useRef<string | null>(null);
   const pendingRedirectRef = useRef<{
     message: string;
@@ -401,7 +404,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
         temperature: 0.2,
         topP: 0.9,
         topK: 40,
-        maxOutputTokens: current.settings.maxOutputTokens,
+        maxOutputTokens: current.settings.modelOverrides.find((item) => item.modelId === current.selected?.id)?.maxOutputTokens ?? current.settings.maxOutputTokens,
       });
       chatRequestRef.current = started.requestId;
       setSession(started.session);
@@ -707,7 +710,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   const releaseMemory = async () => {
     if (
       !window.confirm(
-        "Release all AI memory controlled by Kestrel? This safely cancels active Kestrel work, stops the configured Bonsai model service, and removes abandoned Kestrel model processes. Other model apps are left alone.",
+        "Release all AI memory controlled by Kestrel? This safely cancels active Kestrel work, stops its managed local model and media runtimes, and removes abandoned Kestrel model processes. Other model apps are left alone.",
       )
     )
       return;
@@ -761,8 +764,6 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   };
   const updatePositiveSetting = (
     key:
-      | "contextWindow"
-      | "maxOutputTokens"
       | "agentMaxSteps"
       | "agentMaxOutputTokens",
     value: string,
@@ -770,6 +771,40 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
     const next = Number(value);
     if (Number.isFinite(next) && next > 0)
       setSettings((current) => ({ ...current, [key]: next }));
+  };
+  const updateSelectedRuntime = (
+    key: "contextWindow" | "maxOutputTokens",
+    value: string,
+  ) => {
+    const next = Number(value);
+    if (!selectedId || !Number.isFinite(next) || next <= 0) return;
+    setSettings((current) => {
+      const known = current.modelOverrides.find((item) => item.modelId === selectedId) ?? { modelId: selectedId };
+      return {
+        ...current,
+        modelOverrides: [
+          ...current.modelOverrides.filter((item) => item.modelId !== selectedId),
+          { ...known, [key]: next },
+        ],
+      };
+    });
+  };
+  const toggleSelectedRuntime = (enabled: boolean) => {
+    if (!selectedId) return;
+    setSettings((current) => ({
+      ...current,
+      modelOverrides: enabled
+        ? [
+            ...current.modelOverrides.filter((item) => item.modelId !== selectedId),
+            {
+              modelId: selectedId,
+              contextWindow: current.contextWindow,
+              maxOutputTokens: current.maxOutputTokens,
+              threads: current.threads,
+            },
+          ]
+        : current.modelOverrides.filter((item) => item.modelId !== selectedId),
+    }));
   };
   const active = !!stream || !!taskRunRef.current;
   const resumableAnswer =
@@ -1030,7 +1065,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
               ) : (
                 <Welcome
                   models={control.models.length}
-                  context={settings.contextWindow}
+                  context={effectiveContext}
                   freeMib={gpu?.freeMib}
                 />
               )}{" "}
@@ -1253,7 +1288,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
           )}
           <span>
             <strong>Release AI memory</strong>
-            <small>Stop Kestrel + configured Bonsai models</small>
+            <small>Stop Kestrel-managed model and media runtimes</small>
           </span>
         </button>
         {kind === "chat" && <section className="inspector-section inspector-mode-settings">
@@ -1263,10 +1298,10 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
               Context
               <input
                 type="number"
-                disabled={!settings.advancedMode}
-                value={settings.contextWindow}
+                disabled={!selectedOverride}
+                value={effectiveContext}
                 onChange={(event) =>
-                  updatePositiveSetting("contextWindow", event.target.value)
+                  updateSelectedRuntime("contextWindow", event.target.value)
                 }
               />
             </label>
@@ -1274,25 +1309,21 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
               Max output
               <input
                 type="number"
-                disabled={!settings.advancedMode}
-                value={settings.maxOutputTokens}
+                disabled={!selectedOverride}
+                value={effectiveMaxOutput}
                 onChange={(event) =>
-                  updatePositiveSetting("maxOutputTokens", event.target.value)
+                  updateSelectedRuntime("maxOutputTokens", event.target.value)
                 }
               />
             </label>
             <label className="check-line inspector-wide-setting">
               <input
                 type="checkbox"
-                checked={settings.advancedMode}
-                onChange={(event) =>
-                  setSettings({
-                    ...settings,
-                    advancedMode: event.target.checked,
-                  })
-                }
+                checked={!!selectedOverride}
+                disabled={!selectedId}
+                onChange={(event) => toggleSelectedRuntime(event.target.checked)}
               />{" "}
-              Advanced, uncapped
+              Override selected model
             </label>
           </div>
         </section>}
@@ -1381,7 +1412,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             </div>
           </div>
         </section>}
-        {kind === "chat" && settings.advancedMode && (
+        {kind === "chat" && selectedOverride && settings.advancedMode && (
           <div className="control-warning">
             Invalid or oversized values can stop startup or exhaust VRAM.
           </div>

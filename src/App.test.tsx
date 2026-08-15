@@ -7,18 +7,27 @@ import type { ContextAttachment } from "./types";
 
 const profileApi = vi.hoisted(() => ({
   exportSetupProfile: vi.fn(),
+  exportSetupProfileText: vi.fn(),
+  getSetupProfileText: vi.fn(),
   importSetupProfile: vi.fn(),
+  importSetupProfileText: vi.fn(),
 }));
 
 vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
   exportSetupProfile: profileApi.exportSetupProfile,
+  exportSetupProfileText: profileApi.exportSetupProfileText,
+  getSetupProfileText: profileApi.getSetupProfileText,
   importSetupProfile: profileApi.importSetupProfile,
+  importSetupProfileText: profileApi.importSetupProfileText,
 }));
 
 beforeEach(() => {
   profileApi.exportSetupProfile.mockReset().mockResolvedValue({ path: "C:\\Research\\portable.json", message: "Safe profile exported." });
+  profileApi.exportSetupProfileText.mockReset().mockResolvedValue({ path: "C:\\Research\\portable.json", message: "Validated profile exported." });
+  profileApi.getSetupProfileText.mockReset().mockResolvedValue(JSON.stringify({ schemaVersion: 1, app: "Kestrel" }, null, 2));
   profileApi.importSetupProfile.mockReset().mockResolvedValue(demoSnapshot);
+  profileApi.importSetupProfileText.mockReset().mockResolvedValue(demoSnapshot);
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
 });
 
@@ -83,11 +92,17 @@ describe("Kestrel research experience", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));
     expect(await screen.findByRole("heading", { name: "System" })).toBeInTheDocument();
-    expect(screen.getByText(/one model researcher/i)).toBeInTheDocument();
-    expect(screen.getByText(/intentionally uncapped/i)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Portable setup" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Export safe profile/i })).toBeInTheDocument();
-    expect(screen.getByText(/never contain weights, chats, research, credentials/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "App-wide local model policy" })).toBeInTheDocument();
+    expect(screen.getByText(/No GPU model is assumed/i)).toBeInTheDocument();
+    expect(screen.getByText(/Per-model exception/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Research policy/i }));
+    expect(screen.getByText(/One selected model, one inference lease/i)).toBeInTheDocument();
+    expect(screen.getByText(/never launches or attaches to a separate model-specific server/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Portable setup/i }));
+    expect(screen.getByRole("heading", { name: "Portable setup JSON" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Export edited JSON/i })).toBeInTheDocument();
+    expect(screen.getByText(/excludes weights, projects, conversations, developer paths, credentials, and access grants/i)).toBeInTheDocument();
+    expect((await screen.findByLabelText("Editable portable setup JSON") as HTMLTextAreaElement).value).toContain('"schemaVersion": 1');
     fireEvent.click(screen.getByRole("button", { name: /^Research$/i }));
     expect(await screen.findByText("Your research")).toBeInTheDocument();
   });
@@ -118,14 +133,15 @@ describe("Kestrel research experience", () => {
     }
   });
 
-  it("displays safe exports and explains clipboard failures", async () => {
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
+  it("displays the validated portable export beside its editable text", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /Export safe profile/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Portable setup/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Export edited JSON/i }));
 
     expect(await screen.findByDisplayValue("C:\\Research\\portable.json")).toBeInTheDocument();
-    expect(await screen.findByText(/Safe profile exported.*Copy the displayed path manually/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Validated profile exported/i)).toBeInTheDocument();
+    expect(profileApi.exportSetupProfileText).toHaveBeenCalledWith(expect.stringContaining('"schemaVersion": 1'));
   });
 
   it("requires confirmation and adopts the imported snapshot", async () => {
@@ -134,22 +150,24 @@ describe("Kestrel research experience", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));
-    fireEvent.change(await screen.findByLabelText("Profile JSON path"), { target: { value: "C:\\Research\\portable.json" } });
-    fireEvent.click(screen.getByRole("button", { name: /Import profile/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Portable setup/i }));
+    fireEvent.change(await screen.findByLabelText("Import an existing profile path"), { target: { value: "C:\\Research\\portable.json" } });
+    fireEvent.click(screen.getByRole("button", { name: /Import file/i }));
     expect(profileApi.importSetupProfile).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: /Import profile/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Import file/i }));
     await waitFor(() => expect(profileApi.importSetupProfile).toHaveBeenCalledWith("C:\\Research\\portable.json"));
     expect(await screen.findByText("Imported offline archive")).toBeInTheDocument();
-    expect(screen.getByText(/Profile imported.*Full Access remains locked/i)).toBeInTheDocument();
+    expect(screen.getByText(/Profile imported.*trust grants left unchanged/i)).toBeInTheDocument();
   });
 
   it("surfaces profile API errors", async () => {
-    profileApi.exportSetupProfile.mockRejectedValue(new Error("profile storage is read-only"));
+    profileApi.exportSetupProfileText.mockRejectedValue(new Error("profile storage is read-only"));
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /Export safe profile/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Portable setup/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Export edited JSON/i }));
     expect(await screen.findByText(/profile storage is read-only/i)).toBeInTheDocument();
   });
 

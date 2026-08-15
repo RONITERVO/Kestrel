@@ -1,7 +1,7 @@
 # Studio maintainer guide
 
 This directory contains every model-assisted part of Kestrel Studio. Start here before changing
-Director/Reviewer planning, prompt generation, Producer Copilot, H3 image assets, live previews, or Music. The root
+Director/Reviewer planning, prompt generation, Producer Copilot, H3 image assets, live previews, Image Studio, or Music. The root
 `studio.rs` file remains the domain and persistence facade; child modules own one bounded concern
 and must not acquire authority implicitly.
 
@@ -17,11 +17,11 @@ and must not acquire authority implicitly.
   and planning controls are durable user data. Interrupted work is surfaced, never silently resumed.
 - The model receives the original producer request and a fresh authoritative workspace snapshot on
   every Director planning turn. UI/log redaction must never mutate model input or durable history.
-- H3 and Music 3 rendering begin only after every language-model inference lease is released and the
+- H3, Ideogram 4, and Music 3 rendering begin only after every language-model inference lease is released and the
   runtime is unloaded from the GPU.
 - Director and Reviewer bindings are durable project data. Missing pinned models fail visibly; an
   explicit checkpointed role change records provenance and forces producer review.
-- Non-Bonsai models must pass the current local Studio protocol check before standard-mode unattended
+- Every local model must pass the current local Studio protocol check before standard-mode unattended
   planning. Advanced mode may run an unverified compatible model only with forced producer review.
 
 ## Module ownership
@@ -32,15 +32,17 @@ and must not acquire authority implicitly.
 | `agent_flow.rs` | Director planning orchestration, producer-control boundaries, per-turn model leases, tool dispatch, independent-review coordination | Wire parsing or file mutation rules |
 | `agent_lifecycle.rs` | Pure session, tool-use, and reviewer-budget transitions | HTTP, filesystem, UI events, or project state |
 | `agent_protocol.rs` | Exact planning requests, lossless transcript history, assistant/tool-call assembly | Workspace mutation or producer copy |
-| `model_stream.rs` | Shared OpenAI-compatible SSE framing, UTF-8 fragmentation, JSON validation, completion markers | Feature-specific tokens, tool schemas, or UI events |
+| `model_stream.rs` | Shared OpenAI-compatible SSE framing, UTF-8 fragmentation, JSON validation, completion markers, and explicit reasoning-channel extraction | Tool schemas or producer-facing UI events |
 | `movie_agent.rs` | Sandboxed movie workspace, typed actions/outcomes, native plan compilation and lint | OS commands, arbitrary paths, renderer execution, or network |
 | `planning.rs` | Durable redirection/checkpoint controls and typed planning UI event contract | Model inference |
 | `prompts.rs` | Planning, lint, resume, and repair prompt text exposed to advanced producers | Hidden control behavior |
 | `prompt_collaboration.rs` | Story/image/reference/music-description/lyrics drafting from producer context | Applying proposals, movie-plan mutation, or rendering |
 | `copilot.rs` | Timeline advice and validated, unapplied edit proposals | Applying edits or rendering |
 | `image_assets.rs` | Durable H3 pseudo-image generations, graph/receipt provenance, imported candidates | Planning authority |
+| `image_studio.rs` | Recoverable image projects, structured compositions, native Ideogram 4 graphs, immutable PNG takes, and progress | LLM process ownership, arbitrary imported workflows, bundled license rights, or public-network fallback |
 | `live_preview.rs` | TAE preview graph nodes and producer-visible preview events | Final-render truth |
 | `music.rs` | Recoverable song projects, producer arrangement, native Music 3 graphs, immutable takes, progress, and optional MuScriptor adapter | LLM process ownership, fake stem separation, bundled gated weights, or public-network fallback |
+| `music_midi.rs` | Bounded Standard MIDI parsing/writing, typed piano-roll documents, and recoverable binary replacement | MuScriptor execution, project path selection, source mutation, or UI state |
 
 If a change appears to belong to two rows, introduce a typed boundary instead of importing private
 implementation details across both modules.
@@ -80,6 +82,12 @@ All Studio language-model streams pass response bytes through `OpenAiSseDecoder`
 their own request bodies and map decoded JSON into their own events, but must not implement another
 `data:`/`[DONE]` parser. The decoder intentionally rejects malformed JSON, invalid UTF-8, duplicate
 completion markers, and events after completion so token loss cannot look like success.
+
+Explicit `reasoning_content` or `reasoning` deltas are streamed to the same bounded, provisional
+thinking pane in prompt collaboration, Director planning and review, Producer Copilot, and the
+per-scene Director assistant. They are never inferred from ordinary answer text, treated as a
+production instruction, or copied into the model's durable tool transcript. A model that exposes no
+separate channel is identified honestly in the UI.
 
 When adding a compatible runtime variation:
 
@@ -134,9 +142,49 @@ port 8189 with async weight offload disabled, dynamic VRAM as an OOM fallback, a
 for the desktop. The installed INT8 text encoder, INT8 DiT, and VAE run one stage at a time; Kestrel
 does not pretend that all three can remain resident together on a 12 GiB GPU. MuScriptor startup first
 releases both ComfyUI services and the local language model so its checkpoint cannot overlap them.
-MuScriptor remains an explicit advanced adapter: the producer supplies both its executable and gated
-checkpoint, Kestrel invokes a fixed argument array, and the receipt preserves its non-commercial
-license notice and output hash.
+MuScriptor remains an explicit separate adapter. Setup can verify a producer-supplied gated large
+checkpoint and prepare the pinned official package in an isolated NVIDIA runtime after explicit
+license confirmation; manually supplied compatible runners remain supported. Native code validates
+the paths, launches a fixed argument array, forces the managed runner offline, and preserves the
+non-commercial license notice and output hash in its receipt.
+
+The first successful transcription is copied into a unique `midi/<take>/<transcription>/source.mid`
+and never edited. `music_midi.rs` parses metrical Standard MIDI into bounded tempo, time-signature,
+track, program, and note records. Opening a legacy transcription migrates it through the same source
+preservation boundary. Every piano-roll save writes a new numbered `.mid`, typed `.json`, and receipt;
+the take points to the latest revision while older revisions remain addressable. Muted tracks are
+omitted only from the exported revision, not deleted from the edit document. Native export uses a
+producer-selected absolute `.mid`/`.midi` destination and recoverable replacement.
+
+## Image production lifecycle
+
+Image Studio uses the same resource boundary without inheriting movie-agent authority:
+
+```text
+open recoverable image project
+  -> producer edits the brief, exclusive photo/art style, palette, exact text, layer order, and normalized layout boxes
+  -> optional selected local GGUF streams an unapplied structured-composition proposal
+  -> producer applies, discards, redirects, or keeps the partial checkpoint
+  -> persist the project and unload the language-model runtime plus retained ComfyUI models
+  -> serialize Ideogram's order-sensitive compact JSON and compile Kestrel's native graph on loopback ComfyUI port 8188
+  -> stream node phase, sampling progress, percentage, and ETA
+  -> require every expected batch PNG, then copy, dimension-check, and hash each inside the project
+  -> append separate immutable takes with exact prompt/graph/model/license receipts, then call `/free`
+```
+
+`images/<uuid>/project.json` is recoverable truth. `takes/*.png` and each generation receipt are
+immutable; changing the design never rewrites an older take. Startup marks an active generation
+`interrupted` and never submits it again. The React surface sends typed producer fields, not ComfyUI
+graphs. Native code owns node names, model filenames, limits, output extraction, and provenance.
+The layout desk supports direct box drawing, overlap cycling, layer ordering, duplication, keyboard
+nudge, extreme canvas presets, explicit seed modes, and one/two/four-image batches. A completed take
+can be used as an opacity-adjustable alignment backdrop, but it is never sent as model conditioning.
+ComfyUI Manager and KJNodes are not Image Studio runtime dependencies: those projects informed the
+producer interaction, while Kestrel keeps the submitted workflow on versioned Comfy core nodes so a
+custom-node update cannot silently alter an existing project contract.
+Ideogram 4 is installed only after explicit acceptance of its pinned non-commercial agreement and is
+not included in the commercial production-suite action. Kestrel's MIT license does not grant model
+or output rights.
 
 ## Typed cross-boundary contracts
 

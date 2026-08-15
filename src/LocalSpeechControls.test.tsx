@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LocalSpeechProvider, SpeechDictationButton, SpeechLiveCaption, SpeechPlaybackButton, splitSpeechText } from "./LocalSpeechControls";
+import { advanceLiveTranscriptionCheckpoint, completeRecordingBlob, LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS, LocalSpeechProvider, SpeechDictationButton, SpeechLiveCaption, SpeechPlaybackButton, splitSpeechText } from "./LocalSpeechControls";
 
 const speechApi = vi.hoisted(() => ({
   snapshot: vi.fn(),
@@ -106,6 +106,28 @@ describe("shared local speech controls", () => {
     expect(onSeek).toHaveBeenCalledWith(.4);
   });
 
+  it("keeps the WebM header in every growing provisional recording", async () => {
+    const header = new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: "audio/webm" });
+    const laterFragment = new Blob([new Uint8Array([0x81, 0x82, 0x83])], { type: "audio/webm" });
+    const firstPass = new Uint8Array(await completeRecordingBlob([header], "audio/webm").arrayBuffer());
+    const nextPass = new Uint8Array(await completeRecordingBlob([header, laterFragment], "audio/webm").arrayBuffer());
+
+    expect([...firstPass]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
+    expect([...nextPass]).toEqual([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x82, 0x83]);
+  });
+
+  it("bounds live full-recording transcription to eight checkpoints", () => {
+    let nextIndex = 0;
+    const checkpoints: number[] = [];
+    for (let elapsed = 4; elapsed <= 15 * 60; elapsed += 4) {
+      const advanced = advanceLiveTranscriptionCheckpoint(elapsed, nextIndex);
+      if (advanced !== nextIndex) checkpoints.push(elapsed);
+      nextIndex = advanced;
+    }
+    expect(checkpoints).toEqual([...LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS]);
+    expect(checkpoints.reduce((sum, seconds) => sum + seconds, 0)).toBeLessThan(30 * 60);
+  });
+
   it("speaks only after the user requests a saved model response", async () => {
     const { container } = render(<LocalSpeechProvider><SpeechPlaybackButton sourceKind="chat" sourceId="chat-1" passageId="answer" text="First sentence." /></LocalSpeechProvider>);
     expect(speechApi.synthesize).not.toHaveBeenCalled();
@@ -172,5 +194,40 @@ describe("shared local speech controls", () => {
     expect(onActiveChange).toHaveBeenCalledWith(true);
     expect(speechApi.release).toHaveBeenCalled();
     expect(stopTrack).toHaveBeenCalled();
+  });
+
+  it("shows preparation failure instead of leaving the microphone looking inert", async () => {
+    speechApi.snapshot.mockResolvedValueOnce({ ...ready, transcriptionAvailable: false, transcribers: [], detail: "Whisper is missing." });
+    speechApi.prepare.mockRejectedValueOnce(new Error("Whisper is missing."));
+    render(<LocalSpeechProvider><SpeechDictationButton sourceKind="chat" sourceId="chat-1" value="" onChange={vi.fn()} /></LocalSpeechProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dictate" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/Dictation unavailable.*Whisper is missing.*Open Setup/i);
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeEnabled();
+  });
+
+  it("releases an acquired microphone when MediaRecorder startup fails", async () => {
+    const stopTrack = vi.fn();
+    class FailingRecorder {
+      static isTypeSupported() { return true; }
+      state: RecordingState = "inactive";
+      mimeType = "audio/webm;codecs=opus";
+      ondataavailable = null;
+      onerror = null;
+      onstop = null;
+      constructor(_stream: MediaStream, _options?: MediaRecorderOptions) {}
+      start() { throw new Error("recorder startup failed"); }
+      stop() {}
+      requestData() {}
+    }
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) } });
+    Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: FailingRecorder });
+    render(<LocalSpeechProvider><SpeechDictationButton sourceKind="chat" sourceId="chat-1" value="" onChange={vi.fn()} /></LocalSpeechProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dictate" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/Dictation unavailable.*recorder startup failed/i);
+    expect(stopTrack).toHaveBeenCalledOnce();
   });
 });

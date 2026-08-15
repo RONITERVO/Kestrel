@@ -8,6 +8,21 @@ use serde_json::Value;
 
 const MAX_SSE_EVENT_BYTES: usize = 1024 * 1024;
 
+/// Returns the model's explicit reasoning channel without trying to infer private thought from
+/// ordinary answer text. OpenAI-compatible local servers use both field names in practice.
+pub(super) fn reasoning_delta(value: &Value) -> Option<&str> {
+    value
+        .pointer("/choices/0/delta/reasoning_content")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .or_else(|| {
+            value
+                .pointer("/choices/0/delta/reasoning")
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+        })
+}
+
 #[derive(Debug, PartialEq)]
 pub(super) enum OpenAiStreamEvent {
     Message(Value),
@@ -167,5 +182,29 @@ mod tests {
         let error = decoder.push(&oversized).unwrap_err();
         assert!(error.contains("event exceeds"));
         assert!(decoder.buffer.is_empty());
+    }
+
+    #[test]
+    fn reasoning_delta_accepts_both_explicit_local_server_fields_only() {
+        assert_eq!(
+            reasoning_delta(&json!({"choices":[{"delta":{"reasoning_content":"first"}}]})),
+            Some("first")
+        );
+        assert_eq!(
+            reasoning_delta(&json!({"choices":[{"delta":{"reasoning":"second"}}]})),
+            Some("second")
+        );
+        assert_eq!(
+            reasoning_delta(
+                &json!({"choices":[{"delta":{"reasoning_content":"","reasoning":"fallback"}}]})
+            ),
+            Some("fallback")
+        );
+        assert_eq!(
+            reasoning_delta(
+                &json!({"choices":[{"delta":{"content":"<think>not a channel</think>"}}]})
+            ),
+            None
+        );
     }
 }

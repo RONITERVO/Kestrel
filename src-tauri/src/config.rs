@@ -1,7 +1,7 @@
 use crate::models::{ControlSettings, ResearchSettings};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::fs;
+use std::{collections::HashSet, fs};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -13,8 +13,8 @@ pub enum ConfigError {
     Json(#[from] serde_json::Error),
     #[error("advanced values must be positive integers")]
     InvalidAdvancedValue,
-    #[error("Bonsai root does not contain settings.json: {0}")]
-    MissingBonsaiSettings(String),
+    #[error("each model override needs a unique model ID and positive values")]
+    InvalidModelOverride,
 }
 
 #[derive(Clone)]
@@ -50,12 +50,32 @@ impl ControlSettingsStore {
         {
             return Err(ConfigError::InvalidAdvancedValue);
         }
+        let mut model_ids = HashSet::new();
+        if settings.model_overrides.iter().any(|model| {
+            model.model_id.trim().is_empty()
+                || !model_ids.insert(model.model_id.as_str())
+                || [
+                    model.context_window,
+                    model.max_output_tokens,
+                    model.threads,
+                ]
+                .into_iter()
+                .flatten()
+                .any(|value| value == 0)
+        }) {
+            return Err(ConfigError::InvalidModelOverride);
+        }
         let mut stored = settings.clone();
         if !stored.advanced_mode {
             stored.context_window = stored.context_window.min(98_304);
             stored.max_output_tokens = stored.max_output_tokens.min(32_768);
             stored.agent_max_steps = stored.agent_max_steps.min(50);
             stored.agent_max_output_tokens = stored.agent_max_output_tokens.min(32_768);
+            for model in &mut stored.model_overrides {
+                model.context_window = model.context_window.map(|value| value.min(98_304));
+                model.max_output_tokens =
+                    model.max_output_tokens.map(|value| value.min(32_768));
+            }
         }
         atomic_json_write(&self.path, &serde_json::to_vec_pretty(&stored)?)
     }
@@ -217,31 +237,6 @@ pub(crate) fn without_utf8_bom(bytes: &[u8]) -> &[u8] {
     bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)
 }
 
-pub fn apply_bonsai_runtime(settings: &ResearchSettings) -> Result<PathBuf, ConfigError> {
-    validate(settings)?;
-    let path = Path::new(&settings.bonsai_root).join("settings.json");
-    if !path.is_file() {
-        return Err(ConfigError::MissingBonsaiSettings(
-            path.display().to_string(),
-        ));
-    }
-    let bytes = fs::read(&path)?;
-    let mut value: Value = serde_json::from_slice(without_utf8_bom(&bytes))?;
-    value["AdvancedMode"] = Value::Bool(true);
-    value["ContextWindow"] = Value::from(settings.context_window);
-    value["MainMaxOutputTokens"] = Value::from(settings.max_output_tokens);
-    let temporary = path.with_extension("json.kestrel.tmp");
-    let backup = path.with_extension("json.kestrel-backup");
-    fs::write(&temporary, serde_json::to_vec_pretty(&value)?)?;
-    fs::copy(&path, &backup)?;
-    fs::remove_file(&path)?;
-    if let Err(error) = fs::rename(&temporary, &path) {
-        let _ = fs::copy(&backup, &path);
-        return Err(error.into());
-    }
-    Ok(path)
-}
-
 pub fn validate(settings: &ResearchSettings) -> Result<(), ConfigError> {
     if settings.advanced_mode
         && [
@@ -382,51 +377,23 @@ mod tests {
     }
 
     #[test]
-    fn applies_runtime_values_and_preserves_a_recovery_copy() {
-        let directory = tempfile::tempdir().unwrap();
-        let original = serde_json::json!({
-            "AdvancedMode": false,
-            "ContextWindow": 4_096,
-            "MainMaxOutputTokens": 1_024,
-            "Temperature": 0.6
-        });
-        let mut powershell_json = vec![0xEF, 0xBB, 0xBF];
-        powershell_json.extend(serde_json::to_vec_pretty(&original).unwrap());
-        fs::write(directory.path().join("settings.json"), powershell_json).unwrap();
-        let settings = ResearchSettings {
-            advanced_mode: true,
-            bonsai_root: directory.path().to_string_lossy().into_owned(),
-            context_window: 196_608,
-            max_output_tokens: 65_536,
-            ..ResearchSettings::default()
+    fn per_model_runtime_values_override_global_defaults() {
+        let settings = ControlSettings {
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            model_overrides: vec![crate::models::ModelRuntimeOverride {
+                model_id: "model-a".into(),
+                context_window: Some(65_536),
+                max_output_tokens: Some(16_384),
+                threads: Some(6),
+            }],
+            ..ControlSettings::default()
         };
 
-        apply_bonsai_runtime(&settings).unwrap();
-
-        let applied: Value =
-            serde_json::from_slice(&fs::read(directory.path().join("settings.json")).unwrap())
-                .unwrap();
-        let backup_bytes = fs::read(directory.path().join("settings.json.kestrel-backup")).unwrap();
-        let backup: Value = serde_json::from_slice(without_utf8_bom(&backup_bytes)).unwrap();
-        assert_eq!(applied["ContextWindow"], 196_608);
-        assert_eq!(applied["MainMaxOutputTokens"], 65_536);
-        assert_eq!(applied["Temperature"], 0.6);
-        assert_eq!(backup, original);
-    }
-
-    #[test]
-    #[ignore = "writes the user's installed Bonsai settings with the validated profile"]
-    fn live_applies_profile_to_powershell_bom_settings() {
-        let settings = ResearchSettings {
-            advanced_mode: true,
-            ..ResearchSettings::default()
-        };
-        let path = apply_bonsai_runtime(&settings).expect("installed Bonsai settings should apply");
-        let bytes = fs::read(&path).unwrap();
-        assert!(!bytes.starts_with(&[0xEF, 0xBB, 0xBF]));
-        let applied: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(applied["ContextWindow"], 98_304);
-        assert_eq!(applied["MainMaxOutputTokens"], 32_768);
-        assert!(path.with_extension("json.kestrel-backup").is_file());
+        let effective = settings.for_model("model-a");
+        assert_eq!(effective.context_window, 65_536);
+        assert_eq!(effective.max_output_tokens, 16_384);
+        assert_eq!(effective.threads, 6);
+        assert_eq!(settings.for_model("model-b").context_window, 32_768);
     }
 }

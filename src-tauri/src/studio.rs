@@ -36,10 +36,12 @@ mod agent_lifecycle;
 mod agent_protocol;
 mod copilot;
 mod image_assets;
+mod image_studio;
 mod live_preview;
 mod model_stream;
 mod movie_agent;
 mod music;
+mod music_midi;
 mod planning;
 mod prompt_collaboration;
 mod prompts;
@@ -57,12 +59,14 @@ pub use image_assets::{
     emit_image_asset_error, GeneratedImageProvenance, MovieImageAssetGeneration,
     MovieImageAssetRequest,
 };
+pub use image_studio::{CreateImageProjectRequest, ImageProject, ImageStudio, ImageSummary};
 use live_preview::{
     emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget, PREVIEW_NODE_ID,
 };
 use movie_agent::MovieAgentWorkspace;
 pub use music::{
-    CreateMusicProjectRequest, MusicMidiRequest, MusicProject, MusicStudio, MusicSummary,
+    CreateMusicProjectRequest, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
+    MusicSummary, SaveMusicMidiDocumentRequest,
 };
 pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningStage};
 pub use prompt_collaboration::{
@@ -133,6 +137,9 @@ struct IndependentReviewRequest<'a> {
     connection: &'a ModelConnection,
     settings: &'a MovieSettings,
     runtime_max_output_tokens: u32,
+    cancel: &'a CancellationToken,
+    app: Option<&'a AppHandle>,
+    position: (u32, u32),
 }
 
 fn media_program(name: &str) -> PathBuf {
@@ -177,6 +184,8 @@ fn read_media_response(
         .ok_or_else(|| (500, "local media library is unavailable".to_string()))?;
     let (root, relative) = if let Some(relative) = relative.strip_prefix("music/") {
         (library.join("music"), relative)
+    } else if let Some(relative) = relative.strip_prefix("images/") {
+        (library.join("images"), relative)
     } else {
         (library.join("movies"), relative.as_ref())
     };
@@ -218,6 +227,22 @@ fn read_media_response(
         .header("Content-Type", content_type)
         .header("Access-Control-Allow-Origin", "*")
         .header("Accept-Ranges", "bytes");
+    if request
+        .uri()
+        .query()
+        .is_some_and(|query| query.split('&').any(|parameter| parameter == "download=1"))
+    {
+        let filename = target
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("kestrel-media");
+        let encoded =
+            percent_encoding::utf8_percent_encode(filename, percent_encoding::NON_ALPHANUMERIC);
+        builder = builder.header(
+            "Content-Disposition",
+            format!("attachment; filename*=UTF-8''{encoded}"),
+        );
+    }
     if request.method() == tauri::http::Method::HEAD {
         return builder
             .header("Content-Length", length)
@@ -357,9 +382,21 @@ pub struct MoviePlanFeedbackRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MovieClipAssistRequest {
+    pub request_id: String,
     pub id: String,
     pub clip_id: String,
     pub feedback: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieClipAssistEvent {
+    pub request_id: String,
+    pub project_id: String,
+    pub clip_id: String,
+    pub kind: String,
+    pub content: String,
+    pub at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1827,6 +1864,8 @@ impl MovieStudio {
                 runtime_max_output_tokens,
                 label: "Studio model qualification",
                 audit_path: None,
+                cancel: None,
+                on_event: None,
             },
         )
         .await?;
@@ -2151,19 +2190,19 @@ impl MovieStudio {
 
     pub async fn assist_clip(
         &self,
-        id: &str,
-        clip_id: &str,
-        feedback: &str,
+        request: &MovieClipAssistRequest,
         connection: &ModelConnection,
         runtime_max_output_tokens: u32,
+        app: Option<&AppHandle>,
     ) -> Result<MovieClipSuggestion, StudioError> {
-        let feedback = feedback.trim();
+        validate_id(&request.request_id)?;
+        let feedback = request.feedback.trim();
         if feedback.chars().count() < 3 || feedback.chars().count() > 8_000 {
             return Err(StudioError::Invalid(
                 "scene feedback must contain 3 to 8,000 characters".into(),
             ));
         }
-        let project = self.get(id)?;
+        let project = self.get(&request.id)?;
         let plan = project
             .plan
             .as_ref()
@@ -2171,7 +2210,7 @@ impl MovieStudio {
         let index = plan
             .clips
             .iter()
-            .position(|clip| clip.id == clip_id)
+            .position(|clip| clip.id == request.clip_id)
             .ok_or_else(|| StudioError::Invalid("unknown movie scene".into()))?;
         let start = index.saturating_sub(1);
         let end = (index + 2).min(plan.clips.len());
@@ -2188,6 +2227,21 @@ impl MovieStudio {
             json!({"role":"system","content":clip_assistant_prompt()}),
             json!({"role":"user","content":payload.to_string()}),
         ];
+        let mut on_event = |event| {
+            if let (Some(app), agent_protocol::StreamEvent::Reasoning(token)) = (app, event) {
+                let _ = app.emit(
+                    "movie-clip-assist",
+                    MovieClipAssistEvent {
+                        request_id: request.request_id.clone(),
+                        project_id: request.id.clone(),
+                        clip_id: request.clip_id.clone(),
+                        kind: "reasoning".into(),
+                        content: token,
+                        at: Utc::now().to_rfc3339(),
+                    },
+                );
+            }
+        };
         let mut suggestion: MovieClipSuggestion = agent_protocol::complete_tool_submission(
             &self.http,
             ToolSubmissionRequest {
@@ -2200,11 +2254,13 @@ impl MovieStudio {
                 runtime_max_output_tokens,
                 label: "movie scene suggestion",
                 audit_path: None,
+                cancel: None,
+                on_event: Some(&mut on_event),
             },
         )
         .await?;
-        suggestion.clip_id = clip_id.into();
-        suggestion.clip.id = clip_id.into();
+        suggestion.clip_id = request.clip_id.clone();
+        suggestion.clip.id = request.clip_id.clone();
         let mut candidate = plan.clone();
         candidate.clips[index] = suggestion.clip.clone();
         prepare_producer_plan(&project, &mut candidate)?;
@@ -2257,6 +2313,18 @@ impl MovieStudio {
             .project_dir(request.project_id)
             .join("agent-workspace")
             .join("agent-last-request.json");
+        let mut on_event = |event| {
+            if let agent_protocol::StreamEvent::Reasoning(token) = event {
+                self.emit_planning(
+                    request.project_id,
+                    PlanningEventKind::Reasoning,
+                    PlanningStage::Thinking,
+                    token,
+                    request.position,
+                    request.app,
+                );
+            }
+        };
         agent_protocol::complete_tool_submission(
             &self.http,
             ToolSubmissionRequest {
@@ -2269,6 +2337,8 @@ impl MovieStudio {
                 runtime_max_output_tokens: request.runtime_max_output_tokens,
                 label: "independent movie code review",
                 audit_path: Some(&audit_path),
+                cancel: Some(request.cancel),
+                on_event: Some(&mut on_event),
             },
         )
         .await
@@ -5405,8 +5475,7 @@ mod tests {
         };
         let models = crate::model::scan(&[Path::new(&research.bonsai_root).join("models")]);
         let model_id = models
-            .iter()
-            .find(|model| crate::model_roles::is_bonsai(model))
+            .first()
             .expect("installed Bonsai model")
             .id
             .clone();
@@ -6013,11 +6082,12 @@ mod tests {
         let exchange_prompt = studio.movie_plan_exchange_prompt(&project.id).unwrap();
         let runtime = Arc::new(RuntimeManager::new());
         let research = ResearchSettings::default();
+        let (control, models, model_id) = live_bonsai_studio_context(&research);
         studio.release_comfy_memory().await;
 
         let result: Result<MoviePlan, String> = async {
             let lease = runtime
-                .lease_research(&research)
+                .lease_research(&model_id, &models, &control, &research, None)
                 .await
                 .map_err(|error| error.to_string())?;
             let body = json!({
@@ -7012,7 +7082,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let project = result.unwrap();
         let plan = project.plan.as_ref().unwrap();
         assert_eq!(plan.clips.len(), 2);
@@ -7053,12 +7123,12 @@ mod tests {
             studio.plan(&project.id, MovieModelRuntime { runtime: &runtime, models: &models, settings: &runtime_settings, director_model_id: &model_id, reviewer_model_id: &model_id }, &cancel, None).await.map_err(|error| error.to_string())?;
             eprintln!("live movie: returning the Studio runtime and GPU");
             runtime.stop_managed().await.map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root).await.map_err(|error| error.to_string())?;
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await.map_err(|error| error.to_string())?;
             eprintln!("live movie: rendering and assembling with MiniMax H3");
             studio.render(&project.id, &cancel, None).await.map_err(|error| error.to_string())
         }.await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let project = result.unwrap();
         assert_eq!(project.status, "complete");
         assert!(Path::new(&project.final_path).is_file());
@@ -7198,7 +7268,7 @@ mod tests {
                 .stop_managed()
                 .await
                 .map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root)
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             eprintln!("live reference movie: rendering with installed H3 ref2va");
@@ -7209,7 +7279,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let project = result.unwrap();
         assert_eq!(project.status, "complete");
         assert_eq!(project.references.len(), 2);
@@ -7443,7 +7513,7 @@ mod tests {
                 .stop_managed()
                 .await
                 .map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root)
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             eprintln!("AFRICA ACCEPTANCE: planning complete; MiniMax H3 rendering begins");
@@ -7455,7 +7525,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let (project, plan) = result.unwrap();
         let planned_seconds = plan
             .clips
@@ -7709,7 +7779,7 @@ mod tests {
                 .stop_managed()
                 .await
                 .map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root)
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             eprintln!("MOON CAT ACCEPTANCE: planning complete; MiniMax H3 rendering begins");
@@ -7721,7 +7791,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let (project, plan) = result.unwrap();
         let planned_seconds = plan
             .clips
@@ -7931,7 +8001,7 @@ mod tests {
                 .stop_managed()
                 .await
                 .map_err(|error| error.to_string())?;
-            crate::services::stop_bonsai(&research.bonsai_root)
+            crate::services::stop_legacy_bonsai_service(&research.bonsai_root)
                 .await
                 .map_err(|error| error.to_string())?;
             eprintln!("FOOTBALL CIRCUS ACCEPTANCE: unattended plan accepted; MiniMax H3 rendering begins");
@@ -7943,7 +8013,7 @@ mod tests {
         }
         .await;
         let _ = runtime.stop_managed().await;
-        let _ = crate::services::stop_bonsai(&research.bonsai_root).await;
+        let _ = crate::services::stop_legacy_bonsai_service(&research.bonsai_root).await;
         let (project, plan) = result.unwrap();
         let planned_seconds = plan
             .clips
