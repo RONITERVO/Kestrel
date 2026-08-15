@@ -138,6 +138,14 @@ export const demoSnapshot: AppSnapshot = {
       { id: "speech", label: "Whisper dictation + local voice", status: "missing", detail: "Downloads verified Whisper large-v3-turbo dictation and private Chatterbox narration through local ComfyUI.", path: "D:\\AI\\ComfyUI", downloadBytes: 4810176394, optional: true },
       { id: "muscriptor", label: "MuScriptor audio to MIDI", status: "missing", detail: "Optional gated non-commercial transcription with an isolated local GPU runner.", path: "D:\\LocalAI\\MuScriptor\\runtime\\uvx.exe", downloadBytes: 3500000000, optional: true },
     ],
+    modelAssets: [
+      { id: "assistant:ternary-bonsai-27b-q2_0.gguf", component: "assistant", label: "Bonsai 27B model", fileName: "Ternary-Bonsai-27B-Q2_0.gguf", bytes: 7_165_121_600, recognized: true, installedPath: "D:\\LocalAI\\Bonsai27B\\models\\Ternary-Bonsai-27B-Q2_0.gguf" },
+      { id: "studio:minimax_h3_fl2va_pruned_int8_convrot.safetensors", component: "studio", label: "MiniMax H3 FL2VA", fileName: "minimax_h3_fl2va_pruned_int8_convrot.safetensors", bytes: 20_970_379_616, recognized: true, installedPath: "D:\\AI\\ComfyUI\\models\\diffusion_models\\minimax_h3_fl2va_pruned_int8_convrot.safetensors" },
+      { id: "music:minimax_music3_dit_int8_convrot.safetensors", component: "music", label: "MiniMax Music 3 model", fileName: "minimax_music3_dit_int8_convrot.safetensors", bytes: 2_502_161_682, recognized: true, installedPath: "D:\\AI\\ComfyUI\\models\\diffusion_models\\minimax_music3_dit_int8_convrot.safetensors" },
+      { id: "image:ideogram4_nvfp4_mixed.safetensors", component: "image", label: "Ideogram 4 conditional NVFP4 model", fileName: "ideogram4_nvfp4_mixed.safetensors", bytes: 5_490_550_037, recognized: true, installedPath: "D:\\AI\\ComfyUI\\models\\diffusion_models\\ideogram4_nvfp4_mixed.safetensors" },
+      { id: "speech:large-v3-turbo.pt", component: "speech", label: "Whisper large-v3-turbo", fileName: "large-v3-turbo.pt", bytes: 1_617_941_637, recognized: true, installedPath: "D:\\AI\\ComfyUI\\models\\stt\\whisper\\large-v3-turbo.pt" },
+      { id: "muscriptor:model.safetensors", component: "muscriptor", label: "MuScriptor large checkpoint", fileName: "model.safetensors", bytes: 5_465_642_136, recognized: false, installedPath: "D:\\LocalAI\\MuScriptor\\models\\model.safetensors" },
+    ],
   },
   control: {
     settings: {

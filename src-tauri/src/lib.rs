@@ -2042,7 +2042,7 @@ async fn save_setup_locations(
 #[tauri::command]
 async fn pick_setup_folder() -> Result<String, String> {
     Ok(rfd::AsyncFileDialog::new()
-        .set_title("Choose where Kestrel should keep its AI components")
+        .set_title("Choose a local AI model or Kestrel component folder")
         .pick_folder()
         .await
         .map(|folder| folder.path().to_string_lossy().into_owned())
@@ -2059,6 +2059,7 @@ async fn pick_setup_file(kind: String) -> Result<String, String> {
         }
         "muscriptorModel" => dialog.add_filter("MuScriptor checkpoint", &["safetensors"]),
         "whisperModel" => dialog.add_filter("OpenAI Whisper checkpoint", &["pt"]),
+        "modelAsset" => dialog.add_filter("Local AI model", &["safetensors", "gguf", "pt", "json"]),
         _ => dialog,
     };
     Ok(dialog
@@ -2066,6 +2067,17 @@ async fn pick_setup_file(kind: String) -> Result<String, String> {
         .await
         .map(|file| file.path().to_string_lossy().into_owned())
         .unwrap_or_default())
+}
+
+#[tauri::command]
+async fn scan_setup_model_folder(
+    path: String,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let root = std::path::PathBuf::from(path);
+    tokio::task::spawn_blocking(move || setup::scan_existing_model_folder(&root))
+        .await
+        .map_err(|error| format!("existing model search could not finish: {error}"))?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3475,6 +3487,7 @@ pub fn run() {
             save_setup_locations,
             pick_setup_folder,
             pick_setup_file,
+            scan_setup_model_folder,
             install_setup_component,
             cancel_setup_install,
             open_standalone_report,

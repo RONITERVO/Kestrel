@@ -128,6 +128,11 @@ export async function pickSetupFile(kind: string): Promise<string> {
   return invoke<string>("pick_setup_file", { kind });
 }
 
+export async function scanSetupModelFolder(path: string): Promise<Record<string, string>> {
+  if (!isTauri()) return {};
+  return invoke<Record<string, string>>("scan_setup_model_folder", { path });
+}
+
 export async function installSetupComponent(request: SetupInstallRequest): Promise<AppSnapshot> {
   if (!isTauri()) return demoSnapshot;
   return invoke<AppSnapshot>("install_setup_component", { request });

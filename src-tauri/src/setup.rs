@@ -4,6 +4,7 @@ use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -55,6 +56,18 @@ pub struct SetupComponent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetupModelAsset {
+    pub id: String,
+    pub component: String,
+    pub label: String,
+    pub file_name: String,
+    pub bytes: u64,
+    pub recognized: bool,
+    pub installed_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetupSnapshot {
     pub ready: bool,
     pub install_root: String,
@@ -62,6 +75,7 @@ pub struct SetupSnapshot {
     pub gpu_name: Option<String>,
     pub gpu_memory_bytes: u64,
     pub components: Vec<SetupComponent>,
+    pub model_assets: Vec<SetupModelAsset>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -92,6 +106,8 @@ pub struct SetupInstallRequest {
     pub muscriptor_checkpoint_path: String,
     #[serde(default)]
     pub accept_muscriptor_non_commercial_license: bool,
+    #[serde(default)]
+    pub existing_model_paths: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -229,6 +245,19 @@ pub fn snapshot(
     let ffmpeg = resolve_program(&research.ffmpeg_path, "ffmpeg.exe");
     let ffprobe = resolve_program(&research.ffprobe_path, "ffprobe.exe");
     let media_ready = ffmpeg.is_some() && ffprobe.is_some();
+    let model_assets = setup_model_assets(research);
+    let missing_model_bytes = |component: &str| {
+        model_assets
+            .iter()
+            .filter(|asset| asset.component == component && !asset.recognized)
+            .map(|asset| asset.bytes)
+            .sum::<u64>()
+    };
+    let missing_comfy_bytes = if comfy.join("main.py").is_file() {
+        0
+    } else {
+        2_133_107_036
+    };
 
     let components = vec![
         component(
@@ -241,7 +270,17 @@ pub fn snapshot(
                 "Needs the local engine, Bonsai 27B model, and image projector."
             },
             &research.bonsai_root,
-            (8_447_588_320, false),
+            (
+                missing_model_bytes("assistant")
+                    + if engine_ready {
+                        0
+                    } else if gpu.is_some() {
+                        653_219_840
+                    } else {
+                        17_401_584
+                    },
+                false,
+            ),
         ),
         component(
             "wikipedia",
@@ -282,7 +321,7 @@ pub fn snapshot(
                 "Optional: about 61 GB plus ComfyUI, the full H3 decoders, and a pinned live-preview decoder; intended for a capable NVIDIA PC."
             },
             &research.comfy_root,
-            (65_550_000_000, true),
+            (missing_model_bytes("studio") + missing_comfy_bytes, true),
         ),
         component(
             "music",
@@ -296,7 +335,7 @@ pub fn snapshot(
                 "Optional: about 12 GB for the verified INT8 model, text encoder, full-quality decoder, and dedicated GPU profile."
             },
             &research.comfy_root,
-            (11_915_469_696, true),
+            (missing_model_bytes("music") + missing_comfy_bytes, true),
         ),
         component(
             "image",
@@ -310,7 +349,20 @@ pub fn snapshot(
                 "Optional: about 16.4 GiB for the 12 GB NVIDIA profile. Ideogram's license permits non-commercial work only."
             },
             &research.comfy_root,
-            (17_622_549_040, true),
+            (
+                missing_model_bytes("image")
+                    + missing_comfy_bytes
+                    + if file_has_size(
+                        &comfy
+                            .join("models/diffusion_models/IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt"),
+                        13_646,
+                    ) {
+                        0
+                    } else {
+                        13_646
+                    },
+                true,
+            ),
         ),
         component(
             "speech",
@@ -322,7 +374,19 @@ pub fn snapshot(
                 "Optional: downloads the verified 1.6 GB Whisper large-v3-turbo checkpoint for dictation plus a local Chatterbox voice; no browser or system speech fallback."
             },
             &research.comfy_root,
-            (4_810_176_394, true),
+            (
+                missing_model_bytes("speech")
+                    + missing_comfy_bytes
+                    + if comfy
+                        .join("custom_nodes/ComfyUI-Chatterbox/nodes.py")
+                        .is_file()
+                    {
+                        0
+                    } else {
+                        267_765
+                    },
+                true,
+            ),
         ),
         component(
             "muscriptor",
@@ -344,6 +408,7 @@ pub fn snapshot(
         gpu_name: gpu.map(|value| value.name.clone()),
         gpu_memory_bytes: gpu.map(|value| value.total_mib * 1024 * 1024).unwrap_or(0),
         components,
+        model_assets,
     }
 }
 
@@ -430,6 +495,7 @@ pub async fn install_component(
     request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
+    validate_existing_model_paths(request)?;
     let root = PathBuf::from(request.install_root.trim());
     if !root.is_absolute() {
         return Err(SetupError::InvalidPath(request.install_root.clone()));
@@ -437,18 +503,19 @@ pub async fn install_component(
     fs::create_dir_all(&root)?;
     settings.install_root = root.to_string_lossy().into_owned();
     match request.component.as_str() {
-        "assistant" => install_assistant(app, settings, &root, cancel).await,
+        "assistant" => install_assistant(app, settings, &root, request, cancel).await,
         "wikipedia" => {
             install_wikipedia(app, settings, &root, &request.wikipedia_edition, cancel).await
         }
         "media" => install_media(app, settings, &root, cancel).await,
-        "studio" => install_studio(app, settings, &root, cancel).await,
-        "music" => install_music(app, settings, &root, cancel).await,
+        "studio" => install_studio(app, settings, &root, request, cancel).await,
+        "music" => install_music(app, settings, &root, request, cancel).await,
         "image" => {
             install_image(
                 app,
                 settings,
                 &root,
+                request,
                 request.accept_ideogram_non_commercial_license,
                 cancel,
             )
@@ -459,6 +526,7 @@ pub async fn install_component(
                 app,
                 settings,
                 &root,
+                request,
                 &request.whisper_checkpoint_path,
                 cancel,
             )
@@ -468,7 +536,12 @@ pub async fn install_component(
             install_muscriptor(
                 app,
                 &root,
-                &request.muscriptor_checkpoint_path,
+                request
+                    .existing_model_paths
+                    .get("muscriptor:model.safetensors")
+                    .map(String::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(&request.muscriptor_checkpoint_path),
                 request.accept_muscriptor_non_commercial_license,
                 cancel,
             )
@@ -481,10 +554,40 @@ pub async fn install_component(
     }
 }
 
+fn validate_existing_model_paths(request: &SetupInstallRequest) -> Result<(), SetupError> {
+    if request.existing_model_paths.len() > 32 {
+        return Err(SetupError::Dependency {
+            name: "existing model selection".into(),
+            details: "at most 32 supported model files can be selected for one setup run".into(),
+        });
+    }
+    let mut ids = reusable_model_assets()
+        .into_iter()
+        .map(|asset| asset.id())
+        .collect::<Vec<_>>();
+    ids.push("muscriptor:model.safetensors".into());
+    for (id, path) in &request.existing_model_paths {
+        if !ids.contains(id) {
+            return Err(SetupError::Dependency {
+                name: "existing model selection".into(),
+                details: format!("{id} is not a supported Setup model asset"),
+            });
+        }
+        if path.chars().count() > 32_767 {
+            return Err(SetupError::Dependency {
+                name: "existing model selection".into(),
+                details: format!("the selected path for {id} is too long"),
+            });
+        }
+    }
+    Ok(())
+}
+
 async fn install_assistant(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     let bonsai = root.join("Bonsai");
@@ -525,36 +628,13 @@ async fn install_assistant(
         download(app, "assistant", &asset, &archive, &cancel).await?;
         unzip(&archive, &runtime, &asset.name)?;
     }
-    let model = Asset::new(
-        "Bonsai 27B model",
-        &format!("https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/{BONSAI_REVISION}/Ternary-Bonsai-27B-Q2_0.gguf"),
-        "Ternary-Bonsai-27B-Q2_0.gguf",
-        7_165_121_600,
-        "868c11714cf8fe47f5ec9eeb2be0ab1a337112886f92ee0ede6b855c4fa31757",
-    );
-    download(
-        app,
-        "assistant",
-        &model,
-        &models.join(&model.file_name),
-        &cancel,
-    )
-    .await?;
-    let projector = Asset::new(
-        "Bonsai image understanding",
-        &format!("https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/{BONSAI_REVISION}/Ternary-Bonsai-27B-mmproj-Q8_0.gguf"),
-        "Ternary-Bonsai-27B-mmproj-Q8_0.gguf",
-        629_246_880,
-        "eb561d41a7bbeb0fcf04883c8af11078ef6cae0a66862a0b68443cfca495269d",
-    );
-    download(
-        app,
-        "assistant",
-        &projector,
-        &models.join(&projector.file_name),
-        &cancel,
-    )
-    .await?;
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "assistant")
+    {
+        install_or_reuse_model(app, request, &asset, &bonsai.join(&asset.relative), &cancel)
+            .await?;
+    }
     let settings_path = bonsai.join("settings.json");
     if !settings_path.is_file() {
         fs::write(
@@ -737,6 +817,7 @@ async fn install_studio(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     if crate::services::gpu_snapshot().await.is_none() {
@@ -747,29 +828,16 @@ async fn install_studio(
     }
     let comfy =
         install_comfy_portable(app, root, "studio", ComfyRequirement::Base, &cancel).await?;
-    for asset in h3_assets() {
-        let destination = comfy.join("models").join(asset.relative);
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "studio")
+    {
+        let destination = comfy.join(&asset.relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        download(
-            app,
-            "studio",
-            &asset.download_asset(),
-            &destination,
-            &cancel,
-        )
-        .await?;
+        install_or_reuse_model(app, request, &asset, &destination, &cancel).await?;
     }
-    let decoder = h3_preview_decoder();
-    download(
-        app,
-        "studio",
-        &decoder,
-        &comfy.join("models/vae_approx/taeh3.safetensors"),
-        &cancel,
-    )
-    .await?;
     ensure_h3_preview_node(app, &comfy, &cancel).await?;
     ensure_comfy_launcher(&comfy)?;
     settings.comfy_root = comfy.to_string_lossy().into_owned();
@@ -864,6 +932,7 @@ async fn install_music(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     if crate::services::gpu_snapshot().await.is_none() {
@@ -895,12 +964,15 @@ async fn install_music(
     } else {
         install_comfy_portable(app, root, "music", ComfyRequirement::Music, &cancel).await?
     };
-    for asset in music_assets() {
-        let destination = comfy.join("models").join(asset.relative);
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "music")
+    {
+        let destination = comfy.join(&asset.relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        download(app, "music", &asset.download_asset(), &destination, &cancel).await?;
+        install_or_reuse_model(app, request, &asset, &destination, &cancel).await?;
     }
     ensure_comfy_launcher(&comfy)?;
     settings.comfy_root = comfy.to_string_lossy().into_owned();
@@ -920,6 +992,7 @@ async fn install_image(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    request: &SetupInstallRequest,
     accepted_license: bool,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
@@ -956,7 +1029,20 @@ async fn install_image(
     } else {
         install_comfy_portable(app, root, "image", ComfyRequirement::Ideogram, &cancel).await?
     };
-    for asset in ideogram_assets() {
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "image")
+    {
+        let destination = comfy.join(&asset.relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        install_or_reuse_model(app, request, &asset, &destination, &cancel).await?;
+    }
+    for asset in ideogram_assets()
+        .into_iter()
+        .filter(|asset| !asset.relative.ends_with(".safetensors"))
+    {
         let destination = comfy.join(asset.relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -981,6 +1067,7 @@ async fn install_speech(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    request: &SetupInstallRequest,
     whisper_checkpoint_path: &str,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
@@ -1020,13 +1107,17 @@ async fn install_speech(
     .await?;
     install_chatterbox_node(&chatterbox_archive, &comfy)?;
     install_kestrel_whisper_node(&comfy)?;
-    for asset in speech_assets() {
-        let destination = comfy.join(asset.relative);
+    for asset in reusable_model_assets()
+        .into_iter()
+        .filter(|asset| asset.component == "speech")
+    {
+        let destination = comfy.join(&asset.relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
         if asset.relative == "models/stt/whisper/large-v3-turbo.pt"
             && !whisper_checkpoint_path.trim().is_empty()
+            && !request.existing_model_paths.contains_key(&asset.id())
             && !verified(&destination, &asset.download).await?
         {
             import_verified_asset(
@@ -1037,8 +1128,9 @@ async fn install_speech(
                 &asset.download,
             )
             .await?;
+        } else {
+            install_or_reuse_model(app, request, &asset, &destination, &cancel).await?;
         }
-        download(app, "speech", &asset.download, &destination, &cancel).await?;
     }
     ensure_comfy_launcher(&comfy)?;
     fs::write(
@@ -1125,7 +1217,9 @@ async fn install_muscriptor(
     if temporary.is_file() {
         fs::remove_file(&temporary)?;
     }
-    tokio::fs::copy(&source, &temporary).await?;
+    if fs::hard_link(&source, &temporary).is_err() {
+        tokio::fs::copy(&source, &temporary).await?;
+    }
     validate_muscriptor_checkpoint(&temporary)?;
     let hash_path = temporary.clone();
     let model_sha256 = tokio::task::spawn_blocking(move || sha256_file(&hash_path))
@@ -1134,10 +1228,22 @@ async fn install_muscriptor(
             name: "MuScriptor large checkpoint".into(),
             details: error.to_string(),
         })??;
-    if model.is_file() {
-        fs::remove_file(&model)?;
+    let backup = model.with_extension("safetensors.kestrel-backup");
+    if backup.is_file() {
+        fs::remove_file(&backup)?;
     }
-    fs::rename(&temporary, &model)?;
+    if model.is_file() {
+        fs::rename(&model, &backup)?;
+    }
+    if let Err(error) = fs::rename(&temporary, &model) {
+        if backup.is_file() {
+            let _ = fs::rename(&backup, &model);
+        }
+        return Err(error.into());
+    }
+    if backup.is_file() {
+        fs::remove_file(backup)?;
+    }
 
     emit(
         app,
@@ -2003,6 +2109,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {"ModelPreviewOverrideKJ": "Model Preview Override 
     Ok(())
 }
 
+#[derive(Clone)]
 struct Asset {
     name: String,
     url: String,
@@ -2021,6 +2128,231 @@ impl Asset {
             sha256: sha256.into(),
         }
     }
+}
+
+struct ReusableModelAsset {
+    component: &'static str,
+    relative: String,
+    download: Asset,
+}
+
+impl ReusableModelAsset {
+    fn id(&self) -> String {
+        format!(
+            "{}:{}",
+            self.component,
+            self.download.file_name.to_ascii_lowercase()
+        )
+    }
+}
+
+fn bonsai_model_asset() -> Asset {
+    Asset::new(
+        "Bonsai 27B model",
+        &format!(
+            "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/{BONSAI_REVISION}/Ternary-Bonsai-27B-Q2_0.gguf"
+        ),
+        "Ternary-Bonsai-27B-Q2_0.gguf",
+        7_165_121_600,
+        "868c11714cf8fe47f5ec9eeb2be0ab1a337112886f92ee0ede6b855c4fa31757",
+    )
+}
+
+fn bonsai_projector_asset() -> Asset {
+    Asset::new(
+        "Bonsai image understanding",
+        &format!(
+            "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/{BONSAI_REVISION}/Ternary-Bonsai-27B-mmproj-Q8_0.gguf"
+        ),
+        "Ternary-Bonsai-27B-mmproj-Q8_0.gguf",
+        629_246_880,
+        "eb561d41a7bbeb0fcf04883c8af11078ef6cae0a66862a0b68443cfca495269d",
+    )
+}
+
+fn reusable_model_assets() -> Vec<ReusableModelAsset> {
+    let mut assets = vec![
+        ReusableModelAsset {
+            component: "assistant",
+            relative: "models/Ternary-Bonsai-27B-Q2_0.gguf".into(),
+            download: bonsai_model_asset(),
+        },
+        ReusableModelAsset {
+            component: "assistant",
+            relative: "models/Ternary-Bonsai-27B-mmproj-Q8_0.gguf".into(),
+            download: bonsai_projector_asset(),
+        },
+    ];
+    assets.extend(h3_assets().into_iter().map(|asset| ReusableModelAsset {
+        component: "studio",
+        relative: format!("models/{}", asset.relative),
+        download: asset.download_asset(),
+    }));
+    assets.push(ReusableModelAsset {
+        component: "studio",
+        relative: "models/vae_approx/taeh3.safetensors".into(),
+        download: h3_preview_decoder(),
+    });
+    assets.extend(music_assets().into_iter().map(|asset| ReusableModelAsset {
+        component: "music",
+        relative: format!("models/{}", asset.relative),
+        download: asset.download_asset(),
+    }));
+    assets.extend(
+        ideogram_assets()
+            .into_iter()
+            .filter(|asset| asset.relative.ends_with(".safetensors"))
+            .map(|asset| ReusableModelAsset {
+                component: "image",
+                relative: asset.relative.into(),
+                download: asset.download,
+            }),
+    );
+    assets.extend(speech_assets().into_iter().map(|asset| ReusableModelAsset {
+        component: "speech",
+        relative: asset.relative.into(),
+        download: asset.download,
+    }));
+    assets
+}
+
+fn configured_model_destination(
+    research: &ResearchSettings,
+    asset: &ReusableModelAsset,
+) -> PathBuf {
+    let root = if asset.component == "assistant" {
+        Path::new(&research.bonsai_root)
+    } else {
+        Path::new(&research.comfy_root)
+    };
+    root.join(&asset.relative)
+}
+
+fn setup_model_assets(research: &ResearchSettings) -> Vec<SetupModelAsset> {
+    let mut assets = reusable_model_assets()
+        .into_iter()
+        .map(|asset| {
+            let destination = configured_model_destination(research, &asset);
+            SetupModelAsset {
+                id: asset.id(),
+                component: asset.component.into(),
+                label: asset.download.name,
+                file_name: asset.download.file_name,
+                bytes: asset.download.bytes,
+                recognized: file_has_size(&destination, asset.download.bytes),
+                installed_path: destination.to_string_lossy().into_owned(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let (_, muscriptor_model, _) = managed_muscriptor_paths(Path::new(&research.install_root));
+    assets.push(SetupModelAsset {
+        id: "muscriptor:model.safetensors".into(),
+        component: "muscriptor".into(),
+        label: "MuScriptor large checkpoint".into(),
+        file_name: "model.safetensors".into(),
+        bytes: MUSCRIPTOR_MODEL_BYTES,
+        recognized: file_has_size(&muscriptor_model, MUSCRIPTOR_MODEL_BYTES),
+        installed_path: muscriptor_model.to_string_lossy().into_owned(),
+    });
+    assets
+}
+
+pub fn scan_existing_model_folder(root: &Path) -> Result<BTreeMap<String, String>, SetupError> {
+    const MAX_SCAN_ENTRIES: usize = 50_000;
+    if !root.is_absolute() || !root.is_dir() {
+        return Err(SetupError::InvalidPath(root.to_string_lossy().into_owned()));
+    }
+    let mut expected = reusable_model_assets()
+        .into_iter()
+        .map(|asset| {
+            (
+                asset.download.file_name.to_ascii_lowercase(),
+                (asset.id(), asset.download.bytes),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    expected.insert(
+        "model.safetensors".into(),
+        (
+            "muscriptor:model.safetensors".into(),
+            MUSCRIPTOR_MODEL_BYTES,
+        ),
+    );
+    let mut matches = BTreeMap::new();
+    for (index, entry) in walkdir::WalkDir::new(root)
+        .max_depth(10)
+        .follow_links(false)
+        .into_iter()
+        .enumerate()
+    {
+        if index >= MAX_SCAN_ENTRIES {
+            return Err(SetupError::Dependency {
+                name: "existing model search".into(),
+                details: format!(
+                    "{} contains more than {MAX_SCAN_ENTRIES} entries. Choose a narrower AI model folder, then scan again.",
+                    root.display()
+                ),
+            });
+        }
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Some(file_name) = entry.file_name().to_str() else {
+            continue;
+        };
+        let Some((id, bytes)) = expected.get(&file_name.to_ascii_lowercase()) else {
+            continue;
+        };
+        if entry
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() == *bytes)
+        {
+            matches
+                .entry(id.clone())
+                .or_insert_with(|| entry.path().to_string_lossy().into_owned());
+        }
+    }
+    Ok(matches)
+}
+
+async fn install_or_reuse_model(
+    app: &AppHandle,
+    request: &SetupInstallRequest,
+    asset: &ReusableModelAsset,
+    destination: &Path,
+    cancel: &CancellationToken,
+) -> Result<(), SetupError> {
+    if verified(destination, &asset.download).await? {
+        emit(
+            app,
+            asset.component,
+            "verified",
+            &format!("{} is already complete.", asset.download.name),
+            asset.download.bytes,
+            asset.download.bytes,
+            0,
+        );
+        return Ok(());
+    }
+    if let Some(source) = request
+        .existing_model_paths
+        .get(&asset.id())
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        import_verified_asset(
+            app,
+            asset.component,
+            Path::new(source),
+            destination,
+            &asset.download,
+        )
+        .await?;
+        return Ok(());
+    }
+    download(app, asset.component, &asset.download, destination, cancel).await
 }
 
 async fn download(
@@ -2204,7 +2536,7 @@ async fn import_verified_asset(
         asset.bytes,
         0,
     );
-    if !verified(source, asset).await? {
+    if fs::metadata(source)?.len() != asset.bytes {
         return Err(SetupError::Integrity {
             name: asset.name.clone(),
             details: format!(
@@ -2217,22 +2549,62 @@ async fn import_verified_asset(
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    let temporary = destination.with_extension("pt.importing");
+    let temporary = destination.with_extension(format!(
+        "{}.kestrel-importing",
+        destination
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("model")
+    ));
     if temporary.is_file() {
         fs::remove_file(&temporary)?;
     }
-    tokio::fs::copy(source, &temporary).await?;
+    if fs::hard_link(source, &temporary).is_err() {
+        let available =
+            fs2::available_space(destination.parent().unwrap_or_else(|| Path::new(".")))
+                .unwrap_or(u64::MAX);
+        if asset.bytes > available {
+            return Err(SetupError::InsufficientSpace {
+                name: asset.name.clone(),
+                needed: human_bytes(asset.bytes),
+                available: human_bytes(available),
+            });
+        }
+        tokio::fs::copy(source, &temporary).await?;
+    }
     if !verified(&temporary, asset).await? {
         let _ = fs::remove_file(&temporary);
         return Err(SetupError::Integrity {
             name: asset.name.clone(),
-            details: "the copied checkpoint did not retain the verified bytes".into(),
+            details: format!(
+                "{} is not the supported verified {} checkpoint. Leave the field empty to let Setup download the correct file.",
+                source.display(),
+                asset.file_name
+            ),
         });
     }
-    if destination.is_file() {
-        fs::remove_file(destination)?;
+    let backup = destination.with_extension(format!(
+        "{}.kestrel-backup",
+        destination
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("model")
+    ));
+    if backup.is_file() {
+        fs::remove_file(&backup)?;
     }
-    fs::rename(temporary, destination)?;
+    if destination.is_file() {
+        fs::rename(destination, &backup)?;
+    }
+    if let Err(error) = fs::rename(&temporary, destination) {
+        if backup.is_file() {
+            let _ = fs::rename(&backup, destination);
+        }
+        return Err(error.into());
+    }
+    if backup.is_file() {
+        fs::remove_file(backup)?;
+    }
     Ok(())
 }
 
@@ -2580,6 +2952,40 @@ mod tests {
             },
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn existing_model_scan_covers_every_release_profile_and_ignores_wrong_sizes() {
+        let root = tempfile::tempdir().unwrap();
+        let assets = reusable_model_assets();
+        assert_eq!(assets.len(), 21);
+        assert!(assets.iter().any(|asset| asset.component == "assistant"));
+        assert!(assets.iter().any(|asset| asset.component == "studio"));
+        assert!(assets.iter().any(|asset| asset.component == "music"));
+        assert!(assets.iter().any(|asset| asset.component == "image"));
+        assert!(assets.iter().any(|asset| asset.component == "speech"));
+
+        let music = assets
+            .iter()
+            .find(|asset| asset.download.file_name == "minimax_music3_dit_int8_convrot.safetensors")
+            .unwrap();
+        let nested = root.path().join("ComfyUI/models/diffusion_models");
+        fs::create_dir_all(&nested).unwrap();
+        fs::File::create(nested.join(&music.download.file_name))
+            .unwrap()
+            .set_len(music.download.bytes)
+            .unwrap();
+        fs::File::create(nested.join("large-v3-turbo.pt"))
+            .unwrap()
+            .set_len(1)
+            .unwrap();
+
+        let matches = scan_existing_model_folder(root.path()).unwrap();
+        assert!(matches.get(&music.id()).is_some_and(|path| paths_equal(
+            Path::new(path),
+            &nested.join(&music.download.file_name)
+        )));
+        assert!(!matches.contains_key("speech:large-v3-turbo.pt"));
     }
 
     #[test]

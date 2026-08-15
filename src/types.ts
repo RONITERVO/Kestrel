@@ -102,6 +102,16 @@ export interface SetupComponent {
   optional: boolean;
 }
 
+export interface SetupModelAsset {
+  id: string;
+  component: string;
+  label: string;
+  fileName: string;
+  bytes: number;
+  recognized: boolean;
+  installedPath: string;
+}
+
 export interface SetupSnapshot {
   ready: boolean;
   installRoot: string;
@@ -109,6 +119,7 @@ export interface SetupSnapshot {
   gpuName?: string;
   gpuMemoryBytes: number;
   components: SetupComponent[];
+  modelAssets: SetupModelAsset[];
 }
 
 export interface SetupLocations {
@@ -130,6 +141,7 @@ export interface SetupInstallRequest {
   whisperCheckpointPath?: string;
   muscriptorCheckpointPath?: string;
   acceptMuscriptorNonCommercialLicense?: boolean;
+  existingModelPaths?: Record<string, string>;
 }
 
 export interface SetupProgress {

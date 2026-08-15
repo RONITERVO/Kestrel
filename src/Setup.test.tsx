@@ -5,18 +5,24 @@ import { mergeSetupControlSnapshot, SetupConsole } from "./Setup";
 
 const setupApi = vi.hoisted(() => ({
   install: vi.fn(),
+  pickFolder: vi.fn(),
   save: vi.fn(),
+  scanModels: vi.fn(),
 }));
 
 vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
   installSetupComponent: setupApi.install,
+  pickSetupFolder: setupApi.pickFolder,
   saveSetupLocations: setupApi.save,
+  scanSetupModelFolder: setupApi.scanModels,
 }));
 
 beforeEach(() => {
   setupApi.install.mockReset().mockResolvedValue(demoSnapshot);
+  setupApi.pickFolder.mockReset().mockResolvedValue("");
   setupApi.save.mockReset().mockResolvedValue(demoSnapshot);
+  setupApi.scanModels.mockReset().mockResolvedValue({});
 });
 
 afterEach(cleanup);
@@ -129,7 +135,7 @@ describe("SetupConsole", () => {
     fireEvent.change(screen.getByPlaceholderText("Completed MuScriptor large model.safetensors"), {
       target: { value: "C:\\Users\\Producer\\Downloads\\model.safetensors" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Prepare MuScriptor" }));
+    fireEvent.click(screen.getByRole("button", { name: "Verify & use existing" }));
 
     expect(screen.getByRole("dialog", { name: /MuScriptor is for permitted non-commercial transcription/i })).toBeInTheDocument();
     const prepare = screen.getByRole("button", { name: /Prepare offline MuScriptor/i });
@@ -141,6 +147,26 @@ describe("SetupConsole", () => {
       component: "muscriptor",
       muscriptorCheckpointPath: "C:\\Users\\Producer\\Downloads\\model.safetensors",
       acceptMuscriptorNonCommercialLicense: true,
+    })));
+  });
+
+  it("discovers models across an existing folder and reuses them for component setup", async () => {
+    const musicId = "music:minimax_music3_dit_int8_convrot.safetensors";
+    const existingPath = "D:\\AI\\ComfyUI\\models\\diffusion_models\\minimax_music3_dit_int8_convrot.safetensors";
+    setupApi.pickFolder.mockResolvedValue("D:\\AI");
+    setupApi.scanModels.mockResolvedValue({ [musicId]: existingPath });
+    render(<SetupConsole snapshot={demoSnapshot} onChanged={vi.fn()} onError={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Use existing files/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Find models in a folder/i }));
+
+    await waitFor(() => expect(setupApi.scanModels).toHaveBeenCalledWith("D:\\AI"));
+    expect(screen.getByText(/Found 1 supported model file/)).toBeInTheDocument();
+    const musicCard = screen.getByRole("heading", { name: "MiniMax Music 3 Production" }).closest("article");
+    fireEvent.click(musicCard!.querySelector("button")!);
+    await waitFor(() => expect(setupApi.install).toHaveBeenCalledWith(expect.objectContaining({
+      component: "music",
+      existingModelPaths: expect.objectContaining({ [musicId]: existingPath }),
     })));
   });
 
