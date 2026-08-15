@@ -772,7 +772,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   const gpu = control.gpu;
 
   return (
-    <div className="control-plane offline-workspace">
+    <div className="control-plane offline-workspace" data-mode={kind}>
       <aside className="model-drawer">
         <div className="control-product">
           <strong>KESTREL</strong>
