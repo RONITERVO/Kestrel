@@ -135,7 +135,8 @@ export const demoSnapshot: AppSnapshot = {
       { id: "studio", label: "MiniMax H3 Movie Studio", status: "ready", detail: "Ready for high-quality movies.", path: "D:\\AI\\ComfyUI", downloadBytes: 65550000000, optional: true },
       { id: "music", label: "MiniMax Music 3 Production", status: "missing", detail: "Optional private full-song generation through local ComfyUI.", path: "D:\\AI\\ComfyUI", downloadBytes: 11915469696, optional: true },
       { id: "image", label: "Ideogram 4 Image Studio", status: "missing", detail: "Optional non-commercial image production through local ComfyUI.", path: "D:\\AI\\ComfyUI", downloadBytes: 17622549040, optional: true },
-      { id: "speech", label: "Local voice and dictation", status: "missing", detail: "Optional private narration and timestamped dictation through local ComfyUI.", path: "D:\\AI\\ComfyUI", downloadBytes: 4810176394, optional: true },
+      { id: "speech", label: "Whisper dictation + local voice", status: "missing", detail: "Downloads verified Whisper large-v3-turbo dictation and private Chatterbox narration through local ComfyUI.", path: "D:\\AI\\ComfyUI", downloadBytes: 4810176394, optional: true },
+      { id: "muscriptor", label: "MuScriptor audio to MIDI", status: "missing", detail: "Optional gated non-commercial transcription with an isolated local GPU runner.", path: "D:\\LocalAI\\MuScriptor\\runtime\\uvx.exe", downloadBytes: 3500000000, optional: true },
     ],
   },
   control: {

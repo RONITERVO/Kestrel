@@ -1638,10 +1638,24 @@ fn get_music_project(id: String, state: State<'_, AppState>) -> Result<MusicProj
 
 #[tauri::command]
 fn create_music_project(
-    request: CreateMusicProjectRequest,
+    mut request: CreateMusicProjectRequest,
     state: State<'_, AppState>,
 ) -> Result<MusicProject, String> {
     let _guard = claim_workspace(&state)?;
+    if request.muscriptor_executable_path.trim().is_empty()
+        && request.muscriptor_model_path.trim().is_empty()
+    {
+        let settings = state
+            .research_settings
+            .load()
+            .map_err(|error| error.to_string())?;
+        let (executable, model, marker) =
+            setup::managed_muscriptor_paths(std::path::Path::new(&settings.install_root));
+        if executable.is_file() && model.is_file() && marker.is_file() {
+            request.muscriptor_executable_path = executable.to_string_lossy().into_owned();
+            request.muscriptor_model_path = model.to_string_lossy().into_owned();
+        }
+    }
     state
         .music
         .create(request)
@@ -2044,6 +2058,7 @@ async fn pick_setup_file(kind: String) -> Result<String, String> {
             dialog.add_filter("Windows program", &["exe"])
         }
         "muscriptorModel" => dialog.add_filter("MuScriptor checkpoint", &["safetensors"]),
+        "whisperModel" => dialog.add_filter("OpenAI Whisper checkpoint", &["pt"]),
         _ => dialog,
     };
     Ok(dialog

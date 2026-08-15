@@ -29,7 +29,10 @@ describe("SetupConsole", () => {
     expect(screen.getByRole("heading", { name: "MiniMax H3 Movie Studio" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ideogram 4 Image Studio" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax Music 3 Production" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Local voice and dictation" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Whisper dictation + local voice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Install Whisper + voice" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "MuScriptor audio to MIDI" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open the official access page/ })).toHaveAttribute("href", "https://huggingface.co/MuScriptor/muscriptor-large");
     expect(screen.getByRole("heading", { name: "Add another local model" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Observed model downloader" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Use existing files/ })).toBeInTheDocument();
@@ -119,6 +122,26 @@ describe("SetupConsole", () => {
       installRoot,
       acceptIdeogramNonCommercialLicense: true,
     }));
+  });
+
+  it("requires the completed gated checkpoint and explicit MuScriptor acceptance", async () => {
+    render(<SetupConsole snapshot={demoSnapshot} onChanged={vi.fn()} onError={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText("Completed MuScriptor large model.safetensors"), {
+      target: { value: "C:\\Users\\Producer\\Downloads\\model.safetensors" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Prepare MuScriptor" }));
+
+    expect(screen.getByRole("dialog", { name: /MuScriptor is for permitted non-commercial transcription/i })).toBeInTheDocument();
+    const prepare = screen.getByRole("button", { name: /Prepare offline MuScriptor/i });
+    expect(prepare).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /accepted the official conditions/i }));
+    fireEvent.click(prepare);
+
+    await waitFor(() => expect(setupApi.install).toHaveBeenCalledWith(expect.objectContaining({
+      component: "muscriptor",
+      muscriptorCheckpointPath: "C:\\Users\\Producer\\Downloads\\model.safetensors",
+      acceptMuscriptorNonCommercialLicense: true,
+    })));
   });
 
   it("merges downloader completion into the latest setup snapshot", () => {

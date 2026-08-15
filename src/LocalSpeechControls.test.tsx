@@ -173,4 +173,15 @@ describe("shared local speech controls", () => {
     expect(speechApi.release).toHaveBeenCalled();
     expect(stopTrack).toHaveBeenCalled();
   });
+
+  it("shows preparation failure instead of leaving the microphone looking inert", async () => {
+    speechApi.snapshot.mockResolvedValueOnce({ ...ready, transcriptionAvailable: false, transcribers: [], detail: "Whisper is missing." });
+    speechApi.prepare.mockRejectedValueOnce(new Error("Whisper is missing."));
+    render(<LocalSpeechProvider><SpeechDictationButton sourceKind="chat" sourceId="chat-1" value="" onChange={vi.fn()} /></LocalSpeechProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dictate" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/Dictation unavailable.*Whisper is missing.*Open Setup/i);
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeEnabled();
+  });
 });

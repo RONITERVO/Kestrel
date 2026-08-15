@@ -270,8 +270,14 @@ impl ChatStreamJob {
                 }
                 if let Some(token) = value
                     .pointer("/choices/0/delta/reasoning_content")
-                    .or_else(|| value.pointer("/choices/0/delta/reasoning"))
                     .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        value
+                            .pointer("/choices/0/delta/reasoning")
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.is_empty())
+                    })
                 {
                     reasoning.push_str(token);
                     emit(

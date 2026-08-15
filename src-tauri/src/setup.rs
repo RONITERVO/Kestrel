@@ -28,6 +28,9 @@ const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
 const CHATTERBOX_NODE_REVISION: &str = "f0300cf84ee1b8fc9cbd38cb68cb3bace1895063";
 const CHATTERBOX_MODEL_REVISION: &str = "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd";
 const KESTREL_WHISPER_ADAPTER_REVISION: &str = "kestrel-whisper-v1";
+const MUSCRIPTOR_PACKAGE: &str = "muscriptor==0.3.0";
+const MUSCRIPTOR_SETUP_REVISION: &str = "muscriptor-0.3.0-uv-0.11.30-cu128-v1";
+const MUSCRIPTOR_MODEL_BYTES: u64 = 5_465_642_136;
 const KESTREL_MANAGED_COMFY_MARKER: &str = ".kestrel-managed-portable";
 const KESTREL_MANAGED_COMFY_MARKER_CONTENT: &str = "Kestrel-managed ComfyUI portable\n";
 const SPEECH_PYTHON_PACKAGES: [&str; 5] = [
@@ -83,6 +86,12 @@ pub struct SetupInstallRequest {
     pub wikipedia_edition: String,
     #[serde(default)]
     pub accept_ideogram_non_commercial_license: bool,
+    #[serde(default)]
+    pub whisper_checkpoint_path: String,
+    #[serde(default)]
+    pub muscriptor_checkpoint_path: String,
+    #[serde(default)]
+    pub accept_muscriptor_non_commercial_license: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,6 +215,16 @@ pub fn snapshot(
         || speech_assets()
             .iter()
             .any(|asset| comfy.join(asset.relative).is_file());
+    let (muscriptor_executable, muscriptor_model, muscriptor_marker) =
+        managed_muscriptor_paths(Path::new(&research.install_root));
+    let muscriptor_ready = muscriptor_executable.is_file()
+        && fs::metadata(&muscriptor_model)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == MUSCRIPTOR_MODEL_BYTES)
+        && read_bounded_text(&muscriptor_marker, 256)
+            .is_some_and(|value| value.trim() == MUSCRIPTOR_SETUP_REVISION);
+    let muscriptor_partial = muscriptor_executable.is_file()
+        || muscriptor_model.is_file()
+        || muscriptor_marker.is_file();
 
     let ffmpeg = resolve_program(&research.ffmpeg_path, "ffmpeg.exe");
     let ffprobe = resolve_program(&research.ffprobe_path, "ffprobe.exe");
@@ -295,15 +314,27 @@ pub fn snapshot(
         ),
         component(
             "speech",
-            "Local voice and dictation",
+            "Whisper dictation + local voice",
             (speech_ready, speech_partial),
             if speech_ready {
                 "Ready for private Chatterbox narration and timestamped Whisper dictation across Kestrel."
             } else {
-                "Optional: installs a local Chatterbox voice and Kestrel's commercially distributable Whisper adapter; no browser or system speech fallback."
+                "Optional: downloads the verified 1.6 GB Whisper large-v3-turbo checkpoint for dictation plus a local Chatterbox voice; no browser or system speech fallback."
             },
             &research.comfy_root,
             (4_810_176_394, true),
+        ),
+        component(
+            "muscriptor",
+            "MuScriptor audio to MIDI",
+            (muscriptor_ready, muscriptor_partial),
+            if muscriptor_ready {
+                "Ready for offline, GPU-accelerated transcription from a preserved music take to editable MIDI."
+            } else {
+                "Optional non-commercial extension. Setup prepares the official Windows GPU runner after you accept the separate terms and choose the gated large checkpoint."
+            },
+            muscriptor_executable.to_string_lossy().as_ref(),
+            (3_500_000_000, true),
         ),
     ];
     SetupSnapshot {
@@ -423,7 +454,26 @@ pub async fn install_component(
             )
             .await
         }
-        "speech" => install_speech(app, settings, &root, cancel).await,
+        "speech" => {
+            install_speech(
+                app,
+                settings,
+                &root,
+                &request.whisper_checkpoint_path,
+                cancel,
+            )
+            .await
+        }
+        "muscriptor" => {
+            install_muscriptor(
+                app,
+                &root,
+                &request.muscriptor_checkpoint_path,
+                request.accept_muscriptor_non_commercial_license,
+                cancel,
+            )
+            .await
+        }
         other => Err(SetupError::Download {
             name: other.into(),
             details: "unknown setup component".into(),
@@ -931,6 +981,7 @@ async fn install_speech(
     app: &AppHandle,
     settings: &mut ResearchSettings,
     root: &Path,
+    whisper_checkpoint_path: &str,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     if crate::services::gpu_snapshot().await.is_none() {
@@ -974,6 +1025,19 @@ async fn install_speech(
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
+        if asset.relative == "models/stt/whisper/large-v3-turbo.pt"
+            && !whisper_checkpoint_path.trim().is_empty()
+            && !verified(&destination, &asset.download).await?
+        {
+            import_verified_asset(
+                app,
+                "speech",
+                Path::new(whisper_checkpoint_path.trim()),
+                &destination,
+                &asset.download,
+            )
+            .await?;
+        }
         download(app, "speech", &asset.download, &destination, &cancel).await?;
     }
     ensure_comfy_launcher(&comfy)?;
@@ -991,6 +1055,235 @@ async fn install_speech(
         1,
         0,
     );
+    Ok(())
+}
+
+pub(crate) fn managed_muscriptor_paths(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let muscriptor = root.join("MuScriptor");
+    (
+        muscriptor.join("runtime/uvx.exe"),
+        muscriptor.join("models/model.safetensors"),
+        muscriptor.join(".kestrel-muscriptor-ready"),
+    )
+}
+
+async fn install_muscriptor(
+    app: &AppHandle,
+    root: &Path,
+    checkpoint_path: &str,
+    accepted_license: bool,
+    cancel: CancellationToken,
+) -> Result<(), SetupError> {
+    if !accepted_license {
+        return Err(SetupError::Dependency {
+            name: "MuScriptor audio to MIDI".into(),
+            details: "MuScriptor weights use separate gated CC BY-NC 4.0 terms. Accept those terms on the official model page and confirm them in Setup before preparing this extension.".into(),
+        });
+    }
+    if crate::services::gpu_snapshot().await.is_none() {
+        return Err(SetupError::Dependency {
+            name: "MuScriptor audio to MIDI".into(),
+            details: "no NVIDIA GPU was detected. The official Windows GPU profile cannot be prepared on this computer.".into(),
+        });
+    }
+    let source = PathBuf::from(checkpoint_path.trim());
+    validate_muscriptor_checkpoint(&source)?;
+
+    let muscriptor = root.join("MuScriptor");
+    let runtime = muscriptor.join("runtime");
+    let downloads = muscriptor.join("downloads");
+    let (uvx, model, marker) = managed_muscriptor_paths(root);
+    fs::create_dir_all(&downloads)?;
+    fs::create_dir_all(model.parent().expect("fixed MuScriptor model parent"))?;
+    let uv = Asset::new(
+        "MuScriptor isolated Python runner",
+        "https://github.com/astral-sh/uv/releases/download/0.11.30/uv-x86_64-pc-windows-msvc.zip",
+        "uv-x86_64-pc-windows-msvc-0.11.30.zip",
+        25_710_044,
+        "be8d78c992312212e5cc05e9f9de3fa996db73b7c86a186dfb9231eb9f91d33e",
+    );
+    let archive = downloads.join(&uv.file_name);
+    download(app, "muscriptor", &uv, &archive, &cancel).await?;
+    unzip(&archive, &runtime, &uv.name)?;
+    if !uvx.is_file() {
+        return Err(SetupError::Extract {
+            name: uv.name,
+            details: "the verified Windows archive did not contain uvx.exe".into(),
+        });
+    }
+
+    emit(
+        app,
+        "muscriptor",
+        "importing",
+        "Copying the producer-approved MuScriptor large checkpoint into the offline extension…",
+        0,
+        MUSCRIPTOR_MODEL_BYTES,
+        0,
+    );
+    let temporary = model.with_extension("safetensors.importing");
+    if temporary.is_file() {
+        fs::remove_file(&temporary)?;
+    }
+    tokio::fs::copy(&source, &temporary).await?;
+    validate_muscriptor_checkpoint(&temporary)?;
+    let hash_path = temporary.clone();
+    let model_sha256 = tokio::task::spawn_blocking(move || sha256_file(&hash_path))
+        .await
+        .map_err(|error| SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: error.to_string(),
+        })??;
+    if model.is_file() {
+        fs::remove_file(&model)?;
+    }
+    fs::rename(&temporary, &model)?;
+
+    emit(
+        app,
+        "muscriptor",
+        "dependencies",
+        "Preparing the pinned official MuScriptor package and CUDA runtime for later offline use…",
+        0,
+        0,
+        0,
+    );
+    run_muscriptor_probe(&uvx, &muscriptor, false, &cancel).await?;
+    run_muscriptor_probe(&uvx, &muscriptor, true, &cancel).await?;
+    fs::write(&marker, format!("{MUSCRIPTOR_SETUP_REVISION}\n"))?;
+    fs::write(
+        muscriptor.join("install.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "revision": MUSCRIPTOR_SETUP_REVISION,
+            "package": MUSCRIPTOR_PACKAGE,
+            "runner": "uv 0.11.30 x86_64-pc-windows-msvc",
+            "model": "MuScriptor/muscriptor-large",
+            "modelBytes": MUSCRIPTOR_MODEL_BYTES,
+            "modelSha256": model_sha256,
+            "license": "CC-BY-NC-4.0 plus the producer-accepted gated model conditions",
+        }))?,
+    )?;
+    emit(
+        app,
+        "muscriptor",
+        "complete",
+        "MuScriptor large and its isolated NVIDIA runtime are installed and verified for offline use.",
+        1,
+        1,
+        0,
+    );
+    Ok(())
+}
+
+async fn run_muscriptor_probe(
+    uvx: &Path,
+    root: &Path,
+    offline: bool,
+    cancel: &CancellationToken,
+) -> Result<(), SetupError> {
+    let mut command = tokio::process::Command::new(uvx);
+    if offline {
+        command.arg("--offline");
+    }
+    command.args([
+        "--python",
+        "3.12",
+        "--torch-backend",
+        "cu128",
+        "--from",
+        MUSCRIPTOR_PACKAGE,
+        "muscriptor",
+        "--help",
+    ]);
+    command
+        .current_dir(root)
+        .env("UV_CACHE_DIR", root.join("cache"))
+        .env("UV_PYTHON_INSTALL_DIR", root.join("python"))
+        .env("UV_NO_PROGRESS", "1")
+        .env("UV_LINK_MODE", "copy")
+        .env("PYTHONUTF8", "1")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = tokio::select! {
+        result = command.output() => result?,
+        _ = cancel.cancelled() => return Err(SetupError::Cancelled),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(SetupError::Dependency {
+            name: "MuScriptor isolated runtime".into(),
+            details: bounded_setup_detail(if stderr.trim().is_empty() {
+                stdout.as_ref()
+            } else {
+                stderr.as_ref()
+            }),
+        });
+    }
+    Ok(())
+}
+
+fn validate_muscriptor_checkpoint(path: &Path) -> Result<(), SetupError> {
+    let metadata = fs::metadata(path).map_err(|_| SetupError::Dependency {
+        name: "MuScriptor large checkpoint".into(),
+        details: format!(
+            "choose the completed model.safetensors file downloaded from the official MuScriptor/muscriptor-large page; {} is unavailable",
+            path.display()
+        ),
+    })?;
+    if !metadata.is_file() || metadata.len() != MUSCRIPTOR_MODEL_BYTES {
+        return Err(SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: format!(
+                "expected the official {MUSCRIPTOR_MODEL_BYTES}-byte model.safetensors file, but {} contains {} bytes. Wait for the browser download to finish before choosing it.",
+                path.display(),
+                metadata.len()
+            ),
+        });
+    }
+    let mut file = fs::File::open(path)?;
+    let mut length = [0_u8; 8];
+    file.read_exact(&mut length)?;
+    let header_bytes = u64::from_le_bytes(length);
+    if header_bytes == 0 || header_bytes > 16 * 1024 * 1024 {
+        return Err(SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: "the selected file does not contain a bounded safetensors header".into(),
+        });
+    }
+    let mut header = vec![0_u8; header_bytes as usize];
+    file.read_exact(&mut header)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&header).map_err(|error| SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: format!("the safetensors header is invalid: {error}"),
+        })?;
+    let tensor_found = value.as_object().is_some_and(|entries| {
+        entries.iter().any(|(name, value)| {
+            name != "__metadata__"
+                && value
+                    .get("dtype")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                && value
+                    .get("shape")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some()
+                && value
+                    .get("data_offsets")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|offsets| offsets.len() == 2)
+        })
+    });
+    if !tensor_found {
+        return Err(SetupError::Integrity {
+            name: "MuScriptor large checkpoint".into(),
+            details: "the selected safetensors file contains no tensor entries".into(),
+        });
+    }
     Ok(())
 }
 
@@ -1092,7 +1385,7 @@ async fn ensure_speech_python(
     let python = comfy_python(comfy).ok_or_else(|| SetupError::Dependency {
         name: "local speech Python runtime".into(),
         details: format!(
-            "ComfyUI's private Python runtime is missing beside {}. Resume Movie Studio, Music Production, or Local voice and dictation from Setup.",
+            "ComfyUI's private Python runtime is missing beside {}. Resume Movie Studio, Music Production, or Whisper dictation + local voice from Setup.",
             comfy.display()
         ),
     })?;
@@ -1886,6 +2179,63 @@ async fn verified(path: &Path, asset: &Asset) -> Result<bool, SetupError> {
     Ok(actual.eq_ignore_ascii_case(&asset.sha256))
 }
 
+async fn import_verified_asset(
+    app: &AppHandle,
+    component: &str,
+    source: &Path,
+    destination: &Path,
+    asset: &Asset,
+) -> Result<(), SetupError> {
+    if !source.is_absolute() || !source.is_file() {
+        return Err(SetupError::Dependency {
+            name: asset.name.clone(),
+            details: format!(
+                "the selected existing checkpoint is not a local file: {}",
+                source.display()
+            ),
+        });
+    }
+    emit(
+        app,
+        component,
+        "verifying",
+        &format!("Checking existing {}", asset.name),
+        0,
+        asset.bytes,
+        0,
+    );
+    if !verified(source, asset).await? {
+        return Err(SetupError::Integrity {
+            name: asset.name.clone(),
+            details: format!(
+                "{} is not the supported verified {} checkpoint. Leave the field empty to let Setup download the correct file.",
+                source.display(),
+                asset.file_name
+            ),
+        });
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temporary = destination.with_extension("pt.importing");
+    if temporary.is_file() {
+        fs::remove_file(&temporary)?;
+    }
+    tokio::fs::copy(source, &temporary).await?;
+    if !verified(&temporary, asset).await? {
+        let _ = fs::remove_file(&temporary);
+        return Err(SetupError::Integrity {
+            name: asset.name.clone(),
+            details: "the copied checkpoint did not retain the verified bytes".into(),
+        });
+    }
+    if destination.is_file() {
+        fs::remove_file(destination)?;
+    }
+    fs::rename(temporary, destination)?;
+    Ok(())
+}
+
 fn sha256_file(path: &Path) -> Result<String, SetupError> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -2413,6 +2763,45 @@ mod tests {
         )
         .unwrap();
         assert!(!is_kestrel_managed_comfy_root(&producer, root.path()));
+    }
+
+    #[test]
+    fn setup_recognizes_only_a_complete_managed_muscriptor_install() {
+        let root = tempfile::tempdir().unwrap();
+        let (executable, model, marker) = managed_muscriptor_paths(root.path());
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(model.parent().unwrap()).unwrap();
+        fs::write(&executable, b"runner").unwrap();
+        fs::File::create(&model)
+            .unwrap()
+            .set_len(MUSCRIPTOR_MODEL_BYTES)
+            .unwrap();
+        fs::write(&marker, format!("{MUSCRIPTOR_SETUP_REVISION}\n")).unwrap();
+        let research = ResearchSettings {
+            install_root: root.path().to_string_lossy().into_owned(),
+            ..ResearchSettings::default()
+        };
+        let value = snapshot(&research, &ControlSettings::default(), None);
+        assert_eq!(
+            value
+                .components
+                .iter()
+                .find(|item| item.id == "muscriptor")
+                .unwrap()
+                .status,
+            "ready"
+        );
+        fs::write(&marker, "stale").unwrap();
+        let stale = snapshot(&research, &ControlSettings::default(), None);
+        assert_eq!(
+            stale
+                .components
+                .iter()
+                .find(|item| item.id == "muscriptor")
+                .unwrap()
+                .status,
+            "partial"
+        );
     }
 
     #[test]

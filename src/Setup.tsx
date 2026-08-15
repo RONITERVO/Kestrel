@@ -1,5 +1,5 @@
 import {
-  Check, ChevronDown, CircleStop, Download, Film, FolderOpen, HardDrive, Headphones, Image as ImageIcon,
+  Check, ChevronDown, CircleStop, Download, FileMusic, Film, FolderOpen, HardDrive, Headphones, Image as ImageIcon,
   Library, LoaderCircle, MessageSquare, Mic2, RefreshCw, Settings2, ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
@@ -24,8 +24,13 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const [advanced, setAdvanced] = useState(false);
   const [ideogramLicenseOpen, setIdeogramLicenseOpen] = useState(false);
   const [ideogramLicenseAccepted, setIdeogramLicenseAccepted] = useState(false);
+  const [existingWhisperPath, setExistingWhisperPath] = useState("");
+  const [muscriptorLicenseOpen, setMuscriptorLicenseOpen] = useState(false);
+  const [muscriptorLicenseAccepted, setMuscriptorLicenseAccepted] = useState(false);
+  const [muscriptorCheckpointPath, setMuscriptorCheckpointPath] = useState("");
   const [locations, setLocations] = useState<SetupLocations>(() => fromSnapshot(snapshot));
   const ideogramLicenseDialogRef = useRef<HTMLDialogElement>(null);
+  const muscriptorLicenseDialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => setLocations(fromSnapshot(snapshot)), [snapshot.settings]);
   useEffect(() => {
@@ -34,6 +39,12 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");
   }, [ideogramLicenseOpen]);
+  useEffect(() => {
+    const dialog = muscriptorLicenseDialogRef.current;
+    if (!muscriptorLicenseOpen || !dialog || dialog.open) return;
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }, [muscriptorLicenseOpen]);
   useEffect(() => {
     let dispose: (() => void) | undefined;
     void onSetupProgress(setProgress).then((unlisten) => { dispose = unlisten; });
@@ -59,7 +70,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     return next;
   };
 
-  const runInstall = async (component: string, acceptedIdeogramLicense = false) => {
+  const runInstall = async (component: string, acceptedIdeogramLicense = false, acceptedMuscriptorLicense = false) => {
     setBusy(component);
     setProgress({ component, stage: "preparing", detail: "Checking saved files and available downloads…", downloadedBytes: 0, totalBytes: 0, bytesPerSecond: 0 });
     try {
@@ -69,6 +80,9 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
         installRoot: saved.settings.installRoot,
         wikipediaEdition: edition,
         acceptIdeogramNonCommercialLicense: acceptedIdeogramLicense,
+        whisperCheckpointPath: component === "speech" ? existingWhisperPath.trim() : undefined,
+        muscriptorCheckpointPath: component === "muscriptor" ? muscriptorCheckpointPath.trim() : undefined,
+        acceptMuscriptorNonCommercialLicense: acceptedMuscriptorLicense,
       });
       onChanged(next);
       setLocations(fromSnapshot(next));
@@ -108,6 +122,11 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
       setIdeogramLicenseOpen(true);
       return;
     }
+    if (component === "muscriptor") {
+      setMuscriptorLicenseAccepted(false);
+      setMuscriptorLicenseOpen(true);
+      return;
+    }
     await runInstall(component);
   };
 
@@ -144,10 +163,12 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     } catch (error) { onError(String(error)); }
   };
 
-  const chooseFile = async (field: keyof SetupLocations, kind: string) => {
+  const chooseFile = async (field: keyof SetupLocations | "whisperCheckpoint" | "muscriptorCheckpoint", kind: string) => {
     try {
       const value = await pickSetupFile(kind);
-      if (value) setLocations((current) => ({ ...current, [field]: value }));
+      if (value && field === "whisperCheckpoint") setExistingWhisperPath(value);
+      else if (value && field === "muscriptorCheckpoint") setMuscriptorCheckpointPath(value);
+      else if (value) setLocations((current) => ({ ...current, [field]: value }));
     } catch (error) { onError(String(error)); }
   };
 
@@ -181,7 +202,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     {snapshot.setup.gpuName && <div className="setup-hardware-note compatible"><Check /><div><strong>{snapshot.setup.gpuName}</strong><span>{formatBytes(snapshot.setup.gpuMemoryBytes)} graphics memory detected. Kestrel can install the validated NVIDIA profiles for Bonsai, H3, Music 3, Ideogram 4, narration, and dictation.</span></div></div>}
 
     <section className={`setup-simple-panel setup-production-panel ${productionReady ? "ready" : ""}`}>
-      <div><span className="eyebrow">Complete production suite</span><h2>{productionReady ? "Every distributable production service is ready." : "Set up the full studio for me"}</h2><p>Installs movie finishing, H3 video and image generation, Music 3, Chatterbox narration, and timestamped Whisper dictation. Downloads are pinned, resumable, and verified before use.</p><small>MuScriptor audio-to-MIDI remains a separately licensed non-commercial extension and cannot be silently included in a sold product.</small></div>
+      <div><span className="eyebrow">Complete production suite</span><h2>{productionReady ? "Every distributable production service is ready." : "Set up the full studio for me"}</h2><p>Installs movie finishing, H3 video and image generation, Music 3, Chatterbox narration, and timestamped Whisper dictation. Downloads are pinned, resumable, and verified before use.</p><small>MuScriptor audio-to-MIDI remains a separately licensed non-commercial extension; its dedicated card below guides the required producer acceptance and checkpoint import.</small></div>
       {!productionReady && <div className="setup-speed"><strong>{formatBytes(productionBytes)} remaining</strong><small>Roughly {formatTime(productionBytes, speed)} at {speed} Mbps, plus extraction and verification.</small></div>}
       <button className={productionReady ? "quiet-button" : "primary-button setup-main-button"} disabled={!!busy || productionReady} onClick={() => void installProductionSuite()}>{busy === "production" ? <LoaderCircle className="spin" /> : productionReady ? <Check /> : <Download />} {productionReady ? "Production ready" : "Set up production suite"}</button>
     </section>
@@ -203,12 +224,19 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
       {components.map((component) => {
         const sharedComfy = component.id === "studio" || component.id === "music" || component.id === "image";
         const opening = busy === `${component.id}-open`;
+        const actionLabel = component.status === "ready" && sharedComfy ? "Open ComfyUI"
+          : component.status === "ready" ? "Installed"
+            : component.id === "speech" ? component.status === "partial" ? "Resume Whisper + voice" : "Install Whisper + voice"
+              : component.id === "muscriptor" ? component.status === "partial" ? "Resume MuScriptor setup" : "Prepare MuScriptor"
+              : component.status === "partial" ? "Resume" : "Install";
         return <article className={`setup-component ${component.status}`} key={component.id}>
-        <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : component.id === "music" ? <Headphones /> : component.id === "image" ? <ImageIcon /> : component.id === "speech" ? <Mic2 /> : <Settings2 />}</div>
+        <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : component.id === "music" ? <Headphones /> : component.id === "image" ? <ImageIcon /> : component.id === "speech" ? <Mic2 /> : component.id === "muscriptor" ? <FileMusic /> : <Settings2 />}</div>
         <div className="setup-component-copy"><div className="setup-component-title"><h2>{component.label}</h2><span className={`setup-state ${component.status}`}>{component.status === "ready" ? <><Check /> Ready</> : component.status === "partial" ? "Resume available" : component.optional ? "Optional" : "Needed"}</span></div><p>{component.detail}</p><small>{component.status === "ready" ? component.path : `${formatBytes(component.downloadBytes)} download · about ${formatTime(component.downloadBytes, speed)} at ${speed} Mbps`}</small>
           {component.id === "wikipedia" && component.status !== "ready" && <div className="wikipedia-choice"><button className={edition === "compact" ? "active" : ""} onClick={() => setEdition("compact")}><strong>Compact</strong><span>11.7 GB · article summaries</span></button><button className={edition === "complete" ? "active" : ""} onClick={() => setEdition("complete")}><strong>Complete text</strong><span>49.1 GB · full articles</span></button></div>}
+          {component.id === "speech" && component.status !== "ready" && <div className="setup-existing-model"><strong>Whisper is included in this Install button.</strong><span>Already have the official OpenAI-format <code>large-v3-turbo.pt</code>? Choose it here and Kestrel will verify and reuse it instead of downloading another 1.6 GB copy.</span><label><input value={existingWhisperPath} onChange={(event) => setExistingWhisperPath(event.target.value)} placeholder="Optional existing large-v3-turbo.pt" /><button disabled={!!busy} onClick={() => void chooseFile("whisperCheckpoint", "whisperModel")}><FolderOpen /> Choose</button></label></div>}
+          {component.id === "muscriptor" && component.status !== "ready" && <div className="setup-existing-model muscriptor"><strong>One gated model download, then Kestrel handles the technical setup.</strong><span>1. <a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Open the official access page</a>, accept its separate non-commercial terms, and download the 5.1 GiB <code>model.safetensors</code>. 2. Wait until the browser download is complete. 3. Choose that file below. Kestrel then prepares roughly 3.3 GiB of isolated Windows CUDA dependencies and proves they work offline.</span><label><input value={muscriptorCheckpointPath} onChange={(event) => setMuscriptorCheckpointPath(event.target.value)} placeholder="Completed MuScriptor large model.safetensors" /><button disabled={!!busy} onClick={() => void chooseFile("muscriptorCheckpoint", "muscriptorModel")}><FolderOpen /> Choose</button></label></div>}
         </div>
-        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !sharedComfy)} onClick={() => component.status === "ready" && sharedComfy ? void openStudio(component.id as "studio" | "music" | "image") : void install(component.id)}>{busy === component.id || opening ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : component.status === "ready" && component.id === "image" ? <ImageIcon /> : <Download />}{component.status === "ready" && sharedComfy ? "Open ComfyUI" : component.status === "ready" ? "Installed" : component.status === "partial" ? "Resume" : "Install"}</button>
+        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !sharedComfy)} onClick={() => component.status === "ready" && sharedComfy ? void openStudio(component.id as "studio" | "music" | "image") : void install(component.id)}>{busy === component.id || opening ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : component.status === "ready" && component.id === "image" ? <ImageIcon /> : <Download />}{actionLabel}</button>
       </article>})}
     </section>
 
@@ -219,6 +247,8 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     </section>}
 
     {ideogramLicenseOpen && <dialog ref={ideogramLicenseDialogRef} className="setup-license-dialog" aria-labelledby="ideogram-license-title" onCancel={() => setIdeogramLicenseOpen(false)}><div className="setup-license-icon"><ImageIcon /></div><div><span className="eyebrow">Separate model terms</span><h2 id="ideogram-license-title">Ideogram 4 is non-commercial.</h2><p>The published agreement does not permit client deliverables, promotion, advertising, or other revenue-generating use without separate rights from Ideogram. Kestrel’s MIT license does not change those model terms.</p><a href="https://github.com/ideogram-oss/ideogram4/blob/main/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL" target="_blank" rel="noreferrer">Read the complete Ideogram 4 agreement</a><label><input type="checkbox" checked={ideogramLicenseAccepted} onChange={(event) => setIdeogramLicenseAccepted(event.target.checked)} /> I have read and accept the Ideogram Non-Commercial Model Agreement for this installation.</label></div><footer><button disabled={!!busy} onClick={() => setIdeogramLicenseOpen(false)}>Cancel</button><button className="primary-button" disabled={!!busy || !ideogramLicenseAccepted} onClick={() => { setIdeogramLicenseOpen(false); void runInstall("image", true); }}><Download /> Accept and install</button></footer></dialog>}
+
+    {muscriptorLicenseOpen && <dialog ref={muscriptorLicenseDialogRef} className="setup-license-dialog" aria-labelledby="muscriptor-license-title" onCancel={() => setMuscriptorLicenseOpen(false)}><div className="setup-license-icon"><FileMusic /></div><div><span className="eyebrow">Separate gated model terms</span><h2 id="muscriptor-license-title">MuScriptor is for permitted non-commercial transcription.</h2><p>The official weights use CC BY-NC 4.0 plus gated conditions requiring you to have the necessary rights to music you transcribe. Kestrel can prepare the isolated Windows GPU runner, but it cannot accept those terms or grant commercial rights for you.</p><a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Read and accept the official MuScriptor conditions</a><label><input type="checkbox" checked={muscriptorLicenseAccepted} onChange={(event) => setMuscriptorLicenseAccepted(event.target.checked)} /> I accepted the official conditions, have rights to the music I will transcribe, and understand this extension is non-commercial.</label></div><footer><button disabled={!!busy} onClick={() => setMuscriptorLicenseOpen(false)}>Cancel</button><button className="primary-button" disabled={!!busy || !muscriptorLicenseAccepted || !muscriptorCheckpointPath.trim()} onClick={() => { setMuscriptorLicenseOpen(false); void runInstall("muscriptor", false, true); }}><Download /> Prepare offline MuScriptor</button></footer></dialog>}
 
     <button className="setup-advanced-toggle" onClick={() => setAdvanced((value) => !value)}><Settings2 /> Use existing files or choose every location <ChevronDown className={advanced ? "open" : ""} /></button>
     {advanced && <section className="setup-advanced-panel">

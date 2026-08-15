@@ -257,9 +257,14 @@ pub async fn run(
             .ok_or_else(|| "computer task model returned no message".to_string())?;
         if let Some(reasoning) = message
             .get("reasoning_content")
-            .or_else(|| message.get("reasoning"))
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
+            .or_else(|| {
+                message
+                    .get("reasoning")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+            })
         {
             event(
                 &app,

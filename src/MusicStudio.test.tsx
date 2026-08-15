@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { applyTaggedLyrics, MusicStudio } from "./MusicStudio";
+import { applyTaggedLyrics, managedMuscriptorPaths, MusicStudio } from "./MusicStudio";
 import type { MusicSection } from "./types";
 
 const sections: MusicSection[] = [
@@ -26,6 +26,13 @@ describe("MusicStudio", () => {
 
   it("does not erase the producer arrangement when a model returns only unknown tags", () => {
     expect(applyTaggedLyrics(sections, "[Not A Real Section]\nidea")).toEqual(sections);
+  });
+
+  it("derives the managed MuScriptor runner and checkpoint without producer path editing", () => {
+    expect(managedMuscriptorPaths("C:\\Kestrel AI\\")).toEqual({
+      executable: "C:\\Kestrel AI\\MuScriptor\\runtime\\uvx.exe",
+      model: "C:\\Kestrel AI\\MuScriptor\\models\\model.safetensors",
+    });
   });
 
   it("keeps unmentioned producer sections while merging a partial tagged proposal", () => {

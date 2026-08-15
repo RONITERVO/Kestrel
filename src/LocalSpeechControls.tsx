@@ -316,9 +316,11 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
   label?: string;
 }) {
   const { snapshot, prepare } = useSpeech();
+  const [preparing, setPreparing] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [detail, setDetail] = useState("");
+  const [failed, setFailed] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -366,6 +368,7 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
     if (blob.size < 128) return emptyFinal();
     const task = (async () => {
       setTranscribing(true);
+      setFailed(false);
       setDetail(finalPass ? "Finalizing words and timestamps…" : "Updating live local transcript…");
       const result = await transcribeLocalSpeech({
         jobId: id(finalPass ? "stt-final" : "stt-live"),
@@ -389,7 +392,10 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
       }
       applyTranscript(provisionalTranscriptRef.current);
       setDetail(finalPass ? "Saved locally with word timestamps" : "Listening · live text updated");
-    })().catch((error) => setDetail(`Dictation stopped: ${String(error)}`)).finally(async () => {
+    })().catch((error) => {
+      setFailed(true);
+      setDetail(`Dictation stopped: ${error instanceof Error ? error.message : String(error)}`);
+    }).finally(async () => {
       if (finalPass) await releaseLocalSpeechMemory().catch(() => undefined);
       pendingRef.current = null;
       setTranscribing(false);
@@ -439,7 +445,7 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
     recorderRef.current = recorder;
     streamRef.current = stream;
     recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
-    recorder.onerror = () => { setDetail("Microphone recording failed."); stop(); };
+    recorder.onerror = () => { setFailed(true); setDetail("Microphone recording failed."); stop(); };
     recorder.onstop = () => {
       stream.getTracks().forEach((track) => track.stop());
       const finish = async () => {
@@ -450,6 +456,7 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
     };
     recorder.start(500);
     setRecording(true);
+    setFailed(false);
     onActiveChange?.(true);
     setDetail("Listening locally…");
     timerRef.current = window.setInterval(() => {
@@ -459,12 +466,27 @@ export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, o
     scheduleTimeout(() => { if (recorder.state === "recording") stop(); }, 15 * 60 * 1_000);
   };
 
+  const begin = async () => {
+    setPreparing(true);
+    setFailed(false);
+    setDetail("Preparing private Whisper dictation…");
+    try {
+      await start();
+    } catch (error) {
+      setFailed(true);
+      const message = error instanceof Error ? error.message : String(error);
+      setDetail(`Dictation unavailable: ${message} Open Setup → Whisper dictation + local voice to install or repair it.`);
+    } finally {
+      setPreparing(false);
+    }
+  };
+
   return <span className={`speech-dictation ${recording ? "recording" : ""}`}>
-    <button type="button" title={detail || `${label} with local ComfyUI Whisper`} aria-label={recording ? "Stop dictation" : label} disabled={disabled && !recording || transcribing && !recording} onClick={() => recording ? stop() : void start().catch((error) => setDetail(String(error)))}>
-      {transcribing && !recording ? <LoaderCircle className="spin" /> : recording ? <Square /> : <Mic />}
-      <span>{recording ? "Stop" : transcribing ? "Saving…" : label}</span>
+    <button type="button" title={detail || `${label} with local ComfyUI Whisper`} aria-label={recording ? "Stop dictation" : preparing ? "Preparing dictation" : label} disabled={preparing || disabled && !recording || transcribing && !recording} onClick={() => recording ? stop() : void begin()}>
+      {preparing || transcribing && !recording ? <LoaderCircle className="spin" /> : recording ? <Square /> : <Mic />}
+      <span>{recording ? "Stop" : preparing ? "Preparing…" : transcribing ? "Saving…" : label}</span>
     </button>
     {recording && <i aria-hidden="true" />}
-    {(recording || transcribing) && <small className="speech-dictation-status" role="status">{detail}</small>}
+    {detail && <small className={`speech-dictation-status ${failed ? "error" : ""}`} role="status" aria-live="polite">{detail}</small>}
   </span>;
 }

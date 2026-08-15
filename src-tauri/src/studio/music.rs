@@ -165,6 +165,10 @@ pub struct CreateMusicProjectRequest {
     pub idea: String,
     #[serde(default)]
     pub comfy_root: String,
+    #[serde(default)]
+    pub muscriptor_executable_path: String,
+    #[serde(default)]
+    pub muscriptor_model_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -297,7 +301,11 @@ impl MusicStudio {
             instrumental: false,
             sections: default_sections(),
             settings,
-            midi: MusicMidiSettings::default(),
+            midi: MusicMidiSettings {
+                executable_path: request.muscriptor_executable_path,
+                model_path: request.muscriptor_model_path,
+                instruments: String::new(),
+            },
             takes: Vec::new(),
             active_take_id: String::new(),
             status: "draft".into(),
@@ -698,9 +706,35 @@ impl MusicStudio {
             .join("midi")
             .join(format!("{}.mid", request.take_id));
         let mut command = tokio::process::Command::new(&project.midi.executable_path);
-        command
-            .arg("transcribe")
-            .args(["--model", project.midi.model_path.as_str()]);
+        if is_managed_muscriptor_uvx(Path::new(&project.midi.executable_path)) {
+            let root = Path::new(&project.midi.executable_path)
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| {
+                    StudioError::Invalid("the managed MuScriptor runner path is incomplete".into())
+                })?;
+            command
+                .args([
+                    "--offline",
+                    "--python",
+                    "3.12",
+                    "--torch-backend",
+                    "cu128",
+                    "--from",
+                    "muscriptor==0.3.0",
+                    "muscriptor",
+                    "transcribe",
+                ])
+                .env("UV_CACHE_DIR", root.join("cache"))
+                .env("UV_PYTHON_INSTALL_DIR", root.join("python"))
+                .env("UV_NO_PROGRESS", "1")
+                .env("UV_LINK_MODE", "copy")
+                .env("HF_HUB_OFFLINE", "1")
+                .env("TRANSFORMERS_OFFLINE", "1");
+        } else {
+            command.arg("transcribe");
+        }
+        command.args(["--model", project.midi.model_path.as_str()]);
         if !project.midi.instruments.trim().is_empty() {
             command.args(["--instruments", project.midi.instruments.trim()]);
         }
@@ -1165,6 +1199,12 @@ fn validate_muscriptor_settings(settings: &MusicMidiSettings) -> Result<(), Stud
     Ok(())
 }
 
+fn is_managed_muscriptor_uvx(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("uvx.exe"))
+}
+
 async fn verify_music_nodes(http: &Client, tiled_decode: bool) -> Result<(), StudioError> {
     let info: Value = http
         .get(format!("{MUSIC_COMFY_BASE}/object_info"))
@@ -1417,11 +1457,23 @@ mod tests {
                 title: "Night signal".into(),
                 idea: "Warm analog synth-pop at night".into(),
                 comfy_root: r"D:\AI\ComfyUI".into(),
+                muscriptor_executable_path: String::new(),
+                muscriptor_model_path: String::new(),
             })
             .unwrap();
         project.caption = "Global Metadata: synth-pop, 112 BPM.\n\nVocal Details: intimate alto.\n\nArrangement: analog drums and wide pads.".into();
         project.sections[1].lyrics = "The streetlights answer me".into();
         studio.save_editable(project).unwrap()
+    }
+
+    #[test]
+    fn only_the_managed_uvx_runner_selects_the_pinned_offline_invocation() {
+        assert!(is_managed_muscriptor_uvx(Path::new(
+            r"C:\Kestrel AI\MuScriptor\runtime\uvx.exe"
+        )));
+        assert!(!is_managed_muscriptor_uvx(Path::new(
+            r"C:\Tools\muscriptor.exe"
+        )));
     }
 
     #[test]
@@ -1539,6 +1591,8 @@ mod tests {
                 title: "Music 3 acceptance".into(),
                 idea: "A short, wordless chamber-electronic cue".into(),
                 comfy_root,
+                muscriptor_executable_path: String::new(),
+                muscriptor_model_path: String::new(),
             })
             .unwrap();
         project.caption = "Global Metadata: chamber electronic, 92 BPM, D minor, intimate and resolved.\n\nVocal Details: instrumental, no voice.\n\nArrangement: felt piano and warm analog pulse, one clear eight-bar arc with a quiet ending.".into();

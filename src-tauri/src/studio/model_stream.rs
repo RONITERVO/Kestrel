@@ -14,12 +14,13 @@ pub(super) fn reasoning_delta(value: &Value) -> Option<&str> {
     value
         .pointer("/choices/0/delta/reasoning_content")
         .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
         .or_else(|| {
             value
                 .pointer("/choices/0/delta/reasoning")
                 .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
         })
-        .filter(|token| !token.is_empty())
 }
 
 #[derive(Debug, PartialEq)]
@@ -192,6 +193,12 @@ mod tests {
         assert_eq!(
             reasoning_delta(&json!({"choices":[{"delta":{"reasoning":"second"}}]})),
             Some("second")
+        );
+        assert_eq!(
+            reasoning_delta(
+                &json!({"choices":[{"delta":{"reasoning_content":"","reasoning":"fallback"}}]})
+            ),
+            Some("fallback")
         );
         assert_eq!(
             reasoning_delta(

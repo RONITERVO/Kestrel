@@ -436,7 +436,14 @@ function ImageStudioEmpty({ onNew, dialog }: { onNew: () => void; dialog?: React
 }
 
 function NewImageDialog({ title, idea, busy, onTitle, onIdea, onClose, onCreate }: { title: string; idea: string; busy: boolean; onTitle: (value: string) => void; onIdea: (value: string) => void; onClose: () => void; onCreate: () => void }) {
-  return <dialog open className="image-new-dialog" aria-labelledby="new-image-dialog-title"><div className="image-dialog-icon"><Aperture /></div><div><small>New private image project</small><h2 id="new-image-dialog-title">Start with as much or as little as you have.</h2><p>A sentence, an A4 brief, exact copy, or an already-developed design all work. The project stays editable without the model.</p></div><label>Project name<input autoFocus disabled={busy} value={title} onChange={(event) => onTitle(event.target.value)} placeholder="Campaign key art" /></label><label>Idea or complete brief<textarea disabled={busy} value={idea} onChange={(event) => onIdea(event.target.value)} placeholder="A quiet editorial portrait… Include the exact headline ‘…’" /></label><footer><button disabled={busy} onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy} onClick={onCreate}>{busy ? <LoaderCircle className="spin" /> : <Plus />} Create project</button></footer></dialog>;
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog || dialog.open) return;
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }, []);
+  return <dialog ref={dialogRef} className="image-new-dialog" aria-labelledby="new-image-dialog-title" onCancel={onClose}><div className="image-dialog-icon"><Aperture /></div><div><small>New private image project</small><h2 id="new-image-dialog-title">Start with as much or as little as you have.</h2><p>A sentence, an A4 brief, exact copy, or an already-developed design all work. The project stays editable without the model.</p></div><label>Project name<input autoFocus disabled={busy} value={title} onChange={(event) => onTitle(event.target.value)} placeholder="Campaign key art" /></label><label>Idea or complete brief<textarea disabled={busy} value={idea} onChange={(event) => onIdea(event.target.value)} placeholder="A quiet editorial portrait… Include the exact headline ‘…’" /></label><footer><button disabled={busy} onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy} onClick={onCreate}>{busy ? <LoaderCircle className="spin" /> : <Plus />} Create project</button></footer></dialog>;
 }
 
 export function compiledPrompt(project: ImageProject): Record<string, unknown> {

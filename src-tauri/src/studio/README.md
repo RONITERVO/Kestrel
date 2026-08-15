@@ -141,9 +141,11 @@ port 8189 with async weight offload disabled, dynamic VRAM as an OOM fallback, a
 for the desktop. The installed INT8 text encoder, INT8 DiT, and VAE run one stage at a time; Kestrel
 does not pretend that all three can remain resident together on a 12 GiB GPU. MuScriptor startup first
 releases both ComfyUI services and the local language model so its checkpoint cannot overlap them.
-MuScriptor remains an explicit advanced adapter: the producer supplies both its executable and gated
-checkpoint, Kestrel invokes a fixed argument array, and the receipt preserves its non-commercial
-license notice and output hash.
+MuScriptor remains an explicit separate adapter. Setup can verify a producer-supplied gated large
+checkpoint and prepare the pinned official package in an isolated NVIDIA runtime after explicit
+license confirmation; manually supplied compatible runners remain supported. Native code validates
+the paths, launches a fixed argument array, forces the managed runner offline, and preserves the
+non-commercial license notice and output hash in its receipt.
 
 ## Image production lifecycle
 

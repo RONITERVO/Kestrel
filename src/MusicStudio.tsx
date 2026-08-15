@@ -36,12 +36,14 @@ interface CollaborationDraft {
 
 export function MusicStudio({
   initialComfyRoot,
+  installRoot,
   advancedEnabled,
   models = [],
   selectedModelId,
   onError,
 }: {
   initialComfyRoot?: string;
+  installRoot?: string;
   advancedEnabled: boolean;
   models?: ModelInfo[];
   selectedModelId?: string;
@@ -410,17 +412,18 @@ export function MusicStudio({
             </fieldset>
           </details>
 
-          {advancedEnabled && <details className="music-midi-panel">
+          <details className="music-midi-panel">
             <summary><span><FileMusic /> Audio → editable MIDI</span><ChevronDown /></summary>
-            <p>Optional MuScriptor pass. Its gated CC-BY-NC weights are not bundled and may not suit commercial delivery. Choose files you accepted and installed locally.</p>
+            <p>Optional MuScriptor pass under separate gated non-commercial terms. Setup can prepare its isolated NVIDIA runner; this project then uses it offline without command-line work.</p>
             <fieldset disabled={busy}>
-              <div className="music-path-field"><label>muscriptor.exe<input value={project.midi.executablePath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: event.target.value } }))} /></label><button aria-label="Browse for muscriptor executable" onClick={() => void pickSetupFile("muscriptor").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
+              <div className="music-midi-setup"><a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Official model terms</a><button disabled={!installRoot} onClick={() => { const paths = managedMuscriptorPaths(installRoot ?? ""); mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: paths.executable, modelPath: paths.model } })); }}><FileMusic /> Use Kestrel Setup</button></div>
+              <div className="music-path-field"><label>MuScriptor runner<input value={project.midi.executablePath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: event.target.value } }))} /></label><button aria-label="Browse for muscriptor executable" onClick={() => void pickSetupFile("muscriptor").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
               <div className="music-path-field"><label>Accepted checkpoint<input value={project.midi.modelPath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: event.target.value } }))} /></label><button aria-label="Browse for MuScriptor checkpoint" onClick={() => void pickSetupFile("muscriptorModel").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
               <label>Expected instruments<input value={project.midi.instruments} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, instruments: event.target.value } }))} placeholder="acoustic_piano,acoustic_guitar,acoustic_bass" /></label>
               <button disabled={!activeTake || midiBusy} onClick={() => activeTake && void transcribe(activeTake)}>{midiBusy ? <LoaderCircle className="spin" /> : <FileMusic />} Transcribe active take</button>
               {activeTake?.midiPath && <span className="music-midi-ready"><Download /> MIDI preserved beside the take</span>}
             </fieldset>
-          </details>}
+          </details>
 
           {advancedEnabled && activeTake && <details className="music-receipt"><summary><span><Gauge /> Exact generation receipt</span><ChevronDown /></summary><dl><dt>Model</dt><dd>{activeTake.resolvedModel}</dd><dt>Seed</dt><dd>{activeTake.seed}</dd><dt>Prompt ID</dt><dd>{activeTake.promptId}</dd><dt>SHA-256</dt><dd>{activeTake.sha256}</dd></dl><pre>{JSON.stringify(activeTake.exactGraph, null, 2)}</pre></details>}
         </div>}
@@ -529,4 +532,14 @@ function friendlyPhase(value: string): string {
 
 function finiteSetting(value: number, min: number, max: number, apply: (value: number) => void) {
   if (Number.isFinite(value) && value >= min && value <= max) apply(value);
+}
+
+export function managedMuscriptorPaths(installRoot: string): { executable: string; model: string } {
+  const root = installRoot.trim().replace(/[\\/]+$/, "");
+  if (!root) return { executable: "", model: "" };
+  const separator = root.includes("\\") ? "\\" : "/";
+  return {
+    executable: [root, "MuScriptor", "runtime", "uvx.exe"].join(separator),
+    model: [root, "MuScriptor", "models", "model.safetensors"].join(separator),
+  };
 }

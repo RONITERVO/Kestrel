@@ -10,6 +10,8 @@ describe("ImageStudio", () => {
     fireEvent.click(button);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getByLabelText(/idea or complete brief/i)).toBeInTheDocument();
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { bubbles: true, cancelable: true }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("accepts a bounded Ideogram JSON proposal with exact text and layout", () => {

@@ -127,6 +127,9 @@ export interface SetupInstallRequest {
   installRoot: string;
   wikipediaEdition: "compact" | "complete";
   acceptIdeogramNonCommercialLicense?: boolean;
+  whisperCheckpointPath?: string;
+  muscriptorCheckpointPath?: string;
+  acceptMuscriptorNonCommercialLicense?: boolean;
 }
 
 export interface SetupProgress {
