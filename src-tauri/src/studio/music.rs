@@ -10,18 +10,18 @@ use super::music_midi::{
     write_midi_document, MusicMidiDocument,
 };
 use super::{
-    comfy_execution_error, find_output_media, truncate, MovieStudio, StudioError, MUSIC_COMFY_BASE,
+    comfy_execution_error, find_output_media, hash_file, truncate, MovieStudio, StudioError,
+    MUSIC_COMFY_BASE,
 };
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -1693,22 +1693,6 @@ fn probe_audio_duration(path: &Path) -> Option<f64> {
         .parse::<f64>()
         .ok()
         .filter(|value| value.is_finite() && *value > 0.0)
-}
-
-fn hash_file(path: &Path) -> Result<(u64, String), StudioError> {
-    let mut input = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut bytes = 0_u64;
-    let mut buffer = [0_u8; 1024 * 1024];
-    loop {
-        let count = input.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-        bytes = bytes.saturating_add(count as u64);
-    }
-    Ok((bytes, hex::encode(hasher.finalize())))
 }
 
 fn read_project(path: &Path) -> Result<MusicProject, StudioError> {

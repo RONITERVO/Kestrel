@@ -80,6 +80,7 @@ pub(super) const MUSIC_COMFY_BASE: &str = "http://127.0.0.1:8189";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
+const HASH_BUFFER_BYTES: usize = 64 * 1024;
 pub(super) const MAX_MOVIE_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_PLAN_EXCHANGE_BYTES: usize = 2 * 1024 * 1024;
 const PLAN_EXCHANGE_FORMAT: &str = "kestrel.movie-plan";
@@ -5347,18 +5348,24 @@ fn copy_reference_and_hash(
     result
 }
 
-fn hash_reference(path: &Path) -> Result<String, StudioError> {
+pub(super) fn hash_file(path: &Path) -> Result<(u64, String), StudioError> {
     let mut input = fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0; 1024 * 1024];
+    let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
+    let mut bytes = 0_u64;
     loop {
         let count = input.read(&mut buffer)?;
         if count == 0 {
             break;
         }
         hasher.update(&buffer[..count]);
+        bytes = bytes.saturating_add(count as u64);
     }
-    Ok(hex::encode(hasher.finalize()))
+    Ok((bytes, hex::encode(hasher.finalize())))
+}
+
+fn hash_reference(path: &Path) -> Result<String, StudioError> {
+    hash_file(path).map(|(_, sha256)| sha256)
 }
 
 fn reference_extension(path: &Path) -> String {
@@ -5438,6 +5445,27 @@ mod tests {
     fn comfy_workload_derives_ports_from_its_base_url() {
         assert_eq!(ComfyWorkload::Shared.port(), 8188);
         assert_eq!(ComfyWorkload::Music.port(), 8189);
+    }
+
+    #[test]
+    fn studio_hashing_uses_heap_storage_on_constrained_command_threads() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("studio-hash.bin");
+        let content = vec![0xA5_u8; HASH_BUFFER_BYTES * 3 + 17];
+        fs::write(&path, &content).unwrap();
+        let expected = hex::encode(Sha256::digest(&content));
+
+        let result = std::thread::Builder::new()
+            .name("constrained-studio-command".into())
+            .stack_size(256 * 1024)
+            .spawn(move || hash_file(&path))
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.0, content.len() as u64);
+        assert_eq!(result.1, expected);
     }
 
     #[test]

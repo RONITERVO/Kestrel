@@ -4,13 +4,14 @@
 //! never accepts executable workflow JSON from a model or producer. Completed PNGs, prompt JSON,
 //! graph receipts, hashes, and earlier takes are immutable backend truth.
 
-use super::{comfy_execution_error, truncate, ComfyWorkload, MovieStudio, StudioError, COMFY_BASE};
+use super::{
+    comfy_execution_error, hash_file, truncate, ComfyWorkload, MovieStudio, StudioError, COMFY_BASE,
+};
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs,
@@ -1420,22 +1421,6 @@ fn resolved_seed(seed: u64) -> u64 {
     } else {
         seed & i64::MAX as u64
     }
-}
-
-fn hash_file(path: &Path) -> Result<(u64, String), StudioError> {
-    let mut input = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut bytes = 0_u64;
-    let mut buffer = [0_u8; 1024 * 1024];
-    loop {
-        let count = input.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-        bytes = bytes.saturating_add(count as u64);
-    }
-    Ok((bytes, hex::encode(hasher.finalize())))
 }
 
 fn validate_image_id(id: &str) -> Result<(), StudioError> {
