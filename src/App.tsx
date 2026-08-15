@@ -54,6 +54,7 @@ import {
 } from "./api";
 import { ControlPlane, DeveloperConsole } from "./ControlPlane";
 import { MovieStudio } from "./MovieStudio";
+import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { SetupConsole } from "./Setup";
 import type {
   AppSnapshot,
@@ -176,7 +177,7 @@ function App() {
   if (!snapshot) return <AppBoot error={error} onRetry={refresh} />;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell app-shell-${view}`} data-view={view}>
       <AppHeader
         status={snapshot.status}
         view={view}
@@ -194,7 +195,7 @@ function App() {
           }
         }}
       />
-      <div className={`workspace ${view !== "research" ? "system-workspace" : ""}`}>
+      <div className={`workspace workspace-${view} ${view !== "research" ? "system-workspace" : ""}`}>
         {view === "research" && <LibrarySidebar
           open={sidebarOpen}
           reports={visibleReports}
@@ -206,7 +207,7 @@ function App() {
           onNew={() => setNewResearchOpen(true)}
           onReveal={() => void revealLibrary()}
         />}
-        <main className="main-stage">
+        <main className={`main-stage main-stage-${view}`}>
           {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
           {view === "setup" ? (
             <SetupConsole snapshot={snapshot} onChanged={setSnapshot} onError={(message) => setError(message)} />
@@ -282,25 +283,27 @@ function AppHeader({
   onPrepare: () => void;
 }) {
   const allReady = status.bonsai === "ready" && status.wikipedia === "ready";
+  const sectionLabel = view === "setup" ? "Setup" : view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research";
   return (
-    <header className="app-header">
+    <header className={`app-header app-header-${view}`}>
       <div className="header-left">
-        <button className="icon-button menu-button" aria-label="Toggle library" onClick={onMenu}><Menu /></button>
+        <div className="window-controls" aria-hidden="true"><span /><span /><span /></div>
+        <button type="button" className="icon-button menu-button" aria-label="Toggle library" onClick={onMenu}><Menu /></button>
         <div className="brand-mark"><Feather size={19} /></div>
-        <div className="brand-copy"><strong>Kestrel</strong><span>{view === "setup" ? "Setup" : view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research"}</span></div>
+        <div className="brand-copy"><strong>Kestrel</strong><span>{sectionLabel}</span></div>
       </div>
       <nav className="view-switcher" aria-label="Kestrel sections">
-        <button className={view === "setup" ? "active" : ""} onClick={() => onView("setup")}><Download size={14} /> Setup</button>
-        <button className={view === "control" ? "active" : ""} onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
-        <button className={view === "research" ? "active" : ""} onClick={() => onView("research")}><Library size={14} /> Research</button>
-        <button className={view === "studio" ? "active" : ""} onClick={() => onView("studio")}><Clapperboard size={14} /> Studio</button>
-        <button className={view === "developer" ? "active" : ""} onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
-        <button className={view === "system" ? "active" : ""} onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
+        <button type="button" className={view === "setup" ? "active" : ""} aria-current={view === "setup" ? "page" : undefined} title="Setup" onClick={() => onView("setup")}><Download size={14} /> Setup</button>
+        <button type="button" className={view === "control" ? "active" : ""} aria-current={view === "control" ? "page" : undefined} title="Control" onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
+        <button type="button" className={view === "research" ? "active" : ""} aria-current={view === "research" ? "page" : undefined} title="Research" onClick={() => onView("research")}><Library size={14} /> Research</button>
+        <button type="button" className={view === "studio" ? "active" : ""} aria-current={view === "studio" ? "page" : undefined} title="Studio" onClick={() => onView("studio")}><Clapperboard size={14} /> Studio</button>
+        <button type="button" className={view === "developer" ? "active" : ""} aria-current={view === "developer" ? "page" : undefined} title="Developer" onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
+        <button type="button" className={view === "system" ? "active" : ""} aria-current={view === "system" ? "page" : undefined} title="System" onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
       </nav>
       <div className="header-status" role="status">
         <StatusPill state={status.wikipedia} label={status.archive} />
         <StatusPill state={status.bonsai} label={status.model} />
-        <div className="privacy-pill"><ShieldCheck size={14} /> Offline only</div>
+        <div className="privacy-pill" aria-label="Offline only" title="Offline only"><ShieldCheck size={14} /> Offline only</div>
       </div>
       <div className="header-actions">
         {!allReady && <button className="quiet-button" onClick={onPrepare}>Prepare services</button>}
@@ -311,7 +314,7 @@ function AppHeader({
 }
 
 function StatusPill({ state, label }: { state: ServiceState; label: string }) {
-  return <div className={`status-pill status-${state}`}><span className="status-dot" />{label}</div>;
+  return <div className={`status-pill status-${state}`} aria-label={`${label}: ${state}`} title={`${label}: ${state}`}><span className="status-dot" />{label}</div>;
 }
 
 function LibrarySidebar({
@@ -368,7 +371,12 @@ function LibrarySidebar({
 
 function ResearchReader({ report, onStandalone }: { report: ResearchReport; onStandalone: () => void }) {
   const [sourceFocus, setSourceFocus] = useState<string | null>(null);
+  const [spokenAnchor, setSpokenAnchor] = useState<string | null>(null);
   const sourceMap = useMemo(() => new Map(report.sources.map((source) => [source.id, source])), [report.sources]);
+  const handleSpeechPassage = useCallback((anchorId: string | null) => {
+    setSpokenAnchor(anchorId);
+    if (anchorId) document.getElementById(anchorId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
   const focusSource = (id: string) => {
     setSourceFocus(id);
     document.getElementById(`source-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -377,7 +385,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
     <div className="reader-layout">
       <article className="research-article">
         <nav className="reader-breadcrumb"><button><ArrowLeft size={15} /> Library</button><span>/</span><span>{report.title}</span></nav>
-        <header className="report-header">
+        <header className={`report-header ${spokenAnchor === "report-overview" ? "speech-active" : ""}`} id="report-overview">
           <div className="report-kicker"><span>Research brief</span><span>Edition {report.edition}</span><span>{formatDate(report.updatedAt)}</span></div>
           <h1>{report.title}</h1>
           <p className="report-dek">{report.dek}</p>
@@ -388,20 +396,22 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
           </div>
         </header>
 
-        <section className="answer-card" aria-labelledby="short-answer-title">
+        <ResearchSpeechPlayer report={report} onPassageChange={handleSpeechPassage} />
+
+        <section className={`answer-card ${spokenAnchor === "short-answer" ? "speech-active" : ""}`} id="short-answer" aria-labelledby="short-answer-title">
           <div className="section-label" id="short-answer-title"><Sparkles size={16} /> Short answer</div>
           <p>{report.answer}</p>
         </section>
 
         {report.edition > 1 && (
-          <aside className="improvement-note">
+          <aside className={`improvement-note ${spokenAnchor === "edition-improvement" ? "speech-active" : ""}`} id="edition-improvement">
             <div className="improvement-icon"><History size={17} /></div>
             <div><strong>What changed in this edition</strong><p>{report.improvement}</p></div>
             <span className="edition-badge">v{report.edition}</span>
           </aside>
         )}
 
-        <section className="content-section" id="findings">
+        <section className={`content-section ${spokenAnchor === "findings" ? "speech-active" : ""}`} id="findings">
           <div className="section-heading"><span className="section-number">01</span><div><span className="eyebrow">The evidence at a glance</span><h2>Key findings</h2></div></div>
           <div className="findings-grid">
             {report.findings.map((finding, index) => (
@@ -416,7 +426,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
         </section>
 
         {report.sections.map((section, index) => (
-          <section className="content-section narrative-section" id={section.id} key={section.id}>
+          <section className={`content-section narrative-section ${spokenAnchor === section.id ? "speech-active" : ""}`} id={section.id} key={section.id}>
             <div className="section-heading"><span className="section-number">{String(index + 2).padStart(2, "0")}</span><div><span className="eyebrow">Deep dive</span><h2>{section.heading}</h2></div></div>
             <p className="section-summary">{section.summary}</p>
             {section.body.map((paragraph, paragraphIndex) => <p key={paragraphIndex}>{paragraph}</p>)}
@@ -425,7 +435,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
         ))}
 
         {!!report.timeline.length && (
-          <section className="content-section" id="timeline">
+          <section className={`content-section ${spokenAnchor === "timeline" ? "speech-active" : ""}`} id="timeline">
             <div className="section-heading"><span className="section-number">{String(report.sections.length + 2).padStart(2, "0")}</span><div><span className="eyebrow">Sequence</span><h2>Timeline</h2></div></div>
             <div className="timeline">
               {report.timeline.map((item) => (
@@ -437,7 +447,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
           </section>
         )}
 
-        <section className="content-section split-section" id="terms">
+        <section className={`content-section split-section ${spokenAnchor === "terms" ? "speech-active" : ""}`} id="terms">
           <div>
             <div className="section-heading small"><div><span className="eyebrow">Plain language</span><h2>Terms worth knowing</h2></div></div>
             <dl className="term-list">{report.terms.map((term) => <div key={term.term}><dt>{term.term}</dt><dd>{term.meaning}</dd></div>)}</dl>
@@ -448,7 +458,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
           </div>
         </section>
 
-        <section className="content-section sources-section" id="sources">
+        <section className={`content-section sources-section ${spokenAnchor === "sources" ? "speech-active" : ""}`} id="sources">
           <div className="section-heading"><span className="section-number">{String(report.sections.length + 3).padStart(2, "0")}</span><div><span className="eyebrow">Evidence ledger</span><h2>Sources inspected</h2></div></div>
           <p className="sources-intro">Every source below was opened by the local model. Excerpts show the evidence it received; Wikipedia is a tertiary starting point, not a substitute for primary sources.</p>
           <div className="source-list">

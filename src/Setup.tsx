@@ -4,15 +4,17 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import {
   cancelSetupInstall, installSetupComponent, onSetupProgress, openComfyUi, pickSetupFile,
   pickSetupFolder, saveSetupLocations,
 } from "./api";
-import type { AppSnapshot, SetupLocations, SetupProgress } from "./types";
+import { ModelDownloader } from "./ModelDownloader";
+import type { AppSnapshot, ControlSnapshot, SetupLocations, SetupProgress } from "./types";
 
 export function SetupConsole({ snapshot, onChanged, onError }: {
   snapshot: AppSnapshot;
-  onChanged: (snapshot: AppSnapshot) => void;
+  onChanged: Dispatch<SetStateAction<AppSnapshot | null>>;
   onError: (message: string) => void;
 }) {
   const [speed, setSpeed] = useState(50);
@@ -36,7 +38,11 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     : item), [snapshot.setup.components, edition]);
 
   const saveLocations = async (): Promise<AppSnapshot> => {
-    const next = await saveSetupLocations(locations);
+    const enginePath = locations.enginePath.trim();
+    if (enginePath && !/(?:^|[\\/])llama-server\.exe$/i.test(enginePath)) {
+      throw new Error("The model engine path must end with llama-server.exe. Choose the verified local engine before saving.");
+    }
+    const next = await saveSetupLocations({ ...locations, enginePath });
     onChanged(next);
     return next;
   };
@@ -127,6 +133,19 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     {!snapshot.setup.gpuName && <div className="setup-hardware-note"><TriangleAlert /><div><strong>No NVIDIA graphics card was detected.</strong><span>The assistant and Wikipedia can still work, although Bonsai may be slow on a laptop processor. Movie Studio stays optional because MiniMax H3 is not practical on this hardware.</span></div></div>}
     {snapshot.setup.gpuName && <div className="setup-hardware-note compatible"><Check /><div><strong>{snapshot.setup.gpuName}</strong><span>{formatBytes(snapshot.setup.gpuMemoryBytes)} graphics memory detected. Kestrel will use the NVIDIA Bonsai engine; H3 remains an optional large install.</span></div></div>}
 
+    <section className="setup-model-library" aria-labelledby="setup-model-library-title">
+      <div className="setup-model-library-heading">
+        <div><span className="eyebrow">Your model library</span><h2 id="setup-model-library-title">Add another local model</h2></div>
+        <p>Paste a public Hugging Face model link. Kestrel will inspect compatible GGUF files first, then download only the quantization you choose with visible progress and safe resume.</p>
+      </div>
+      <ModelDownloader
+        variant="setup"
+        gpuTotalMib={snapshot.setup.gpuMemoryBytes / 1024 / 1024}
+        onCatalogChanged={(control) => onChanged((current) => mergeSetupControlSnapshot(current, control))}
+        onError={onError}
+      />
+    </section>
+
     <section className="setup-components" aria-label="Kestrel components">
       {components.map((component) => <article className={`setup-component ${component.status}`} key={component.id}>
         <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : <Settings2 />}</div>
@@ -156,6 +175,13 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
       <div className="setup-advanced-actions"><span>Kestrel validates what is actually present; saving a path never marks it ready by itself.</span><button className="primary-button" disabled={!!busy} onClick={() => void saveLocations().catch((error) => onError(String(error)))}><Check /> Save & check again</button></div>
     </section>}
   </div>;
+}
+
+export function mergeSetupControlSnapshot(
+  current: AppSnapshot | null,
+  control: ControlSnapshot,
+): AppSnapshot | null {
+  return current ? { ...current, control } : current;
 }
 
 function PathField({ label, value, onChange, onBrowse }: { label: string; value: string; onChange: (value: string) => void; onBrowse: () => void }) {

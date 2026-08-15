@@ -73,7 +73,7 @@ pub(super) struct WorkspaceToolRequest {
     #[serde(default)]
     pub(super) path: String,
     #[serde(default)]
-    content: String,
+    content: WorkspaceFileContent,
     #[serde(default)]
     files: Vec<WorkspaceFileWrite>,
 }
@@ -109,7 +109,46 @@ impl WorkspaceAction {
 #[derive(Debug, Deserialize)]
 struct WorkspaceFileWrite {
     path: String,
-    content: String,
+    #[serde(default)]
+    content: WorkspaceFileContent,
+}
+
+/// The current tool contract accepts a real JSON object, avoiding fragile JSON-inside-JSON
+/// escaping during long model turns. Text remains accepted so interrupted v1 transcripts and
+/// native tests can still be recovered safely.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum WorkspaceFileContent {
+    Text(String),
+    Object(serde_json::Map<String, Value>),
+    Other(Value),
+}
+
+impl Default for WorkspaceFileContent {
+    fn default() -> Self {
+        Self::Text(String::new())
+    }
+}
+
+impl WorkspaceFileContent {
+    fn into_json_text(self, path: &str) -> Result<String, StudioError> {
+        match self {
+            Self::Text(content) => Ok(content),
+            Self::Object(content) => Ok(serde_json::to_string(&content)?),
+            Self::Other(value) => {
+                drop(value);
+                Err(StudioError::Invalid(format!(
+                    "workspace file content for {path} must be a string or object"
+                )))
+            }
+        }
+    }
+}
+
+impl From<String> for WorkspaceFileContent {
+    fn from(content: String) -> Self {
+        Self::Text(content)
+    }
 }
 
 pub(super) struct WorkspaceToolResult {
@@ -237,8 +276,8 @@ impl MovieAgentWorkspace {
                     "properties": {
                         "action": {"type":"string","enum":["list","read","read_many","write","write_batch","delete","check","submit"]},
                         "path": {"type":"string","description":"Workspace-relative path for read, write, or delete."},
-                        "content": {"type":"string","description":"Complete JSON file content for write."},
-                        "files": {"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]},"description":"Up to eight paths for read_many (content ignored), or up to eight complete files for write_batch. Use multiple small batches for a long movie."}
+                        "content": {"type":"object","description":"Complete JSON object for write. Supply the object directly; do not quote it or append a separator."},
+                        "files": {"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"object","description":"Complete JSON object for this file. Supply the object directly; do not quote it or append a separator."}},"required":["path"]},"description":"Up to eight paths for read_many (omit content), or up to eight complete files for write_batch. Use multiple small batches for a long movie."}
                     },
                     "required": ["action"]
                 }
@@ -355,7 +394,8 @@ impl MovieAgentWorkspace {
                 Ok(self.result(WorkspaceOutcome::Observed, output, None))
             }
             WorkspaceAction::Write => {
-                self.write_file(&request.path, &request.content)?;
+                let content = request.content.into_json_text(&request.path)?;
+                self.write_file(&request.path, &content)?;
                 Ok(self.result(
                     WorkspaceOutcome::Mutated,
                     format!("WROTE {}", request.path),
@@ -370,16 +410,24 @@ impl MovieAgentWorkspace {
                         batch_limit
                     )));
                 }
+                let files = request
+                    .files
+                    .into_iter()
+                    .map(|file| {
+                        let content = file.content.into_json_text(&file.path)?;
+                        Ok((file.path, content))
+                    })
+                    .collect::<Result<Vec<_>, StudioError>>()?;
                 // Validate the entire batch before changing durable state.
-                for file in &request.files {
-                    validate_write(&file.path, &file.content)?;
+                for (path, content) in &files {
+                    validate_write(path, content)?;
                 }
                 self.ensure_mutation_allowed()?;
                 self.changed()?;
-                let mut paths = Vec::with_capacity(request.files.len());
-                for file in request.files {
-                    self.write_validated_file(&file.path, &file.content)?;
-                    paths.push(file.path);
+                let mut paths = Vec::with_capacity(files.len());
+                for (path, content) in files {
+                    self.write_validated_file(&path, &content)?;
+                    paths.push(path);
                 }
                 Ok(self.result(
                     WorkspaceOutcome::Mutated,
@@ -461,7 +509,7 @@ impl MovieAgentWorkspace {
                 plan.quality_review = MovieQualityReview {
                     attempts: self.state.clean_check_passes,
                     score: 100,
-                    verdict: "Bonsai completed an incremental workspace build, native H3 lint, and full code-review pass.".into(),
+                    verdict: "The Studio Director completed an incremental workspace build, native H3 lint, and full code-review pass.".into(),
                 };
                 Ok(self.result(
                     WorkspaceOutcome::Submitted,
@@ -906,6 +954,83 @@ mod tests {
     }
 
     #[test]
+    fn workspace_accepts_direct_json_objects_without_nested_string_encoding() {
+        let root = temp_workspace();
+        let mut workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a compact test film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let request: WorkspaceToolRequest = serde_json::from_value(json!({
+            "action":"write_batch",
+            "files":[
+                {"path":"movie.json","content":{
+                    "title":"Signal",
+                    "logline":"A courier finds a signal.",
+                    "audience":"Film buyers",
+                    "creativeDirection":"Restrained live-action photography.",
+                    "continuityBible":[],
+                    "sourceCredits":[]
+                }},
+                {"path":"scenes/001.json","content":{
+                    "title":"Discovery",
+                    "purpose":"Reveal the signal",
+                    "durationSeconds":5,
+                    "prompt":"A complete renderer prompt will replace this lintable draft.",
+                    "continuityIn":"Independent opening",
+                    "continuityOut":"The courier holds the signal",
+                    "transition":"Hard cut",
+                    "usePreviousFrame":false,
+                    "sourceRefs":[],
+                    "referenceIds":[]
+                }}
+            ]
+        }))
+        .unwrap();
+
+        let result = workspace.execute(request);
+
+        assert_eq!(result.outcome, WorkspaceOutcome::Mutated);
+        let stored: Value =
+            serde_json::from_str(&workspace.read_file("scenes/001.json").unwrap()).unwrap();
+        assert_eq!(stored["title"], "Discovery");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_rejects_non_document_content_with_the_affected_path() {
+        let root = temp_workspace();
+        let mut workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            "Make a compact test film",
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let request: WorkspaceToolRequest = serde_json::from_value(json!({
+            "action":"write",
+            "path":"scenes/001.json",
+            "content":["not", "a", "document"]
+        }))
+        .unwrap();
+
+        let result = workspace.execute(request);
+
+        assert_eq!(result.outcome, WorkspaceOutcome::Rejected);
+        assert!(result.message.contains("scenes/001.json"));
+        assert!(result.message.contains("must be a string or object"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn producer_notes_are_durable_and_model_readable() {
         let root = temp_workspace();
         let workspace = MovieAgentWorkspace::open(
@@ -1327,11 +1452,11 @@ mod tests {
         let result = workspace.execute(WorkspaceToolRequest {
             action: WorkspaceAction::ReadMany,
             path: String::new(),
-            content: String::new(),
+            content: String::new().into(),
             files: (1..=3)
                 .map(|index| WorkspaceFileWrite {
                     path: format!("scenes/{index:03}.json"),
-                    content: String::new(),
+                    content: String::new().into(),
                 })
                 .collect(),
         });
@@ -1434,7 +1559,7 @@ mod tests {
         let blocked = workspace.execute(WorkspaceToolRequest {
             action: WorkspaceAction::Write,
             path: "scenes/001.json".into(),
-            content: scene.clone(),
+            content: scene.clone().into(),
             files: Vec::new(),
         });
         assert_eq!(blocked.outcome, WorkspaceOutcome::Rejected);
@@ -1445,7 +1570,7 @@ mod tests {
             .try_execute(WorkspaceToolRequest {
                 action: WorkspaceAction::Check,
                 path: String::new(),
-                content: String::new(),
+                content: String::new().into(),
                 files: Vec::new(),
             })
             .unwrap();
@@ -1499,15 +1624,15 @@ mod tests {
             .try_execute(WorkspaceToolRequest {
                 action: WorkspaceAction::WriteBatch,
                 path: String::new(),
-                content: String::new(),
+                content: String::new().into(),
                 files: vec![
                     WorkspaceFileWrite {
                         path: "movie.json".into(),
-                        content: metadata,
+                        content: metadata.into(),
                     },
                     WorkspaceFileWrite {
                         path: "scenes/001.json".into(),
-                        content: bad_scene,
+                        content: bad_scene.into(),
                     },
                 ],
             })
@@ -1516,7 +1641,7 @@ mod tests {
             .try_execute(WorkspaceToolRequest {
                 action: WorkspaceAction::Check,
                 path: String::new(),
-                content: String::new(),
+                content: String::new().into(),
                 files: Vec::new(),
             })
             .unwrap();
@@ -1551,7 +1676,7 @@ mod tests {
             .try_execute(WorkspaceToolRequest {
                 action: WorkspaceAction::Write,
                 path: "scenes/001.json".into(),
-                content: repaired_scene,
+                content: repaired_scene.into(),
                 files: Vec::new(),
             })
             .unwrap();
@@ -1560,7 +1685,7 @@ mod tests {
                 .try_execute(WorkspaceToolRequest {
                     action: WorkspaceAction::Check,
                     path: String::new(),
-                    content: String::new(),
+                    content: String::new().into(),
                     files: Vec::new(),
                 })
                 .unwrap();
@@ -1572,7 +1697,7 @@ mod tests {
             .try_execute(WorkspaceToolRequest {
                 action: WorkspaceAction::Submit,
                 path: String::new(),
-                content: String::new(),
+                content: String::new().into(),
                 files: Vec::new(),
             })
             .unwrap();

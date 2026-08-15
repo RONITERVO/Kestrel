@@ -1,4 +1,4 @@
-//! Bonsai planning protocol and durable conversation primitives.
+//! Studio Director planning protocol and durable conversation primitives.
 //!
 //! Model request construction, SSE assembly, typed tool-only retries, explicit redacted views,
 //! and lossless transcript persistence live here so every Studio model call follows the same
@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
-/// Durable conversation state for one Bonsai context session.
+/// Durable conversation state for one Studio Director context session.
 ///
 /// Mutations are persisted through this type so orchestration code cannot accidentally update the
 /// in-memory prompt without updating the producer-inspectable transcript.
@@ -456,7 +456,7 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
                 Err(error) => last_error = error.to_string(),
             }
         } else {
-            last_error = format!("Bonsai did not call {}", request.tool_name);
+            last_error = format!("The Studio Director did not call {}", request.tool_name);
         }
         let mut history_message = message;
         if let Some(object) = history_message.as_object_mut() {

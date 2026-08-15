@@ -1,7 +1,7 @@
 # Studio maintainer guide
 
 This directory contains every model-assisted part of Kestrel Studio. Start here before changing
-Bonsai planning, prompt generation, Producer Copilot, H3 image assets, or live previews. The root
+Director/Reviewer planning, prompt generation, Producer Copilot, H3 image assets, or live previews. The root
 `studio.rs` file remains the domain and persistence facade; child modules own one bounded concern
 and must not acquire authority implicitly.
 
@@ -16,16 +16,20 @@ and must not acquire authority implicitly.
 - `project.json`, immutable reference objects, raw masters, edit decisions, receipts, transcripts,
   and planning controls are durable user data. Interrupted work is surfaced, never silently resumed.
 - The model receives the original producer request and a fresh authoritative workspace snapshot on
-  every Bonsai planning turn. UI/log redaction must never mutate model input or durable history.
-- H3 rendering begins only after the Bonsai inference lease is released and the language model is
+  every Director planning turn. UI/log redaction must never mutate model input or durable history.
+- H3 rendering begins only after every language-model inference lease is released and the runtime is
   unloaded from the GPU.
+- Director and Reviewer bindings are durable project data. Missing pinned models fail visibly; an
+  explicit checkpointed role change records provenance and forces producer review.
+- Non-Bonsai models must pass the current local Studio protocol check before standard-mode unattended
+  planning. Advanced mode may run an unverified compatible model only with forced producer review.
 
 ## Module ownership
 
 | Module | Owns | Must not own |
 | --- | --- | --- |
 | `studio.rs` | Public Tauri-facing domain types, project persistence, job coordination, rendering and edit facade | Model stream framing or workspace action semantics |
-| `agent_flow.rs` | Bonsai planning orchestration, producer-control boundaries, tool dispatch, independent-review coordination | Wire parsing or file mutation rules |
+| `agent_flow.rs` | Director planning orchestration, producer-control boundaries, per-turn model leases, tool dispatch, independent-review coordination | Wire parsing or file mutation rules |
 | `agent_lifecycle.rs` | Pure session, tool-use, and reviewer-budget transitions | HTTP, filesystem, UI events, or project state |
 | `agent_protocol.rs` | Exact planning requests, lossless transcript history, assistant/tool-call assembly | Workspace mutation or producer copy |
 | `model_stream.rs` | Shared OpenAI-compatible SSE framing, UTF-8 fragmentation, JSON validation, completion markers | Feature-specific tokens, tool schemas, or UI events |
@@ -40,7 +44,7 @@ and must not acquire authority implicitly.
 If a change appears to belong to two rows, introduce a typed boundary instead of importing private
 implementation details across both modules.
 
-## Bonsai planning lifecycle
+## Studio planning lifecycle
 
 ```text
 open durable workspace
@@ -99,6 +103,7 @@ The project directory is the source of truth. Important planning files include:
 | `agent-workspace/state.json` | Workspace revision and clean-check gate |
 | `agent-workspace/agent-transcript*.json` | Lossless accepted conversation by context session |
 | `agent-workspace/agent-last-request.json` | Exact last planning request envelope for audit |
+| `../../model-qualifications.json` | Recoverable protocol receipts bound to model, engine, runtime profile, and protocol revision |
 
 Atomic replacement and recovery copies are deliberate. Do not trade them for in-memory convenience.
 The advanced UI reads bounded redacted views; the unmodified files remain available as durable truth.
@@ -123,7 +128,7 @@ The advanced UI reads bounded redacted views; the unmodified files remain availa
 6. Run every command required by the repository `AGENTS.md`.
 7. For runtime/harness changes, run the applicable ignored live test with local services available.
 
-Fast tests are the first defense: lifecycle rules do not require Bonsai, stream framing does not
+Fast tests are the first defense: lifecycle rules do not require a live model, stream framing does not
 require HTTP, and workspace semantics do not require ComfyUI. The ignored live acceptance tests prove
 runtime compatibility and realistic production quality; they are not a substitute for deterministic
 coverage.

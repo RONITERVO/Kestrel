@@ -3,7 +3,12 @@
 //! Maintainers should read `studio/README.md` before changing model-assisted flows or persistence
 //! boundaries. Child modules own protocol, lifecycle, workspace, preview, and copilot concerns.
 
-use crate::{models::ResearchSettings, runtime::ModelConnection};
+use crate::{
+    model::ModelInfo,
+    model_roles::STUDIO_PROTOCOL_REVISION,
+    models::{ControlSettings, ResearchSettings},
+    runtime::{ModelConnection, RuntimeManager},
+};
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -61,7 +66,7 @@ pub use prompt_collaboration::{
     validate_request as validate_prompt_draft_request, PromptDraftJob, PromptDraftRequest,
 };
 
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
@@ -85,7 +90,7 @@ struct IndependentReviewRequest<'a> {
     plan: &'a MoviePlan,
     connection: &'a ModelConnection,
     settings: &'a MovieSettings,
-    research: &'a ResearchSettings,
+    runtime_max_output_tokens: u32,
 }
 
 fn media_program(name: &str) -> PathBuf {
@@ -228,7 +233,7 @@ pub enum StudioError {
     NotFound(String),
     #[error("movie request is invalid: {0}")]
     Invalid(String),
-    #[error("Bonsai could not produce a movie plan: {0}")]
+    #[error("the Studio Director could not produce a movie plan: {0}")]
     Planning(String),
     #[error("MiniMax H3 render failed: {0}")]
     Render(String),
@@ -246,6 +251,53 @@ pub struct StartMovieRequest {
     pub references: Vec<ProducerReferenceRequest>,
     #[serde(default)]
     pub pause_after_plan: bool,
+    #[serde(default)]
+    pub model_roles: MovieModelRoleRequest,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MovieModelRoleRequest {
+    pub director_model_id: String,
+    pub reviewer_model_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MovieModelBinding {
+    pub model_id: String,
+    pub model_name: String,
+    pub compatibility_tier: String,
+    pub protocol_revision: String,
+    pub bound_at: String,
+}
+
+impl Default for MovieModelBinding {
+    fn default() -> Self {
+        Self {
+            model_id: String::new(),
+            model_name: "Ternary Bonsai 27B Q2_0".into(),
+            compatibility_tier: "legacy-release-validated".into(),
+            protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
+            bound_at: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MovieModelRoles {
+    pub director: MovieModelBinding,
+    pub reviewer: MovieModelBinding,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MovieModelRuntime<'a> {
+    pub runtime: &'a Arc<RuntimeManager>,
+    pub models: &'a [ModelInfo],
+    pub settings: &'a ControlSettings,
+    pub director_model_id: &'a str,
+    pub reviewer_model_id: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +322,14 @@ pub struct MovieClipSuggestion {
     pub summary: String,
     pub checklist: Vec<String>,
     pub clip: PlannedClip,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StudioProtocolQualification {
+    nonce: String,
+    acknowledged_role: String,
+    checks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,9 +522,9 @@ impl MovieSettings {
         self.temperature = self.temperature.clamp(0.0, 2.0);
         self.top_p = self.top_p.clamp(0.05, 1.0);
         self.top_k = self.top_k.clamp(1, 200);
-        // Bonsai's movie-agent checkpoint is trained for its full reasoning mode.
-        // Keep the serialized field for project/profile compatibility, but never
-        // permit a movie request (including an old saved one) to disable it.
+        // Studio's durable agent protocol is acceptance-tested at its full reasoning mode. Keep
+        // the serialized field for project/profile compatibility, but never permit a movie
+        // request (including an old saved one) to disable it.
         self.thinking_budget = MOVIE_THINKING_BUDGET;
         self.max_output_tokens = self.max_output_tokens.clamp(1_024, 32_768);
         let root = PathBuf::from(&self.comfy_root);
@@ -675,6 +735,8 @@ pub struct MovieProject {
     pub created_at: String,
     pub updated_at: String,
     pub model: String,
+    #[serde(default)]
+    pub model_roles: MovieModelRoles,
     pub renderer: String,
     pub settings: MovieSettings,
     #[serde(default)]
@@ -835,16 +897,18 @@ impl MovieStudio {
         &self,
         request: StartMovieRequest,
         advanced: bool,
+        model_roles: MovieModelRoles,
     ) -> Result<MovieProject, StudioError> {
-        self.create_project(request, advanced, false)
+        self.create_project(request, advanced, false, model_roles)
     }
 
     pub fn create_manual(
         &self,
         request: StartMovieRequest,
         advanced: bool,
+        model_roles: MovieModelRoles,
     ) -> Result<MovieProject, StudioError> {
-        self.create_project(request, advanced, true)
+        self.create_project(request, advanced, true, model_roles)
     }
 
     fn create_project(
@@ -852,12 +916,14 @@ impl MovieStudio {
         request: StartMovieRequest,
         advanced: bool,
         producer_authored: bool,
+        model_roles: MovieModelRoles,
     ) -> Result<MovieProject, StudioError> {
         let StartMovieRequest {
             prompt,
             settings,
             references,
             pause_after_plan,
+            model_roles: _,
         } = request;
         let meaningful_prompt = prompt.trim();
         if prompt.len() > MAX_MOVIE_PROMPT_BYTES
@@ -896,7 +962,7 @@ impl MovieStudio {
             quality_review: MovieQualityReview {
                 attempts: 0,
                 score: 0,
-                verdict: "Producer-owned blank plan. Bonsai has not been used.".into(),
+                verdict: "Producer-owned blank plan. The Studio Director has not been used.".into(),
             },
             clips: Vec::new(),
         });
@@ -918,19 +984,22 @@ impl MovieStudio {
             }
             .into(),
             detail: if producer_authored {
-                "A blank producer-owned plan is ready. Add scenes and approve when native checks pass; Bonsai has not been started."
+                "A blank producer-owned plan is ready. Add scenes and approve when native checks pass; the Studio Director has not been started."
             } else {
-                "Bonsai is shaping the story, continuity, and production plan."
+                "The Studio Director is shaping the story, continuity, and production plan."
             }
             .into(),
             created_at: now.clone(),
             updated_at: now,
             model: if producer_authored {
-                "Producer-authored; local model help is optional"
+                format!(
+                    "Producer-authored · Kestrel Director available with {}",
+                    model_roles.director.model_name
+                )
             } else {
-                "Ternary Bonsai 27B Q2_0"
-            }
-            .into(),
+                format!("Kestrel Director · {}", model_roles.director.model_name)
+            },
+            model_roles: model_roles.clone(),
             renderer: "MiniMax H3 / ComfyUI native".into(),
             settings,
             references,
@@ -948,14 +1017,23 @@ impl MovieStudio {
             final_path: String::new(),
             exports: Vec::new(),
             error: String::new(),
-            producer_review_required: producer_authored || pause_after_plan,
+            producer_review_required: producer_authored
+                || pause_after_plan
+                || !matches!(
+                    model_roles.director.compatibility_tier.as_str(),
+                    "release-validated" | "protocol-ready"
+                )
+                || !matches!(
+                    model_roles.reviewer.compatibility_tier.as_str(),
+                    "release-validated" | "protocol-ready"
+                ),
             producer_approved_at: String::new(),
             producer_feedback: Vec::new(),
             copilot_history: Vec::new(),
         };
         write_json_atomic(
             &folder.join("request.json"),
-            &json!({"prompt":project.prompt,"settings":project.settings,"references":project.references,"createdAt":project.created_at}),
+            &json!({"prompt":project.prompt,"settings":project.settings,"references":project.references,"modelRoles":project.model_roles,"createdAt":project.created_at}),
         )?;
         write_json_atomic(&folder.join("references.json"), &project.references)?;
         if let Some(plan) = project.plan.as_ref() {
@@ -1203,7 +1281,7 @@ impl MovieStudio {
             (
                 "BRIEF.md",
                 "producer-brief",
-                "Producer brief sent to Bonsai",
+                "Producer brief sent to the Director",
                 "input",
             ),
             (
@@ -1252,7 +1330,7 @@ impl MovieStudio {
             )
         {
             return Err(StudioError::Invalid(
-                "live direction is available while Bonsai is planning; resume a planning checkpoint first"
+                "live direction is available while the Director is planning; resume a planning checkpoint first"
                     .into(),
             ));
         }
@@ -1288,7 +1366,7 @@ impl MovieStudio {
             )
         {
             return Err(StudioError::Invalid(
-                "a planning checkpoint can only be requested while Bonsai is planning".into(),
+                "a planning checkpoint can only be requested while the Director is planning".into(),
             ));
         }
         {
@@ -1301,7 +1379,7 @@ impl MovieStudio {
             id,
             PlanningEventKind::CheckpointRequested,
             PlanningStage::Producer,
-            "Checkpoint requested. Bonsai will stop after the current safe model turn.",
+            "Checkpoint requested. The Director will stop after the current safe model turn.",
             (0, 0),
             app,
         );
@@ -1482,7 +1560,7 @@ impl MovieStudio {
             attempts: 0,
             score: 0,
             verdict:
-                "Producer-edited draft. Run Bonsai revision or approve explicitly before rendering."
+                "Producer-edited draft. Run a Director revision or approve explicitly before rendering."
                     .into(),
         };
         project.producer_feedback.push(ProducerFeedbackRecord {
@@ -1648,7 +1726,7 @@ impl MovieStudio {
         project.phase = "resuming".into();
         project.error.clear();
         project.detail = if resuming_planning {
-            "Resuming Bonsai from the durable movie workspace.".into()
+            "Resuming the Director from the durable movie workspace.".into()
         } else {
             "Resuming from the last preserved H3 master.".into()
         };
@@ -1666,11 +1744,70 @@ impl MovieStudio {
             .await;
     }
 
+    /// Exercise the same typed tool-submission path used by Studio before a generic model can be
+    /// offered to non-advanced producers. This does not claim artistic quality; it proves that the
+    /// exact model/runtime profile can follow Kestrel's structured agent protocol and correction
+    /// loop without prose being executed as an action.
+    pub async fn qualify_model_protocol(
+        &self,
+        connection: &ModelConnection,
+        runtime_max_output_tokens: u32,
+    ) -> Result<Vec<String>, StudioError> {
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let messages = vec![
+            json!({"role":"system","content":"You are completing Kestrel's local Studio protocol check. You have no filesystem, render, or network authority. Call only the supplied qualification tool with the exact nonce and concise check names; do not answer in prose."}),
+            json!({"role":"user","content":format!("Acknowledge the Kestrel Studio Director role. Submit nonce {nonce} and checks named structured-tool-call and exact-nonce.")}),
+        ];
+        let settings = MovieSettings {
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 1,
+            thinking_budget: 512,
+            max_output_tokens: 1_024,
+            ..MovieSettings::default()
+        };
+        let submission: StudioProtocolQualification = agent_protocol::complete_tool_submission(
+            &self.http,
+            ToolSubmissionRequest {
+                connection,
+                initial_messages: &messages,
+                tool_name: "submit_kestrel_studio_qualification",
+                tool_description: "Submit the exact local Studio protocol acknowledgement.",
+                response_format: studio_qualification_schema(),
+                settings: &settings,
+                runtime_max_output_tokens,
+                label: "Studio model qualification",
+                audit_path: None,
+            },
+        )
+        .await?;
+        if submission.nonce != nonce {
+            return Err(StudioError::Planning(
+                "the model called the qualification tool with the wrong nonce".into(),
+            ));
+        }
+        if submission.acknowledged_role != "Kestrel Studio Director" {
+            return Err(StudioError::Planning(
+                "the model did not acknowledge the exact Kestrel Studio Director role".into(),
+            ));
+        }
+        let checks = submission
+            .checks
+            .into_iter()
+            .filter(|check| matches!(check.as_str(), "structured-tool-call" | "exact-nonce"))
+            .collect::<HashSet<_>>();
+        if checks.len() != 2 {
+            return Err(StudioError::Planning(
+                "the model's qualification omitted a required protocol check".into(),
+            ));
+        }
+        Ok(vec!["structured-tool-call".into(), "exact-nonce".into()])
+    }
+
     pub async fn plan(
         &self,
         id: &str,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
+        model_runtime: MovieModelRuntime<'_>,
         cancel: &CancellationToken,
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
@@ -1683,8 +1820,7 @@ impl MovieStudio {
             .direct(
                 &user_prompt,
                 &movie_settings,
-                connection,
-                research,
+                model_runtime,
                 cancel,
                 (&mut project, app),
             )
@@ -1692,7 +1828,7 @@ impl MovieStudio {
         let MovieAgentOutcome::Submitted(mut plan) = outcome else {
             project.status = "planning-checkpoint".into();
             project.phase = "planning-checkpoint".into();
-            project.detail = "Bonsai stopped at a safe producer checkpoint. The workspace, exact model transcript, and unfinished scene files are preserved; resume whenever you are ready.".into();
+            project.detail = "The Director stopped at a safe producer checkpoint. The workspace, exact model transcript, and unfinished scene files are preserved; resume whenever you are ready.".into();
             self.persist_emit(&mut project, app)?;
             self.emit_planning(
                 id,
@@ -1731,7 +1867,7 @@ impl MovieStudio {
             });
             if clip.use_previous_frame && !clip.reference_ids.is_empty() {
                 return Err(StudioError::Planning(format!(
-                    "Bonsai review accepted clip {} with incompatible H3 continuation and native references; rendering was stopped before any media changed",
+                    "The Director review accepted clip {} with incompatible H3 continuation and native references; rendering was stopped before any media changed",
                     index + 1
                 )));
             }
@@ -1782,7 +1918,7 @@ impl MovieStudio {
             project.status = "awaiting-review".into();
             project.phase = "awaiting-producer".into();
             project.detail = format!(
-                "Bonsai's {}-scene plan is paused for structured producer review. No H3 clip has started.",
+                "The Director's {}-scene plan is paused for structured producer review. No H3 clip has started.",
                 project.clips.len()
             );
         } else {
@@ -1803,8 +1939,7 @@ impl MovieStudio {
         &self,
         prompt: &str,
         settings: &MovieSettings,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
+        model_runtime: MovieModelRuntime<'_>,
         cancel: &CancellationToken,
         progress: (&mut MovieProject, Option<&AppHandle>),
     ) -> Result<(MovieAgentOutcome, Vec<MovieSource>), StudioError> {
@@ -1812,7 +1947,8 @@ impl MovieStudio {
         check_cancel(cancel)?;
         project.phase = "writing".into();
         project.detail =
-            "Bonsai is working in its durable movie codebase and running native H3 checks.".into();
+            "The Director is working in its durable movie codebase and running native H3 checks."
+                .into();
         self.persist_emit(project, app)?;
         let manifest = reference_manifest(&project.references);
         let plan = agent_flow::run(
@@ -1823,8 +1959,11 @@ impl MovieStudio {
                 seed: None,
                 producer_feedback: None,
                 settings,
-                connection,
-                research,
+                runtime: model_runtime.runtime,
+                models: model_runtime.models,
+                runtime_settings: model_runtime.settings,
+                director_model_id: model_runtime.director_model_id,
+                reviewer_model_id: model_runtime.reviewer_model_id,
                 cancel,
             },
             MovieAgentProgress { project, app },
@@ -1837,8 +1976,7 @@ impl MovieStudio {
         &self,
         id: &str,
         feedback: &str,
-        connection: &ModelConnection,
-        research: &ResearchSettings,
+        model_runtime: MovieModelRuntime<'_>,
         cancel: &CancellationToken,
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
@@ -1858,7 +1996,8 @@ impl MovieStudio {
             .ok_or_else(|| StudioError::Invalid("project has no saved movie plan".into()))?;
         project.status = "running".into();
         project.phase = "producer-revision".into();
-        project.detail = "Bonsai is revising the structured plan from producer feedback.".into();
+        project.detail =
+            "The Director is revising the structured plan from producer feedback.".into();
         self.persist_emit(&mut project, app)?;
         let manifest = reference_manifest(&project.references);
         let settings = project.settings.clone();
@@ -1871,8 +2010,11 @@ impl MovieStudio {
                 seed: Some(&current),
                 producer_feedback: Some(feedback),
                 settings: &settings,
-                connection,
-                research,
+                runtime: model_runtime.runtime,
+                models: model_runtime.models,
+                runtime_settings: model_runtime.settings,
+                director_model_id: model_runtime.director_model_id,
+                reviewer_model_id: model_runtime.reviewer_model_id,
                 cancel,
             },
             MovieAgentProgress {
@@ -1884,7 +2026,7 @@ impl MovieStudio {
         let MovieAgentOutcome::Submitted(mut reviewed) = reviewed else {
             project.status = "planning-checkpoint".into();
             project.phase = "planning-checkpoint".into();
-            project.detail = "Bonsai saved the producer revision at a safe checkpoint. The previous approved draft and the unfinished workspace are both preserved.".into();
+            project.detail = "The Director saved the producer revision at a safe checkpoint. The previous approved draft and the unfinished workspace are both preserved.".into();
             project.producer_feedback.push(ProducerFeedbackRecord {
                 created_at: Utc::now().to_rfc3339(),
                 scope: "full-plan-checkpoint".into(),
@@ -1904,9 +2046,57 @@ impl MovieStudio {
         self.replace_unrendered_plan(
             &mut project,
             reviewed,
-            "Bonsai's revised plan passed review and is paused for producer approval.",
+            "The Director's revised plan passed review and is paused for producer approval.",
             app,
         )?;
+        Ok(project)
+    }
+
+    pub async fn set_model_roles(
+        &self,
+        id: &str,
+        model_roles: MovieModelRoles,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
+        let mut project = self.get(id)?;
+        if project.status == "running" {
+            return Err(StudioError::Invalid(
+                "Studio model roles cannot change while planning or rendering is active; stop at a checkpoint first"
+                    .into(),
+            ));
+        }
+        ensure_plan_is_unrendered(&project)?;
+        if project.model_roles == model_roles {
+            return Ok(project);
+        }
+        let prior = project.model_roles.clone();
+        project.model = if project.model.starts_with("Producer-authored") {
+            format!(
+                "Producer-authored · Kestrel Director available with {}",
+                model_roles.director.model_name
+            )
+        } else {
+            format!("Kestrel Director · {}", model_roles.director.model_name)
+        };
+        project.model_roles = model_roles.clone();
+        project.producer_review_required = true;
+        project.producer_approved_at.clear();
+        project.producer_feedback.push(ProducerFeedbackRecord {
+            created_at: Utc::now().to_rfc3339(),
+            scope: "model-role-change".into(),
+            clip_id: String::new(),
+            feedback: format!(
+                "Director changed from {} to {}; reviewer changed from {} to {}. No model output or rendered media was silently regenerated.",
+                prior.director.model_name,
+                model_roles.director.model_name,
+                prior.reviewer.model_name,
+                model_roles.reviewer.model_name,
+            ),
+        });
+        project.detail = "The project model team changed at a safe checkpoint. Existing producer work is preserved, and producer approval is required before rendering.".into();
+        self.persist_emit(&mut project, app)?;
         Ok(project)
     }
 
@@ -1916,7 +2106,7 @@ impl MovieStudio {
         clip_id: &str,
         feedback: &str,
         connection: &ModelConnection,
-        research: &ResearchSettings,
+        runtime_max_output_tokens: u32,
     ) -> Result<MovieClipSuggestion, StudioError> {
         let feedback = feedback.trim();
         if feedback.chars().count() < 3 || feedback.chars().count() > 8_000 {
@@ -1958,7 +2148,7 @@ impl MovieStudio {
                 tool_description: "Submit the organized replacement scene only after checking the producer feedback and neighboring continuity.",
                 response_format: clip_suggestion_schema(),
                 settings: &project.settings,
-                runtime_max_output_tokens: research.max_output_tokens,
+                runtime_max_output_tokens,
                 label: "movie scene suggestion",
                 audit_path: None,
             },
@@ -1972,7 +2162,7 @@ impl MovieStudio {
         let issues = prompt_quality_issues(&candidate, &project.references);
         if !issues.is_empty() {
             return Err(StudioError::Planning(format!(
-                "Bonsai's scene suggestion was not render-ready: {}",
+                "The Director's scene suggestion was not render-ready: {}",
                 issues.join(" ")
             )));
         }
@@ -2027,7 +2217,7 @@ impl MovieStudio {
                 tool_description: "Submit only the independent whole-film review after comparing every scene with the exact producer brief and references.",
                 response_format: code_review_schema(),
                 settings: &review_settings,
-                runtime_max_output_tokens: request.research.max_output_tokens,
+                runtime_max_output_tokens: request.runtime_max_output_tokens,
                 label: "independent movie code review",
                 audit_path: Some(&audit_path),
             },
@@ -2885,6 +3075,15 @@ fn selected_clip_source<'a>(
 
 fn normalize_movie_project(project: &mut MovieProject) {
     project.schema_version = SCHEMA_VERSION;
+    project.producer_review_required |=
+        [&project.model_roles.director, &project.model_roles.reviewer]
+            .iter()
+            .any(|binding| {
+                !matches!(
+                    binding.compatibility_tier.as_str(),
+                    "release-validated" | "protocol-ready"
+                )
+            });
     if project.edit.export_preset.is_empty() {
         project.edit.export_preset = default_export_preset();
     }
@@ -3318,6 +3517,16 @@ struct MovieAssessment {
 
 fn clip_assistant_prompt() -> &'static str {
     prompts::CLIP_ASSISTANT_SYSTEM
+}
+
+fn studio_qualification_schema() -> Value {
+    json!({"type":"json_schema","json_schema":{"name":"kestrel_studio_model_qualification","strict":true,"schema":{
+        "type":"object","additionalProperties":false,"properties":{
+            "nonce":{"type":"string","minLength":36,"maxLength":36},
+            "acknowledgedRole":{"type":"string","enum":["Kestrel Studio Director"]},
+            "checks":{"type":"array","minItems":2,"maxItems":2,"uniqueItems":true,"items":{"type":"string","enum":["structured-tool-call","exact-nonce"]}}
+        },"required":["nonce","acknowledgedRole","checks"]
+    }}})
 }
 
 fn clip_suggestion_schema() -> Value {
@@ -5072,6 +5281,29 @@ mod tests {
     use crate::runtime::RuntimeManager;
     use std::sync::Arc;
 
+    fn live_bonsai_studio_context(
+        research: &ResearchSettings,
+    ) -> (ControlSettings, Vec<ModelInfo>, String) {
+        let settings = ControlSettings {
+            engine_path: Path::new(&research.bonsai_root)
+                .join("runtime")
+                .join("llama-server.exe")
+                .to_string_lossy()
+                .into_owned(),
+            context_window: research.context_window,
+            max_output_tokens: research.max_output_tokens,
+            ..ControlSettings::default()
+        };
+        let models = crate::model::scan(&[Path::new(&research.bonsai_root).join("models")]);
+        let model_id = models
+            .iter()
+            .find(|model| crate::model_roles::is_bonsai(model))
+            .expect("installed Bonsai model")
+            .id
+            .clone();
+        (settings, models, model_id)
+    }
+
     #[test]
     fn h3_frame_count_uses_native_grid() {
         let graph = h3_graph(H3GraphRequest {
@@ -5357,8 +5589,10 @@ mod tests {
                     settings: MovieSettings::default(),
                     references: vec![],
                     pause_after_plan: true,
+                    model_roles: MovieModelRoleRequest::default(),
                 },
                 false,
+                MovieModelRoles::default(),
             )
             .unwrap();
         project.status = "awaiting-review".into();
@@ -5375,7 +5609,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn producer_can_checkpoint_and_approve_a_movie_without_starting_bonsai() {
+    async fn producer_can_checkpoint_and_approve_a_movie_without_starting_the_director() {
         let root = tempfile::tempdir().unwrap();
         let studio = MovieStudio::new(root.path()).unwrap();
         let project = studio
@@ -5385,14 +5619,18 @@ mod tests {
                     settings: MovieSettings::default(),
                     references: vec![],
                     pause_after_plan: true,
+                    model_roles: MovieModelRoleRequest::default(),
                 },
                 false,
+                MovieModelRoles::default(),
             )
             .unwrap();
         assert_eq!(project.status, "awaiting-review");
         assert_eq!(project.phase, "awaiting-producer");
         assert!(project.plan.as_ref().unwrap().clips.is_empty());
-        assert!(project.detail.contains("Bonsai has not been started"));
+        assert!(project
+            .detail
+            .contains("Studio Director has not been started"));
 
         let blank_checkpoint = studio
             .save_producer_plan(
@@ -5468,6 +5706,92 @@ mod tests {
             .contains("without an agent review"));
     }
 
+    #[tokio::test]
+    async fn project_model_team_changes_are_explicit_and_force_producer_review() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let project = studio
+            .create_manual(
+                StartMovieRequest {
+                    prompt: "A producer-owned model migration".into(),
+                    settings: MovieSettings::default(),
+                    references: vec![],
+                    pause_after_plan: true,
+                    model_roles: MovieModelRoleRequest::default(),
+                },
+                false,
+                MovieModelRoles::default(),
+            )
+            .unwrap();
+        let roles = MovieModelRoles {
+            director: MovieModelBinding {
+                model_id: "director-v2".into(),
+                model_name: "Local Director V2".into(),
+                compatibility_tier: "protocol-ready".into(),
+                protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
+                bound_at: Utc::now().to_rfc3339(),
+            },
+            reviewer: MovieModelBinding {
+                model_id: "reviewer-v1".into(),
+                model_name: "Local Reviewer V1".into(),
+                compatibility_tier: "protocol-ready".into(),
+                protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
+                bound_at: Utc::now().to_rfc3339(),
+            },
+        };
+
+        let updated = studio
+            .set_model_roles(&project.id, roles.clone(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(updated.model_roles, roles);
+        assert!(updated.model.starts_with("Producer-authored"));
+        assert!(updated.producer_review_required);
+        assert!(updated.producer_approved_at.is_empty());
+        assert_eq!(
+            updated.producer_feedback.last().unwrap().scope,
+            "model-role-change"
+        );
+        assert_eq!(studio.get(&project.id).unwrap().model_roles, roles);
+    }
+
+    #[test]
+    fn normalization_requires_review_for_unverified_project_roles() {
+        let ready_binding = MovieModelBinding {
+            model_id: "ready".into(),
+            model_name: "Ready model".into(),
+            compatibility_tier: "protocol-ready".into(),
+            protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
+            bound_at: Utc::now().to_rfc3339(),
+        };
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let mut project = studio
+            .create_manual(
+                StartMovieRequest {
+                    prompt: "A producer-owned compatibility check".into(),
+                    settings: MovieSettings::default(),
+                    references: vec![],
+                    pause_after_plan: false,
+                    model_roles: MovieModelRoleRequest::default(),
+                },
+                false,
+                MovieModelRoles {
+                    director: ready_binding.clone(),
+                    reviewer: ready_binding.clone(),
+                },
+            )
+            .unwrap();
+        project.producer_review_required = false;
+        normalize_movie_project(&mut project);
+        assert!(!project.producer_review_required);
+
+        project.model_roles.reviewer.compatibility_tier = "unverified".into();
+        normalize_movie_project(&mut project);
+        assert!(project.producer_review_required);
+    }
+
     #[test]
     fn external_chat_plan_exchange_is_versioned_bounded_and_reference_safe() {
         let root = tempfile::tempdir().unwrap();
@@ -5480,8 +5804,10 @@ mod tests {
                     settings: MovieSettings::default(),
                     references: vec![],
                     pause_after_plan: true,
+                    model_roles: MovieModelRoleRequest::default(),
                 },
                 false,
+                MovieModelRoles::default(),
             )
             .unwrap();
         project.references.push(MovieReference {
@@ -5569,8 +5895,10 @@ mod tests {
                     },
                     references: Vec::new(),
                     pause_after_plan: true,
+                    model_roles: MovieModelRoleRequest::default(),
                 },
                 false,
+                MovieModelRoles::default(),
             )
             .unwrap();
         let exchange_prompt = studio.movie_plan_exchange_prompt(&project.id).unwrap();
@@ -5651,7 +5979,7 @@ mod tests {
         let prompt = movie_agent_prompt();
         assert!(!prompt.contains("Wikipedia"));
         assert!(prompt.split_whitespace().count() < 120);
-        assert!(prompt.contains("coding agent"));
+        assert!(prompt.contains("Kestrel Studio Director"));
         assert!(prompt.contains("movie_workspace"));
         let tools = MovieAgentWorkspace::tools();
         assert_eq!(tools.as_array().unwrap().len(), 1);
@@ -6488,8 +6816,10 @@ mod tests {
                     settings: MovieSettings::default(),
                     references: vec![],
                     pause_after_plan: false,
+                    model_roles: MovieModelRoleRequest::default(),
                 },
                 false,
+                MovieModelRoles::default(),
             )
             .unwrap();
         assert_eq!(project.prompt, prompt);
@@ -6498,6 +6828,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(request["prompt"], prompt);
+        assert_eq!(
+            request["modelRoles"]["director"]["protocolRevision"],
+            STUDIO_PROTOCOL_REVISION
+        );
     }
 
     #[test]
@@ -6530,6 +6864,7 @@ mod tests {
         let research = ResearchSettings::default();
         let runtime = Arc::new(RuntimeManager::new());
         let cancel = CancellationToken::new();
+        let (runtime_settings, models, model_id) = live_bonsai_studio_context(&research);
         let result: Result<MovieProject, String> = async {
             studio.release_comfy_memory().await;
             let project = studio
@@ -6544,16 +6879,25 @@ mod tests {
                         },
                         references: vec![],
                         pause_after_plan: false,
+                        model_roles: MovieModelRoleRequest::default(),
                     },
                     false,
+                    MovieModelRoles::default(),
                 )
                 .map_err(|error| error.to_string())?;
-            let lease = runtime
-                .lease_research(&research)
-                .await
-                .map_err(|error| error.to_string())?;
             studio
-                .plan(&project.id, &lease.connection, &research, &cancel, None)
+                .plan(
+                    &project.id,
+                    MovieModelRuntime {
+                        runtime: &runtime,
+                        models: &models,
+                        settings: &runtime_settings,
+                        director_model_id: &model_id,
+                        reviewer_model_id: &model_id,
+                    },
+                    &cancel,
+                    None,
+                )
                 .await
                 .map_err(|error| error.to_string())
         }
@@ -6584,6 +6928,7 @@ mod tests {
         let research = ResearchSettings::default();
         let runtime = Arc::new(RuntimeManager::new());
         let cancel = CancellationToken::new();
+        let (runtime_settings, models, model_id) = live_bonsai_studio_context(&research);
         let result: Result<MovieProject, String> = async {
             eprintln!("live movie: releasing Comfy memory");
             studio.release_comfy_memory().await;
@@ -6593,12 +6938,11 @@ mod tests {
                 settings: MovieSettings { width: 864, height: 480, max_clips: 1, ..MovieSettings::default() },
                 references: vec![],
                 pause_after_plan: false,
-            }, false).map_err(|error| error.to_string())?;
-            let lease = runtime.lease_research(&research).await.map_err(|error| error.to_string())?;
+                model_roles: MovieModelRoleRequest::default(),
+            }, false, MovieModelRoles::default()).map_err(|error| error.to_string())?;
             eprintln!("live movie: directing with Bonsai");
-            studio.plan(&project.id, &lease.connection, &research, &cancel, None).await.map_err(|error| error.to_string())?;
-            eprintln!("live movie: returning the Bonsai lease and GPU");
-            drop(lease);
+            studio.plan(&project.id, MovieModelRuntime { runtime: &runtime, models: &models, settings: &runtime_settings, director_model_id: &model_id, reviewer_model_id: &model_id }, &cancel, None).await.map_err(|error| error.to_string())?;
+            eprintln!("live movie: returning the Studio runtime and GPU");
             runtime.stop_managed().await.map_err(|error| error.to_string())?;
             crate::services::stop_bonsai(&research.bonsai_root).await.map_err(|error| error.to_string())?;
             eprintln!("live movie: rendering and assembling with MiniMax H3");
@@ -6681,6 +7025,7 @@ mod tests {
         let research = ResearchSettings::default();
         let runtime = Arc::new(RuntimeManager::new());
         let cancel = CancellationToken::new();
+        let (runtime_settings, models, model_id) = live_bonsai_studio_context(&research);
         let result: Result<MovieProject, String> = async {
             eprintln!("live reference movie: releasing Comfy memory");
             studio.release_comfy_memory().await;
@@ -6709,17 +7054,26 @@ mod tests {
                             },
                         ],
                         pause_after_plan: false,
+                        model_roles: MovieModelRoleRequest::default(),
                     },
                     false,
+                    MovieModelRoles::default(),
                 )
-                .map_err(|error| error.to_string())?;
-            let lease = runtime
-                .lease_research(&research)
-                .await
                 .map_err(|error| error.to_string())?;
             eprintln!("live reference movie: directing with Bonsai and producer manifest");
             let planned = match studio
-                .plan(&project.id, &lease.connection, &research, &cancel, None)
+                .plan(
+                    &project.id,
+                    MovieModelRuntime {
+                        runtime: &runtime,
+                        models: &models,
+                        settings: &runtime_settings,
+                        director_model_id: &model_id,
+                        reviewer_model_id: &model_id,
+                    },
+                    &cancel,
+                    None,
+                )
                 .await
             {
                 Ok(planned) => planned,
@@ -6731,7 +7085,6 @@ mod tests {
             let plan = planned.plan.as_ref().ok_or("Bonsai committed no plan")?;
             assert_eq!(plan.clips.len(), 1);
             assert_eq!(plan.clips[0].reference_ids.len(), 2);
-            drop(lease);
             runtime
                 .stop_managed()
                 .await
@@ -6794,6 +7147,7 @@ mod tests {
         let research = ResearchSettings::default();
         let runtime = Arc::new(RuntimeManager::new());
         let cancel = CancellationToken::new();
+        let (runtime_settings, models, model_id) = live_bonsai_studio_context(&research);
         let producer_prompt = "An African vlogger lowers his camera in a glowing, misty jungle, completely amazed by a beautiful wild animal. The audio is for the flashback scene and the reference image is the vlogger. Make the finished film about 2 to 3 minutes.";
 
         let result: Result<(MovieProject, MoviePlan), String> = async {
@@ -6827,8 +7181,10 @@ mod tests {
                             },
                         ],
                         pause_after_plan: false,
+                        model_roles: MovieModelRoleRequest::default(),
                     },
                     true,
+                    MovieModelRoles::default(),
                 )
                 .map_err(|error| error.to_string())?;
             eprintln!(
@@ -6836,13 +7192,20 @@ mod tests {
                 project.id,
                 studio.project_dir(&project.id).display()
             );
-            let lease = runtime
-                .lease_research(&research)
-                .await
-                .map_err(|error| error.to_string())?;
             eprintln!("AFRICA ACCEPTANCE: Bonsai is writing and reviewing the unattended plan");
             let planned = match studio
-                .plan(&project.id, &lease.connection, &research, &cancel, None)
+                .plan(
+                    &project.id,
+                    MovieModelRuntime {
+                        runtime: &runtime,
+                        models: &models,
+                        settings: &runtime_settings,
+                        director_model_id: &model_id,
+                        reviewer_model_id: &model_id,
+                    },
+                    &cancel,
+                    None,
+                )
                 .await
             {
                 Ok(planned) => planned,
@@ -6967,7 +7330,6 @@ mod tests {
                     preflight_issues.join("; ")
                 ));
             }
-            drop(lease);
             runtime
                 .stop_managed()
                 .await
@@ -7068,6 +7430,7 @@ mod tests {
         let research = ResearchSettings::default();
         let runtime = Arc::new(RuntimeManager::new());
         let cancel = CancellationToken::new();
+        let (runtime_settings, models, model_id) = live_bonsai_studio_context(&research);
         let producer_prompt = "A cat lowers his pawn in a glowing, misty moon, completely amazed by a beautiful view of earth. the reference image is the cat. Make the finished film about 2 to 3 minutes.";
         let existing_project_id = std::env::var("KESTREL_ACCEPTANCE_PROJECT_ID").ok();
 
@@ -7099,8 +7462,10 @@ mod tests {
                             embedded_audio_description: String::new(),
                         }],
                         pause_after_plan: false,
+                        model_roles: MovieModelRoleRequest::default(),
                     },
                     true,
+                    MovieModelRoles::default(),
                 )
                     .map_err(|error| error.to_string())?
             };
@@ -7109,13 +7474,20 @@ mod tests {
                 project.id,
                 studio.project_dir(&project.id).display()
             );
-            let lease = runtime
-                .lease_research(&research)
-                .await
-                .map_err(|error| error.to_string())?;
             eprintln!("MOON CAT ACCEPTANCE: Bonsai is writing and reviewing the unattended plan");
             let planned = match studio
-                .plan(&project.id, &lease.connection, &research, &cancel, None)
+                .plan(
+                    &project.id,
+                    MovieModelRuntime {
+                        runtime: &runtime,
+                        models: &models,
+                        settings: &runtime_settings,
+                        director_model_id: &model_id,
+                        reviewer_model_id: &model_id,
+                    },
+                    &cancel,
+                    None,
+                )
                 .await
             {
                 Ok(planned) => planned,
@@ -7224,7 +7596,6 @@ mod tests {
                     preflight_issues.join("; ")
                 ));
             }
-            drop(lease);
             runtime
                 .stop_managed()
                 .await
@@ -7274,6 +7645,7 @@ mod tests {
         let research = ResearchSettings::default();
         let runtime = Arc::new(RuntimeManager::new());
         let cancel = CancellationToken::new();
+        let (runtime_settings, models, model_id) = live_bonsai_studio_context(&research);
         let producer_prompt = "A football player looks at his feet in a shimmering, misty morning, completely amazed by a beautiful view of the construction-site circus. the reference image is the football player. Make the finished film about 2 to 3 minutes.";
         let existing_project_id = std::env::var("KESTREL_ACCEPTANCE_PROJECT_ID").ok();
 
@@ -7305,8 +7677,10 @@ mod tests {
                                 embedded_audio_description: String::new(),
                             }],
                             pause_after_plan: false,
+                            model_roles: MovieModelRoleRequest::default(),
                         },
                         true,
+                        MovieModelRoles::default(),
                     )
                     .map_err(|error| error.to_string())?
             };
@@ -7316,13 +7690,20 @@ mod tests {
                 studio.project_dir(&project.id).display(),
                 picture_id
             );
-            let lease = runtime
-                .lease_research(&research)
-                .await
-                .map_err(|error| error.to_string())?;
             eprintln!("FOOTBALL CIRCUS ACCEPTANCE: Bonsai is writing, linting, and reviewing the plan without producer redirection");
             let planned = match studio
-                .plan(&project.id, &lease.connection, &research, &cancel, None)
+                .plan(
+                    &project.id,
+                    MovieModelRuntime {
+                        runtime: &runtime,
+                        models: &models,
+                        settings: &runtime_settings,
+                        director_model_id: &model_id,
+                        reviewer_model_id: &model_id,
+                    },
+                    &cancel,
+                    None,
+                )
                 .await
             {
                 Ok(planned) => planned,
@@ -7437,7 +7818,6 @@ mod tests {
                     evaluation_issues.join("; ")
                 ));
             }
-            drop(lease);
             runtime
                 .stop_managed()
                 .await
@@ -7506,8 +7886,10 @@ mod tests {
                     settings: MovieSettings::default(),
                     references: vec![],
                     pause_after_plan: false,
+                    model_roles: MovieModelRoleRequest::default(),
                 },
                 false,
+                MovieModelRoles::default(),
             )
             .unwrap();
         let raw = studio.project_dir(&project.id).join("raw");

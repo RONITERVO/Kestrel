@@ -486,6 +486,7 @@ export interface MovieProject {
   createdAt: string;
   updatedAt: string;
   model: string;
+  modelRoles?: MovieModelRoles;
   renderer: string;
   settings: MovieSettings;
   references: MovieReference[];
@@ -552,6 +553,130 @@ export interface StartMovieRequest {
   settings: MovieSettings;
   references: ProducerReferenceRequest[];
   pauseAfterPlan: boolean;
+  modelRoles: MovieModelRoleRequest;
+}
+
+export interface SpeechModel {
+  id: string;
+  name: string;
+  provider: string;
+}
+
+export interface LocalSpeechSnapshot {
+  narrationAvailable: boolean;
+  transcriptionAvailable: boolean;
+  comfyReady: boolean;
+  voices: SpeechModel[];
+  transcribers: SpeechModel[];
+  detail: string;
+}
+
+export interface SpeechSynthesisRequest {
+  jobId: string;
+  sourceKind: "research" | "chat" | "task" | "copilot";
+  sourceId: string;
+  passageId: string;
+  text: string;
+  modelId: string;
+}
+
+export interface SpeechAlignmentRequest {
+  jobId: string;
+  sourceKind: "research" | "chat" | "task" | "copilot";
+  sourceId: string;
+  passageId: string;
+  text: string;
+  relativePath: string;
+  voiceModelId: string;
+  alignmentModelId: string;
+}
+
+export interface SpeechTiming {
+  value: string;
+  start: number;
+  end: number;
+}
+
+export interface SpeechClip {
+  jobId: string;
+  passageId: string;
+  relativePath: string;
+  modelId: string;
+  cacheHit: boolean;
+  segments: SpeechTiming[];
+  words: SpeechTiming[];
+}
+
+export interface SpeechTranscriptionRequest {
+  jobId: string;
+  sourceKind: "research" | "chat" | "task" | "copilot";
+  sourceId: string;
+  recordingId: string;
+  audioBase64: string;
+  mimeType: string;
+  modelId: string;
+  language: string;
+  prompt: string;
+  finalPass: boolean;
+}
+
+export interface SpeechTranscription {
+  jobId: string;
+  recordingId: string;
+  text: string;
+  segments: SpeechTiming[];
+  words: SpeechTiming[];
+  audioRelativePath?: string;
+  finalPass: boolean;
+}
+
+export interface SpeechProgress {
+  jobId: string;
+  passageId: string;
+  stage: "cached" | "generating" | "transcribing" | "aligning" | "complete" | string;
+  detail: string;
+}
+
+export interface MovieModelRoleRequest {
+  directorModelId: string;
+  reviewerModelId: string;
+}
+
+export interface MovieModelBinding {
+  modelId: string;
+  modelName: string;
+  compatibilityTier: string;
+  protocolRevision: string;
+  boundAt: string;
+}
+
+export interface MovieModelRoles {
+  director: MovieModelBinding;
+  reviewer: MovieModelBinding;
+}
+
+export interface ModelQualificationReceipt {
+  modelId: string;
+  modelName: string;
+  protocolRevision: string;
+  engineSha256: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  passed: boolean;
+  checks: string[];
+  detail: string;
+  checkedAt: string;
+}
+
+export interface ModelCompatibility {
+  modelId: string;
+  modelName: string;
+  tier: "release-validated" | "protocol-ready" | "unverified" | "limited-context" | "incompatible" | string;
+  studioReady: boolean;
+  requiresQualification: boolean;
+  detail: string;
+  protocolRevision: string;
+  receipt?: ModelQualificationReceipt;
 }
 
 export type PromptDraftTarget = "story" | "imageAsset" | "referenceDescription";
