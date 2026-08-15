@@ -85,8 +85,8 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     }
   };
 
-  const openStudio = async () => {
-    setBusy("studio-open");
+  const openStudio = async (component: "studio" | "music") => {
+    setBusy(`${component}-open`);
     try { await openComfyUi(); } catch (error) { onError(String(error)); } finally { setBusy(null); }
   };
 
@@ -147,13 +147,16 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     </section>
 
     <section className="setup-components" aria-label="Kestrel components">
-      {components.map((component) => <article className={`setup-component ${component.status}`} key={component.id}>
+      {components.map((component) => {
+        const sharedComfy = component.id === "studio" || component.id === "music";
+        const opening = busy === `${component.id}-open`;
+        return <article className={`setup-component ${component.status}`} key={component.id}>
         <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : component.id === "music" ? <Headphones /> : <Settings2 />}</div>
         <div className="setup-component-copy"><div className="setup-component-title"><h2>{component.label}</h2><span className={`setup-state ${component.status}`}>{component.status === "ready" ? <><Check /> Ready</> : component.status === "partial" ? "Resume available" : component.optional ? "Optional" : "Needed"}</span></div><p>{component.detail}</p><small>{component.status === "ready" ? component.path : `${formatBytes(component.downloadBytes)} download · about ${formatTime(component.downloadBytes, speed)} at ${speed} Mbps`}</small>
           {component.id === "wikipedia" && component.status !== "ready" && <div className="wikipedia-choice"><button className={edition === "compact" ? "active" : ""} onClick={() => setEdition("compact")}><strong>Compact</strong><span>11.7 GB · article summaries</span></button><button className={edition === "complete" ? "active" : ""} onClick={() => setEdition("complete")}><strong>Complete text</strong><span>49.1 GB · full articles</span></button></div>}
         </div>
-        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !["studio", "music"].includes(component.id))} onClick={() => component.status === "ready" && ["studio", "music"].includes(component.id) ? void openStudio() : void install(component.id)}>{busy === component.id || (busy === "studio-open" && ["studio", "music"].includes(component.id)) ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : <Download />}{component.status === "ready" && ["studio", "music"].includes(component.id) ? "Open ComfyUI" : component.status === "ready" ? "Installed" : component.status === "partial" ? "Resume" : "Install"}</button>
-      </article>)}
+        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !sharedComfy)} onClick={() => component.status === "ready" && sharedComfy ? void openStudio(component.id as "studio" | "music") : void install(component.id)}>{busy === component.id || opening ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : <Download />}{component.status === "ready" && sharedComfy ? "Open ComfyUI" : component.status === "ready" ? "Installed" : component.status === "partial" ? "Resume" : "Install"}</button>
+      </article>})}
     </section>
 
     {progress && <section className="setup-progress" role="status" aria-live="polite">

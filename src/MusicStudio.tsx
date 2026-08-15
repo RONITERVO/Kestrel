@@ -96,6 +96,7 @@ export function MusicStudio({
       }
     }).then((cleanup) => disposed ? cleanup() : cleanups.push(cleanup));
     void onMoviePromptDraft((event) => {
+      if (event.kind === "error") onError(event.content ?? "The local music collaborator stopped.");
       setCollaboration((current) => {
         if (!current || current.id !== event.requestId) return current;
         if (event.kind === "token") return { ...current, text: current.text + (event.content ?? ""), status: "writing", modelName: event.modelName ?? current.modelName };
@@ -104,10 +105,7 @@ export function MusicStudio({
         if (event.kind === "complete") return { ...current, status: "ready", modelName: event.modelName ?? current.modelName };
         if (event.kind === "limited") return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName };
         if (event.kind === "cancelled") return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName };
-        if (event.kind === "error") {
-          onError(event.content ?? "The local music collaborator stopped.");
-          return { ...current, status: "error" };
-        }
+        if (event.kind === "error") return { ...current, status: "error" };
         return current;
       });
     }).then((cleanup) => disposed ? cleanup() : cleanups.push(cleanup));
@@ -380,7 +378,7 @@ export function MusicStudio({
 
         <section className="music-writing-desk">
           <div className="music-writing-heading"><span><small>Music description</small><strong>Sound, performance, and production</strong></span><span className="music-structure-check"><i className={structuredCaption(project.caption) ? "ready" : ""} />{structuredCaption(project.caption) ? "Structured for Music 3" : "Describe freely or ask a local model"}</span></div>
-          <textarea aria-label="Music description" disabled={busy || assistantBusy} value={project.caption} onChange={(event) => mutate((current) => ({ ...current, caption: event.target.value }))} placeholder="Global Metadata: genre, BPM, key, emotion, production profile…\n\nVocal Details: timbre, performance, harmonies, effects…\n\nArrangement: instruments, groove, section evolution, textures, space…" />
+          <textarea aria-label="Music description" disabled={busy || assistantBusy} value={project.caption} onChange={(event) => mutate((current) => ({ ...current, caption: event.target.value }))} placeholder={`Global Metadata: genre, BPM, key, emotion, production profile…\n\nVocal Details: timbre, performance, harmonies, effects…\n\nArrangement: instruments, groove, section evolution, textures, space…`} />
           <div className="music-assist-bar">
             <Bot /><select aria-label="Music collaborator model" disabled={assistantBusy || busy} value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Choose local model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select>
             <select aria-label="Music collaborator mode" disabled={assistantBusy || busy} value={draftMode} onChange={(event) => setDraftMode(event.target.value as PromptDraftMode)}><option value="develop">Develop idea / notes</option><option value="continue">Continue exact draft</option></select>
@@ -414,8 +412,8 @@ export function MusicStudio({
             <summary><span><FileMusic /> Audio → editable MIDI</span><ChevronDown /></summary>
             <p>Optional MuScriptor pass. Its gated CC-BY-NC weights are not bundled and may not suit commercial delivery. Choose files you accepted and installed locally.</p>
             <fieldset disabled={busy}>
-              <label>muscriptor.exe<div className="music-path-field"><input value={project.midi.executablePath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: event.target.value } }))} /><button onClick={() => void pickSetupFile("muscriptor").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: value } })))}><FolderOpen /></button></div></label>
-              <label>Accepted checkpoint<div className="music-path-field"><input value={project.midi.modelPath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: event.target.value } }))} /><button onClick={() => void pickSetupFile("muscriptorModel").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: value } })))}><FolderOpen /></button></div></label>
+              <div className="music-path-field"><label>muscriptor.exe<input value={project.midi.executablePath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: event.target.value } }))} /></label><button aria-label="Browse for muscriptor executable" onClick={() => void pickSetupFile("muscriptor").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
+              <div className="music-path-field"><label>Accepted checkpoint<input value={project.midi.modelPath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: event.target.value } }))} /></label><button aria-label="Browse for MuScriptor checkpoint" onClick={() => void pickSetupFile("muscriptorModel").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
               <label>Expected instruments<input value={project.midi.instruments} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, instruments: event.target.value } }))} placeholder="acoustic_piano,acoustic_guitar,acoustic_bass" /></label>
               <button disabled={!activeTake || midiBusy} onClick={() => activeTake && void transcribe(activeTake)}>{midiBusy ? <LoaderCircle className="spin" /> : <FileMusic />} Transcribe active take</button>
               {activeTake?.midiPath && <span className="music-midi-ready"><Download /> MIDI preserved beside the take</span>}
@@ -438,7 +436,13 @@ export function MusicStudio({
 }
 
 function NewSongDialog({ title, idea, busy, onTitle, onIdea, onClose, onCreate }: { title: string; idea: string; busy: boolean; onTitle: (value: string) => void; onIdea: (value: string) => void; onClose: () => void; onCreate: () => void }) {
-  return <div className="music-dialog-backdrop"><section className="music-new-dialog" role="dialog" aria-modal="true" aria-label="New song"><span className="music-dialog-icon"><Disc3 /></span><div><span className="eyebrow">New private project</span><h2>What are you hearing?</h2><p>A sentence is enough. A full A4 brief also fits. You can write every part yourself or invite any local model after the project opens.</p></div><label>Working title<input autoFocus maxLength={120} value={title} onChange={(event) => onTitle(event.target.value)} placeholder="Untitled song" /></label><label>Idea, story, hook, references, or production notes<textarea maxLength={65536} value={idea} onChange={(event) => onIdea(event.target.value)} placeholder="A slow-burning northern soul song about…" /></label><footer><button disabled={busy} onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy} onClick={onCreate}>{busy ? <LoaderCircle className="spin" /> : <Plus />} Create project</button></footer></section></div>;
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialog.current;
+    if (element && !element.open) element.showModal();
+    return () => { if (element?.open) element.close(); };
+  }, []);
+  return <dialog ref={dialog} className="music-new-dialog" aria-label="New song" onCancel={(event) => { if (busy) event.preventDefault(); }} onClose={onClose}><span className="music-dialog-icon"><Disc3 /></span><div><span className="eyebrow">New private project</span><h2>What are you hearing?</h2><p>A sentence is enough. A full A4 brief also fits. You can write every part yourself or invite any local model after the project opens.</p></div><label>Working title<input autoFocus maxLength={120} value={title} onChange={(event) => onTitle(event.target.value)} placeholder="Untitled song" /></label><label>Idea, story, hook, references, or production notes<textarea maxLength={65536} value={idea} onChange={(event) => onIdea(event.target.value)} placeholder="A slow-burning northern soul song about…" /></label><footer><button disabled={busy} onClick={() => dialog.current?.close()}>Cancel</button><button className="primary-button" disabled={busy} onClick={onCreate}>{busy ? <LoaderCircle className="spin" /> : <Plus />} Create project</button></footer></dialog>;
 }
 
 function patchSection(mutate: (change: (current: MusicProject) => MusicProject) => void, id: string, patch: Partial<MusicSection>) {
@@ -456,26 +460,27 @@ export function applyTaggedLyrics(sections: MusicSection[], value: string): Musi
     return sections.map((section, index) => index === 0 ? { ...section, lyrics: value.trim() } : section);
   }
   const counts = new Map<string, number>();
-  const parsed = matches.flatMap((match, index) => {
+  const merged = sections.map((section) => ({ ...section }));
+  const added: MusicSection[] = [];
+  let recognized = false;
+  matches.forEach((match, index) => {
     const tag = normalizeTag(match[1]);
-    if (!tag) return [];
+    if (!tag) return;
+    recognized = true;
     const occurrence = counts.get(tag) ?? 0;
     counts.set(tag, occurrence + 1);
-    const sameTag = sections.filter((section) => section.tag === tag);
-    const existing = sameTag[occurrence];
+    const sameTagIndexes = sections.flatMap((section, sectionIndex) => section.tag === tag ? [sectionIndex] : []);
+    const existingIndex = sameTagIndexes[occurrence];
     const start = (match.index ?? 0) + match[0].length;
     const end = matches[index + 1]?.index ?? value.length;
     const lyrics = value.slice(start, end).trim();
-    return [{
-      id: existing?.id ?? stableId(),
-      tag,
-      name: existing?.name ?? `${tag}${occurrence ? ` ${occurrence + 1}` : ""}`,
-      bars: existing?.bars ?? (tag === "Intro" || tag === "Outro" ? 4 : 8),
-      direction: existing?.direction ?? "",
-      lyrics,
-    }];
+    if (existingIndex !== undefined) {
+      merged[existingIndex] = { ...merged[existingIndex], lyrics };
+    } else {
+      added.push({ id: stableId(), tag, name: `${tag}${occurrence ? ` ${occurrence + 1}` : ""}`, bars: tag === "Intro" || tag === "Outro" ? 4 : 8, direction: "", lyrics });
+    }
   });
-  return parsed.length ? parsed : sections;
+  return recognized ? [...merged, ...added] : sections;
 }
 
 function normalizeTag(value: string): MusicSection["tag"] | undefined {

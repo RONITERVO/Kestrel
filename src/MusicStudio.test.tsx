@@ -28,6 +28,15 @@ describe("MusicStudio", () => {
     expect(applyTaggedLyrics(sections, "[Not A Real Section]\nidea")).toEqual(sections);
   });
 
+  it("keeps unmentioned producer sections while merging a partial tagged proposal", () => {
+    const next = applyTaggedLyrics(sections, "[Chorus]\nreplacement hook\n\n[Bridge]\na new release");
+    expect(next.slice(0, 3).map((section) => section.id)).toEqual(sections.map((section) => section.id));
+    expect(next[0]).toEqual(sections[0]);
+    expect(next[1]).toEqual({ ...sections[1], lyrics: "replacement hook" });
+    expect(next[2]).toEqual(sections[2]);
+    expect(next[3]).toMatchObject({ tag: "Bridge", lyrics: "a new release" });
+  });
+
   it("opens with a producer-facing new-song action when the library is empty", async () => {
     render(<MusicStudio advancedEnabled models={[]} onError={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("button", { name: /New song/i })).toBeInTheDocument());

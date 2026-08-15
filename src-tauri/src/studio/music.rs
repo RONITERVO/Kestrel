@@ -435,7 +435,7 @@ impl MusicStudio {
                 Some(cancel),
             )
             .await?;
-        verify_music_nodes(&self.http).await?;
+        verify_music_nodes(&self.http, project.settings.tiled_decode).await?;
         let model_file = resolve_music_model(&comfy_root, &project.settings.model_variant)?;
         verify_music_assets(&comfy_root, &model_file)?;
         let prefix = format!("kestrel_music/{project_id}/take_{}", take_index + 1);
@@ -560,9 +560,18 @@ impl MusicStudio {
                 source.display()
             ))
         })?;
-        let (bytes, sha256) = hash_file(&target)?;
-        let duration =
-            probe_audio_duration(&target).unwrap_or(project.settings.max_duration_seconds);
+        let hash_target = target.clone();
+        let duration_target = target.clone();
+        let (hash_result, duration_result) = tokio::join!(
+            tokio::task::spawn_blocking(move || hash_file(&hash_target)),
+            tokio::task::spawn_blocking(move || probe_audio_duration(&duration_target)),
+        );
+        let (bytes, sha256) = hash_result.map_err(|error| {
+            StudioError::Render(format!("music checksum task failed: {error}"))
+        })??;
+        let duration = duration_result
+            .map_err(|error| StudioError::Render(format!("audio probe task failed: {error}")))?
+            .unwrap_or(project.settings.max_duration_seconds);
         let mut project = self.get(project_id)?;
         let take = project
             .takes
@@ -685,6 +694,7 @@ impl MusicStudio {
             .arg(&source)
             .arg("-o")
             .arg(&output)
+            .env("PYTHONUTF8", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -731,6 +741,7 @@ impl MusicStudio {
     }
 
     pub fn reveal_path(&self, id: &str) -> Result<PathBuf, StudioError> {
+        validate_music_id(id)?;
         let path = self.project_dir(id);
         if !path.is_dir() {
             return Err(StudioError::Invalid(
@@ -1140,7 +1151,7 @@ fn validate_muscriptor_settings(settings: &MusicMidiSettings) -> Result<(), Stud
     Ok(())
 }
 
-async fn verify_music_nodes(http: &Client) -> Result<(), StudioError> {
+async fn verify_music_nodes(http: &Client, tiled_decode: bool) -> Result<(), StudioError> {
     let info: Value = http
         .get(format!("{COMFY_BASE}/object_info"))
         .timeout(Duration::from_secs(30))
@@ -1152,10 +1163,15 @@ async fn verify_music_nodes(http: &Client) -> Result<(), StudioError> {
         "MiniMaxMusic3TextEncode",
         "EmptyMiniMaxMusic3LatentAudio",
         "SaveAudioAdvanced",
+        if tiled_decode {
+            "VAEDecodeAudioTiled"
+        } else {
+            "VAEDecodeAudio"
+        },
     ] {
         if info.get(node).is_none() {
             return Err(StudioError::Render(format!(
-                "the running ComfyUI does not expose {node}. Update ComfyUI to 0.31.0 or newer, restart it, then resume Music Production in Setup"
+                "the running ComfyUI does not expose {node}. Update ComfyUI to 0.33.0 or newer, restart it, then resume Music Production in Setup"
             )));
         }
     }
@@ -1243,7 +1259,7 @@ fn minimax_music_graph(
         }},
         "8":decode_node,
         "10":{"class_type":"SaveAudioAdvanced","inputs":{
-            "audio":["8",0],"filename_prefix":prefix,"format":{"format":"flac"}
+            "audio":["8",0],"filename_prefix":prefix,"format":"flac"
         }}
     })
 }
@@ -1300,6 +1316,22 @@ fn hash_file(path: &Path) -> Result<(u64, String), StudioError> {
 }
 
 fn read_project(path: &Path) -> Result<MusicProject, StudioError> {
+    match read_project_file(path) {
+        Ok(project) => Ok(project),
+        Err(primary_error) => {
+            let backup = path.with_extension("json.bak");
+            match read_project_file(&backup) {
+                Ok(project) => {
+                    fs::copy(&backup, path)?;
+                    Ok(project)
+                }
+                Err(_) => Err(primary_error),
+            }
+        }
+    }
+}
+
+fn read_project_file(path: &Path) -> Result<MusicProject, StudioError> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() || metadata.len() > 16 * 1024 * 1024 {
         return Err(StudioError::Invalid(
@@ -1424,7 +1456,40 @@ mod tests {
         assert_eq!(graph["6"]["inputs"]["seconds"], json!(["4", 1]));
         assert_eq!(graph["8"]["class_type"], "VAEDecodeAudioTiled");
         assert_eq!(graph["10"]["class_type"], "SaveAudioAdvanced");
-        assert_eq!(graph["10"]["inputs"]["format"]["format"], "flac");
+        assert_eq!(graph["10"]["inputs"]["format"], "flac");
+    }
+
+    #[test]
+    fn graph_uses_the_available_non_tiled_audio_decoder_when_requested() {
+        let settings = MusicSettings {
+            tiled_decode: false,
+            comfy_root: r"D:\AI\ComfyUI".into(),
+            ..MusicSettings::default()
+        };
+        let graph = minimax_music_graph(
+            &settings,
+            "Global Metadata: jazz",
+            "[Instrumental]",
+            42,
+            MUSIC_DIT_INT8,
+            "kestrel_music/test/take_1",
+        );
+        assert_eq!(graph["8"]["class_type"], "VAEDecodeAudio");
+    }
+
+    #[test]
+    fn missing_primary_project_is_restored_from_its_backup() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let manifest = studio.project_dir(&project.id).join("project.json");
+        let backup = manifest.with_extension("json.bak");
+        fs::copy(&manifest, &backup).unwrap();
+        fs::remove_file(&manifest).unwrap();
+
+        let recovered = studio.get(&project.id).unwrap();
+        assert_eq!(recovered.id, project.id);
+        assert!(manifest.is_file());
     }
 
     #[test]
@@ -1494,6 +1559,6 @@ mod tests {
         assert!(Path::new(&take.path).is_file());
         assert!(take.bytes > 0);
         assert_eq!(take.sha256.len(), 64);
-        assert_eq!(take.exact_graph["10"]["inputs"]["format"]["format"], "flac");
+        assert_eq!(take.exact_graph["10"]["inputs"]["format"], "flac");
     }
 }

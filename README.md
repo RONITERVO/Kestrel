@@ -91,7 +91,7 @@ C:\Users\<you>\Kestrel Research\
 |-- music\<uuid>           # recoverable producer-owned song project
 |   |-- project.json       # arrangement, lyrics, settings, take history, and status
 |   |-- takes\*.wav         # immutable local stereo masters
-|   |-- takes\*.graph.json  # exact submitted graph and generation receipt
+|   |-- receipts\<take_id>.graph.json # exact submitted graph and generation receipt
 |   `-- midi\*.mid          # optional explicit MuScriptor transcriptions
 `-- reports\YYYY\MM\<title>--<id>\
     |-- index.html        # self-contained, printable research page

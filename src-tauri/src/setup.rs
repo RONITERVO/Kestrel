@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 const BONSAI_REVISION: &str = "abbae723028d71be674e71e1a71201a6f43fab22";
 const BONSAI_RELEASE: &str = "prism-b9596-9fcaed7";
 const H3_REVISION: &str = "0bd506d2e895983a9663037febda27aa3948cf48";
-const COMFY_VERSION: &str = "v0.31.0";
+const COMFY_VERSION: &str = "v0.33.1";
 const MUSIC_REVISION: &str = "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6";
 const KJ_PREVIEW_REVISION: &str = "5219cd171cb44e2edce9e4daad6cc42c41eded5c";
 const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
@@ -130,8 +130,10 @@ pub fn snapshot(
     let h3_files = h3_assets()
         .iter()
         .all(|asset| comfy.join("models").join(asset.relative).is_file());
+    let generic_launcher = comfy.join("Start-Kestrel-ComfyUI.ps1").is_file();
+    let legacy_h3_launcher = comfy.join("Start-ComfyUI-MiniMax-H3.ps1").is_file();
     let studio_ready = comfy.join("main.py").is_file()
-        && comfy.join("Start-ComfyUI-MiniMax-H3.ps1").is_file()
+        && (generic_launcher || legacy_h3_launcher)
         && h3_files
         && h3_live_preview_ready(comfy);
     let studio_partial = comfy.join("main.py").is_file()
@@ -146,8 +148,7 @@ pub fn snapshot(
         .join("nodes_minimax_music.py")
         .is_file();
     let music_ready = comfy.join("main.py").is_file()
-        && (comfy.join("Start-Kestrel-ComfyUI.ps1").is_file()
-            || comfy.join("Start-ComfyUI-MiniMax-H3.ps1").is_file())
+        && (generic_launcher || (legacy_h3_launcher && h3_files))
         && music_nodes
         && music_files;
     let music_partial = music_nodes
@@ -220,7 +221,7 @@ pub fn snapshot(
             if music_ready {
                 "Ready for private full-song generation with producer-owned structure and immutable takes."
             } else if comfy.join("main.py").is_file() && !music_nodes {
-                "ComfyUI must be updated to 0.31.0 or newer before Kestrel can install the native music workflow."
+                "ComfyUI must be updated to 0.33.0 or newer before Kestrel can install the native music workflow."
             } else {
                 "Optional: about 12 GB for the official low-VRAM model, text encoder, and full-quality decoder."
             },
@@ -653,21 +654,26 @@ async fn install_comfy_portable(
     let portable = Asset::new(
         "ComfyUI portable",
         &format!("https://github.com/Comfy-Org/ComfyUI/releases/download/{COMFY_VERSION}/ComfyUI_windows_portable_nvidia.7z"),
-        "ComfyUI_windows_portable_nvidia-v0.31.0.7z",
-        2_125_117_910,
-        "a92a1c45fce9a3d07b96e5e359504a95c57c77bfd16883fe458a7582d2071bb3",
+        "ComfyUI_windows_portable_nvidia-v0.33.1.7z",
+        2_133_107_036,
+        "4a221588979b96b8244e0e50b2edca03af732acae1deba69d60aa3b4d60b9dba",
     );
     let archive = downloads.join(&portable.file_name);
     download(app, component, &portable, &archive, cancel).await?;
     let portable_root = root.join("ComfyUI_windows_portable");
-    if !portable_root.join("ComfyUI").join("main.py").is_file() {
-        extract_7z(&archive, root, &portable.name).await?;
-    }
     let comfy = portable_root.join("ComfyUI");
+    if !comfy.join("main.py").is_file() {
+        extract_7z(&archive, root, &portable.name).await?;
+    } else if require_music_nodes
+        && !comfy.join("comfy_extras/nodes_minimax_music.py").is_file()
+        && is_kestrel_managed_comfy_root(&comfy, root)
+    {
+        replace_managed_comfy_portable(&archive, root, &portable.name).await?;
+    }
     if require_music_nodes && !comfy.join("comfy_extras/nodes_minimax_music.py").is_file() {
         return Err(SetupError::Extract {
             name: portable.name,
-            details: "the installed ComfyUI does not contain native MiniMax Music 3 nodes; remove the stale Kestrel-owned portable folder or update it to 0.31.0+, then resume".into(),
+            details: "the installed ComfyUI does not contain native MiniMax Music 3 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.0+, then resume".into(),
         });
     }
     Ok(comfy)
@@ -691,15 +697,20 @@ async fn install_music(
             .join("comfy_extras/nodes_minimax_music.py")
             .is_file()
         {
-            return Err(SetupError::Download {
-                name: "MiniMax Music 3 Production".into(),
-                details: format!(
-                    "{} is older than ComfyUI 0.31.0. Update this shared ComfyUI installation first; Kestrel will not overwrite a producer-managed installation.",
-                    configured.display()
-                ),
-            });
+            if is_kestrel_managed_comfy_root(&configured, root) {
+                install_comfy_portable(app, root, "music", true, &cancel).await?
+            } else {
+                return Err(SetupError::Download {
+                    name: "MiniMax Music 3 Production".into(),
+                    details: format!(
+                        "{} is older than ComfyUI 0.33.0. Update this shared ComfyUI installation first; Kestrel will not overwrite a producer-managed installation.",
+                        configured.display()
+                    ),
+                });
+            }
+        } else {
+            configured
         }
-        configured
     } else {
         install_comfy_portable(app, root, "music", true, &cancel).await?
     };
@@ -721,6 +732,123 @@ async fn install_music(
         1,
         0,
     );
+    Ok(())
+}
+
+fn is_kestrel_managed_comfy_root(comfy: &Path, install_root: &Path) -> bool {
+    let launcher = comfy.join("Start-Kestrel-ComfyUI.ps1");
+    let launcher_managed = read_bounded_text(&launcher, 64 * 1024)
+        .is_some_and(|value| value.contains("Kestrel-managed shared ComfyUI launcher"));
+    let expected = install_root
+        .join("ComfyUI_windows_portable")
+        .join("ComfyUI");
+    let expected_location = paths_equal(comfy, &expected);
+    let version_managed = read_bounded_text(&comfy.join("comfyui_version.py"), 4 * 1024)
+        .is_some_and(|value| value.contains("__version__"));
+    expected_location && (launcher_managed || version_managed)
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn read_bounded_text(path: &Path, limit: u64) -> Option<String> {
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return None;
+    }
+    fs::read_to_string(path).ok()
+}
+
+async fn replace_managed_comfy_portable(
+    archive: &Path,
+    install_root: &Path,
+    name: &str,
+) -> Result<(), SetupError> {
+    let nonce = uuid::Uuid::new_v4();
+    let staging = install_root.join(format!(".kestrel-comfy-update-{nonce}"));
+    let staged_portable = staging.join("ComfyUI_windows_portable");
+    let portable = install_root.join("ComfyUI_windows_portable");
+    let backup = install_root.join(format!("ComfyUI_windows_portable.kestrel-backup-{nonce}"));
+    fs::create_dir_all(&staging)?;
+    extract_7z(archive, &staging, name).await?;
+    let staged_comfy = staged_portable.join("ComfyUI");
+    if !staged_comfy.join("main.py").is_file()
+        || !staged_comfy
+            .join("comfy_extras/nodes_minimax_music.py")
+            .is_file()
+    {
+        return Err(SetupError::Extract {
+            name: name.into(),
+            details: format!(
+                "the replacement was unpacked to {}, but its native Music 3 files are missing; the existing installation was not changed",
+                staging.display()
+            ),
+        });
+    }
+    fs::rename(&portable, &backup)?;
+    if let Err(error) = fs::rename(&staged_portable, &portable) {
+        let _ = fs::rename(&backup, &portable);
+        return Err(SetupError::Extract {
+            name: name.into(),
+            details: format!(
+                "the replacement could not become active ({error}); Kestrel restored the previous installation"
+            ),
+        });
+    }
+    if let Err(error) = migrate_comfy_data(&backup.join("ComfyUI"), &portable.join("ComfyUI")) {
+        let failed_replacement = staging.join("ComfyUI_windows_portable.failed");
+        let _ = fs::rename(&portable, &failed_replacement);
+        let _ = fs::rename(&backup, &portable);
+        return Err(SetupError::Extract {
+            name: name.into(),
+            details: format!(
+                "producer data could not be moved into the replacement ({error}); Kestrel restored the previous installation and kept the failed replacement at {}",
+                failed_replacement.display()
+            ),
+        });
+    }
+    let _ = fs::remove_dir(&staging);
+    Ok(())
+}
+
+fn migrate_comfy_data(previous: &Path, replacement: &Path) -> Result<(), std::io::Error> {
+    let mut moved: Vec<(&str, PathBuf)> = Vec::new();
+    for name in [
+        "models",
+        "input",
+        "output",
+        "custom_nodes",
+        "user",
+        ".cache",
+    ] {
+        let source = previous.join(name);
+        if !source.exists() {
+            continue;
+        }
+        let target = replacement.join(name);
+        let packaged = replacement.join(format!(".kestrel-packaged-{name}"));
+        if target.exists() {
+            fs::rename(&target, &packaged)?;
+        }
+        if let Err(error) = fs::rename(&source, &target) {
+            if packaged.exists() {
+                let _ = fs::rename(&packaged, &target);
+            }
+            for (prior_name, prior_packaged) in moved.into_iter().rev() {
+                let prior_target = replacement.join(prior_name);
+                let _ = fs::rename(&prior_target, previous.join(prior_name));
+                if prior_packaged.exists() {
+                    let _ = fs::rename(prior_packaged, prior_target);
+                }
+            }
+            return Err(error);
+        }
+        moved.push((name, packaged));
+    }
     Ok(())
 }
 
@@ -1478,5 +1606,27 @@ mod tests {
                 .status
                 == "ready"
         );
+    }
+
+    #[test]
+    fn only_the_portable_install_root_is_classified_as_kestrel_managed() {
+        let root = tempfile::tempdir().unwrap();
+        let managed = root.path().join("ComfyUI_windows_portable/ComfyUI");
+        fs::create_dir_all(&managed).unwrap();
+        fs::write(
+            managed.join("comfyui_version.py"),
+            "__version__ = \"0.32.0\"",
+        )
+        .unwrap();
+        assert!(is_kestrel_managed_comfy_root(&managed, root.path()));
+
+        let producer = root.path().join("Producer-ComfyUI");
+        fs::create_dir_all(&producer).unwrap();
+        fs::write(
+            producer.join("Start-Kestrel-ComfyUI.ps1"),
+            "# Kestrel-managed shared ComfyUI launcher",
+        )
+        .unwrap();
+        assert!(!is_kestrel_managed_comfy_root(&producer, root.path()));
     }
 }

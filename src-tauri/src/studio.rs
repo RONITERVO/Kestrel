@@ -5001,7 +5001,7 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
 fn find_output_media(entry: &Value) -> Option<(String, String)> {
     let outputs = entry.get("outputs")?.as_object()?;
     for output in outputs.values() {
-        for key in ["images", "videos"] {
+        for key in ["images", "videos", "audio"] {
             for media in output
                 .get(key)
                 .and_then(Value::as_array)

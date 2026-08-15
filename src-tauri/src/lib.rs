@@ -1845,6 +1845,7 @@ async fn save_setup_locations(
     let comfy_root = std::path::Path::new(&research.comfy_root);
     if comfy_root.join("main.py").is_file()
         && !comfy_root.join("Start-Kestrel-ComfyUI.ps1").is_file()
+        && !comfy_root.join("Start-ComfyUI-MiniMax-H3.ps1").is_file()
     {
         setup::ensure_comfy_launcher(comfy_root).map_err(|error| error.to_string())?;
     }
