@@ -41,6 +41,7 @@ mod live_preview;
 mod model_stream;
 mod movie_agent;
 mod music;
+mod music_midi;
 mod planning;
 mod prompt_collaboration;
 mod prompts;
@@ -64,7 +65,8 @@ use live_preview::{
 };
 use movie_agent::MovieAgentWorkspace;
 pub use music::{
-    CreateMusicProjectRequest, MusicMidiRequest, MusicProject, MusicStudio, MusicSummary,
+    CreateMusicProjectRequest, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
+    MusicSummary, SaveMusicMidiDocumentRequest,
 };
 pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningStage};
 pub use prompt_collaboration::{

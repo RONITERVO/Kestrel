@@ -5,6 +5,10 @@
 //! per-instrument media. Optional MuScriptor transcription is an explicit, fixed-argument
 //! audio-to-MIDI export using a producer-supplied executable and locally accepted checkpoint.
 
+use super::music_midi::{
+    normalize_midi_document, parse_midi_document, validate_midi_document, write_bytes_recoverable,
+    write_midi_document, MusicMidiDocument,
+};
 use super::{
     comfy_execution_error, find_output_media, truncate, MovieStudio, StudioError, MUSIC_COMFY_BASE,
 };
@@ -104,6 +108,12 @@ pub struct MusicTake {
     pub exact_graph: Value,
     pub midi_path: String,
     pub midi_receipt_path: String,
+    #[serde(default)]
+    pub midi_source_path: String,
+    #[serde(default)]
+    pub midi_document_path: String,
+    #[serde(default)]
+    pub midi_revision: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +187,21 @@ pub struct CreateMusicProjectRequest {
 pub struct MusicMidiRequest {
     pub project_id: String,
     pub take_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveMusicMidiDocumentRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub document: MusicMidiDocument,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicMidiSaveResult {
+    pub project: MusicProject,
+    pub document: MusicMidiDocument,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -393,6 +418,9 @@ impl MusicStudio {
             exact_graph: Value::Null,
             midi_path: String::new(),
             midi_receipt_path: String::new(),
+            midi_source_path: String::new(),
+            midi_document_path: String::new(),
+            midi_revision: 0,
         });
         project.active_take_id = take_id.clone();
         project.status = "generating".into();
@@ -706,10 +734,15 @@ impl MusicStudio {
                 "the selected preserved master is missing from disk".into(),
             ));
         }
-        let output = self
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let midi_session = self
             .project_dir(&project.id)
             .join("midi")
-            .join(format!("{}.mid", request.take_id));
+            .join(&request.take_id)
+            .join(session_id);
+        let source_output = midi_session.join("source.mid");
+        let revisions = midi_session.join("revisions");
+        fs::create_dir_all(&revisions)?;
         let mut command = tokio::process::Command::new(&project.midi.executable_path);
         if is_managed_muscriptor_uvx(Path::new(&project.midi.executable_path)) {
             let root = Path::new(&project.midi.executable_path)
@@ -746,7 +779,7 @@ impl MusicStudio {
         command
             .arg(&source)
             .arg("-o")
-            .arg(&output)
+            .arg(&source_output)
             .env("PYTHONUTF8", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -759,18 +792,26 @@ impl MusicStudio {
             .map_err(|_| {
                 StudioError::Render("MuScriptor did not finish within six hours".into())
             })??;
-        if !result.status.success() || !output.is_file() {
+        if !result.status.success() || !source_output.is_file() {
             return Err(StudioError::Render(format!(
                 "MuScriptor transcription failed: {}",
                 truncate(&String::from_utf8_lossy(&result.stderr), 1_000)
             )));
         }
+        let (_, source_midi_sha256) = hash_file(&source_output)?;
+        let document =
+            parse_midi_document(&source_output, &request.take_id, &source_midi_sha256, 0)?;
+        let editable_output = revisions.join("000.mid");
+        let document_path = revisions.join("000.json");
+        write_midi_document(&editable_output, &document)?;
+        write_json_recoverable(&document_path, &document)?;
         let receipt = json!({
             "schemaVersion": 1,
             "tool": "MuScriptor",
             "createdAt": Utc::now().to_rfc3339(),
             "takeId": request.take_id,
             "sourceSha256": project.takes[take_index].sha256,
+            "sourceMidiSha256": source_midi_sha256,
             "modelPath": project.midi.model_path,
             "executablePath": project.midi.executable_path,
             "instruments": project.midi.instruments,
@@ -778,15 +819,209 @@ impl MusicStudio {
             "stdout": truncate(&String::from_utf8_lossy(&result.stdout), 8_000),
             "stderr": truncate(&String::from_utf8_lossy(&result.stderr), 8_000),
         });
-        let receipt_path = output.with_extension("receipt.json");
+        let receipt_path = midi_session.join("transcription.receipt.json");
         write_json_recoverable(&receipt_path, &receipt)?;
-        project.takes[take_index].midi_path = output.to_string_lossy().into_owned();
+        project.takes[take_index].midi_path = editable_output.to_string_lossy().into_owned();
         project.takes[take_index].midi_receipt_path = receipt_path.to_string_lossy().into_owned();
+        project.takes[take_index].midi_source_path = source_output.to_string_lossy().into_owned();
+        project.takes[take_index].midi_document_path = document_path.to_string_lossy().into_owned();
+        project.takes[take_index].midi_revision = 0;
         project.phase = "midi-ready".into();
-        project.detail = "MuScriptor created an editable MIDI interpretation. The generated master is unchanged.".into();
+        project.detail = "MuScriptor created an immutable source transcription and editable MIDI revision 0. The generated master is unchanged.".into();
         project.updated_at = Utc::now().to_rfc3339();
         self.persist(&project)?;
         Ok(project)
+    }
+
+    pub fn load_midi_document(
+        &self,
+        request: MusicMidiRequest,
+    ) -> Result<MusicMidiSaveResult, StudioError> {
+        let mut project = self.get(&request.project_id)?;
+        let take_index = project
+            .takes
+            .iter()
+            .position(|take| {
+                take.id == request.take_id
+                    && take.status == "complete"
+                    && !take.midi_path.trim().is_empty()
+            })
+            .ok_or_else(|| StudioError::Invalid("choose a take with completed MIDI".into()))?;
+        let current_path =
+            self.validated_midi_artifact(&project.id, &project.takes[take_index].midi_path)?;
+        let stored_document = PathBuf::from(&project.takes[take_index].midi_document_path);
+        let stored_source = PathBuf::from(&project.takes[take_index].midi_source_path);
+        let document = if stored_document.is_file() && stored_source.is_file() {
+            let document = read_midi_document(&stored_document)?;
+            let (_, source_sha256) = hash_file(&stored_source)?;
+            if document.take_id != request.take_id
+                || document.source_sha256 != source_sha256
+                || document.revision != project.takes[take_index].midi_revision
+            {
+                return Err(StudioError::Invalid(
+                    "the MIDI edit document no longer matches its immutable source; start a new transcription instead of overwriting provenance".into(),
+                ));
+            }
+            document
+        } else {
+            let session = self
+                .project_dir(&project.id)
+                .join("midi")
+                .join(&request.take_id)
+                .join(uuid::Uuid::new_v4().to_string());
+            let revisions = session.join("revisions");
+            fs::create_dir_all(&revisions)?;
+            let source_path = session.join("source.mid");
+            write_bytes_recoverable(&source_path, &fs::read(&current_path)?)?;
+            let (_, source_sha256) = hash_file(&source_path)?;
+            let document = parse_midi_document(&current_path, &request.take_id, &source_sha256, 0)?;
+            let revision_path = revisions.join("000.mid");
+            let document_path = revisions.join("000.json");
+            write_midi_document(&revision_path, &document)?;
+            write_json_recoverable(&document_path, &document)?;
+            project.takes[take_index].midi_source_path = source_path.to_string_lossy().into_owned();
+            project.takes[take_index].midi_path = revision_path.to_string_lossy().into_owned();
+            project.takes[take_index].midi_document_path =
+                document_path.to_string_lossy().into_owned();
+            project.takes[take_index].midi_revision = 0;
+            project.updated_at = Utc::now().to_rfc3339();
+            project.detail =
+                "The original MIDI is preserved and revision 0 is ready in the piano roll.".into();
+            self.persist(&project)?;
+            document
+        };
+        Ok(MusicMidiSaveResult { project, document })
+    }
+
+    pub fn save_midi_document(
+        &self,
+        request: SaveMusicMidiDocumentRequest,
+    ) -> Result<MusicMidiSaveResult, StudioError> {
+        let loaded = self.load_midi_document(MusicMidiRequest {
+            project_id: request.project_id.clone(),
+            take_id: request.take_id.clone(),
+        })?;
+        let mut project = loaded.project;
+        let take_index = project
+            .takes
+            .iter()
+            .position(|take| take.id == request.take_id)
+            .ok_or_else(|| StudioError::Invalid("the MIDI take no longer exists".into()))?;
+        if request.document.take_id != request.take_id
+            || request.document.source_sha256 != loaded.document.source_sha256
+            || request.document.revision != loaded.document.revision
+        {
+            return Err(StudioError::Invalid(
+                "the piano-roll edit is stale or belongs to another take; reopen MIDI before saving"
+                    .into(),
+            ));
+        }
+        let revision =
+            loaded.document.revision.checked_add(1).ok_or_else(|| {
+                StudioError::Invalid("the MIDI revision counter is exhausted".into())
+            })?;
+        let mut document = request.document;
+        document.revision = revision;
+        document = normalize_midi_document(document)?;
+        validate_midi_document(&document)?;
+        let previous_document = self
+            .validated_midi_artifact(&project.id, &project.takes[take_index].midi_document_path)?;
+        let revisions = previous_document.parent().ok_or_else(|| {
+            StudioError::Invalid("the MIDI revision folder is unavailable".into())
+        })?;
+        let midi_path = revisions.join(format!("{revision:03}.mid"));
+        let document_path = revisions.join(format!("{revision:03}.json"));
+        let receipt_path = revisions.join(format!("{revision:03}.receipt.json"));
+        if midi_path.exists() || document_path.exists() || receipt_path.exists() {
+            return Err(StudioError::Invalid(
+                "the next immutable MIDI revision already exists; reopen the project before saving"
+                    .into(),
+            ));
+        }
+        write_midi_document(&midi_path, &document)?;
+        write_json_recoverable(&document_path, &document)?;
+        let (bytes, sha256) = hash_file(&midi_path)?;
+        write_json_recoverable(
+            &receipt_path,
+            &json!({
+                "schemaVersion": 1,
+                "createdAt": Utc::now().to_rfc3339(),
+                "takeId": request.take_id,
+                "revision": revision,
+                "sourceMidiSha256": document.source_sha256,
+                "exportSha256": sha256,
+                "bytes": bytes,
+                "trackCount": document.tracks.len(),
+                "noteCount": document.tracks.iter().map(|track| track.notes.len()).sum::<usize>(),
+                "mutedTrackCount": document.tracks.iter().filter(|track| track.muted).count(),
+                "operation": "producer MIDI edit"
+            }),
+        )?;
+        project.takes[take_index].midi_path = midi_path.to_string_lossy().into_owned();
+        project.takes[take_index].midi_document_path = document_path.to_string_lossy().into_owned();
+        project.takes[take_index].midi_revision = revision;
+        project.phase = "midi-ready".into();
+        project.detail = format!(
+            "MIDI revision {revision} is saved. The MuScriptor source and every earlier revision remain unchanged."
+        );
+        project.updated_at = Utc::now().to_rfc3339();
+        self.persist(&project)?;
+        Ok(MusicMidiSaveResult { project, document })
+    }
+
+    pub fn midi_artifact(
+        &self,
+        request: &MusicMidiRequest,
+    ) -> Result<(PathBuf, String), StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| take.id == request.take_id && !take.midi_path.trim().is_empty())
+            .ok_or_else(|| StudioError::Invalid("choose a take with completed MIDI".into()))?;
+        let path = self.validated_midi_artifact(&project.id, &take.midi_path)?;
+        Ok((
+            path,
+            format!("{} - MIDI r{}", project.title, take.midi_revision),
+        ))
+    }
+
+    pub fn export_midi_artifact(
+        &self,
+        request: &MusicMidiRequest,
+        destination: &Path,
+    ) -> Result<(), StudioError> {
+        if !destination.is_absolute()
+            || !destination
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| {
+                    value.eq_ignore_ascii_case("mid") || value.eq_ignore_ascii_case("midi")
+                })
+        {
+            return Err(StudioError::Invalid(
+                "choose an absolute destination ending in .mid or .midi".into(),
+            ));
+        }
+        let (source, _) = self.midi_artifact(request)?;
+        write_bytes_recoverable(destination, &fs::read(source)?)
+    }
+
+    fn validated_midi_artifact(
+        &self,
+        project_id: &str,
+        value: &str,
+    ) -> Result<PathBuf, StudioError> {
+        let root = fs::canonicalize(self.project_dir(project_id).join("midi"))?;
+        let path = fs::canonicalize(Path::new(value)).map_err(|_| {
+            StudioError::Invalid(format!("the MIDI project file is unavailable at {value}"))
+        })?;
+        if !path.starts_with(root) || !path.is_file() {
+            return Err(StudioError::Invalid(
+                "the MIDI path is outside this private music project".into(),
+            ));
+        }
+        Ok(path)
     }
 
     pub fn project_dir(&self, id: &str) -> PathBuf {
@@ -1487,6 +1722,18 @@ fn read_project_file(path: &Path) -> Result<MusicProject, StudioError> {
     Ok(serde_json::from_slice(&fs::read(path)?)?)
 }
 
+fn read_midi_document(path: &Path) -> Result<MusicMidiDocument, StudioError> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 64 * 1024 * 1024 {
+        return Err(StudioError::Invalid(
+            "the MIDI edit document is missing or exceeds 64 MiB".into(),
+        ));
+    }
+    let document: MusicMidiDocument = serde_json::from_slice(&fs::read(path)?)?;
+    validate_midi_document(&document)?;
+    Ok(document)
+}
+
 fn validate_music_id(id: &str) -> Result<(), StudioError> {
     if uuid::Uuid::parse_str(id).is_err() {
         Err(StudioError::Invalid("invalid music project ID".into()))
@@ -1541,6 +1788,9 @@ fn write_json_recoverable(path: &Path, value: &impl Serialize) -> Result<(), Stu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::studio::music_midi::{
+        MusicMidiNote, MusicMidiTempo, MusicMidiTimeSignature, MusicMidiTrack,
+    };
     use tempfile::TempDir;
 
     fn project(studio: &MusicStudio) -> MusicProject {
@@ -1623,6 +1873,89 @@ mod tests {
         let saved = studio.save_editable(editable).unwrap();
         assert_eq!(saved.title, "Renamed");
         assert!(saved.takes[0].path.is_empty());
+    }
+
+    #[test]
+    fn legacy_midi_is_preserved_then_producer_edits_create_new_revisions() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (_, take_id) = studio.begin_generation(&project.id, None).unwrap();
+        let mut stored = studio.get(&project.id).unwrap();
+        let take = stored
+            .takes
+            .iter_mut()
+            .find(|take| take.id == take_id)
+            .unwrap();
+        take.status = "complete".into();
+        let master = studio.project_dir(&project.id).join("takes/master.flac");
+        fs::write(&master, b"preserved master").unwrap();
+        take.path = master.to_string_lossy().into_owned();
+        let legacy = studio
+            .project_dir(&project.id)
+            .join("midi")
+            .join(format!("{take_id}.mid"));
+        let source_document = MusicMidiDocument {
+            schema_version: 1,
+            take_id: take_id.clone(),
+            source_sha256: "a".repeat(64),
+            revision: 0,
+            ticks_per_quarter: 480,
+            duration_ticks: 480,
+            duration_seconds: 0.5,
+            tempos: vec![MusicMidiTempo {
+                tick: 0,
+                microseconds_per_quarter: 500_000,
+            }],
+            time_signatures: vec![MusicMidiTimeSignature {
+                tick: 0,
+                numerator: 4,
+                denominator: 4,
+            }],
+            tracks: vec![MusicMidiTrack {
+                id: "track-1".into(),
+                name: "Piano".into(),
+                channel: 0,
+                program: 0,
+                muted: false,
+                notes: vec![MusicMidiNote {
+                    id: "note-1".into(),
+                    pitch: 60,
+                    start_tick: 0,
+                    duration_ticks: 480,
+                    velocity: 96,
+                    channel: 0,
+                }],
+            }],
+        };
+        write_midi_document(&legacy, &source_document).unwrap();
+        take.midi_path = legacy.to_string_lossy().into_owned();
+        stored.status = "ready".into();
+        studio.persist(&stored).unwrap();
+
+        let loaded = studio
+            .load_midi_document(MusicMidiRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+            })
+            .unwrap();
+        assert!(Path::new(&loaded.project.takes[0].midi_source_path).is_file());
+        assert_eq!(loaded.document.revision, 0);
+        let original_revision = loaded.project.takes[0].midi_path.clone();
+        let mut edited = loaded.document;
+        edited.tracks[0].notes[0].pitch = 64;
+        let saved = studio
+            .save_midi_document(SaveMusicMidiDocumentRequest {
+                project_id: project.id,
+                take_id,
+                document: edited,
+            })
+            .unwrap();
+        assert_eq!(saved.document.revision, 1);
+        assert_eq!(saved.document.tracks[0].notes[0].pitch, 64);
+        assert!(Path::new(&original_revision).is_file());
+        assert!(Path::new(&saved.project.takes[0].midi_path).is_file());
+        assert_ne!(saved.project.takes[0].midi_path, original_revision);
     }
 
     #[test]

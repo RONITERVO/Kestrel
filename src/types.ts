@@ -720,6 +720,56 @@ export interface MusicTake {
   exactGraph: unknown;
   midiPath: string;
   midiReceiptPath: string;
+  midiSourcePath: string;
+  midiDocumentPath: string;
+  midiRevision: number;
+}
+
+export interface MusicMidiTempo {
+  tick: number;
+  microsecondsPerQuarter: number;
+}
+
+export interface MusicMidiTimeSignature {
+  tick: number;
+  numerator: number;
+  denominator: number;
+}
+
+export interface MusicMidiNote {
+  id: string;
+  pitch: number;
+  startTick: number;
+  durationTicks: number;
+  velocity: number;
+  channel: number;
+}
+
+export interface MusicMidiTrack {
+  id: string;
+  name: string;
+  channel: number;
+  program: number;
+  muted: boolean;
+  notes: MusicMidiNote[];
+}
+
+export interface MusicMidiDocument {
+  schemaVersion: number;
+  takeId: string;
+  sourceSha256: string;
+  revision: number;
+  ticksPerQuarter: number;
+  durationTicks: number;
+  durationSeconds: number;
+  tempos: MusicMidiTempo[];
+  timeSignatures: MusicMidiTimeSignature[];
+  tracks: MusicMidiTrack[];
+}
+
+export interface MusicMidiSaveResult {
+  project: MusicProject;
+  document: MusicMidiDocument;
 }
 
 export interface MusicProject {

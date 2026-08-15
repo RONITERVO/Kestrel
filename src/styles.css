@@ -1881,13 +1881,14 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .music-render-meter > span { position: absolute; inset: 0 auto 0 0; background: #7d6428; }
 .music-render-meter small { position: relative; z-index: 1; display: grid; height: 100%; place-items: center; color: #e8d6aa; font: 9px var(--mono); }
 
-.music-timeline { min-width: 0; min-height: 0; overflow: auto hidden; display: grid; grid-template-rows: 25px repeat(3,minmax(53px,1fr)); border-bottom: 1px solid #0d0f0e; background: #1b1f1d; scrollbar-width: thin; scrollbar-color: #4d5551 #191c1b; }
+.music-timeline { min-width: 0; min-height: 0; overflow: auto hidden; display: grid; grid-template-rows: 25px repeat(4,minmax(45px,1fr)); border-bottom: 1px solid #0d0f0e; background: #1b1f1d; scrollbar-width: thin; scrollbar-color: #4d5551 #191c1b; }
 .music-ruler { min-width: 900px; margin-left: 88px; padding: 0 8px; display: flex; justify-content: space-between; align-items: end; border-bottom: 1px solid #383e3b; color: #6e7772; background: repeating-linear-gradient(90deg,transparent 0 calc(12.5% - 1px),#343a37 calc(12.5% - 1px) 12.5%); font: 9px var(--mono); }
 .music-track-row { min-width: 988px; display: grid; grid-template-columns: 88px minmax(900px,1fr); border-bottom: 1px solid #333936; }
 .music-track-label { padding: 0 8px; display: flex; align-items: center; gap: 7px; border-right: 1px solid #3b413e; background: #252a28; box-shadow: inset 3px 0 #59625d; }
 .music-track-row.arrangement .music-track-label { box-shadow: inset 3px 0 #d3912c; }
 .music-track-row.lyrics .music-track-label { box-shadow: inset 3px 0 #4a9dc5; }
 .music-track-row.master .music-track-label { box-shadow: inset 3px 0 #8b61bb; }
+.music-track-row.midi .music-track-label { box-shadow: inset 3px 0 #5ca86c; }
 .music-track-label > svg { width: 13px; color: #a7afa9; }
 .music-track-label > span { display: flex; flex-direction: column; }
 .music-track-label strong { font-size: 10px; }
@@ -1905,6 +1906,11 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .master-region.ready { border-style: solid; border-color: #7752a0; color: #eee5f7; background: linear-gradient(#68478b,#52386e); }
 .master-region span { position: absolute; z-index: 1; left: 9px; top: 5px; font-size: 10px; }
 .master-region i { width: 2px; flex: 1; border-radius: 1px; background: rgba(244,233,255,.45); }
+.music-track-canvas > button.midi-region { width: 100%; min-width: 100%; flex-direction: row; align-items: center; gap: 8px; border-color: #496650; color: #9aa99c; background: #243027; }
+.music-track-canvas > button.midi-region.ready { border-color: #5f9a6a; color: #e6f3e8; background: linear-gradient(140deg,#427a4d,#315c3a); }
+.midi-region > svg { width: 16px; flex: 0 0 auto; }
+.midi-region > span { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.midi-region > span strong, .midi-region > span small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .music-writing-desk { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(70px,1fr) auto; padding: 11px 14px 10px; background: #202422; }
 .music-writing-heading { display: flex; justify-content: space-between; gap: 12px; padding-bottom: 7px; }
@@ -1958,12 +1964,98 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .music-path-field button, .music-midi-panel fieldset > button { min-width: 0; border: 1px solid #454c48; border-left: 0; border-radius: 0 4px 4px 0; color: #c4cbc6; background: #303532; }
 .music-midi-panel fieldset > button { height: 31px; display: flex; align-items: center; justify-content: center; gap: 6px; border-left: 1px solid #454c48; border-radius: 4px; font-size: 10px; font-weight: 750; }
 .music-midi-panel button svg { width: 12px; }
-.music-midi-ready { display: flex; align-items: center; gap: 5px; color: #91bd99; font-size: 9px; }
+.music-midi-ready { display: grid; gap: 6px; color: #91bd99; font-size: 9px; }
+.music-midi-ready > span, .music-midi-ready > div { display: flex; align-items: center; gap: 5px; }
+.music-midi-ready > div button { min-height: 27px; padding: 0 7px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid #4d5b50; border-radius: 4px; color: #d3ded4; background: #2d3930; font-size: 9px; }
 .music-midi-ready svg { width: 11px; }
 .music-receipt dl { margin: 0; display: grid; grid-template-columns: 55px minmax(0,1fr); gap: 4px; font-size: 10px; }
 .music-receipt dt { color: #737b76; }
 .music-receipt dd { min-width: 0; margin: 0; overflow: hidden; color: #b8bfba; font-family: var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .music-receipt pre, .music-collaboration-sheet pre { overflow: auto; padding: 8px; border: 1px solid #3e4541; border-radius: 4px; color: #b8c0bb; background: #151817; font: 10px/1.45 var(--mono); white-space: pre-wrap; }
+
+/* MIDI is a project-local editor, not a detached utility. Its outer frame never scrolls; only the
+   track list and piano-roll viewport do, matching a conventional desktop DAW. */
+.midi-editor { position: absolute; z-index: 40; inset: 57px 0 0; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-columns: 214px minmax(0,1fr) 252px; grid-template-rows: 55px minmax(0,1fr); grid-template-areas: "midi-toolbar midi-toolbar midi-toolbar" "midi-tracks midi-roll midi-inspector"; color: #e5eae6; background: #151817; box-shadow: 0 -8px 30px rgba(0,0,0,.45); }
+.midi-editor button, .midi-editor input, .midi-editor select { color: inherit; font: inherit; }
+.midi-editor-toolbar { grid-area: midi-toolbar; min-width: 0; padding: 6px 8px; display: grid; grid-template-columns: minmax(230px,.8fr) minmax(390px,1.4fr) minmax(300px,1fr); align-items: center; gap: 9px; border-bottom: 1px solid #0c0f0d; background: linear-gradient(#343a37,#272c2a); box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+.midi-editor-identity, .midi-editor-transport, .midi-editor-actions { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.midi-editor-identity > span { width: 33px; height: 33px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid #57705d; border-radius: 6px; color: #9ed2a7; background: #1f2922; }
+.midi-editor-identity svg { width: 17px; }
+.midi-editor-identity > div { min-width: 0; display: flex; flex-direction: column; }
+.midi-editor-identity small { color: #89928c; font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.midi-editor-identity strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.midi-editor-identity em { padding: 3px 6px; border-radius: 8px; color: #9faaa3; background: #202523; font-size: 8px; font-style: normal; white-space: nowrap; }
+.midi-editor-toolbar button { height: 30px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid #4c544f; border-radius: 4px; background: linear-gradient(#3a403d,#2c312f); font-size: 9px; font-weight: 750; white-space: nowrap; }
+.midi-editor-toolbar button:hover:not(:disabled) { background: #48504c; }
+.midi-editor-toolbar button:disabled { opacity: .42; }
+.midi-editor-toolbar button svg { width: 12px; }
+.midi-editor-toolbar label { height: 30px; display: flex; align-items: center; gap: 5px; color: #89918c; font-size: 8px; font-weight: 750; }
+.midi-editor-toolbar select { height: 28px; border: 1px solid #4b534e; border-radius: 4px; background: #202422; font-size: 9px; }
+.midi-editor-toolbar input[type="range"] { width: 68px; accent-color: #69a875; }
+.midi-editor-actions { justify-content: flex-end; }
+.midi-editor-actions .midi-save { border-color: #5e9668; color: #e8f4ea; background: linear-gradient(#4f8559,#396443); }
+.midi-editor-actions .midi-done { border-color: #a4762a; color: #171915; background: linear-gradient(#efb951,#c98c2d); }
+
+.midi-track-list { grid-area: midi-tracks; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 43px minmax(0,1fr) 31px; border-right: 1px solid #0e110f; background: #222725; }
+.midi-track-list > header { padding: 6px 7px 6px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #3a413d; background: #2b302e; }
+.midi-track-list > header > span, .midi-track-list > header > div { display: flex; align-items: center; gap: 5px; }
+.midi-track-list > header svg { width: 13px; }
+.midi-track-list > header strong { font-size: 10px; text-transform: uppercase; }
+.midi-track-list > header button { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid #48504b; border-radius: 4px; background: #343a37; }
+.midi-track-list > div { min-height: 0; overflow-y: auto; padding: 5px; scrollbar-width: thin; scrollbar-color: #505954 transparent; }
+.midi-track-list > div > article { width: 100%; min-height: 49px; display: grid; grid-template-columns: minmax(0,1fr) 32px; align-items: center; border: 1px solid transparent; border-radius: 4px; color: #c3cbc5; background: transparent; }
+.midi-track-list > div > article:hover, .midi-track-list > div > article.active { border-color: #4a544d; background: #343b37; }
+.midi-track-list > div > article.active { box-shadow: inset 3px 0 #66aa73; }
+.midi-track-choice { min-width: 0; min-height: 47px; padding: 6px; display: grid; grid-template-columns: 5px minmax(0,1fr); align-items: center; gap: 7px; color: inherit; background: transparent; text-align: left; }
+.midi-track-choice > i { width: 4px; height: 32px; border-radius: 3px; }
+.midi-track-choice > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.midi-track-choice strong, .midi-track-choice small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.midi-track-choice strong { font-size: 10px; }
+.midi-track-choice small { color: #828b85; font-size: 8px; }
+.midi-track-mute { width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid #4b534e; border-radius: 4px; background: #292e2b; }
+.midi-track-mute svg { width: 11px; }
+.midi-track-list > footer { padding: 0 8px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #3a413d; color: #7f8882; font: 8px var(--mono); }
+
+.midi-roll-pane { grid-area: midi-roll; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 31px minmax(0,1fr); background: #171b19; }
+.midi-roll-status { min-width: 0; padding: 0 8px; display: grid; grid-template-columns: auto minmax(100px,1fr) auto; align-items: center; gap: 12px; border-bottom: 1px solid #383f3b; color: #79827d; background: #222725; font-size: 8px; }
+.midi-roll-status span:nth-child(2) { overflow: hidden; color: #9cad9f; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.midi-roll-viewport { min-width: 0; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #59615d #161917; }
+.midi-roll-content { position: relative; background: #191d1b; }
+.midi-ruler { position: sticky; z-index: 8; top: 0; height: 27px; overflow: hidden; border-bottom: 1px solid #454d48; background-color: #292f2c; background-image: repeating-linear-gradient(90deg,transparent 0 calc(100% - 1px),#525a55 calc(100% - 1px)); cursor: pointer; }
+.midi-ruler span { position: absolute; bottom: 4px; padding-left: 4px; color: #8e9791; font: 8px var(--mono); }
+.midi-keyboard { position: sticky; z-index: 6; left: 0; width: 58px; height: 1536px; display: grid; grid-template-rows: repeat(128,12px); border-right: 1px solid #0d0f0e; background: #d5d8d4; box-shadow: 3px 0 7px rgba(0,0,0,.35); }
+.midi-keyboard span { padding: 1px 3px; border-bottom: 1px solid #929994; color: #252a27; background: #d8ddd9; font: 7px var(--mono); text-align: right; }
+.midi-keyboard span.black { width: 68%; z-index: 1; border-color: #111; border-radius: 0 0 2px 0; color: #e6e9e6; background: #252a27; }
+.midi-note-grid { position: absolute; overflow: hidden; background-color: #1c211e; background-image: linear-gradient(90deg,rgba(116,128,120,.28) 1px,transparent 1px),linear-gradient(0deg,rgba(74,82,77,.35) 1px,transparent 1px); }
+.midi-note-grid::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg,rgba(0,0,0,.13) 0 60px,transparent 60px 144px); }
+.midi-note { position: absolute; z-index: 2; min-width: 4px; padding: 0; overflow: visible; border: 1px solid rgba(255,255,255,.3); border-radius: 2px; box-shadow: 0 1px 2px rgba(0,0,0,.6); cursor: grab; }
+.midi-note.selected { z-index: 4; outline: 2px solid #f7cf78; filter: brightness(1.2); }
+.midi-note:active { cursor: grabbing; }
+.midi-note > span { position: absolute; inset: -2px -3px -2px auto; width: 7px; border-left: 2px solid rgba(255,255,255,.72); cursor: ew-resize; }
+.midi-playhead { position: absolute; z-index: 5; top: 0; bottom: 0; width: 1px; background: #ffc85a; box-shadow: 0 0 4px #ffc85a; pointer-events: none; }
+
+.midi-event-inspector { grid-area: midi-inspector; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 43px minmax(0,1fr); border-left: 1px solid #0d100e; background: #242927; }
+.midi-event-inspector > header { padding: 0 9px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #3b423e; background: #2b302e; }
+.midi-event-inspector > header > span { display: flex; align-items: center; gap: 6px; }
+.midi-event-inspector > header svg { width: 12px; }
+.midi-event-inspector > header strong { font-size: 10px; text-transform: uppercase; }
+.midi-event-inspector fieldset { min-width: 0; min-height: 0; margin: 0; padding: 10px; overflow-y: auto; display: grid; align-content: start; gap: 9px; border: 0; scrollbar-width: thin; }
+.midi-event-inspector label { min-width: 0; display: grid; gap: 4px; color: #8d9690; font-size: 8px; font-weight: 750; }
+.midi-event-inspector input, .midi-event-inspector select, .midi-event-inspector label button { width: 100%; min-width: 0; height: 30px; padding: 0 7px; border: 1px solid #444c47; border-radius: 4px; color: #d9dedb; background: #171b19; font-size: 9px; }
+.midi-event-inspector label button { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.midi-event-inspector label button.muted { color: #dda09a; background: #392624; }
+.midi-event-inspector label button svg { width: 11px; }
+.midi-inspector-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.midi-event-inspector hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid #3c433f; }
+.midi-note-name { min-height: 45px; padding: 7px; display: grid; grid-template-columns: 28px minmax(0,1fr) 28px; align-items: center; gap: 7px; border: 1px solid #465049; border-radius: 5px; background: #1d231f; }
+.midi-note-name > svg { width: 17px; color: #e4ae4d; }
+.midi-note-name > span { display: flex; flex-direction: column; }
+.midi-note-name strong { font-size: 13px; }
+.midi-note-name small { color: #7f8882; font-size: 8px; }
+.midi-note-name button { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid #66443f; border-radius: 4px; color: #daa39d; background: #372523; }
+.midi-note-name button svg { width: 11px; }
+.midi-inspector-empty { min-height: 110px; padding: 16px; display: grid; place-content: center; justify-items: center; gap: 8px; border: 1px dashed #454d48; border-radius: 5px; color: #737c76; text-align: center; font-size: 9px; line-height: 1.45; }
+.midi-inspector-empty svg { width: 21px; }
 
 .music-collaboration-sheet { position: absolute; z-index: 20; right: 320px; bottom: 10px; width: min(560px,calc(100% - 340px)); max-height: calc(100% - 78px); overflow: hidden; display: grid; grid-template-rows: auto minmax(100px,1fr) auto; border: 1px solid #6b5730; border-radius: 7px; background: #252923; box-shadow: 0 18px 55px rgba(0,0,0,.55); }
 .music-collaboration-sheet > header { min-height: 47px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #494331; background: #343024; }
@@ -2004,6 +2096,10 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .music-new-dialog footer svg { width: 13px; }
 
 @media (max-width: 1180px) {
+  .midi-editor { grid-template-columns: 178px minmax(0,1fr) 220px; }
+  .midi-editor-toolbar { grid-template-columns: minmax(190px,.7fr) minmax(330px,1.3fr) minmax(245px,.9fr); gap: 5px; }
+  .midi-editor-toolbar button { padding-inline: 6px; }
+  .midi-editor-identity em, .midi-editor-transport label:last-child { display: none; }
   .music-studio.library-visible { grid-template-columns: 185px minmax(0,1fr) 280px; }
   .music-studio { grid-template-columns: minmax(0,1fr) 280px; }
   .music-transport { grid-template-columns: minmax(170px,1fr) auto minmax(175px,1fr); }

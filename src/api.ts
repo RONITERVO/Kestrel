@@ -58,6 +58,8 @@ import type {
   ModelDownloadInspection,
   MovieSummary,
   MusicGenerationEvent,
+  MusicMidiDocument,
+  MusicMidiSaveResult,
   MusicProject,
   MusicSummary,
   ImageGenerationEvent,
@@ -443,6 +445,25 @@ export async function approveMoviePlan(id: string): Promise<MovieProject> {
 export async function askMovieDirectorClip(requestId: string, id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
   if (!isTauri()) throw new Error("Studio scene assistance requires the desktop application.");
   return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { requestId, id, clipId, feedback } });
+}
+
+export async function getMusicMidiDocument(projectId: string, takeId: string): Promise<MusicMidiSaveResult> {
+  if (!isTauri()) throw new Error("The MIDI editor requires the desktop application.");
+  return invoke<MusicMidiSaveResult>("get_music_midi_document", { request: { projectId, takeId } });
+}
+
+export async function saveMusicMidiDocument(projectId: string, takeId: string, document: MusicMidiDocument): Promise<MusicMidiSaveResult> {
+  if (!isTauri()) throw new Error("Saving MIDI requires the desktop application.");
+  return invoke<MusicMidiSaveResult>("save_music_midi_document", { request: { projectId, takeId, document } });
+}
+
+export async function exportMusicMidi(projectId: string, takeId: string): Promise<string | undefined> {
+  if (!isTauri()) throw new Error("Exporting MIDI requires the desktop application.");
+  return (await invoke<string | null>("export_music_midi", { request: { projectId, takeId } })) ?? undefined;
+}
+
+export async function revealMusicMidi(projectId: string, takeId: string): Promise<void> {
+  if (isTauri()) await invoke("reveal_music_midi", { request: { projectId, takeId } });
 }
 
 export async function onMovieClipAssist(callback: (event: MovieClipAssistEvent) => void): Promise<UnlistenFn> {

@@ -7,13 +7,15 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelMoviePromptDraft, cancelMusicGeneration, createMusicProject, getMusicProject,
-  listMusicProjects, musicMediaUrl, onMoviePromptDraft, onMusicGeneration,
+  exportMusicMidi, getMusicMidiDocument, listMusicProjects, musicMediaUrl, onMoviePromptDraft, onMusicGeneration,
   onMusicProjectUpdated, pickSetupFile, revealMusicProject, saveMusicProject,
-  startMoviePromptDraft, startMusicGeneration, transcribeMusicMidi,
+  revealMusicMidi, saveMusicMidiDocument, startMoviePromptDraft, startMusicGeneration,
+  transcribeMusicMidi,
 } from "./api";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
+import { MusicMidiEditor } from "./MusicMidiEditor";
 import type {
-  ModelInfo, MusicGenerationEvent, MusicProject, MusicSection, MusicSummary, MusicTake,
+  ModelInfo, MusicGenerationEvent, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
   PromptDraftMode, PromptDraftReceipt, PromptDraftTarget,
 } from "./types";
 
@@ -69,6 +71,8 @@ export function MusicStudio({
   const [draftMode, setDraftMode] = useState<PromptDraftMode>("develop");
   const [collaboration, setCollaboration] = useState<CollaborationDraft>();
   const [midiBusy, setMidiBusy] = useState(false);
+  const [midiOpen, setMidiOpen] = useState(false);
+  const [midiDocument, setMidiDocument] = useState<MusicMidiDocument>();
   const audioRef = useRef<HTMLAudioElement>(null);
   const activeProjectId = useRef("");
 
@@ -127,6 +131,8 @@ export function MusicStudio({
   const selectedSection = project?.sections.find((section) => section.id === selectedSectionId) ?? project?.sections[0];
   const activeTake = project?.takes.find((take) => take.id === project.activeTakeId && take.status === "complete")
     ?? [...(project?.takes ?? [])].reverse().find((take) => take.status === "complete");
+  const midiTake = midiDocument ? project?.takes.find((take) => take.id === midiDocument.takeId) : undefined;
+  const midiTargetTake = midiOpen ? midiTake : activeTake;
   const busy = project?.status === "generating" || saving || creating || midiBusy;
   const assistantBusy = !!collaboration && ["queued", "thinking", "writing"].includes(collaboration.status);
   const totalBars = Math.max(1, project?.sections.reduce((sum, section) => sum + section.bars, 0) ?? 1);
@@ -194,6 +200,8 @@ export function MusicStudio({
       setProject(next);
       setSelectedSectionId(next.sections[0]?.id ?? "");
       setProgress(undefined);
+      setMidiOpen(false);
+      setMidiDocument(undefined);
       setDirty(false);
     } catch (error) {
       onError(String(error));
@@ -302,10 +310,65 @@ export function MusicStudio({
       const next = await transcribeMusicMidi(saved.id, take.id);
       setProject(next);
       setDirty(false);
+      const loaded = await getMusicMidiDocument(next.id, take.id);
+      setProject(loaded.project);
+      setMidiDocument(loaded.document);
+      setMidiOpen(true);
     } catch (error) {
       onError(String(error));
     } finally {
       setMidiBusy(false);
+    }
+  };
+
+  const openMidi = async (take: MusicTake) => {
+    if (!project || !take.midiPath) return;
+    setMidiBusy(true);
+    try {
+      const loaded = await getMusicMidiDocument(project.id, take.id);
+      setProject(loaded.project);
+      setMidiDocument(loaded.document);
+      setMidiOpen(true);
+      setDirty(false);
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setMidiBusy(false);
+    }
+  };
+
+  const saveMidi = async (document: MusicMidiDocument): Promise<MusicMidiDocument | undefined> => {
+    if (!project || !project.takes.some((take) => take.id === document.takeId)) return undefined;
+    setMidiBusy(true);
+    try {
+      const saved = await saveMusicMidiDocument(project.id, document.takeId, document);
+      setProject(saved.project);
+      setMidiDocument(saved.document);
+      return saved.document;
+    } catch (error) {
+      onError(String(error));
+      return undefined;
+    } finally {
+      setMidiBusy(false);
+    }
+  };
+
+  const exportMidi = async (): Promise<string | undefined> => {
+    if (!project || !midiTargetTake) return undefined;
+    try {
+      return await exportMusicMidi(project.id, midiTargetTake.id);
+    } catch (error) {
+      onError(String(error));
+      return undefined;
+    }
+  };
+
+  const revealMidi = async () => {
+    if (!project || !midiTargetTake) return;
+    try {
+      await revealMusicMidi(project.id, midiTargetTake.id);
+    } catch (error) {
+      onError(String(error));
     }
   };
 
@@ -353,7 +416,7 @@ export function MusicStudio({
         </div>
         <div className="music-pane-heading takes"><span><small>Project audio</small><strong>Preserved takes</strong></span><button aria-label="Reveal project files" onClick={() => void revealMusicProject(project.id)}><FolderOpen /></button></div>
         <div className="music-take-list">
-          {[...project.takes].reverse().map((take, reverseIndex) => <button key={take.id} className={take.id === project.activeTakeId ? "active" : ""} disabled={take.status !== "complete"} onClick={() => mutate((current) => ({ ...current, activeTakeId: take.id }))}><FileMusic /><span><strong>Take {project.takes.length - reverseIndex}</strong><small>{take.status === "complete" ? `${formatTime(take.durationSeconds)} · seed ${take.seed}` : take.status}</small></span>{take.status === "complete" && <Play />}</button>)}
+          {[...project.takes].reverse().map((take, reverseIndex) => <button key={take.id} className={take.id === project.activeTakeId ? "active" : ""} disabled={take.status !== "complete"} onClick={() => mutate((current) => ({ ...current, activeTakeId: take.id }))}><FileMusic /><span><strong>Take {project.takes.length - reverseIndex}</strong><small>{take.status === "complete" ? `${formatTime(take.durationSeconds)} · seed ${take.seed}${take.midiPath ? ` · MIDI r${take.midiRevision ?? 0}` : ""}` : take.status}</small></span>{take.status === "complete" && <Play />}</button>)}
           {!project.takes.length && <div className="music-list-empty"><AudioLines /><span>Your generated takes will stay here.</span></div>}
         </div>
         <div className="music-library-footer"><span>Offline project</span><small>Masters and receipts stay in your private library.</small></div>
@@ -380,6 +443,7 @@ export function MusicStudio({
           <div className="music-track-row arrangement"><div className="music-track-label"><SlidersHorizontal /><span><strong>ARR</strong><small>Structure</small></span></div><div className="music-track-canvas">{project.sections.map((section, index) => <button key={section.id} className={`${section.id === selectedSection?.id ? "selected" : ""} tag-${section.tag.toLowerCase().replaceAll("-", "")}`} style={{ flexGrow: section.bars, flexBasis: `${section.bars * 18}px` }} onClick={() => seekSection(section)}><strong>{section.name}</strong><small>{section.bars} bars · [{section.tag}]</small><span>{section.direction || "Producer direction"}</span><i>{index + 1}</i></button>)}</div></div>
           <div className="music-track-row lyrics"><div className="music-track-label"><ListMusic /><span><strong>LYR</strong><small>{project.instrumental ? "Instrumental" : "Lyrics"}</small></span></div><div className="music-track-canvas">{project.sections.map((section) => <button key={section.id} className={section.id === selectedSection?.id ? "selected" : ""} style={{ flexGrow: section.bars, flexBasis: `${section.bars * 18}px` }} onClick={() => seekSection(section)}><span>{project.instrumental ? "Instrumental passage" : section.lyrics.trim().split("\n")[0] || "No lyric yet"}</span></button>)}</div></div>
           <div className="music-track-row master"><div className="music-track-label"><AudioLines /><span><strong>MIX</strong><small>Stereo master</small></span></div><div className="music-track-canvas"><div className={activeTake ? "master-region ready" : "master-region"}><span>{activeTake ? `Preserved take · ${formatTime(activeTake.durationSeconds)}` : "Generate a stereo take — no fake stems"}</span>{Array.from({ length: 64 }, (_, index) => <i key={index} style={{ height: `${12 + ((index * 17) % 75)}%` }} />)}</div></div></div>
+          <div className="music-track-row midi"><div className="music-track-label"><FileMusic /><span><strong>MIDI</strong><small>Editable notes</small></span></div><div className="music-track-canvas"><button className={activeTake?.midiPath ? "midi-region ready" : "midi-region"} disabled={!activeTake || midiBusy} onClick={() => activeTake && (activeTake.midiPath ? void openMidi(activeTake) : void transcribe(activeTake))}><FileMusic /><span><strong>{activeTake?.midiPath ? `Piano roll · revision ${activeTake.midiRevision ?? 0}` : activeTake ? "Transcribe this take" : "No completed take"}</strong><small>{activeTake?.midiPath ? "Open tracks, notes, instruments, mute choices, and export" : "MuScriptor creates an editable interpretation without changing the master"}</small></span>{midiBusy ? <LoaderCircle className="spin" /> : <ChevronRight />}</button></div></div>
         </section>
 
         <section className="music-writing-desk">
@@ -423,7 +487,7 @@ export function MusicStudio({
               <div className="music-path-field"><label>Accepted checkpoint<input value={project.midi.modelPath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: event.target.value } }))} /></label><button aria-label="Browse for MuScriptor checkpoint" onClick={() => void pickSetupFile("muscriptorModel").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
               <label>Expected instruments<input value={project.midi.instruments} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, instruments: event.target.value } }))} placeholder="acoustic_piano,acoustic_guitar,acoustic_bass" /></label>
               <button disabled={!activeTake || midiBusy} onClick={() => activeTake && void transcribe(activeTake)}>{midiBusy ? <LoaderCircle className="spin" /> : <FileMusic />} Transcribe active take</button>
-              {activeTake?.midiPath && <span className="music-midi-ready"><Download /> MIDI preserved beside the take</span>}
+              {activeTake?.midiPath && <div className="music-midi-ready"><span><Download /> Revision {activeTake.midiRevision ?? 0} preserved beside the take</span><div><button onClick={() => void openMidi(activeTake)}><FileMusic /> Open piano roll</button><button aria-label="Reveal active MIDI file" onClick={() => void revealMidi()}><FolderOpen /></button><button aria-label="Export active MIDI file" onClick={() => void exportMidi()}><Download /></button></div></div>}
             </fieldset>
           </details>
 
@@ -436,6 +500,8 @@ export function MusicStudio({
         <div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} active={assistantBusy} modelName={collaboration.modelName} /><section className="model-result-stream"><strong>{collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}</strong><pre>{collaboration.text || (assistantBusy ? "The proposal will stream here when the model begins its answer…" : "No proposal was returned.")}</pre></section></div>
         <footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt.exactRequest, null, 2)}</pre></details>}</footer>
       </section>}
+
+      {midiOpen && midiDocument && midiTake && <MusicMidiEditor document={midiDocument} takeLabel={`Take ${project.takes.findIndex((take) => take.id === midiTake.id) + 1}`} currentTime={currentTime} playing={playing} busy={midiBusy} onTogglePlay={togglePlay} onSeek={(seconds) => { if (audioRef.current) { audioRef.current.currentTime = Math.min(midiTake.durationSeconds, Math.max(0, seconds)); setCurrentTime(audioRef.current.currentTime); } }} onSave={saveMidi} onExport={exportMidi} onReveal={revealMidi} onClose={() => { setMidiOpen(false); setMidiDocument(undefined); }} />}
 
       {newOpen && <NewSongDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
     </div>

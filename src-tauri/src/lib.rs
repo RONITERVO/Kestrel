@@ -59,8 +59,9 @@ use studio::{
     MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
     MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest,
     MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot,
-    MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest, MusicProject,
-    MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest, StartMovieRequest,
+    MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest,
+    MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, PromptDraftJob,
+    PromptDraftRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -1778,6 +1779,66 @@ async fn transcribe_music_midi(
 }
 
 #[tauri::command]
+fn get_music_midi_document(
+    request: MusicMidiRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicMidiSaveResult, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .load_midi_document(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_music_midi_document(
+    request: SaveMusicMidiDocumentRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicMidiSaveResult, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .save_midi_document(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn export_music_midi(
+    request: MusicMidiRequest,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let (_, title) = state
+        .music
+        .midi_artifact(&request)
+        .map_err(|error| error.to_string())?;
+    let filename = format!("{}.mid", safe_export_filename(&title));
+    let Some(destination) = rfd::AsyncFileDialog::new()
+        .set_title("Export editable MIDI")
+        .set_file_name(&filename)
+        .add_filter("Standard MIDI file", &["mid", "midi"])
+        .save_file()
+        .await
+    else {
+        return Ok(None);
+    };
+    let path = destination.path().to_path_buf();
+    state
+        .music
+        .export_midi_artifact(&request, &path)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+fn reveal_music_midi(request: MusicMidiRequest, state: State<'_, AppState>) -> Result<(), String> {
+    let (path, _) = state
+        .music
+        .midi_artifact(&request)
+        .map_err(|error| error.to_string())?;
+    reveal_with_explorer(&path)
+}
+
+#[tauri::command]
 fn reveal_music_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let path = state
         .music
@@ -3299,6 +3360,34 @@ fn open_with_explorer(path: &std::path::Path) -> Result<(), String> {
         .map_err(|error| format!("could not open {}: {error}", path.display()))
 }
 
+fn reveal_with_explorer(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("explorer.exe")
+        .arg("/select,")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("could not reveal {}: {error}", path.display()))
+}
+
+fn safe_export_filename(value: &str) -> String {
+    let value = value
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, ' ' | '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let value = value.trim_matches([' ', '.']).trim();
+    if value.is_empty() {
+        "Kestrel MIDI".into()
+    } else {
+        value.chars().take(120).collect()
+    }
+}
+
 fn apply_media_paths(settings: &ResearchSettings) {
     if std::path::Path::new(&settings.ffmpeg_path).is_file() {
         std::env::set_var("KESTREL_FFMPEG_PATH", &settings.ffmpeg_path);
@@ -3473,6 +3562,10 @@ pub fn run() {
             start_music_generation,
             cancel_music_generation,
             transcribe_music_midi,
+            get_music_midi_document,
+            save_music_midi_document,
+            export_music_midi,
+            reveal_music_midi,
             reveal_music_project,
             list_image_projects,
             get_image_project,

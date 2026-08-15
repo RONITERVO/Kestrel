@@ -42,6 +42,7 @@ and must not acquire authority implicitly.
 | `image_studio.rs` | Recoverable image projects, structured compositions, native Ideogram 4 graphs, immutable PNG takes, and progress | LLM process ownership, arbitrary imported workflows, bundled license rights, or public-network fallback |
 | `live_preview.rs` | TAE preview graph nodes and producer-visible preview events | Final-render truth |
 | `music.rs` | Recoverable song projects, producer arrangement, native Music 3 graphs, immutable takes, progress, and optional MuScriptor adapter | LLM process ownership, fake stem separation, bundled gated weights, or public-network fallback |
+| `music_midi.rs` | Bounded Standard MIDI parsing/writing, typed piano-roll documents, and recoverable binary replacement | MuScriptor execution, project path selection, source mutation, or UI state |
 
 If a change appears to belong to two rows, introduce a typed boundary instead of importing private
 implementation details across both modules.
@@ -146,6 +147,14 @@ checkpoint and prepare the pinned official package in an isolated NVIDIA runtime
 license confirmation; manually supplied compatible runners remain supported. Native code validates
 the paths, launches a fixed argument array, forces the managed runner offline, and preserves the
 non-commercial license notice and output hash in its receipt.
+
+The first successful transcription is copied into a unique `midi/<take>/<transcription>/source.mid`
+and never edited. `music_midi.rs` parses metrical Standard MIDI into bounded tempo, time-signature,
+track, program, and note records. Opening a legacy transcription migrates it through the same source
+preservation boundary. Every piano-roll save writes a new numbered `.mid`, typed `.json`, and receipt;
+the take points to the latest revision while older revisions remain addressable. Muted tracks are
+omitted only from the exported revision, not deleted from the edit document. Native export uses a
+producer-selected absolute `.mid`/`.midi` destination and recoverable replacement.
 
 ## Image production lifecycle
 
