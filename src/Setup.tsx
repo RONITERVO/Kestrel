@@ -1,5 +1,5 @@
 import {
-  Check, ChevronDown, CircleStop, Download, Film, FolderOpen, HardDrive,
+  Check, ChevronDown, CircleStop, Download, Film, FolderOpen, HardDrive, Headphones,
   Library, LoaderCircle, MessageSquare, RefreshCw, Settings2, ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
@@ -120,7 +120,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     </header>
 
     {!snapshot.setup.ready && <section className="setup-simple-panel">
-      <div><span className="eyebrow">Recommended</span><h2>Set up the essentials for me</h2><p>Installs the Bonsai assistant and a compact offline English Wikipedia. You can add the movie studio later.</p></div>
+      <div><span className="eyebrow">Recommended</span><h2>Set up the essentials for me</h2><p>Installs the Bonsai assistant and compact offline English Wikipedia. Movie and music production remain optional.</p></div>
       <div className="setup-speed"><label>Internet speed<input type="number" min="1" max="10000" value={speed} onChange={(event) => setSpeed(Math.max(1, Number(event.target.value) || 1))} /><span>Mbps</span></label><small>At {speed} Mbps, essentials need roughly {formatTime(20_980_000_000, speed)} plus verification.</small></div>
       <button className="primary-button setup-main-button" disabled={!!busy} onClick={() => void installEssentials()}>{busy === "essentials" ? <LoaderCircle className="spin" /> : <Download />} Set up essentials</button>
     </section>}
@@ -148,11 +148,11 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
 
     <section className="setup-components" aria-label="Kestrel components">
       {components.map((component) => <article className={`setup-component ${component.status}`} key={component.id}>
-        <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : <Settings2 />}</div>
+        <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : component.id === "music" ? <Headphones /> : <Settings2 />}</div>
         <div className="setup-component-copy"><div className="setup-component-title"><h2>{component.label}</h2><span className={`setup-state ${component.status}`}>{component.status === "ready" ? <><Check /> Ready</> : component.status === "partial" ? "Resume available" : component.optional ? "Optional" : "Needed"}</span></div><p>{component.detail}</p><small>{component.status === "ready" ? component.path : `${formatBytes(component.downloadBytes)} download · about ${formatTime(component.downloadBytes, speed)} at ${speed} Mbps`}</small>
           {component.id === "wikipedia" && component.status !== "ready" && <div className="wikipedia-choice"><button className={edition === "compact" ? "active" : ""} onClick={() => setEdition("compact")}><strong>Compact</strong><span>11.7 GB · article summaries</span></button><button className={edition === "complete" ? "active" : ""} onClick={() => setEdition("complete")}><strong>Complete text</strong><span>49.1 GB · full articles</span></button></div>}
         </div>
-        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && component.id !== "studio")} onClick={() => component.status === "ready" && component.id === "studio" ? void openStudio() : void install(component.id)}>{busy === component.id || (busy === "studio-open" && component.id === "studio") ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : <Download />}{component.status === "ready" && component.id === "studio" ? "Open ComfyUI" : component.status === "ready" ? "Installed" : component.status === "partial" ? "Resume" : "Install"}</button>
+        <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !["studio", "music"].includes(component.id))} onClick={() => component.status === "ready" && ["studio", "music"].includes(component.id) ? void openStudio() : void install(component.id)}>{busy === component.id || (busy === "studio-open" && ["studio", "music"].includes(component.id)) ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : <Download />}{component.status === "ready" && ["studio", "music"].includes(component.id) ? "Open ComfyUI" : component.status === "ready" ? "Installed" : component.status === "partial" ? "Resume" : "Install"}</button>
       </article>)}
     </section>
 

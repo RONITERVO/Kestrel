@@ -39,6 +39,7 @@ mod image_assets;
 mod live_preview;
 mod model_stream;
 mod movie_agent;
+mod music;
 mod planning;
 mod prompt_collaboration;
 mod prompts;
@@ -60,6 +61,9 @@ use live_preview::{
     emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget, PREVIEW_NODE_ID,
 };
 use movie_agent::MovieAgentWorkspace;
+pub use music::{
+    CreateMusicProjectRequest, MusicMidiRequest, MusicProject, MusicStudio, MusicSummary,
+};
 pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningStage};
 pub use prompt_collaboration::{
     emit_error as emit_prompt_draft_error, emit_settled as emit_prompt_draft_settled,
@@ -130,15 +134,20 @@ fn read_media_response(
     {
         return Err((403, "unsafe movie media path".into()));
     }
-    let root = directories::UserDirs::new()
-        .map(|dirs| dirs.home_dir().join("Kestrel Research").join("movies"))
-        .ok_or_else(|| (500, "local movie library is unavailable".to_string()))?;
+    let library = directories::UserDirs::new()
+        .map(|dirs| dirs.home_dir().join("Kestrel Research"))
+        .ok_or_else(|| (500, "local media library is unavailable".to_string()))?;
+    let (root, relative) = if let Some(relative) = relative.strip_prefix("music/") {
+        (library.join("music"), relative)
+    } else {
+        (library.join("movies"), relative.as_ref())
+    };
     let canonical_root = fs::canonicalize(&root)
         .map_err(|_| (404, "local movie library does not exist".to_string()))?;
-    let target = fs::canonicalize(root.join(relative.as_ref()))
-        .map_err(|_| (404, "movie media was not found".to_string()))?;
+    let target = fs::canonicalize(root.join(relative))
+        .map_err(|_| (404, "local media was not found".to_string()))?;
     if !target.starts_with(&canonical_root) || !target.is_file() {
-        return Err((403, "movie media is outside the private library".into()));
+        return Err((403, "media is outside the private library".into()));
     }
     let mut file = fs::File::open(&target).map_err(|error| (500, error.to_string()))?;
     let length = file
@@ -2474,11 +2483,17 @@ impl MovieStudio {
             return Ok(());
         }
         let root = PathBuf::from(root);
-        let script = root.join("Start-ComfyUI-MiniMax-H3.ps1");
+        let generic_script = root.join("Start-Kestrel-ComfyUI.ps1");
+        let legacy_script = root.join("Start-ComfyUI-MiniMax-H3.ps1");
+        let script = if generic_script.is_file() {
+            generic_script
+        } else {
+            legacy_script
+        };
         if !script.is_file() {
             return Err(StudioError::Render(format!(
-                "MiniMax H3 starter is missing: {}",
-                script.display()
+                "Kestrel's local ComfyUI starter is missing from {}. Open Setup and resume Movie Studio or Music Production.",
+                root.display()
             )));
         }
         fs::create_dir_all(logs)?;

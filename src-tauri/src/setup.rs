@@ -17,7 +17,8 @@ use tokio_util::sync::CancellationToken;
 const BONSAI_REVISION: &str = "abbae723028d71be674e71e1a71201a6f43fab22";
 const BONSAI_RELEASE: &str = "prism-b9596-9fcaed7";
 const H3_REVISION: &str = "0bd506d2e895983a9663037febda27aa3948cf48";
-const COMFY_VERSION: &str = "v0.30.0";
+const COMFY_VERSION: &str = "v0.31.0";
+const MUSIC_REVISION: &str = "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6";
 const KJ_PREVIEW_REVISION: &str = "5219cd171cb44e2edce9e4daad6cc42c41eded5c";
 const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
 
@@ -137,6 +138,22 @@ pub fn snapshot(
         || h3_assets()
             .iter()
             .any(|asset| comfy.join("models").join(asset.relative).is_file());
+    let music_files = music_assets()
+        .iter()
+        .all(|asset| comfy.join("models").join(asset.relative).is_file());
+    let music_nodes = comfy
+        .join("comfy_extras")
+        .join("nodes_minimax_music.py")
+        .is_file();
+    let music_ready = comfy.join("main.py").is_file()
+        && (comfy.join("Start-Kestrel-ComfyUI.ps1").is_file()
+            || comfy.join("Start-ComfyUI-MiniMax-H3.ps1").is_file())
+        && music_nodes
+        && music_files;
+    let music_partial = music_nodes
+        || music_assets()
+            .iter()
+            .any(|asset| comfy.join("models").join(asset.relative).is_file());
 
     let ffmpeg = resolve_program(&research.ffmpeg_path, "ffmpeg.exe");
     let ffprobe = resolve_program(&research.ffprobe_path, "ffprobe.exe");
@@ -195,6 +212,20 @@ pub fn snapshot(
             },
             &research.comfy_root,
             (65_550_000_000, true),
+        ),
+        component(
+            "music",
+            "MiniMax Music 3 Production",
+            (music_ready, music_partial),
+            if music_ready {
+                "Ready for private full-song generation with producer-owned structure and immutable takes."
+            } else if comfy.join("main.py").is_file() && !music_nodes {
+                "ComfyUI must be updated to 0.31.0 or newer before Kestrel can install the native music workflow."
+            } else {
+                "Optional: about 12 GB for the official low-VRAM model, text encoder, and full-quality decoder."
+            },
+            &research.comfy_root,
+            (11_915_469_696, true),
         ),
     ];
     SetupSnapshot {
@@ -299,6 +330,7 @@ pub async fn install_component(
         }
         "media" => install_media(app, settings, &root, cancel).await,
         "studio" => install_studio(app, settings, &root, cancel).await,
+        "music" => install_music(app, settings, &root, cancel).await,
         other => Err(SetupError::Download {
             name: other.into(),
             details: "unknown setup component".into(),
@@ -570,22 +602,7 @@ async fn install_studio(
             details: "no NVIDIA GPU was detected. H3 is optional and is not practical on this computer; the rest of Kestrel can still be installed.".into(),
         });
     }
-    let downloads = root.join("downloads");
-    fs::create_dir_all(&downloads)?;
-    let portable = Asset::new(
-        "ComfyUI portable",
-        &format!("https://github.com/Comfy-Org/ComfyUI/releases/download/{COMFY_VERSION}/ComfyUI_windows_portable_nvidia.7z"),
-        "ComfyUI_windows_portable_nvidia-v0.30.0.7z",
-        2_110_797_220,
-        "f4353d069dd7342e3bef421f07f003cca53ca84168102705cfc83f66449f5ae5",
-    );
-    let archive = downloads.join(&portable.file_name);
-    download(app, "studio", &portable, &archive, &cancel).await?;
-    let portable_root = root.join("ComfyUI_windows_portable");
-    if !portable_root.join("ComfyUI").join("main.py").is_file() {
-        extract_7z(&archive, root, &portable.name).await?;
-    }
-    let comfy = portable_root.join("ComfyUI");
+    let comfy = install_comfy_portable(app, root, "studio", false, &cancel).await?;
     for asset in h3_assets() {
         let destination = comfy.join("models").join(asset.relative);
         if let Some(parent) = destination.parent() {
@@ -622,6 +639,131 @@ async fn install_studio(
         0,
     );
     Ok(())
+}
+
+async fn install_comfy_portable(
+    app: &AppHandle,
+    root: &Path,
+    component: &str,
+    require_music_nodes: bool,
+    cancel: &CancellationToken,
+) -> Result<PathBuf, SetupError> {
+    let downloads = root.join("downloads");
+    fs::create_dir_all(&downloads)?;
+    let portable = Asset::new(
+        "ComfyUI portable",
+        &format!("https://github.com/Comfy-Org/ComfyUI/releases/download/{COMFY_VERSION}/ComfyUI_windows_portable_nvidia.7z"),
+        "ComfyUI_windows_portable_nvidia-v0.31.0.7z",
+        2_125_117_910,
+        "a92a1c45fce9a3d07b96e5e359504a95c57c77bfd16883fe458a7582d2071bb3",
+    );
+    let archive = downloads.join(&portable.file_name);
+    download(app, component, &portable, &archive, cancel).await?;
+    let portable_root = root.join("ComfyUI_windows_portable");
+    if !portable_root.join("ComfyUI").join("main.py").is_file() {
+        extract_7z(&archive, root, &portable.name).await?;
+    }
+    let comfy = portable_root.join("ComfyUI");
+    if require_music_nodes && !comfy.join("comfy_extras/nodes_minimax_music.py").is_file() {
+        return Err(SetupError::Extract {
+            name: portable.name,
+            details: "the installed ComfyUI does not contain native MiniMax Music 3 nodes; remove the stale Kestrel-owned portable folder or update it to 0.31.0+, then resume".into(),
+        });
+    }
+    Ok(comfy)
+}
+
+async fn install_music(
+    app: &AppHandle,
+    settings: &mut ResearchSettings,
+    root: &Path,
+    cancel: CancellationToken,
+) -> Result<(), SetupError> {
+    if crate::services::gpu_snapshot().await.is_none() {
+        return Err(SetupError::Download {
+            name: "MiniMax Music 3 Production".into(),
+            details: "no NVIDIA GPU was detected. Keep using the rest of Kestrel, or configure a supported local ComfyUI computer before installing music generation.".into(),
+        });
+    }
+    let configured = PathBuf::from(settings.comfy_root.trim());
+    let comfy = if configured.join("main.py").is_file() {
+        if !configured
+            .join("comfy_extras/nodes_minimax_music.py")
+            .is_file()
+        {
+            return Err(SetupError::Download {
+                name: "MiniMax Music 3 Production".into(),
+                details: format!(
+                    "{} is older than ComfyUI 0.31.0. Update this shared ComfyUI installation first; Kestrel will not overwrite a producer-managed installation.",
+                    configured.display()
+                ),
+            });
+        }
+        configured
+    } else {
+        install_comfy_portable(app, root, "music", true, &cancel).await?
+    };
+    for asset in music_assets() {
+        let destination = comfy.join("models").join(asset.relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        download(app, "music", &asset.download_asset(), &destination, &cancel).await?;
+    }
+    ensure_comfy_launcher(&comfy)?;
+    settings.comfy_root = comfy.to_string_lossy().into_owned();
+    emit(
+        app,
+        "music",
+        "complete",
+        "MiniMax Music 3 is installed and verified for offline production.",
+        1,
+        1,
+        0,
+    );
+    Ok(())
+}
+
+struct MusicAsset {
+    relative: &'static str,
+    bytes: u64,
+    sha256: &'static str,
+}
+
+impl MusicAsset {
+    fn download_asset(&self) -> Asset {
+        let name = self.relative.rsplit('/').next().unwrap_or(self.relative);
+        Asset::new(
+            name,
+            &format!(
+                "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/{MUSIC_REVISION}/{}",
+                self.relative
+            ),
+            name,
+            self.bytes,
+            self.sha256,
+        )
+    }
+}
+
+fn music_assets() -> Vec<MusicAsset> {
+    vec![
+        MusicAsset {
+            relative: "diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+            bytes: 2_502_161_682,
+            sha256: "d6b959633e69899f99f3a92d6741c0fe79f26958a30811e50e372ef978b24d5f",
+        },
+        MusicAsset {
+            relative: "text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+            bytes: 9_196_611_886,
+            sha256: "010b7416d2336a08c711bc22ee65849c9623069ddb7d89bec011a75699e52014",
+        },
+        MusicAsset {
+            relative: "vae/minimax_music3_dav.safetensors",
+            bytes: 216_696_128,
+            sha256: "2a32155b769be01445fcc2a8663b910fc9e1751e18dc1c3ec528064512d9ef0c",
+        },
+    ]
 }
 
 struct H3Asset {
@@ -1048,6 +1190,42 @@ async fn extract_7z(archive: &Path, destination: &Path, name: &str) -> Result<()
 }
 
 pub fn ensure_comfy_launcher(comfy: &Path) -> Result<(), SetupError> {
+    let generic_script = r#"# Kestrel-managed shared ComfyUI launcher
+param(
+  [int]$Port = 8188,
+  [switch]$NoBrowser
+)
+$ErrorActionPreference='Stop'
+$root=$PSScriptRoot
+$python=Join-Path $root '.venv\Scripts\python.exe'
+if(-not (Test-Path $python)){ $python=Join-Path (Split-Path $root -Parent) 'python_embeded\python.exe' }
+if(-not (Test-Path $python)){ throw "ComfyUI Python is missing: $python" }
+if(-not (Test-Path (Join-Path $root 'main.py'))){ throw "ComfyUI main.py is missing from $root" }
+$arguments=@(
+  (Join-Path $root 'main.py'),
+  '--listen','127.0.0.1',
+  '--port',[string]$Port,
+  '--cuda-device','0',
+  '--preview-method','none',
+  '--lowvram',
+  '--async-offload','2',
+  '--enable-dynamic-vram',
+  '--reserve-vram','1.0',
+  '--cache-none',
+  '--fast-disk'
+)
+$env:PYTHONUTF8='1'
+$env:CUDA_VISIBLE_DEVICES='0'
+& $python @arguments
+exit $LASTEXITCODE
+"#;
+    let generic_target = comfy.join("Start-Kestrel-ComfyUI.ps1");
+    let generic_managed = fs::read_to_string(&generic_target)
+        .map(|value| value.contains("Kestrel-managed shared ComfyUI launcher"))
+        .unwrap_or(false);
+    if !generic_target.is_file() || generic_managed {
+        fs::write(generic_target, generic_script)?;
+    }
     let script = r#"# Kestrel-managed MiniMax H3 launcher
 param(
   [int]$Port = 8188,
@@ -1104,12 +1282,12 @@ $env:CUDA_VISIBLE_DEVICES='0'
 & $python @arguments
 exit $LASTEXITCODE
 "#;
-    let target = comfy.join("Start-ComfyUI-MiniMax-H3.ps1");
-    let managed = fs::read_to_string(&target)
+    let legacy_target = comfy.join("Start-ComfyUI-MiniMax-H3.ps1");
+    let managed = fs::read_to_string(&legacy_target)
         .map(|value| value.contains("Kestrel-managed MiniMax H3 launcher"))
         .unwrap_or(false);
-    if !target.is_file() || managed {
-        fs::write(target, script)?;
+    if !legacy_target.is_file() || managed {
+        fs::write(legacy_target, script)?;
     }
     Ok(())
 }

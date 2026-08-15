@@ -15,6 +15,7 @@ import {
   FolderOpen,
   Gauge,
   History,
+  Headphones,
   Layers3,
   Library,
   LoaderCircle,
@@ -54,6 +55,7 @@ import {
 } from "./api";
 import { ControlPlane, DeveloperConsole } from "./ControlPlane";
 import { MovieStudio } from "./MovieStudio";
+import { MusicStudio } from "./MusicStudio";
 import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { SetupConsole } from "./Setup";
 import type {
@@ -90,6 +92,8 @@ const stageNames: Record<ProgressStage, string> = {
   failed: "Failed",
 };
 
+type AppView = "setup" | "control" | "research" | "studio" | "music" | "developer" | "system";
+
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [report, setReport] = useState<ResearchReport | null>(null);
@@ -100,7 +104,7 @@ function App() {
   const [progress, setProgress] = useState<ResearchProgress | null>(null);
   const [activity, setActivity] = useState<ResearchProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"setup" | "control" | "research" | "studio" | "developer" | "system">("research");
+  const [view, setView] = useState<AppView>("research");
 
   const refresh = useCallback(async () => {
     try {
@@ -219,6 +223,8 @@ function App() {
             />
           ) : view === "studio" ? (
             <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode || snapshot.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
+          ) : view === "music" ? (
+            <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode || snapshot.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
           ) : view === "developer" ? (
             <DeveloperConsole
               control={snapshot.control}
@@ -276,14 +282,14 @@ function AppHeader({
   onPrepare,
 }: {
   status: AppSnapshot["status"];
-  view: "setup" | "control" | "research" | "studio" | "developer" | "system";
-  onView: (view: "setup" | "control" | "research" | "studio" | "developer" | "system") => void;
+  view: AppView;
+  onView: (view: AppView) => void;
   onMenu: () => void;
   onNew: () => void;
   onPrepare: () => void;
 }) {
   const allReady = status.bonsai === "ready" && status.wikipedia === "ready";
-  const sectionLabel = view === "setup" ? "Setup" : view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research";
+  const sectionLabel = view === "setup" ? "Setup" : view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "music" ? "Music Production" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research";
   return (
     <header className={`app-header app-header-${view}`}>
       <div className="header-left">
@@ -297,6 +303,7 @@ function AppHeader({
         <button type="button" className={view === "control" ? "active" : ""} aria-current={view === "control" ? "page" : undefined} title="Control" onClick={() => onView("control")}><MessageSquare size={14} /> Control</button>
         <button type="button" className={view === "research" ? "active" : ""} aria-current={view === "research" ? "page" : undefined} title="Research" onClick={() => onView("research")}><Library size={14} /> Research</button>
         <button type="button" className={view === "studio" ? "active" : ""} aria-current={view === "studio" ? "page" : undefined} title="Studio" onClick={() => onView("studio")}><Clapperboard size={14} /> Studio</button>
+        <button type="button" className={view === "music" ? "active" : ""} aria-current={view === "music" ? "page" : undefined} title="Music" onClick={() => onView("music")}><Headphones size={14} /> Music</button>
         <button type="button" className={view === "developer" ? "active" : ""} aria-current={view === "developer" ? "page" : undefined} title="Developer" onClick={() => onView("developer")}><Wrench size={14} /> Developer</button>
         <button type="button" className={view === "system" ? "active" : ""} aria-current={view === "system" ? "page" : undefined} title="System" onClick={() => onView("system")}><MonitorCog size={14} /> System</button>
       </nav>

@@ -56,6 +56,9 @@ import type {
   ModelDownloadRequest,
   ModelDownloadInspection,
   MovieSummary,
+  MusicGenerationEvent,
+  MusicProject,
+  MusicSummary,
   StartMovieRequest,
   PromptDraftEvent,
   PromptDraftRequest,
@@ -195,6 +198,54 @@ export async function onMovieRenderPreview(callback: (event: MovieRenderPreviewE
 export async function startMovie(request: StartMovieRequest): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Movie production requires the desktop application.");
   return invoke<MovieProject>("start_movie", { request });
+}
+
+export async function listMusicProjects(): Promise<MusicSummary[]> {
+  if (!isTauri()) return [];
+  return invoke<MusicSummary[]>("list_music_projects");
+}
+
+export async function getMusicProject(id: string): Promise<MusicProject> {
+  if (!isTauri()) throw new Error("Music projects require the desktop application.");
+  return invoke<MusicProject>("get_music_project", { id });
+}
+
+export async function createMusicProject(request: { title: string; idea: string; comfyRoot: string }): Promise<MusicProject> {
+  if (!isTauri()) throw new Error("Music projects require the desktop application.");
+  return invoke<MusicProject>("create_music_project", { request });
+}
+
+export async function saveMusicProject(project: MusicProject): Promise<MusicProject> {
+  if (!isTauri()) throw new Error("Music projects require the desktop application.");
+  return invoke<MusicProject>("save_music_project", { project });
+}
+
+export async function startMusicGeneration(id: string): Promise<MusicProject> {
+  if (!isTauri()) throw new Error("Local music generation requires the desktop application.");
+  return invoke<MusicProject>("start_music_generation", { id });
+}
+
+export async function cancelMusicGeneration(id: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_music_generation", { id });
+}
+
+export async function transcribeMusicMidi(projectId: string, takeId: string): Promise<MusicProject> {
+  if (!isTauri()) throw new Error("MuScriptor transcription requires the desktop application.");
+  return invoke<MusicProject>("transcribe_music_midi", { request: { projectId, takeId } });
+}
+
+export async function revealMusicProject(id: string): Promise<void> {
+  if (isTauri()) await invoke("reveal_music_project", { id });
+}
+
+export async function onMusicGeneration(callback: (event: MusicGenerationEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MusicGenerationEvent>("music-generation", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function onMusicProjectUpdated(callback: (project: MusicProject) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MusicProject>("music-project-updated", (event) => callback(event.payload));
+  return () => undefined;
 }
 
 export async function getLocalSpeechSnapshot(): Promise<LocalSpeechSnapshot> {
@@ -394,6 +445,16 @@ export function movieMediaUrl(path: string): string {
   if (offset < 0) return "";
   const relative = normalized.slice(offset + marker.length);
   return `http://kestrel-media.localhost/${relative.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+export function musicMediaUrl(path: string): string {
+  if (!path || !isTauri()) return "";
+  const normalized = path.replaceAll("\\", "/");
+  const marker = "/music/";
+  const offset = normalized.toLowerCase().lastIndexOf(marker);
+  if (offset < 0) return "";
+  const relative = normalized.slice(offset + marker.length);
+  return `http://kestrel-media.localhost/music/${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 export async function onRuntimeProgress(

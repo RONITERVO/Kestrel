@@ -54,12 +54,12 @@ use std::{
 };
 use store::ResearchStore;
 use studio::{
-    MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion, MovieCopilotJob,
-    MovieCopilotReceipt, MovieCopilotRequest, MovieEdit, MovieImageAssetGeneration,
-    MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest, MovieModelRoles,
-    MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot, MovieProject,
-    MovieReferenceImport, MovieStudio, MovieSummary, PromptDraftJob, PromptDraftRequest,
-    StartMovieRequest,
+    CreateMusicProjectRequest, MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion,
+    MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
+    MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest,
+    MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot,
+    MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest, MusicProject,
+    MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -91,7 +91,9 @@ struct AppState {
     speech_restore_model: Mutex<Option<SpeechRuntimeRestore>>,
     interactive_jobs: Mutex<HashMap<String, CancellationToken>>,
     studio: MovieStudio,
+    music: MusicStudio,
     movie_jobs: Mutex<HashMap<String, CancellationToken>>,
+    music_jobs: Mutex<HashMap<String, CancellationToken>>,
     image_asset_jobs: Mutex<HashMap<String, CancellationToken>>,
     setup_job: Mutex<Option<CancellationToken>>,
     model_download_job: Mutex<Option<CancellationToken>>,
@@ -1613,6 +1615,137 @@ fn reveal_movie(id: String, state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_music_projects(state: State<'_, AppState>) -> Result<Vec<MusicSummary>, String> {
+    state.music.list().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_music_project(id: String, state: State<'_, AppState>) -> Result<MusicProject, String> {
+    state.music.get(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_music_project(
+    request: CreateMusicProjectRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .create(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_music_project(
+    project: MusicProject,
+    state: State<'_, AppState>,
+) -> Result<MusicProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .save_editable(project)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn start_music_generation(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MusicProject, String> {
+    ensure_workspace_idle(&state)?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI or media job is already active.".to_string())?;
+    let (project, take_id) = state
+        .music
+        .begin_generation(&id, Some(&app))
+        .map_err(|error| {
+            state.work_active.store(false, Ordering::Release);
+            error.to_string()
+        })?;
+    let cancel = CancellationToken::new();
+    match state.music_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("music job registry is unavailable".into());
+        }
+    }
+    tauri::async_runtime::spawn(async move {
+        let managed = app.state::<AppState>();
+        let _guard = WorkGuard(&managed.work_active);
+        let research = managed.research_settings.load();
+        let result: Result<(), String> = async {
+            let research = research.map_err(|error| error.to_string())?;
+            managed
+                .runtime
+                .stop_managed()
+                .await
+                .map_err(|error| error.to_string())?;
+            services::stop_bonsai(&research.bonsai_root)
+                .await
+                .map_err(|error| error.to_string())?;
+            managed
+                .music
+                .render(&id, &take_id, &managed.studio, &cancel, Some(&app))
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            managed
+                .music
+                .fail_generation(&id, &take_id, error, cancel.is_cancelled(), Some(&app));
+        }
+        if let Ok(mut jobs) = managed.music_jobs.lock() {
+            jobs.remove(&id);
+        };
+    });
+    Ok(project)
+}
+
+#[tauri::command]
+fn cancel_music_generation(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .music_jobs
+        .lock()
+        .map_err(|_| "music job registry is unavailable".to_string())?
+        .get(&id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn transcribe_music_midi(
+    request: MusicMidiRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .transcribe_midi(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reveal_music_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let path = state
+        .music
+        .reveal_path(&id)
+        .map_err(|error| error.to_string())?;
+    open_with_explorer(&path)
+}
+
+#[tauri::command]
 async fn prepare_services(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1711,7 +1844,7 @@ async fn save_setup_locations(
         .map_err(|error| error.to_string())?;
     let comfy_root = std::path::Path::new(&research.comfy_root);
     if comfy_root.join("main.py").is_file()
-        && !comfy_root.join("Start-ComfyUI-MiniMax-H3.ps1").is_file()
+        && !comfy_root.join("Start-Kestrel-ComfyUI.ps1").is_file()
     {
         setup::ensure_comfy_launcher(comfy_root).map_err(|error| error.to_string())?;
     }
@@ -1743,7 +1876,10 @@ async fn pick_setup_file(kind: String) -> Result<String, String> {
     let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose an existing Kestrel component");
     dialog = match kind.as_str() {
         "zim" => dialog.add_filter("Kiwix archive", &["zim"]),
-        "engine" | "ffmpeg" | "ffprobe" => dialog.add_filter("Windows program", &["exe"]),
+        "engine" | "ffmpeg" | "ffprobe" | "muscriptor" => {
+            dialog.add_filter("Windows program", &["exe"])
+        }
+        "muscriptorModel" => dialog.add_filter("MuScriptor checkpoint", &["safetensors"]),
         _ => dialog,
     };
     Ok(dialog
@@ -2204,6 +2340,13 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        let music = state
+            .music_jobs
+            .lock()
+            .map_err(|_| "music job registry is unavailable".to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         let speech = state
             .speech_jobs
             .lock()
@@ -2215,6 +2358,7 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .into_iter()
             .chain(interactive)
             .chain(image_assets)
+            .chain(music)
             .chain(speech)
             .collect::<Vec<_>>()
     };
@@ -3013,6 +3157,7 @@ pub fn run() {
             let workspace = WorkspaceStore::new(store.root())?;
             let attachments = AttachmentStore::new(&store.root().join("workspace"))?;
             let studio = MovieStudio::new(store.root()).map_err(|error| error.to_string())?;
+            let music = MusicStudio::new(store.root()).map_err(|error| error.to_string())?;
             let speech = LocalSpeech::new(store.root()).map_err(|error| error.to_string())?;
             app.manage(AppState {
                 store,
@@ -3037,7 +3182,9 @@ pub fn run() {
                 speech_restore_model: Mutex::new(None),
                 interactive_jobs: Mutex::new(HashMap::new()),
                 studio,
+                music,
                 movie_jobs: Mutex::new(HashMap::new()),
+                music_jobs: Mutex::new(HashMap::new()),
                 image_asset_jobs: Mutex::new(HashMap::new()),
                 setup_job: Mutex::new(None),
                 model_download_job: Mutex::new(None),
@@ -3117,6 +3264,14 @@ pub fn run() {
             save_movie_edits,
             render_movie_edit,
             reveal_movie,
+            list_music_projects,
+            get_music_project,
+            create_music_project,
+            save_music_project,
+            start_music_generation,
+            cancel_music_generation,
+            transcribe_music_midi,
+            reveal_music_project,
             prepare_services,
             get_setup_snapshot,
             open_comfy_ui,

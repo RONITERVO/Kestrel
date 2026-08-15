@@ -157,11 +157,14 @@ pub async fn start_comfy(comfy_root: &str) -> Result<(), ServiceError> {
     {
         return Ok(());
     }
-    let script = Path::new(comfy_root).join("Start-ComfyUI-MiniMax-H3.ps1");
+    let root = Path::new(comfy_root);
+    let generic = root.join("Start-Kestrel-ComfyUI.ps1");
+    let legacy = root.join("Start-ComfyUI-MiniMax-H3.ps1");
+    let script = if generic.is_file() { generic } else { legacy };
     if !script.is_file() {
         return Err(ServiceError::MissingScript(format!(
-            "MiniMax H3 launcher is missing: {}. Open Setup and install or locate Movie Studio.",
-            script.display()
+            "Kestrel's ComfyUI launcher is missing from {}. Open Setup and resume Movie Studio or Music Production.",
+            root.display()
         )));
     }
     let mut command = Command::new("powershell.exe");

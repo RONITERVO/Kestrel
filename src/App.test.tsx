@@ -105,6 +105,7 @@ describe("Kestrel research experience", () => {
       ["Control", "control"],
       ["Research", "research"],
       ["Studio", "studio"],
+      ["Music", "music"],
       ["Developer", "developer"],
       ["System", "system"],
     ] as const) {
