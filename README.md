@@ -177,6 +177,22 @@ cargo test --manifest-path src-tauri\Cargo.toml live_ideogram_graph_preserves_a_
 
 The in-app Developer screen runs the deterministic checks offline. Its optional Codex repair uses the same contract captured in `AGENTS.md`, but code, tests, recovery paths, and actionable errors remain the primary maintenance surface.
 
+### Desktop launcher shortcut (Windows)
+
+From this branch, you can build and launch the app directly from a desktop shortcut path by running:
+
+```powershell
+npm run launch
+```
+
+By default, the launcher updates (or creates) a `Kestrel Local.lnk` shortcut on your Desktop (including OneDrive-synchronized Desktop locations), and then:
+
+- runs `npm run build`
+- runs `npm run tauri build`
+- starts `src-tauri\target\release\kestrel-local.exe`
+
+You can pass a custom shortcut target via `-ShortcutPath <path>` or use `npm run launch -- --SkipBuild` to launch an existing binary without rebuilding.
+
 ## Next useful improvements
 
 - Add artifact hashes and an in-app integrity/rebuild action.
