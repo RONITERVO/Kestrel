@@ -737,10 +737,11 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
 
   return (
     <div className="system-console">
-      <header className="system-hero">
-        <div><span className="eyebrow">One runtime policy · every local model</span><h1>System</h1><p>Choose app-wide defaults once. Explicit per-model and workspace settings override them without creating a second server or a hidden model-specific control path.</p></div>
-        <div className="system-hero-actions"><button className="quiet-button" disabled={!!busy} onClick={() => void releaseMemory()}>{busy === "release" ? <LoaderCircle className="spin" size={15}/> : <CircleStop size={15}/>} Release AI memory</button><button className="quiet-button" onClick={() => void refreshSystem()}><RefreshCw size={15} /> Refresh</button></div>
-      </header>
+      <div className="system-console-top">
+        <header className="system-hero">
+          <div><span className="eyebrow">One runtime policy · every local model</span><h1>System</h1><p>Choose app-wide defaults once. Explicit per-model and workspace settings override them without creating a second server or a hidden model-specific control path.</p></div>
+          <div className="system-hero-actions"><button className="quiet-button" disabled={!!busy} onClick={() => void releaseMemory()}>{busy === "release" ? <LoaderCircle className="spin" size={15}/> : <CircleStop size={15}/>} Release AI memory</button><button className="quiet-button" onClick={() => void refreshSystem()}><RefreshCw size={15} /> Refresh</button></div>
+        </header>
 
       <section className="telemetry-grid" aria-label="Live system telemetry">
         <article className="telemetry-card gpu-card">
@@ -752,7 +753,9 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
       </section>
 
       <nav className="system-tabs" aria-label="System settings sections"><button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Cpu size={15}/> Model policy</button><button className={tab === "research" ? "active" : ""} onClick={() => setTab("research")}><Library size={15}/> Research policy</button><button className={tab === "prompts" ? "active" : ""} onClick={() => setTab("prompts")}><FileText size={15}/> Prompt pack</button><button className={tab === "portable" ? "active" : ""} onClick={() => setTab("portable")}><ShieldCheck size={15}/> Portable setup</button></nav>
+      </div>
 
+      <div className="system-console-body">
       {tab === "models" && <section className="settings-panel system-tab-panel">
         <div className="settings-heading"><div><span className="eyebrow">Fallback everywhere</span><h2>App-wide local model policy</h2><p>Chat, Computer Tasks, Research, and every Studio inherit these values unless their selected model or workspace has an explicit override.</p></div><label className="advanced-toggle"><input type="checkbox" checked={controlDraft.advancedMode} onChange={(event) => setControlDraft((current) => ({ ...current, advancedMode: event.target.checked }))}/><span/><strong>Allow uncapped values</strong></label></div>
         <div className="system-policy-grid">
@@ -838,6 +841,7 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
         </div>
         <div className="settings-actions"><button className="quiet-button" disabled={!!busy || !profileText.trim()} onClick={() => void importProfileText()}>{busy === "import" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Validate & apply edited text</button><span/><button className="primary-button" disabled={!!busy || !profileText.trim()} onClick={() => void exportProfile()}>{busy === "export" ? <LoaderCircle className="spin" size={15}/> : <Download size={15}/>} Export edited JSON</button></div>
       </section>}
+      </div>
     </div>
   );
 }

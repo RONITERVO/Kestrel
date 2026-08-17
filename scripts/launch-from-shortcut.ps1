@@ -82,8 +82,14 @@ if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "node_modules"))) {
 }
 
 if (-not $SkipBuild) {
+  $running = Get-Process -Name "kestrel-local" -ErrorAction SilentlyContinue
+  if ($running) {
+    Write-Host "Stopping running Kestrel instance(s)..."
+    & taskkill.exe /F /IM "kestrel-local.exe" /T *>$null
+    Start-Sleep -Seconds 1
+  }
   Invoke-Step "npm run build" @("run", "build")
-  Invoke-Step "npm run tauri build" @("run", "tauri", "--", "build")
+  Invoke-Step "npm run tauri build" @("run", "tauri", "--", "build", "--no-bundle")
 }
 
 $binaryPath = Join-Path $projectRoot "src-tauri\target\release\kestrel-local.exe"
