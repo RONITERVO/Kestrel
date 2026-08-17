@@ -1842,8 +1842,8 @@ impl MovieStudio {
     ) -> Result<Vec<String>, StudioError> {
         let nonce = uuid::Uuid::new_v4().to_string();
         let messages = vec![
-            json!({"role":"system","content":"You are completing Kestrel's local Studio protocol check. You have no filesystem, render, or network authority. Call only the supplied qualification tool with the exact nonce and concise check names; do not answer in prose."}),
-            json!({"role":"user","content":format!("Acknowledge the Kestrel Studio Director role. Submit nonce {nonce} and checks named structured-tool-call and exact-nonce.")}),
+            json!({"role":"system","content":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioQualificationSystem)}),
+            json!({"role":"user","content":crate::prompt_catalog::render(crate::prompt_catalog::PromptId::StudioQualificationUser, &[("nonce", &nonce)])}),
         ];
         let settings = MovieSettings {
             temperature: 0.0,
@@ -1859,7 +1859,9 @@ impl MovieStudio {
                 connection,
                 initial_messages: &messages,
                 tool_name: "submit_kestrel_studio_qualification",
-                tool_description: "Submit the exact local Studio protocol acknowledgement.",
+                tool_description: &crate::prompt_catalog::text(
+                    crate::prompt_catalog::PromptId::StudioQualificationTool,
+                ),
                 response_format: studio_qualification_schema(),
                 settings: &settings,
                 runtime_max_output_tokens,
@@ -2291,7 +2293,7 @@ impl MovieStudio {
             "completeSubmittedPlan": request.plan,
         });
         let messages = vec![
-            json!({"role":"system","content":prompts::INDEPENDENT_REVIEWER_SYSTEM}),
+            json!({"role":"system","content":prompts::independent_reviewer_system()}),
             json!({"role":"user","content":payload.to_string()}),
         ];
         write_json_atomic(
@@ -3612,17 +3614,16 @@ fn check_cancel(cancel: &CancellationToken) -> Result<(), StudioError> {
 }
 
 #[cfg(test)]
-fn movie_agent_prompt() -> &'static str {
-    prompts::MOVIE_AGENT_SYSTEM
+fn movie_agent_prompt() -> String {
+    prompts::movie_agent_system()
 }
 
 fn reference_manifest(references: &[MovieReference]) -> String {
     if references.is_empty() {
         return String::new();
     }
-    let mut manifest = String::from(
-        "Producer-reference manifest. Descriptions below guide planning and asset placement only; they are never sent verbatim to H3. Put exact asset IDs in referenceIds only where the native media should condition that clip. Audio references condition H3's generated sound or voice; they are not editorial tracks, need not match output duration, and must never be trimmed, padded, looped, crossfaded, replaced, or extended with silence. Do not claim to have inspected media beyond these descriptions.\n",
-    );
+    let mut manifest =
+        crate::prompt_catalog::text(crate::prompt_catalog::PromptId::MovieReferenceManifest);
     for reference in references {
         let reference_type = if reference.kind == "audio" {
             "native clip audio"
@@ -3671,8 +3672,8 @@ struct MovieAssessment {
     blocking_issues: Vec<ReviewIssue>,
 }
 
-fn clip_assistant_prompt() -> &'static str {
-    prompts::CLIP_ASSISTANT_SYSTEM
+fn clip_assistant_prompt() -> String {
+    prompts::clip_assistant_system()
 }
 
 fn studio_qualification_schema() -> Value {
@@ -3701,8 +3702,8 @@ fn clip_suggestion_schema() -> Value {
                 "continuityOut":{"type":"string","maxLength":800},
                 "transition":{"type":"string","maxLength":300},
                 "usePreviousFrame":{"type":"boolean"},
-                "sourceRefs":{"type":"array","description":"Textual source-credit IDs only; never producer image, video, or audio asset IDs.","maxItems":24,"items":{"type":"string","maxLength":800}},
-                "referenceIds":{"type":"array","description":"Producer image, video, and audio asset IDs attached natively to this H3 clip.","maxItems":12,"items":{"type":"string","maxLength":128}}
+                "sourceRefs":{"type":"array","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioSourceRefs),"maxItems":24,"items":{"type":"string","maxLength":800}},
+                "referenceIds":{"type":"array","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioReferenceIds),"maxItems":12,"items":{"type":"string","maxLength":128}}
             },"required":["id","title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}
         },"required":["clipId","summary","checklist","clip"]
     }}})
@@ -4967,13 +4968,13 @@ fn movie_schema(max_clips: u32) -> Value {
         "properties":{
             "title":{"type":"string","minLength":1,"maxLength":160},
             "logline":{"type":"string","minLength":20,"maxLength":600},
-            "audience":{"type":"string","minLength":3,"maxLength":300,"description":"Intended viewers and selling context in plain language, never a duration or number."},
+            "audience":{"type":"string","minLength":3,"maxLength":300,"description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioPlanAudience)},
             "creativeDirection":{"type":"string","minLength":40,"maxLength":2400},
-            "continuityBible":{"type":"array","minItems":1,"maxItems":24,"description":"Reusable identity, wardrobe, prop, geography, screen-direction, lighting, and sound facts that must remain stable across clips; never IDs or placeholders.","items":{"type":"string","minLength":20,"maxLength":800}},
+            "continuityBible":{"type":"array","minItems":1,"maxItems":24,"description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioContinuityBible),"items":{"type":"string","minLength":20,"maxLength":800}},
             "sourceCredits":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":800}},
             "clips":{"type":"array","minItems":1,"maxItems":max_clips,"items":{"type":"object","additionalProperties":false,"properties":{
                 "title":{"type":"string"},"purpose":{"type":"string"},"durationSeconds":{"type":"number","minimum":5,"maximum":15},"prompt":{"type":"string"},
-                "continuityIn":{"type":"string"},"continuityOut":{"type":"string"},"transition":{"type":"string"},"usePreviousFrame":{"type":"boolean"},"sourceRefs":{"type":"array","description":"Textual source-credit IDs only; never producer image, video, or audio asset IDs.","items":{"type":"string"}},"referenceIds":{"type":"array","description":"Producer image, video, and audio asset IDs attached natively to this H3 clip.","items":{"type":"string"}}
+                "continuityIn":{"type":"string"},"continuityOut":{"type":"string"},"transition":{"type":"string"},"usePreviousFrame":{"type":"boolean"},"sourceRefs":{"type":"array","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioSourceRefs),"items":{"type":"string"}},"referenceIds":{"type":"array","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioReferenceIds),"items":{"type":"string"}}
             },"required":["title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}}
         },"required":["title","logline","audience","creativeDirection","continuityBible","sourceCredits","clips"]
     }}})
@@ -5502,11 +5503,7 @@ mod tests {
             ..ControlSettings::default()
         };
         let models = crate::model::scan(&[Path::new(&research.bonsai_root).join("models")]);
-        let model_id = models
-            .first()
-            .expect("installed Bonsai model")
-            .id
-            .clone();
+        let model_id = models.first().expect("installed Bonsai model").id.clone();
         (settings, models, model_id)
     }
 

@@ -663,6 +663,36 @@ export async function getSetupProfileText(): Promise<string> {
   return invoke<string>("get_setup_profile_text");
 }
 
+export async function getPromptPackText(): Promise<string> {
+  if (!isTauri()) return JSON.stringify({ format: "kestrel.prompt-pack", version: 1, prompts: {} }, null, 2);
+  return invoke<string>("get_prompt_pack_text");
+}
+
+export async function savePromptPackText(text: string): Promise<string> {
+  if (!isTauri()) return text;
+  return invoke<string>("save_prompt_pack_text", { text });
+}
+
+export async function resetPromptPack(): Promise<string> {
+  if (!isTauri()) return getPromptPackText();
+  return invoke<string>("reset_prompt_pack");
+}
+
+export async function exportPromptPackText(text: string): Promise<ProfileTransfer> {
+  if (!isTauri()) return { path: "kestrel-prompts.json", message: "Prompt pack exported." };
+  return invoke<ProfileTransfer>("export_prompt_pack_text", { text });
+}
+
+export async function importPromptPack(path: string): Promise<string> {
+  if (!isTauri()) return getPromptPackText();
+  return invoke<string>("import_prompt_pack", { path });
+}
+
+export async function pickPromptPackFile(): Promise<string | undefined> {
+  if (!isTauri()) return undefined;
+  return (await invoke<string | null>("pick_prompt_pack_file")) ?? undefined;
+}
+
 export async function exportSetupProfileText(text: string): Promise<ProfileTransfer> {
   if (!isTauri()) return exportSetupProfile();
   return invoke<ProfileTransfer>("export_setup_profile_text", { text });

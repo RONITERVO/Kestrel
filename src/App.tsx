@@ -41,19 +41,25 @@ import {
   cancelResearch,
   applyModelRuntime,
   exportSetupProfileText,
+  exportPromptPackText,
   getControlSnapshot,
   getReport,
   getSetupProfileText,
+  getPromptPackText,
   getSystemSnapshot,
   importSetupProfile,
   importSetupProfileText,
+  importPromptPack,
   onProgress,
+  pickPromptPackFile,
   openStandalone,
   prepareServices,
   releaseAiMemory,
+  resetPromptPack,
   revealLibrary,
   runResearch,
   saveControlSettings,
+  savePromptPackText,
   saveResearchSettings,
 } from "./api";
 import { ControlPlane, DeveloperConsole } from "./ControlPlane";
@@ -520,12 +526,15 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
   const [system, setSystem] = useState<SystemSnapshot | null>(null);
   const [researchDraft, setResearchDraft] = useState(initialSettings);
   const [controlDraft, setControlDraft] = useState(initialControl);
-  const [tab, setTab] = useState<"models" | "research" | "portable">("models");
+  const [tab, setTab] = useState<"models" | "research" | "prompts" | "portable">("models");
   const [overrideModelId, setOverrideModelId] = useState(initialControl.selectedModelId ?? "");
-  const [busy, setBusy] = useState<"save-models" | "save-research" | "apply" | "release" | "export" | "import" | "refresh-profile" | null>(null);
+  const [busy, setBusy] = useState<"save-models" | "save-research" | "apply" | "release" | "export" | "import" | "refresh-profile" | "save-prompts" | "reset-prompts" | "export-prompts" | "import-prompts" | null>(null);
   const [profilePath, setProfilePath] = useState("");
   const [profileText, setProfileText] = useState("");
   const [profileStatus, setProfileStatus] = useState("");
+  const [promptText, setPromptText] = useState("");
+  const [promptPath, setPromptPath] = useState("");
+  const [promptStatus, setPromptStatus] = useState("");
 
   const refreshSystem = useCallback(async () => {
     try {
@@ -540,6 +549,7 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
   useEffect(() => {
     void refreshSystem();
     void getSetupProfileText().then(setProfileText).catch((cause) => onError(String(cause)));
+    void getPromptPackText().then(setPromptText).catch((cause) => onError(String(cause)));
     const timer = window.setInterval(() => void refreshSystem(), 2_500);
     return () => window.clearInterval(timer);
   }, [refreshSystem, onError]);
@@ -678,6 +688,28 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
       setBusy(null);
     }
   };
+  const savePrompts = async () => {
+    setBusy("save-prompts");
+    try { setPromptText(await savePromptPackText(promptText)); setPromptStatus("Validated and applied to future local-model requests. Active requests keep their captured payload."); }
+    catch (cause) { onError(String(cause)); } finally { setBusy(null); }
+  };
+  const resetPrompts = async () => {
+    if (!window.confirm("Reset every app-owned prompt to this Kestrel build's defaults?")) return;
+    setBusy("reset-prompts");
+    try { setPromptText(await resetPromptPack()); setPromptStatus("Default prompt pack restored."); }
+    catch (cause) { onError(String(cause)); } finally { setBusy(null); }
+  };
+  const exportPrompts = async () => {
+    setBusy("export-prompts");
+    try { const transfer = await exportPromptPackText(promptText); setPromptPath(transfer.path); setPromptStatus(transfer.message); }
+    catch (cause) { onError(String(cause)); } finally { setBusy(null); }
+  };
+  const importPrompts = async () => {
+    if (!promptPath.trim() || !window.confirm("Import and activate this prompt-only pack for future local-model requests?")) return;
+    setBusy("import-prompts");
+    try { setPromptText(await importPromptPack(promptPath.trim())); setPromptStatus("Prompt pack validated, imported, and activated."); }
+    catch (cause) { onError(String(cause)); } finally { setBusy(null); }
+  };
   const gpu = system?.gpu;
   const usedPercent = gpu ? Math.min(100, (gpu.usedMib / gpu.totalMib) * 100) : 0;
   const models = system?.models ?? [];
@@ -699,7 +731,7 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
         <article className="telemetry-card"><div className="telemetry-title"><Cpu /><span><small>Effective runtime</small><strong>{(system?.runtime.contextWindow ?? controlDraft.contextWindow).toLocaleString()} context</strong></span></div><div className="runtime-facts"><span>{(system?.runtime.maxOutputTokens ?? controlDraft.maxOutputTokens).toLocaleString()} max output</span><span>1 inference slot</span><span>{controlDraft.modelOverrides.length} model exception{controlDraft.modelOverrides.length === 1 ? "" : "s"}</span></div></article>
       </section>
 
-      <nav className="system-tabs" aria-label="System settings sections"><button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Cpu size={15}/> Model policy</button><button className={tab === "research" ? "active" : ""} onClick={() => setTab("research")}><Library size={15}/> Research policy</button><button className={tab === "portable" ? "active" : ""} onClick={() => setTab("portable")}><ShieldCheck size={15}/> Portable setup</button></nav>
+      <nav className="system-tabs" aria-label="System settings sections"><button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Cpu size={15}/> Model policy</button><button className={tab === "research" ? "active" : ""} onClick={() => setTab("research")}><Library size={15}/> Research policy</button><button className={tab === "prompts" ? "active" : ""} onClick={() => setTab("prompts")}><FileText size={15}/> Prompt pack</button><button className={tab === "portable" ? "active" : ""} onClick={() => setTab("portable")}><ShieldCheck size={15}/> Portable setup</button></nav>
 
       {tab === "models" && <section className="settings-panel system-tab-panel">
         <div className="settings-heading"><div><span className="eyebrow">Fallback everywhere</span><h2>App-wide local model policy</h2><p>Chat, Computer Tasks, Research, and every Studio inherit these values unless their selected model or workspace has an explicit override.</p></div><label className="advanced-toggle"><input type="checkbox" checked={controlDraft.advancedMode} onChange={(event) => setControlDraft((current) => ({ ...current, advancedMode: event.target.checked }))}/><span/><strong>Allow uncapped values</strong></label></div>
@@ -733,6 +765,13 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
         </div>
         <div className="single-context-note"><Zap/><div><strong>One selected model, one inference lease</strong><p>Research searches the local archive concurrently, then coordinates evidence through the same managed runtime used by the rest of Kestrel. It never launches or attaches to a separate model-specific server.</p></div></div>
         <div className="settings-actions"><span/><button className="primary-button" disabled={!!busy} onClick={() => void saveResearch()}>{busy === "save-research" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Save Research policy</button></div>
+      </section>}
+
+      {tab === "prompts" && <section className="settings-panel portability-panel system-tab-panel">
+        <div className="settings-heading"><div><span className="eyebrow">Advanced · every local workspace</span><h2>Portable prompt pack</h2><p>One prompt-only JSON document owns Kestrel’s app-authored instructions for chat, Computer Tasks, Research, movie planning and review, image design, music writing, and model qualification. Producer text and generated runtime data remain in their projects.</p></div><FileText/></div>
+        <div className="advanced-warning"><TriangleAlert/><div><strong>Prompts guide models; native authority does not move.</strong><span>Editing wording cannot grant filesystem, network, rendering, or tool access, and cannot bypass schema, path, citation, or planning validation.</span></div></div>
+        <div className="portable-editor-grid"><label className="portable-json"><span>Editable prompt-only JSON</span><textarea value={promptText} onChange={(event) => setPromptText(event.target.value)} spellCheck={false} aria-label="Editable portable prompt pack JSON"/></label><div className="portable-file-controls"><label className="wide-field"><span>Import prompt pack path</span><input value={promptPath} onChange={(event) => setPromptPath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\prompt-packs\\kestrel-prompts.json"/></label>{promptStatus && <div className="profile-status" role="status">{promptStatus}</div>}<button className="quiet-button" disabled={!!busy} onClick={() => void pickPromptPackFile().then((path) => path && setPromptPath(path)).catch((cause) => onError(String(cause)))}><FolderOpen size={15}/> Choose JSON file</button><button className="quiet-button" disabled={!!busy} onClick={() => void getPromptPackText().then(setPromptText).catch((cause) => onError(String(cause)))}><RefreshCw size={15}/> Reload active pack</button><button className="quiet-button" disabled={!!busy || !promptPath.trim()} onClick={() => void importPrompts()}><Upload size={15}/> Import & activate</button><button className="quiet-button" disabled={!!busy} onClick={() => void resetPrompts()}><RefreshCw size={15}/> Restore build defaults</button></div></div>
+        <div className="settings-actions"><button className="quiet-button" disabled={!!busy || !promptText.trim()} onClick={() => void savePrompts()}>{busy === "save-prompts" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Validate & apply</button><span/><button className="primary-button" disabled={!!busy || !promptText.trim()} onClick={() => void exportPrompts()}>{busy === "export-prompts" ? <LoaderCircle className="spin" size={15}/> : <Download size={15}/>} Export prompt-only JSON</button></div>
       </section>}
 
       {tab === "portable" && <section className="settings-panel portability-panel system-tab-panel">

@@ -6,6 +6,7 @@ use super::{
     comfy_execution_error, truncate, write_json_atomic, MovieReferenceAsset, MovieStudio,
     StudioError, COMFY_BASE, COMFY_RENDER_TIMEOUT, MAX_MOVIE_PROMPT_BYTES,
 };
+use crate::prompt_catalog::{self, PromptId};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -29,7 +30,6 @@ const CANDIDATE_COUNT: u32 = 6;
 const MAX_GENERATION_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_LISTED_GENERATIONS: usize = 50;
 const MAX_HISTORY_FAILURES: u8 = 5;
-const STILLNESS_SUFFIX: &str = "Create a single static image composition. Keep identity, lettering, geometry, texture, lighting, and fine details stable across the internal frame pass. No camera movement, subject motion, or temporal progression.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -276,7 +276,11 @@ impl MovieStudio {
     ) -> Result<MovieImageAssetGeneration, StudioError> {
         let seed = resolved_seed(request.seed);
         let rendered_prompt = if request.stabilize {
-            format!("{}\n\n{}", request.prompt.trim(), STILLNESS_SUFFIX)
+            format!(
+                "{}\n\n{}",
+                request.prompt.trim(),
+                prompt_catalog::text(PromptId::ImageStillnessSuffix)
+            )
         } else {
             request.prompt.trim().to_string()
         };

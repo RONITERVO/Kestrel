@@ -202,10 +202,8 @@ impl MovieAgentWorkspace {
         scene_paths.sort();
         paths.extend(scene_paths);
 
-        let mut snapshot = String::from(
-            "AUTHORITATIVE CURRENT STORY MEMORY\n\
-             This exact durable snapshot is supplied fresh on every model turn. BRIEF.md and the newest producer notes are authoritative. movie.json and every scene below are the complete current story; never replace them with an unrelated premise, character, location, genre, or ending. Reconcile any draft conflict against the brief and notes before editing.\n",
-        );
+        let mut snapshot =
+            crate::prompt_catalog::text(crate::prompt_catalog::PromptId::MovieAuthoritativeMemory);
         for path in paths {
             let section = format!("\n===== {path} =====\n{}\n", self.read_file(&path)?);
             if snapshot
@@ -269,15 +267,15 @@ impl MovieAgentWorkspace {
             "type": "function",
             "function": {
                 "name": "movie_workspace",
-                "description": "Work on the durable, project-local movie codebase. It cannot access the OS, shell, network, renderer, or files outside this movie workspace. Read the contract, edit only movie.json and scenes/NNN.json, run check immediately after a complete draft, repair only reported issues, then submit.",
+                "description": crate::prompt_catalog::text(crate::prompt_catalog::PromptId::MovieWorkspaceTool),
                 "parameters": {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
                         "action": {"type":"string","enum":["list","read","read_many","write","write_batch","delete","check","submit"]},
-                        "path": {"type":"string","description":"Workspace-relative path for read, write, or delete."},
-                        "content": {"type":"object","description":"Complete JSON object for write. Supply the object directly; do not quote it or append a separator."},
-                        "files": {"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"object","description":"Complete JSON object for this file. Supply the object directly; do not quote it or append a separator."}},"required":["path"]},"description":"Up to eight paths for read_many (omit content), or up to eight complete files for write_batch. Use multiple small batches for a long movie."}
+                        "path": {"type":"string","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::MovieWorkspacePath)},
+                        "content": {"type":"object","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::MovieWorkspaceContent)},
+                        "files": {"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"object","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::MovieWorkspaceContent)}},"required":["path"]},"description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::MovieWorkspaceFiles)}
                     },
                     "required": ["action"]
                 }
@@ -458,9 +456,9 @@ impl MovieAgentWorkspace {
                     self.state.clean_check_passes = self.state.clean_check_passes.saturating_add(1);
                     self.persist_state()?;
                     let next = if self.state.clean_check_passes == 1 {
-                        prompts::FIRST_CLEAN_CHECK
+                        prompts::first_clean_check()
                     } else {
-                        prompts::SECOND_CLEAN_CHECK
+                        prompts::second_clean_check()
                     };
                     Ok(self.result(
                         WorkspaceOutcome::CheckPassed,
@@ -502,7 +500,7 @@ impl MovieAgentWorkspace {
                 {
                     return Ok(self.result(
                         WorkspaceOutcome::SubmissionBlocked,
-                        prompts::SUBMIT_BLOCKED.into(),
+                        prompts::submit_blocked(),
                         None,
                     ));
                 }
@@ -749,23 +747,24 @@ impl MovieAgentWorkspace {
 }
 
 fn workspace_readme(settings: &MovieSettings) -> String {
-    let mut readme = format!(
-        "# Kestrel movie workspace\n\nThis is a durable, sandboxed movie codebase. Read BRIEF.md and REFERENCES.md. Build one canonical movie.json plus ordered scenes/NNN.json files. You may batch-write the first draft, then run `check` immediately; the workspace requires a check after one full draft's worth of unchecked mutations. Patch only reported weaknesses, perform the requested full code-review pass, run `check` again, and `submit`. Do not ask the producer questions; infer tasteful choices. Never stop at prose.\n\n## movie.json\n\nA JSON object with exactly: title, logline, audience, creativeDirection (strings), continuityBible, and sourceCredits (arrays of descriptive strings or structured objects; objects are normalized to readable plan facts). Resolve unspecified story-critical subjects, creatures, objects, locations, wardrobe, and visual motifs into concrete repeatable production facts in the continuityBible; do not leave a recurring subject generic. There are no research tools: never invent defining anatomy, cultural details, or other real-world facts. When uncertain, choose a familiar concrete alternative that still serves the brief or avoid unsupported specificity. Leave sourceCredits empty unless BRIEF.md or REFERENCES.md explicitly supplies an attribution; never invent publications, organizations, research, licenses, or provenance.\n\n## scenes/NNN.json\n\nUse exactly three digits in every scene filename: scenes/001.json, scenes/002.json, and so on. Each ordered JSON object has: title, purpose, durationSeconds (5-15), prompt, continuityIn, continuityOut, transition, usePreviousFrame, sourceRefs (textual source-credit IDs only), referenceIds (short exact IDs from REFERENCES.md such as picture-1 or audio-1). Kestrel resolves those stable workspace IDs to immutable asset hashes; never copy hashes or H3 tags into scene files. The app assigns clip IDs. Maximum scenes: {}. Native output is 24fps at {}x{}.\n\nEvery prompt must be 120-450 words and be a final H3 renderer instruction, not a synopsis: medium/genre/environment, lighting/palette/lens/texture, scene overview, complete timecoded picture/action/camera/sound through the exact native endpoint, dialogue when relevant, transitions, and relevant exclusions. Whenever anyone speaks or narrates, write the exact short words in quotation marks and make them fit the scene duration; otherwise explicitly direct no dialogue. Preserve causality, identity, geography, screen direction, visual language, and sound. Long-form narrative work needs a mixed edit grammar: motivated independent cuts, useful subject-free scenes/inserts, flashbacks when story calls for them, and at least one exact previous-frame continuation across a genuinely continuous boundary. Do not pad runtime with scenes that merely repeat the same action, emotion, framing, and sound under a new title.\n\nReference conditioning and previous-frame continuation are mutually exclusive per scene. A referenced ref2va scene may attach referenceIds but cannot receive the prior last frame. A continuation fl2va scene may usePreviousFrame=true only with empty referenceIds. Establish a referenced subject first, end on the handoff pose, then continue reference-free; place required reference audio in a reference-locked scene. Age changes do not waive identity: an independently cut younger or older version of a referenced character still needs that identity reference, while a truly adjacent age-consistent shot may carry it through usePreviousFrame. Never solve conflicts by silently dropping requested media. References are H3 conditioning, not editorial tracks; never trim, pad, loop, replace, or add silence. When a supplied audio reference represents speech or a voice, include the literal role sentence `Use the supplied voice reference as the speaker's voice identity and vocal timbre.` and write the exact short dialogue in quotation marks so H3 is not forced to invent words; keep the dialogue feasible within the native scene duration.\n",
-        settings.max_clips, settings.width, settings.height
-    );
-    readme.push_str(
-        "\nExact-frame handoff invariant: continuityOut and the next continuityIn must repeat at least two concrete visible anchors (subject/object, pose/action, geography, or time state). Keep numbered scenes in truthful editorial order across present-day and flashback boundaries; sharing only a character name is not continuity. Only the actual last scene may declare the end, and it cannot promise a next scene. Do not ask a generic identity picture to guarantee an invented child/younger transformation; without a matching age reference, keep the character at the supplied age or make that memory POV, off-screen, or subject-free.\n",
-    );
-    readme
+    crate::prompt_catalog::render(
+        crate::prompt_catalog::PromptId::MovieWorkspaceContract,
+        &[
+            ("max_clips", &settings.max_clips.to_string()),
+            ("width", &settings.width.to_string()),
+            ("height", &settings.height.to_string()),
+        ],
+    )
 }
 
 fn workspace_reference_manifest(references: &[MovieReference]) -> String {
     if references.is_empty() {
-        return "# Producer references\n\nNo producer media is attached.\n".into();
+        return crate::prompt_catalog::text(
+            crate::prompt_catalog::PromptId::MovieWorkspaceReferencesEmpty,
+        );
     }
-    let mut output = String::from(
-        "# Producer references\n\nUse only the short Reference ID in scene referenceIds. Kestrel resolves it to the immutable asset internally. Descriptions guide placement and are never renderer prose.\n",
-    );
+    let mut output =
+        crate::prompt_catalog::text(crate::prompt_catalog::PromptId::MovieWorkspaceReferencesIntro);
     let workspace_ids = workspace_reference_ids(references);
     for (reference, workspace_id) in references.iter().zip(workspace_ids) {
         let reference_type = if reference.kind == "audio" {

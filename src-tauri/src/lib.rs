@@ -14,6 +14,7 @@ mod model_download;
 mod model_roles;
 mod models;
 mod profile;
+mod prompt_catalog;
 mod runtime;
 mod services;
 mod setup;
@@ -2295,6 +2296,45 @@ fn export_setup_profile_text(
 }
 
 #[tauri::command]
+fn get_prompt_pack_text() -> Result<String, String> {
+    prompt_catalog::current_text()
+}
+
+#[tauri::command]
+fn save_prompt_pack_text(text: String) -> Result<String, String> {
+    prompt_catalog::save_text(&text)
+}
+
+#[tauri::command]
+fn reset_prompt_pack() -> Result<String, String> {
+    prompt_catalog::reset()
+}
+
+#[tauri::command]
+fn export_prompt_pack_text(text: String) -> Result<ProfileTransfer, String> {
+    let path = prompt_catalog::export_text(&text)?;
+    Ok(ProfileTransfer {
+        path: path.to_string_lossy().into_owned(),
+        message: "Prompt-only pack validated and exported.".into(),
+    })
+}
+
+#[tauri::command]
+fn import_prompt_pack(path: String) -> Result<String, String> {
+    prompt_catalog::import_path(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+async fn pick_prompt_pack_file() -> Result<Option<String>, String> {
+    Ok(rfd::AsyncFileDialog::new()
+        .set_title("Choose a Kestrel prompt-only JSON pack")
+        .add_filter("Kestrel prompt pack", &["json"])
+        .pick_file()
+        .await
+        .map(|file| file.path().to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
 async fn import_setup_profile(
     path: String,
     state: State<'_, AppState>,
@@ -3373,6 +3413,7 @@ pub fn run() {
         })
         .setup(|app| {
             let store = ResearchStore::open_default().map_err(|error| error.to_string())?;
+            prompt_catalog::initialize(store.root()).map_err(|error| error.to_string())?;
             let research_settings = SettingsStore::new(store.root());
             let control_settings = ControlSettingsStore::new(store.root());
             let research = research_settings
@@ -3558,6 +3599,12 @@ pub fn run() {
             export_setup_profile,
             get_setup_profile_text,
             export_setup_profile_text,
+            get_prompt_pack_text,
+            save_prompt_pack_text,
+            reset_prompt_pack,
+            export_prompt_pack_text,
+            import_prompt_pack,
+            pick_prompt_pack_file,
             import_setup_profile,
             import_setup_profile_text,
             save_research_settings,

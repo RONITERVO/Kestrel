@@ -88,14 +88,14 @@ pub(super) async fn run(
         lifecycle.ensure_session_budget()?;
         archive_previous_transcript(&workspace, &transcript_path, lifecycle.session())?;
         let instruction = if lifecycle.session() == 1 && !resuming_existing_workspace {
-            prompts::INITIAL_INSTRUCTION
+            &prompts::initial_instruction()
         } else {
-            prompts::RESUME_INSTRUCTION
+            &prompts::resume_instruction()
         };
         let mut transcript = AgentTranscript::begin(
             transcript_path.clone(),
             lifecycle.absolute_step(),
-            prompts::MOVIE_AGENT_SYSTEM,
+            &prompts::movie_agent_system(),
             instruction,
         )?;
         for _ in 0..MOVIE_AGENT_SESSION_STEPS {
@@ -173,7 +173,7 @@ pub(super) async fn run(
             transcript.push(turn.history_message(), step)?;
             if !turn.has_tool_calls() {
                 transcript.push(
-                    json!({"role":"user","content":prompts::CONTINUE_WITH_TOOLS}),
+                    json!({"role":"user","content":prompts::continue_with_tools()}),
                     step,
                 )?;
                 if lifecycle.record_model_turn(false) == TurnDecision::RestartSession {

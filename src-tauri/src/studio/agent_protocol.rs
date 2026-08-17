@@ -439,9 +439,7 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
             object.remove("reasoning_content");
         }
         messages.push(history_message);
-        messages.push(json!({"role":"user","content":format!(
-            "The {label} submission failed validation: {last_error}. Correct it and call {tool_name}; do not answer in prose.",
-        )}));
+        messages.push(json!({"role":"user","content":crate::prompt_catalog::render(crate::prompt_catalog::PromptId::StudioSubmissionCorrection, &[("label", label), ("error", &last_error), ("tool_name", tool_name)])}));
     }
     Err(StudioError::Planning(format!(
         "{} remained invalid after three attempts: {last_error}",
