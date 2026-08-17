@@ -173,8 +173,9 @@ impl MovieCopilotJob {
         };
 
         let context = producer_context(&project, &request)?;
+        let system_prompt = prompt_catalog::text(PromptId::MovieCopilotSystem);
         let messages = vec![
-            json!({"role":"system","content":prompt_catalog::text(PromptId::MovieCopilotSystem)}),
+            json!({"role":"system","content":system_prompt.clone()}),
             json!({"role":"user","content":prompt_catalog::render(PromptId::MovieCopilotRequest, &[("context", &context), ("instruction", request.instruction.trim())])}),
         ];
         let tool_schema = proposal_tool_schema();
@@ -200,7 +201,7 @@ impl MovieCopilotJob {
             );
         }
         let mut receipt = MovieCopilotReceipt {
-            system_prompt: prompt_catalog::text(PromptId::MovieCopilotSystem),
+            system_prompt,
             messages: messages.clone(),
             tool_schema: body["tools"][0].clone(),
             exact_request,

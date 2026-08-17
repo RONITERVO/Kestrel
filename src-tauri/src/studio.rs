@@ -9,6 +9,7 @@ use crate::{
     models::{ControlSettings, ResearchSettings},
     runtime::{ModelConnection, RuntimeManager},
 };
+use crate::prompt_catalog::{self, PromptId};
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -1886,8 +1887,8 @@ impl MovieStudio {
     ) -> Result<Vec<String>, StudioError> {
         let nonce = uuid::Uuid::new_v4().to_string();
         let messages = vec![
-            json!({"role":"system","content":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioQualificationSystem)}),
-            json!({"role":"user","content":crate::prompt_catalog::render(crate::prompt_catalog::PromptId::StudioQualificationUser, &[("nonce", &nonce)])}),
+            json!({"role":"system","content":prompt_catalog::text(PromptId::StudioQualificationSystem)}),
+            json!({"role":"user","content":prompt_catalog::render(PromptId::StudioQualificationUser, &[("nonce", &nonce)])}),
         ];
         let settings = MovieSettings {
             temperature: 0.0,
@@ -1903,9 +1904,7 @@ impl MovieStudio {
                 connection,
                 initial_messages: &messages,
                 tool_name: "submit_kestrel_studio_qualification",
-                tool_description: &crate::prompt_catalog::text(
-                    crate::prompt_catalog::PromptId::StudioQualificationTool,
-                ),
+                tool_description: &prompt_catalog::text(PromptId::StudioQualificationTool),
                 response_format: studio_qualification_schema(),
                 settings: &settings,
                 runtime_max_output_tokens,
@@ -3704,8 +3703,7 @@ fn reference_manifest(references: &[MovieReference]) -> String {
     if references.is_empty() {
         return String::new();
     }
-    let mut manifest =
-        crate::prompt_catalog::text(crate::prompt_catalog::PromptId::MovieReferenceManifest);
+    let mut manifest = prompt_catalog::text(PromptId::MovieReferenceManifest);
     for reference in references {
         let reference_type = if reference.kind == "audio" {
             "native clip audio"
@@ -3813,8 +3811,8 @@ fn clip_suggestion_schema() -> Value {
                 "continuityOut":{"type":"string","maxLength":800},
                 "transition":{"type":"string","maxLength":300},
                 "usePreviousFrame":{"type":"boolean"},
-                "sourceRefs":{"type":"array","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioSourceRefs),"maxItems":24,"items":{"type":"string","maxLength":800}},
-                "referenceIds":{"type":"array","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioReferenceIds),"maxItems":12,"items":{"type":"string","maxLength":128}}
+                "sourceRefs":{"type":"array","description":prompt_catalog::text(PromptId::StudioSourceRefs),"maxItems":24,"items":{"type":"string","maxLength":800}},
+                "referenceIds":{"type":"array","description":prompt_catalog::text(PromptId::StudioReferenceIds),"maxItems":12,"items":{"type":"string","maxLength":128}}
             },"required":["id","title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}
         },"required":["clipId","summary","checklist","clip"]
     }}})
@@ -5079,13 +5077,13 @@ fn movie_schema(max_clips: u32) -> Value {
         "properties":{
             "title":{"type":"string","minLength":1,"maxLength":160},
             "logline":{"type":"string","minLength":20,"maxLength":600},
-            "audience":{"type":"string","minLength":3,"maxLength":300,"description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioPlanAudience)},
+            "audience":{"type":"string","minLength":3,"maxLength":300,"description":prompt_catalog::text(PromptId::StudioPlanAudience)},
             "creativeDirection":{"type":"string","minLength":40,"maxLength":2400},
-            "continuityBible":{"type":"array","minItems":1,"maxItems":24,"description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioContinuityBible),"items":{"type":"string","minLength":20,"maxLength":800}},
+            "continuityBible":{"type":"array","minItems":1,"maxItems":24,"description":prompt_catalog::text(PromptId::StudioContinuityBible),"items":{"type":"string","minLength":20,"maxLength":800}},
             "sourceCredits":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":800}},
             "clips":{"type":"array","minItems":1,"maxItems":max_clips,"items":{"type":"object","additionalProperties":false,"properties":{
                 "title":{"type":"string"},"purpose":{"type":"string"},"durationSeconds":{"type":"number","minimum":5,"maximum":15},"prompt":{"type":"string"},
-                "continuityIn":{"type":"string"},"continuityOut":{"type":"string"},"transition":{"type":"string"},"usePreviousFrame":{"type":"boolean"},"sourceRefs":{"type":"array","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioSourceRefs),"items":{"type":"string"}},"referenceIds":{"type":"array","description":crate::prompt_catalog::text(crate::prompt_catalog::PromptId::StudioReferenceIds),"items":{"type":"string"}}
+                "continuityIn":{"type":"string"},"continuityOut":{"type":"string"},"transition":{"type":"string"},"usePreviousFrame":{"type":"boolean"},"sourceRefs":{"type":"array","description":prompt_catalog::text(PromptId::StudioSourceRefs),"items":{"type":"string"}},"referenceIds":{"type":"array","description":prompt_catalog::text(PromptId::StudioReferenceIds),"items":{"type":"string"}}
             },"required":["title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}}
         },"required":["title","logline","audience","creativeDirection","continuityBible","sourceCredits","clips"]
     }}})

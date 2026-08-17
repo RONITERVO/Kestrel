@@ -334,9 +334,8 @@ pub fn initialize(root: &Path) -> Result<(), String> {
         }
         Ok(None) => default_pack(),
         Err(error) => {
-            return Err(format!(
-                "The active prompt pack is invalid and no recovery copy is available: {error}"
-            ))
+            eprintln!("The active prompt pack is invalid and no recovery copy is available: {error}");
+            default_pack()
         }
     };
     let state = CatalogState {
@@ -370,11 +369,20 @@ fn read_pack(path: &Path) -> Result<Option<PromptPack>, String> {
 }
 
 pub fn text(id: PromptId) -> String {
-    CATALOG
-        .get()
-        .and_then(|lock| lock.read().ok())
-        .and_then(|state| state.pack.prompts.get(id.key()).cloned())
-        .or_else(|| default_pack().prompts.remove(id.key()))
+    let key = id.key();
+    if let Some(lock) = CATALOG.get() {
+        let state = match lock.read() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(prompt) = state.pack.prompts.get(key) {
+            return prompt.clone();
+        }
+    }
+    default_pack()
+        .prompts
+        .get(key)
+        .cloned()
         .expect("required embedded prompt is missing")
 }
 
@@ -387,11 +395,16 @@ pub fn render(id: PromptId, values: &[(&str, &str)]) -> String {
 }
 
 pub fn current_text() -> Result<String, String> {
-    let pack = CATALOG
-        .get()
-        .and_then(|lock| lock.read().ok())
-        .map(|state| state.pack.clone())
-        .unwrap_or_else(default_pack);
+    let pack = match CATALOG.get() {
+        Some(lock) => {
+            let state = match lock.read() {
+                Ok(state) => state,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            state.pack.clone()
+        }
+        None => default_pack(),
+    };
     serde_json::to_string_pretty(&pack).map_err(|error| error.to_string())
 }
 
@@ -422,9 +435,14 @@ pub fn reset() -> Result<String, String> {
         .write()
         .map_err(|_| "Prompt catalog lock is poisoned".to_string())?;
     let path = state.root.join("prompt-pack.json");
+    let backup = path.with_extension("json.bak");
     if path.exists() {
         fs::remove_file(&path)
             .map_err(|error| format!("Could not remove the custom prompt pack: {error}"))?;
+    }
+    if backup.exists() {
+        fs::remove_file(&backup)
+            .map_err(|error| format!("Could not remove the custom prompt-pack backup: {error}"))?;
     }
     state.pack = default_pack();
     serde_json::to_string_pretty(&state.pack).map_err(|error| error.to_string())

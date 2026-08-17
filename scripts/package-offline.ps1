@@ -11,6 +11,35 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $tauriConfigPath = Join-Path $projectRoot "src-tauri\tauri.conf.json"
 $tauriConfig = Get-Content -LiteralPath $tauriConfigPath -Raw | ConvertFrom-Json
 $version = [string]$tauriConfig.version
+$extract_version = {
+    param([string]$value)
+    if (-not $value) { return $null }
+    $match = [regex]::Match($value, "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
+    if ($match.Success) { return $match.Value } else { return $null }
+}
+
+function Get-KestrelArtifactVersion([string]$TargetPath, [string]$Role) {
+    $item = Get-Item -LiteralPath $TargetPath
+    $candidates = @($item.VersionInfo.ProductVersion, $item.VersionInfo.FileVersion) | ForEach-Object -Process {
+        & $extract_version $_
+    } | Where-Object { $_ }
+    $versionFromName = & $extract_version $item.Name
+    if ($candidates.Count -gt 0) {
+        return $candidates[0]
+    }
+    if ($versionFromName) {
+        return $versionFromName
+    }
+    throw "Could not determine the version for ${Role}: $TargetPath"
+}
+
+$validate_version = {
+    param([string]$Artifact, [string]$Path, [string]$ExpectedVersion)
+    $actualVersion = Get-KestrelArtifactVersion -TargetPath $Path -Role $Artifact
+    if ($actualVersion -ne $ExpectedVersion) {
+        throw "$Artifact version mismatch for $Path. Expected $ExpectedVersion but found $actualVersion."
+    }
+}
 
 if ($tauriConfig.bundle.windows.webviewInstallMode.type -ne "offlineInstaller") {
     throw "Release packaging requires bundle.windows.webviewInstallMode.type=offlineInstaller."
@@ -62,6 +91,8 @@ $installer = Get-ChildItem -LiteralPath $bundleDirectory -Filter "*.exe" -File |
 if (-not (Test-Path -LiteralPath $releaseBinary -PathType Leaf) -or -not $installer) {
     throw "The release binary or NSIS installer was not produced."
 }
+& $validate_version "release binary" $releaseBinary $version
+& $validate_version "NSIS installer" $installer.FullName $version
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $outputDirectory = Join-Path $projectRoot "release\$version-$stamp"

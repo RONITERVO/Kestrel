@@ -528,7 +528,7 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
   const [controlDraft, setControlDraft] = useState(initialControl);
   const [tab, setTab] = useState<"models" | "research" | "prompts" | "portable">("models");
   const [overrideModelId, setOverrideModelId] = useState(initialControl.selectedModelId ?? "");
-  const [busy, setBusy] = useState<"save-models" | "save-research" | "apply" | "release" | "export" | "import" | "refresh-profile" | "save-prompts" | "reset-prompts" | "export-prompts" | "import-prompts" | null>(null);
+  const [busy, setBusy] = useState<"save-models" | "save-research" | "apply" | "release" | "export" | "import" | "refresh-profile" | "save-prompts" | "reset-prompts" | "export-prompts" | "import-prompts" | "reload-prompts" | null>(null);
   const [profilePath, setProfilePath] = useState("");
   const [profileText, setProfileText] = useState("");
   const [profileStatus, setProfileStatus] = useState("");
@@ -546,13 +546,24 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
     }
   }, [onError]);
 
+  const refreshPromptText = useCallback(async () => {
+    setBusy("reload-prompts");
+    try {
+      setPromptText(await getPromptPackText());
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  }, [onError]);
+
   useEffect(() => {
     void refreshSystem();
     void getSetupProfileText().then(setProfileText).catch((cause) => onError(String(cause)));
-    void getPromptPackText().then(setPromptText).catch((cause) => onError(String(cause)));
+    void refreshPromptText();
     const timer = window.setInterval(() => void refreshSystem(), 2_500);
     return () => window.clearInterval(timer);
-  }, [refreshSystem, onError]);
+  }, [refreshSystem, onError, refreshPromptText]);
 
   const updateResearchNumber = (key: keyof ResearchSettings, value: string) => {
     const parsed = Number.parseInt(value, 10);
@@ -770,7 +781,7 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
       {tab === "prompts" && <section className="settings-panel portability-panel system-tab-panel">
         <div className="settings-heading"><div><span className="eyebrow">Advanced · every local workspace</span><h2>Portable prompt pack</h2><p>One prompt-only JSON document owns Kestrel’s app-authored instructions for chat, Computer Tasks, Research, movie planning and review, image design, music writing, and model qualification. Producer text and generated runtime data remain in their projects.</p></div><FileText/></div>
         <div className="advanced-warning"><TriangleAlert/><div><strong>Prompts guide models; native authority does not move.</strong><span>Editing wording cannot grant filesystem, network, rendering, or tool access, and cannot bypass schema, path, citation, or planning validation.</span></div></div>
-        <div className="portable-editor-grid"><label className="portable-json"><span>Editable prompt-only JSON</span><textarea value={promptText} onChange={(event) => setPromptText(event.target.value)} spellCheck={false} aria-label="Editable portable prompt pack JSON"/></label><div className="portable-file-controls"><label className="wide-field"><span>Import prompt pack path</span><input value={promptPath} onChange={(event) => setPromptPath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\prompt-packs\\kestrel-prompts.json"/></label>{promptStatus && <div className="profile-status" role="status">{promptStatus}</div>}<button className="quiet-button" disabled={!!busy} onClick={() => void pickPromptPackFile().then((path) => path && setPromptPath(path)).catch((cause) => onError(String(cause)))}><FolderOpen size={15}/> Choose JSON file</button><button className="quiet-button" disabled={!!busy} onClick={() => void getPromptPackText().then(setPromptText).catch((cause) => onError(String(cause)))}><RefreshCw size={15}/> Reload active pack</button><button className="quiet-button" disabled={!!busy || !promptPath.trim()} onClick={() => void importPrompts()}><Upload size={15}/> Import & activate</button><button className="quiet-button" disabled={!!busy} onClick={() => void resetPrompts()}><RefreshCw size={15}/> Restore build defaults</button></div></div>
+        <div className="portable-editor-grid"><label className="portable-json"><span>Editable prompt-only JSON</span><textarea value={promptText} disabled={!!busy} onChange={(event) => setPromptText(event.target.value)} spellCheck={false} aria-label="Editable portable prompt pack JSON"/></label><div className="portable-file-controls"><label className="wide-field"><span>Import prompt pack path</span><input value={promptPath} onChange={(event) => setPromptPath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\prompt-packs\\kestrel-prompts.json"/></label>{promptStatus && <div className="profile-status" role="status">{promptStatus}</div>}<button className="quiet-button" disabled={!!busy} onClick={() => void pickPromptPackFile().then((path) => path && setPromptPath(path)).catch((cause) => onError(String(cause)))}><FolderOpen size={15}/> Choose JSON file</button><button className="quiet-button" disabled={!!busy} onClick={() => void refreshPromptText()}><RefreshCw size={15}/> Reload active pack</button><button className="quiet-button" disabled={!!busy || !promptPath.trim()} onClick={() => void importPrompts()}><Upload size={15}/> Import & activate</button><button className="quiet-button" disabled={!!busy} onClick={() => void resetPrompts()}><RefreshCw size={15}/> Restore build defaults</button></div></div>
         <div className="settings-actions"><button className="quiet-button" disabled={!!busy || !promptText.trim()} onClick={() => void savePrompts()}>{busy === "save-prompts" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Validate & apply</button><span/><button className="primary-button" disabled={!!busy || !promptText.trim()} onClick={() => void exportPrompts()}>{busy === "export-prompts" ? <LoaderCircle className="spin" size={15}/> : <Download size={15}/>} Export prompt-only JSON</button></div>
       </section>}
 
