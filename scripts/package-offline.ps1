@@ -2,7 +2,8 @@
 param(
     [string]$SigningCertificateThumbprint = "",
     [string]$TimestampUrl = "",
-    [switch]$RequireSignature
+    [switch]$RequireSignature,
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,29 +26,31 @@ if ($SigningCertificateThumbprint -and $SigningCertificateThumbprint -notmatch "
 }
 
 $signingConfigPath = $null
-Push-Location $projectRoot
-try {
-    $buildArguments = @("run", "tauri", "--", "build", "--bundles", "nsis")
-    if ($SigningCertificateThumbprint) {
-        $windows = [ordered]@{
-            certificateThumbprint = $SigningCertificateThumbprint
-            digestAlgorithm = "sha256"
+if (-not $SkipBuild) {
+    Push-Location $projectRoot
+    try {
+        $buildArguments = @("run", "tauri", "--", "build", "--bundles", "nsis")
+        if ($SigningCertificateThumbprint) {
+            $windows = [ordered]@{
+                certificateThumbprint = $SigningCertificateThumbprint
+                digestAlgorithm = "sha256"
+            }
+            if ($TimestampUrl) {
+                $windows["timestampUrl"] = $TimestampUrl
+                $windows["tsp"] = $true
+            }
+            $signingConfig = [ordered]@{ bundle = [ordered]@{ windows = $windows } }
+            $signingConfigPath = Join-Path ([System.IO.Path]::GetTempPath()) ("kestrel-signing-" + [guid]::NewGuid().ToString("N") + ".json")
+            $signingConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $signingConfigPath -Encoding utf8
+            $buildArguments += @("--config", $signingConfigPath)
         }
-        if ($TimestampUrl) {
-            $windows["timestampUrl"] = $TimestampUrl
-            $windows["tsp"] = $true
+        & npm.cmd @buildArguments
+        if ($LASTEXITCODE -ne 0) { throw "Tauri release build failed with exit code $LASTEXITCODE." }
+    } finally {
+        Pop-Location
+        if ($signingConfigPath -and (Test-Path -LiteralPath $signingConfigPath)) {
+            Remove-Item -LiteralPath $signingConfigPath -Force
         }
-        $signingConfig = [ordered]@{ bundle = [ordered]@{ windows = $windows } }
-        $signingConfigPath = Join-Path ([System.IO.Path]::GetTempPath()) ("kestrel-signing-" + [guid]::NewGuid().ToString("N") + ".json")
-        $signingConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $signingConfigPath -Encoding utf8
-        $buildArguments += @("--config", $signingConfigPath)
-    }
-    & npm.cmd @buildArguments
-    if ($LASTEXITCODE -ne 0) { throw "Tauri release build failed with exit code $LASTEXITCODE." }
-} finally {
-    Pop-Location
-    if ($signingConfigPath -and (Test-Path -LiteralPath $signingConfigPath)) {
-        Remove-Item -LiteralPath $signingConfigPath -Force
     }
 }
 
@@ -68,14 +71,30 @@ $installerPath = Join-Path $outputDirectory "Kestrel-Local-$version-offline-setu
 Copy-Item -LiteralPath $releaseBinary -Destination $portablePath
 Copy-Item -LiteralPath $installer.FullName -Destination $installerPath
 
+function Get-KestrelAuthenticodeStatus([string]$TargetPath) {
+    $status = & powershell.exe -NoProfile -NonInteractive -Command '& { param([string]$Target) (Get-AuthenticodeSignature -LiteralPath $Target).Status.ToString() }' $TargetPath
+    if ($LASTEXITCODE -ne 0 -or -not $status) {
+        throw "Could not inspect the Authenticode status of $TargetPath."
+    }
+    return [string]$status
+}
+
+function Get-KestrelSha256([string]$TargetPath) {
+    $stream = [System.IO.File]::OpenRead($TargetPath)
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "") }
+        finally { $sha.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
 $artifacts = @($portablePath, $installerPath) | ForEach-Object {
     $item = Get-Item -LiteralPath $_
-    $signature = Get-AuthenticodeSignature -LiteralPath $_
     [ordered]@{
         file = $item.Name
         bytes = $item.Length
-        sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash
-        authenticode = [string]$signature.Status
+        sha256 = Get-KestrelSha256 $_
+        authenticode = Get-KestrelAuthenticodeStatus $_
     }
 }
 $invalidArtifacts = @($artifacts | Where-Object authenticode -ne "Valid")
