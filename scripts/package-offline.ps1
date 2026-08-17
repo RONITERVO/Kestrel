@@ -14,8 +14,9 @@ $version = [string]$tauriConfig.version
 $extract_version = {
     param([string]$value)
     if (-not $value) { return $null }
-    $match = [regex]::Match($value, "\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
-    if ($match.Success) { return $match.Value } else { return $null }
+    $match = [regex]::Match($value.Trim(), "^(?<version>\\d+\\.\\d+\\.\\d+)(?:\\.0)?$")
+    if (-not $match.Success) { return $null }
+    return $match.Groups['version'].Value
 }
 
 function Get-KestrelArtifactVersion([string]$TargetPath, [string]$Role) {
@@ -107,7 +108,7 @@ function Get-KestrelAuthenticodeStatus([string]$TargetPath) {
     if (-not $authenticodeShell) {
         $authenticodeShell = Get-Command powershell.exe -ErrorAction Stop
     }
-    $status = & $authenticodeShell.Source -NoProfile -NonInteractive -Command '& { param([string]$Target) (Get-AuthenticodeSignature -LiteralPath $Target).Status.ToString() }' $TargetPath
+    $status = & $authenticodeShell.Source -NoProfile -NonInteractive -Command { param([string]$Target) (Get-AuthenticodeSignature -LiteralPath $Target).Status.ToString() } -Args $TargetPath
     if ($LASTEXITCODE -ne 0 -or -not $status) {
         throw "Could not inspect the Authenticode status of $TargetPath."
     }

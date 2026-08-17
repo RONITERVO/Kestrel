@@ -1,4 +1,4 @@
-use super::{write_json_atomic, StudioError};
+use super::{write_json_atomic, MovieCodeReview, StudioError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -142,7 +142,7 @@ pub struct MoviePlanningSnapshot {
     pub last_request: Value,
     pub transcript: Value,
     pub current_text: String,
-    pub reviewer_review: Value,
+    pub reviewer_review: Option<MovieCodeReview>,
 }
 
 pub(super) fn load_control(path: &Path) -> Result<PlanningControl, StudioError> {
@@ -257,6 +257,19 @@ pub(super) fn read_advanced_json(path: &Path) -> Result<Value, StudioError> {
     }
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes).map_err(StudioError::from)
+}
+
+/// Loads the independent reviewer's result as a typed `MovieCodeReview`, degrading to
+/// `None` (rather than exposing a shape-mismatched `Value`) when the file is missing,
+/// oversized, or fails to parse — the UI treats "no review yet" and "review unreadable"
+/// the same way.
+pub(super) fn read_reviewer_review(path: &Path) -> Option<MovieCodeReview> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_ADVANCED_DOCUMENT_BYTES {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 pub(super) fn read_prompt_document(

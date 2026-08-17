@@ -9,7 +9,7 @@ use crate::{
     models::{ControlSettings, ResearchSettings},
     runtime::{ModelConnection, RuntimeManager},
 };
-use crate::prompt_catalog::{self, PromptId};
+use crate::prompt_catalog::{PromptId, render, text};
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -1390,11 +1390,7 @@ impl MovieStudio {
             planning::read_advanced_json(&folder.join("agent-last-request.json"))?;
         let last_request = redacted_transcript_view(&durable_last_request);
         let reviewer_review_path = folder.join("independent-review-result.json");
-        let reviewer_review = if reviewer_review_path.is_file() {
-            planning::read_advanced_json(&reviewer_review_path)?
-        } else {
-            Value::Null
-        };
+        let reviewer_review = planning::read_reviewer_review(&reviewer_review_path);
         let control = {
             let _guard = self.planning_control.lock().map_err(|_| {
                 StudioError::Invalid("movie planning controls are unavailable".into())
@@ -1887,8 +1883,8 @@ impl MovieStudio {
     ) -> Result<Vec<String>, StudioError> {
         let nonce = uuid::Uuid::new_v4().to_string();
         let messages = vec![
-            json!({"role":"system","content":prompt_catalog::text(PromptId::StudioQualificationSystem)}),
-            json!({"role":"user","content":prompt_catalog::render(PromptId::StudioQualificationUser, &[("nonce", &nonce)])}),
+            json!({"role":"system","content":text(PromptId::StudioQualificationSystem)}),
+            json!({"role":"user","content":render(PromptId::StudioQualificationUser, &[("nonce", &nonce)])}),
         ];
         let settings = MovieSettings {
             temperature: 0.0,
@@ -1904,7 +1900,7 @@ impl MovieStudio {
                 connection,
                 initial_messages: &messages,
                 tool_name: "submit_kestrel_studio_qualification",
-                tool_description: &prompt_catalog::text(PromptId::StudioQualificationTool),
+                tool_description: &text(PromptId::StudioQualificationTool),
                 response_format: studio_qualification_schema(),
                 settings: &settings,
                 runtime_max_output_tokens,
@@ -3703,7 +3699,7 @@ fn reference_manifest(references: &[MovieReference]) -> String {
     if references.is_empty() {
         return String::new();
     }
-    let mut manifest = prompt_catalog::text(PromptId::MovieReferenceManifest);
+    let mut manifest = text(PromptId::MovieReferenceManifest);
     for reference in references {
         let reference_type = if reference.kind == "audio" {
             "native clip audio"
@@ -3737,7 +3733,7 @@ struct ReviewIssue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
-struct MovieCodeReview {
+pub(crate) struct MovieCodeReview {
     summary: String,
     issues: Vec<ReviewIssue>,
 }
@@ -3811,8 +3807,8 @@ fn clip_suggestion_schema() -> Value {
                 "continuityOut":{"type":"string","maxLength":800},
                 "transition":{"type":"string","maxLength":300},
                 "usePreviousFrame":{"type":"boolean"},
-                "sourceRefs":{"type":"array","description":prompt_catalog::text(PromptId::StudioSourceRefs),"maxItems":24,"items":{"type":"string","maxLength":800}},
-                "referenceIds":{"type":"array","description":prompt_catalog::text(PromptId::StudioReferenceIds),"maxItems":12,"items":{"type":"string","maxLength":128}}
+                "sourceRefs":{"type":"array","description":text(PromptId::StudioSourceRefs),"maxItems":24,"items":{"type":"string","maxLength":800}},
+                "referenceIds":{"type":"array","description":text(PromptId::StudioReferenceIds),"maxItems":12,"items":{"type":"string","maxLength":128}}
             },"required":["id","title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}
         },"required":["clipId","summary","checklist","clip"]
     }}})
@@ -5077,13 +5073,13 @@ fn movie_schema(max_clips: u32) -> Value {
         "properties":{
             "title":{"type":"string","minLength":1,"maxLength":160},
             "logline":{"type":"string","minLength":20,"maxLength":600},
-            "audience":{"type":"string","minLength":3,"maxLength":300,"description":prompt_catalog::text(PromptId::StudioPlanAudience)},
+            "audience":{"type":"string","minLength":3,"maxLength":300,"description":text(PromptId::StudioPlanAudience)},
             "creativeDirection":{"type":"string","minLength":40,"maxLength":2400},
-            "continuityBible":{"type":"array","minItems":1,"maxItems":24,"description":prompt_catalog::text(PromptId::StudioContinuityBible),"items":{"type":"string","minLength":20,"maxLength":800}},
+            "continuityBible":{"type":"array","minItems":1,"maxItems":24,"description":text(PromptId::StudioContinuityBible),"items":{"type":"string","minLength":20,"maxLength":800}},
             "sourceCredits":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":800}},
             "clips":{"type":"array","minItems":1,"maxItems":max_clips,"items":{"type":"object","additionalProperties":false,"properties":{
                 "title":{"type":"string"},"purpose":{"type":"string"},"durationSeconds":{"type":"number","minimum":5,"maximum":15},"prompt":{"type":"string"},
-                "continuityIn":{"type":"string"},"continuityOut":{"type":"string"},"transition":{"type":"string"},"usePreviousFrame":{"type":"boolean"},"sourceRefs":{"type":"array","description":prompt_catalog::text(PromptId::StudioSourceRefs),"items":{"type":"string"}},"referenceIds":{"type":"array","description":prompt_catalog::text(PromptId::StudioReferenceIds),"items":{"type":"string"}}
+                "continuityIn":{"type":"string"},"continuityOut":{"type":"string"},"transition":{"type":"string"},"usePreviousFrame":{"type":"boolean"},"sourceRefs":{"type":"array","description":text(PromptId::StudioSourceRefs),"items":{"type":"string"}},"referenceIds":{"type":"array","description":text(PromptId::StudioReferenceIds),"items":{"type":"string"}}
             },"required":["title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}}
         },"required":["title","logline","audience","creativeDirection","continuityBible","sourceCredits","clips"]
     }}})
@@ -8363,3 +8359,4 @@ mod tests {
         assert!(Path::new(&export.path).with_extension("json").is_file());
     }
 }
+

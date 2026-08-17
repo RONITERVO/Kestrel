@@ -1,9 +1,35 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emptyPlannedClip, IndependentReviewerResult, LiveH3Preview, moviePlanningLive, MovieStudio, previewProvenanceAvailable, ProducerCopilot, ProducerPlanDesk, referenceDisplayTags } from "./MovieStudio";
-import type { ModelInfo, MovieEdit, MoviePlan, MovieProject, MovieRenderPreviewEvent, PendingMovieReference } from "./types";
+import * as api from "./api";
+import type { ModelInfo, MovieEdit, MoviePlan, MoviePlanningSnapshot, MovieProject, MovieRenderPreviewEvent, MovieSummary, PendingMovieReference } from "./types";
 
-afterEach(cleanup);
+vi.mock("./api", async () => {
+  const actual = await vi.importActual<typeof import("./api")>("./api");
+  return {
+    ...actual,
+    listMovies: vi.fn(async () => []),
+    getMovie: vi.fn(async () => {
+      throw new Error("Movie projects require the desktop application.");
+    }),
+    getMoviePlanning: vi.fn(async () => ({
+      projectId: "",
+      checkpointRequested: false,
+      pendingDirections: [],
+      promptDocuments: [],
+      toolSchema: {},
+      lastRequest: {},
+      transcript: {},
+      currentText: "",
+      reviewerReview: null,
+    } satisfies MoviePlanningSnapshot)),
+  };
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 const baselineModel = {
   id: "bonsai-local",
@@ -17,6 +43,71 @@ const baselineModel = {
   recommendation: "Release baseline",
 } satisfies ModelInfo;
 
+const defaultMovieSettings = {
+  width: 1344,
+  height: 768,
+  clipSeconds: 5,
+  steps: 20,
+  maxClips: 12,
+  seed: 0,
+  temperature: 0.7,
+  topP: 0.95,
+  topK: 20,
+  thinkingBudget: 32768,
+  maxOutputTokens: 32768,
+  comfyRoot: "",
+  refImageSize: "match",
+} as const;
+
+const makeMovieSummary = (id: string, title: string): MovieSummary => ({
+  id,
+  title,
+  status: "running",
+  phase: "agent-submitted",
+  updatedAt: "2026-08-16T00:00:00Z",
+  clipCount: 0,
+  finalPath: "",
+});
+
+const makeRunningProject = (id: string, title: string): MovieProject => ({
+  schemaVersion: 6,
+  id,
+  title,
+  prompt: `Prompt for ${title}.`,
+  status: "running",
+  phase: "agent-submitted",
+  detail: "Planning",
+  createdAt: "2026-08-16T00:00:00Z",
+  updatedAt: "2026-08-16T00:00:00Z",
+  model: "Local Director",
+  renderer: "H3",
+  settings: { ...defaultMovieSettings },
+  references: [],
+  sources: [],
+  plan: undefined,
+  clips: [],
+  edit: { clips: [], exportTitle: title, exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [] },
+  finalPath: "",
+  exports: [],
+  error: "",
+  producerReviewRequired: false,
+  producerApprovedAt: "",
+  producerFeedback: [],
+  copilotHistory: [],
+});
+
+const makePlanningSnapshot = (projectId: string): MoviePlanningSnapshot => ({
+  projectId,
+  checkpointRequested: false,
+  pendingDirections: [],
+  promptDocuments: [],
+  toolSchema: {},
+  lastRequest: {},
+  transcript: {},
+  currentText: "",
+  reviewerReview: null,
+});
+
 describe("Kestrel Movie Studio", () => {
   it("keeps the planning room mounted and presents the fresh-context review", () => {
     expect(moviePlanningLive({ status: "running", phase: "agent-submitted" })).toBe(true);
@@ -28,6 +119,34 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByText("1 blocking issue")).toBeInTheDocument();
     expect(screen.getByText("Scene 8 · continuity")).toBeInTheDocument();
     expect(screen.getByText(/Restore it in the final frame/)).toBeInTheDocument();
+  });
+
+  it("remounts the planning room when switching between planning-enabled projects", async () => {
+    const onError = vi.fn();
+    const first = makeRunningProject("movie-one", "Project One");
+    const second = makeRunningProject("movie-two", "Project Two");
+
+    vi.mocked(api.listMovies).mockResolvedValue([makeMovieSummary(first.id, first.title), makeMovieSummary(second.id, second.title)]);
+    vi.mocked(api.getMovie).mockImplementation(async (id: string) => {
+      if (id === first.id) return first;
+      if (id === second.id) return second;
+      throw new Error(`Unknown movie project: ${id}`);
+    });
+    vi.mocked(api.getMoviePlanning).mockImplementation(async (id: string) => makePlanningSnapshot(id));
+
+    render(<MovieStudio advancedEnabled onError={onError} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Project One/i }));
+    const firstDirection = await screen.findByPlaceholderText(/opening warmer and more intimate/i);
+    fireEvent.change(firstDirection, { target: { value: "Keep the first project focused." } });
+    await waitFor(() => expect(firstDirection).toHaveValue("Keep the first project focused."));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Project Two/i }));
+    await waitFor(() => {
+      const directions = screen.getAllByPlaceholderText(/opening warmer and more intimate/i);
+      expect(directions).toHaveLength(1);
+      expect(directions[0]).toHaveValue("");
+    });
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("presents a one-prompt offline production path", async () => {

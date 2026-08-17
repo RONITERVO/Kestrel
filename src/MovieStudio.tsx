@@ -871,7 +871,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
         <div className="project-model-team"><StudioModelRoles models={models} compatibility={modelCompatibility} directorModelId={directorModelId} reviewerModelId={reviewerModelId} advancedEnabled={advancedEnabled} disabled={modelRolesLocked} qualifyingModelId={qualifyingModelId} onDirector={setDirectorModelId} onReviewer={setReviewerModelId} onCheck={onCheckModel} />
           <button disabled={modelRolesLocked || !modelRolesChanged || !directorModelId} onClick={() => void runProjectAction(() => setMovieModelRoles(project.id, { directorModelId, reviewerModelId }))}><Save /> Save model team at checkpoint</button>
         </div>
-        {planningRoomVisible && <ProducerPlanningRoom project={project} advancedEnabled={advancedEnabled} onError={onError} />}
+        {planningRoomVisible && <ProducerPlanningRoom key={project.id} project={project} advancedEnabled={advancedEnabled} onError={onError} />}
         {project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={busy || working} onPlan={setDraftPlan}
           onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
           onRevise={(feedback) => runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return reviseMoviePlan(project.id, feedback); })}
@@ -1094,6 +1094,20 @@ export function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
   const [sending, setSending] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const planning = project.status === "running";
+
+  useEffect(() => {
+    setSnapshot(undefined);
+    setCurrentText("");
+    setReasoning("");
+    setModelTurnActive(false);
+    setModelTurnObserved(false);
+    setActiveModelRole(project.phase === "agent-submitted" ? "reviewer" : "director");
+    setAdvancedStream("");
+    setActivities([]);
+    setDirection("");
+    setSending(false);
+    setShowAdvanced(false);
+  }, [project.id]);
 
   const refresh = useCallback(async () => {
     try {

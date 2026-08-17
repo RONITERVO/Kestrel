@@ -2,7 +2,7 @@ use super::{
     producer_intent_issues, prompt_quality_issues, prompts, MoviePlan, MovieQualityReview,
     MovieReference, MovieSettings, PlannedClip, PlanningStage, StudioError,
 };
-use crate::prompt_catalog::{self, PromptId};
+use crate::prompt_catalog::{PromptId, render, text};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -203,7 +203,7 @@ impl MovieAgentWorkspace {
         scene_paths.sort();
         paths.extend(scene_paths);
 
-        let mut snapshot = prompt_catalog::text(PromptId::MovieAuthoritativeMemory);
+        let mut snapshot = text(PromptId::MovieAuthoritativeMemory);
         for path in paths {
             let section = format!("\n===== {path} =====\n{}\n", self.read_file(&path)?);
             if snapshot
@@ -267,15 +267,15 @@ impl MovieAgentWorkspace {
             "type": "function",
             "function": {
                 "name": "movie_workspace",
-                "description": prompt_catalog::text(PromptId::MovieWorkspaceTool),
+                "description": text(PromptId::MovieWorkspaceTool),
                 "parameters": {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
                         "action": {"type":"string","enum":["list","read","read_many","write","write_batch","delete","check","submit"]},
-                        "path": {"type":"string","description":prompt_catalog::text(PromptId::MovieWorkspacePath)},
-                        "content": {"type":"object","description":prompt_catalog::text(PromptId::MovieWorkspaceContent)},
-                        "files": {"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"object","description":prompt_catalog::text(PromptId::MovieWorkspaceContent)}},"required":["path"]},"description":prompt_catalog::text(PromptId::MovieWorkspaceFiles)}
+                        "path": {"type":"string","description":text(PromptId::MovieWorkspacePath)},
+                        "content": {"type":"object","description":text(PromptId::MovieWorkspaceContent)},
+                        "files": {"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"object","description":text(PromptId::MovieWorkspaceContent)}},"required":["path"]},"description":text(PromptId::MovieWorkspaceFiles)}
                     },
                     "required": ["action"]
                 }
@@ -747,7 +747,7 @@ impl MovieAgentWorkspace {
 }
 
 fn workspace_readme(settings: &MovieSettings) -> String {
-    prompt_catalog::render(
+    render(
         PromptId::MovieWorkspaceContract,
         &[
             ("max_clips", &settings.max_clips.to_string()),
@@ -759,9 +759,9 @@ fn workspace_readme(settings: &MovieSettings) -> String {
 
 fn workspace_reference_manifest(references: &[MovieReference]) -> String {
     if references.is_empty() {
-        return prompt_catalog::text(PromptId::MovieWorkspaceReferencesEmpty);
+        return text(PromptId::MovieWorkspaceReferencesEmpty);
     }
-    let mut output = prompt_catalog::text(PromptId::MovieWorkspaceReferencesIntro);
+    let mut output = text(PromptId::MovieWorkspaceReferencesIntro);
     let workspace_ids = workspace_reference_ids(references);
     for (reference, workspace_id) in references.iter().zip(workspace_ids) {
         let reference_type = if reference.kind == "audio" {
@@ -1703,3 +1703,4 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+

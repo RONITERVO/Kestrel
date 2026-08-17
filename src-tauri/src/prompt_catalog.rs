@@ -322,15 +322,25 @@ pub fn initialize(root: &Path) -> Result<(), String> {
     let pack = match read_pack(&path) {
         Ok(Some(pack)) => pack,
         Ok(None) | Err(_) if backup.is_file() => {
-            let recovered = read_pack(&backup)?
-                .ok_or_else(|| "Prompt-pack recovery copy disappeared".to_string())?;
-            write_recoverable(
-                &path,
-                serde_json::to_string_pretty(&recovered)
-                    .map_err(|error| error.to_string())?
-                    .as_bytes(),
-            )?;
-            recovered
+            match read_pack(&backup) {
+                Ok(Some(recovered)) => {
+                    write_recoverable(
+                        &path,
+                        serde_json::to_string_pretty(&recovered)
+                            .map_err(|error| error.to_string())?
+                            .as_bytes(),
+                    )?;
+                    recovered
+                }
+                Ok(None) => {
+                    eprintln!("Prompt-pack recovery copy is unavailable.");
+                    default_pack()
+                }
+                Err(error) => {
+                    eprintln!("The active prompt pack is invalid and the recovery copy is unavailable: {error}");
+                    default_pack()
+                }
+            }
         }
         Ok(None) => default_pack(),
         Err(error) => {
