@@ -844,7 +844,8 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
       setWorking(false);
     }
   };
-  const planningLive = project.status === "planning-checkpoint" || (project.status === "running" && ["writing", "agent-workspace", "resuming", "producer-revision"].includes(project.phase));
+  const planningLive = moviePlanningLive(project);
+  const planningRoomVisible = planningLive || project.status === "awaiting-review";
   const modelRolesChanged = directorModelId !== (project.modelRoles?.director.modelId || "")
     || reviewerModelId !== (project.modelRoles?.reviewer.modelId || "");
   const modelRolesLocked = busy || working || project.status === "running"
@@ -870,7 +871,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
         <div className="project-model-team"><StudioModelRoles models={models} compatibility={modelCompatibility} directorModelId={directorModelId} reviewerModelId={reviewerModelId} advancedEnabled={advancedEnabled} disabled={modelRolesLocked} qualifyingModelId={qualifyingModelId} onDirector={setDirectorModelId} onReviewer={setReviewerModelId} onCheck={onCheckModel} />
           <button disabled={modelRolesLocked || !modelRolesChanged || !directorModelId} onClick={() => void runProjectAction(() => setMovieModelRoles(project.id, { directorModelId, reviewerModelId }))}><Save /> Save model team at checkpoint</button>
         </div>
-        {planningLive && <ProducerPlanningRoom project={project} advancedEnabled={advancedEnabled} onError={onError} />}
+        {planningRoomVisible && <ProducerPlanningRoom project={project} advancedEnabled={advancedEnabled} onError={onError} />}
         {project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={busy || working} onPlan={setDraftPlan}
           onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
           onRevise={(feedback) => runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return reviseMoviePlan(project.id, feedback); })}
@@ -1069,7 +1070,12 @@ function ProductionMasterCard({ project, clip, onProject, onError }: { project: 
   </article>;
 }
 
-function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
+export function moviePlanningLive(project: Pick<MovieProject, "status" | "phase">): boolean {
+  return project.status === "planning-checkpoint"
+    || (project.status === "running" && ["writing", "agent-workspace", "agent-submitted", "resuming", "producer-revision"].includes(project.phase));
+}
+
+export function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
   project: MovieProject;
   advancedEnabled: boolean;
   onError: (message: string) => void;
@@ -1079,6 +1085,9 @@ function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
   const [reasoning, setReasoning] = useState("");
   const [modelTurnActive, setModelTurnActive] = useState(false);
   const [modelTurnObserved, setModelTurnObserved] = useState(false);
+  const [activeModelRole, setActiveModelRole] = useState<"director" | "reviewer">(
+    project.phase === "agent-submitted" ? "reviewer" : "director",
+  );
   const [advancedStream, setAdvancedStream] = useState("");
   const [activities, setActivities] = useState<MoviePlanningEvent[]>([]);
   const [direction, setDirection] = useState("");
@@ -1103,6 +1112,7 @@ function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
     void onMoviePlanning((event) => {
       if (event.projectId !== project.id) return;
       if (event.kind === "turn-start") {
+        setActiveModelRole(event.modelRole === "reviewer" ? "reviewer" : "director");
         setCurrentText("");
         setReasoning("");
         setModelTurnActive(true);
@@ -1142,6 +1152,12 @@ function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
     }
   };
 
+  const activeModelLabel = activeModelRole === "reviewer" ? "fresh-context Reviewer" : "Director";
+  const activeModelName = activeModelRole === "reviewer"
+    ? project.modelRoles?.reviewer.modelName
+    : project.modelRoles?.director.modelName ?? project.model;
+  const roomStateLabel = planning ? "Planning live" : project.status === "awaiting-review" ? "Model review ready" : "Checkpoint saved";
+
   const checkpoint = async () => {
     setSending(true);
     try {
@@ -1154,13 +1170,14 @@ function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
   };
 
   return <section className="producer-planning-room">
-    <div className="movie-section-heading"><div><span className="eyebrow">Live planning room</span><h2>Direct the model while it works</h2><small>Directions enter the durable workspace at the next safe model-turn boundary. Nothing is sent to the public network.</small></div><span className={`planning-room-state ${planning ? "live" : "saved"}`}>{planning ? <LoaderCircle className="spin" /> : <ShieldCheck />}{planning ? "Planning live" : "Checkpoint saved"}</span></div>
+    <div className="movie-section-heading"><div><span className="eyebrow">Live planning room</span><h2>Direct the model while it works</h2><small>Directions enter the durable workspace at the next safe model-turn boundary. Nothing is sent to the public network.</small></div><span className={`planning-room-state ${planning ? "live" : "saved"}`}>{planning ? <LoaderCircle className="spin" /> : <ShieldCheck />}{roomStateLabel}</span></div>
     <div className="planning-room-grid">
       <article className="planning-current-copy">
-        <header><strong>What the Director is saying now</strong><small>Streamed as the local model produces it</small></header>
-        {modelTurnObserved && <ModelThinkingStream text={reasoning} active={modelTurnActive && planning} modelName={project.model} className="planning-thinking-stream" />}
-        <div className="planning-stream-text">{currentText.trim() || (planning ? "The Director is preparing its next structured production action…" : "No unfinished model text. The durable workspace is ready to resume.")}</div>
-        <div className="planning-activity-feed">{activities.length ? activities.map((event) => <div key={`${event.sequence}-${event.kind}`}><span>{event.kind.includes("checkpoint") ? <ShieldCheck /> : <Check />}</span><p><b>{friendlyPlanningStage(event.stage)}</b>{event.text}</p></div>) : <small>Production actions will appear here as the Director reads, edits, and checks scenes.</small>}</div>
+        <header><strong>What the {activeModelLabel} is saying now</strong><small>Streamed as the local model produces it</small></header>
+        {modelTurnObserved && <ModelThinkingStream text={reasoning} active={modelTurnActive && planning} modelName={activeModelName} className="planning-thinking-stream" />}
+        <div className="planning-stream-text">{currentText.trim() || (planning ? `The ${activeModelLabel} is preparing its next structured production action…` : "No unfinished model text. The durable workspace is ready to resume.")}</div>
+        {snapshot?.reviewerReview && <IndependentReviewerResult review={snapshot.reviewerReview} />}
+        <div className="planning-activity-feed">{activities.length ? activities.map((event) => <div key={`${event.sequence}-${event.kind}`}><span>{event.kind.includes("checkpoint") ? <ShieldCheck /> : <Check />}</span><p><b>{event.modelRole === "reviewer" ? "Reviewer · " : ""}{friendlyPlanningStage(event.stage)}</b>{event.text}</p></div>) : <small>Production actions will appear here as the Director and Reviewer inspect and check the film.</small>}</div>
       </article>
       <article className="planning-direction-card">
         <header><strong>Change direction</strong><small>Write naturally—no JSON, prompts, or code required</small></header>
@@ -1173,15 +1190,24 @@ function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
     {advancedEnabled && <div className="planning-advanced">
       <button onClick={() => setShowAdvanced((value) => !value)}><Settings2 /> {showAdvanced ? "Hide" : "Inspect"} exact model context <ChevronDown className={showAdvanced ? "open" : ""} /></button>
       {showAdvanced && <div className="planning-advanced-content">
-        <p>These are the exact sanitized messages, tool definition, workspace contract, lint policy, brief, references, and live tool-call arguments available to the Director. The separate thinking stream remains visible above as provisional working notes and is never treated as producer-approved text.</p>
+        <p>These are the exact sanitized messages, tool definitions, workspace contract, lint policy, brief, references, and live tool-call arguments available to the Director or fresh-context Reviewer. The separate thinking stream remains visible above as provisional working notes and is never treated as producer-approved text.</p>
         {advancedStream && <details open><summary>Current streamed tool-call arguments</summary><pre>{advancedStream}</pre></details>}
+        {snapshot?.reviewerReview && <details><summary>Exact latest independent review</summary><pre>{JSON.stringify(snapshot.reviewerReview, null, 2)}</pre></details>}
         {snapshot?.promptDocuments.map((document) => <details key={document.id}><summary>{document.title} <small>{document.category}</small></summary><pre>{document.content}</pre></details>)}
         <details><summary>movie_workspace tool schema</summary><pre>{JSON.stringify(snapshot?.toolSchema ?? {}, null, 2)}</pre></details>
-        <details><summary>Exact last request envelope sent to the Director</summary><pre>{JSON.stringify(snapshot?.lastRequest ?? {}, null, 2)}</pre></details>
+        <details><summary>Exact last request envelope sent to the active model</summary><pre>{JSON.stringify(snapshot?.lastRequest ?? {}, null, 2)}</pre></details>
         <details><summary>Exact accepted model transcript</summary><pre>{JSON.stringify(snapshot?.transcript ?? {}, null, 2)}</pre></details>
         <button onClick={() => void refresh()}><RotateCcw /> Refresh exact context</button>
       </div>}
     </div>}
+  </section>;
+}
+
+export function IndependentReviewerResult({ review }: { review: NonNullable<MoviePlanningSnapshot["reviewerReview"]> }) {
+  return <section className="independent-reviewer-result" aria-label="Latest fresh-context review">
+    <header><span><ShieldCheck /><strong>Latest fresh-context review</strong></span><small>{review.issues.length ? `${review.issues.length} blocking issue${review.issues.length === 1 ? "" : "s"}` : "Passed without blocking issues"}</small></header>
+    <p>{review.summary}</p>
+    {review.issues.length > 0 && <ol>{review.issues.map((issue, index) => <li key={`${issue.clipNumber}-${issue.category}-${index}`}><strong>Scene {issue.clipNumber} · {issue.category}</strong><span>{issue.finding}</span><em>Required repair: {issue.requiredFix}</em></li>)}</ol>}
   </section>;
 }
 

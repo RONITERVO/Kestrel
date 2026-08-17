@@ -68,7 +68,9 @@ pub use music::{
     CreateMusicProjectRequest, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
     MusicSummary, SaveMusicMidiDocumentRequest,
 };
-pub use planning::{MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningStage};
+pub use planning::{
+    MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningModelRole, PlanningStage,
+};
 pub use prompt_collaboration::{
     emit_error as emit_prompt_draft_error, emit_settled as emit_prompt_draft_settled,
     validate_request as validate_prompt_draft_request, PromptDraftJob, PromptDraftRequest,
@@ -1327,6 +1329,40 @@ impl MovieStudio {
         position: (u32, u32),
         app: Option<&AppHandle>,
     ) {
+        self.emit_planning_for_model(id, kind, stage, text, position, None, app);
+    }
+
+    fn emit_reviewer_planning(
+        &self,
+        id: &str,
+        kind: PlanningEventKind,
+        stage: PlanningStage,
+        text: impl Into<String>,
+        position: (u32, u32),
+        app: Option<&AppHandle>,
+    ) {
+        self.emit_planning_for_model(
+            id,
+            kind,
+            stage,
+            text,
+            position,
+            Some(PlanningModelRole::Reviewer),
+            app,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_planning_for_model(
+        &self,
+        id: &str,
+        kind: PlanningEventKind,
+        stage: PlanningStage,
+        text: impl Into<String>,
+        position: (u32, u32),
+        model_role: Option<PlanningModelRole>,
+        app: Option<&AppHandle>,
+    ) {
         let Some(app) = app else { return };
         let event = MoviePlanningEvent {
             project_id: id.into(),
@@ -1334,6 +1370,7 @@ impl MovieStudio {
             kind,
             stage,
             text: text.into(),
+            model_role,
             session: position.0,
             step: position.1,
             created_at: Utc::now().to_rfc3339(),
@@ -1351,6 +1388,12 @@ impl MovieStudio {
         let durable_last_request =
             planning::read_advanced_json(&folder.join("agent-last-request.json"))?;
         let last_request = redacted_transcript_view(&durable_last_request);
+        let reviewer_review_path = folder.join("independent-review-result.json");
+        let reviewer_review = if reviewer_review_path.is_file() {
+            planning::read_advanced_json(&reviewer_review_path)?
+        } else {
+            Value::Null
+        };
         let control = {
             let _guard = self.planning_control.lock().map_err(|_| {
                 StudioError::Invalid("movie planning controls are unavailable".into())
@@ -1398,6 +1441,7 @@ impl MovieStudio {
             tool_schema: MovieAgentWorkspace::tools(),
             last_request,
             current_text: planning::latest_assistant_text(&transcript),
+            reviewer_review,
             transcript,
         })
     }
@@ -2316,19 +2360,41 @@ impl MovieStudio {
             .project_dir(request.project_id)
             .join("agent-workspace")
             .join("agent-last-request.json");
-        let mut on_event = |event| {
-            if let agent_protocol::StreamEvent::Reasoning(token) = event {
-                self.emit_planning(
-                    request.project_id,
-                    PlanningEventKind::Reasoning,
-                    PlanningStage::Thinking,
-                    token,
-                    request.position,
-                    request.app,
-                );
-            }
+        let mut on_event = |event| match event {
+            agent_protocol::StreamEvent::Content(token) => self.emit_reviewer_planning(
+                request.project_id,
+                PlanningEventKind::Token,
+                PlanningStage::ModelText,
+                token,
+                request.position,
+                request.app,
+            ),
+            agent_protocol::StreamEvent::Reasoning(token) => self.emit_reviewer_planning(
+                request.project_id,
+                PlanningEventKind::Reasoning,
+                PlanningStage::Thinking,
+                token,
+                request.position,
+                request.app,
+            ),
+            agent_protocol::StreamEvent::ToolArgumentsStarted => self.emit_reviewer_planning(
+                request.project_id,
+                PlanningEventKind::Activity,
+                PlanningStage::Planning,
+                "The independent Reviewer is streaming its structured whole-film findings.",
+                request.position,
+                request.app,
+            ),
+            agent_protocol::StreamEvent::ToolArguments(fragment) => self.emit_reviewer_planning(
+                request.project_id,
+                PlanningEventKind::AdvancedToken,
+                PlanningStage::ToolArguments,
+                fragment,
+                request.position,
+                request.app,
+            ),
         };
-        agent_protocol::complete_tool_submission(
+        let review: MovieCodeReview = agent_protocol::complete_tool_submission(
             &self.http,
             ToolSubmissionRequest {
                 connection: request.connection,
@@ -2344,7 +2410,23 @@ impl MovieStudio {
                 on_event: Some(&mut on_event),
             },
         )
-        .await
+        .await?;
+        write_json_atomic(
+            &self
+                .project_dir(request.project_id)
+                .join("agent-workspace")
+                .join("independent-review-result.json"),
+            &review,
+        )?;
+        self.emit_reviewer_planning(
+            request.project_id,
+            PlanningEventKind::Token,
+            PlanningStage::ModelText,
+            producer_reviewer_output(&review),
+            request.position,
+            request.app,
+        );
+        Ok(review)
     }
 
     pub async fn render(
@@ -3660,6 +3742,35 @@ struct ReviewIssue {
 struct MovieCodeReview {
     summary: String,
     issues: Vec<ReviewIssue>,
+}
+
+fn producer_reviewer_output(review: &MovieCodeReview) -> String {
+    let mut output = review.summary.trim().to_owned();
+    if review.issues.is_empty() {
+        if !output.is_empty() {
+            output.push_str("\n\n");
+        }
+        output.push_str("No blocking fidelity or continuity issues found.");
+        return output;
+    }
+    if !output.is_empty() {
+        output.push_str("\n\n");
+    }
+    output.push_str(&format!(
+        "{} blocking issue{} found:",
+        review.issues.len(),
+        if review.issues.len() == 1 { "" } else { "s" }
+    ));
+    for issue in &review.issues {
+        output.push_str(&format!(
+            "\n\nScene {} · {}\n{}\nRequired repair: {}",
+            issue.clip_number,
+            issue.category.trim(),
+            issue.finding.trim(),
+            issue.required_fix.trim()
+        ));
+    }
+    output
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5446,6 +5557,22 @@ mod tests {
     fn comfy_workload_derives_ports_from_its_base_url() {
         assert_eq!(ComfyWorkload::Shared.port(), 8188);
         assert_eq!(ComfyWorkload::Music.port(), 8189);
+    }
+
+    #[test]
+    fn independent_review_is_formatted_for_producers() {
+        let output = producer_reviewer_output(&MovieCodeReview {
+            summary: "The ending drops a required identity detail.".into(),
+            issues: vec![ReviewIssue {
+                clip_number: 8,
+                category: "continuity".into(),
+                finding: "The red suitcase disappears.".into(),
+                required_fix: "Restore it in the final frame.".into(),
+            }],
+        });
+        assert!(output.contains("1 blocking issue found"));
+        assert!(output.contains("Scene 8 · continuity"));
+        assert!(output.contains("Required repair: Restore it in the final frame."));
     }
 
     #[test]

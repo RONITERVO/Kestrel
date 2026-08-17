@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emptyPlannedClip, LiveH3Preview, MovieStudio, previewProvenanceAvailable, ProducerCopilot, ProducerPlanDesk, referenceDisplayTags } from "./MovieStudio";
+import { emptyPlannedClip, IndependentReviewerResult, LiveH3Preview, moviePlanningLive, MovieStudio, previewProvenanceAvailable, ProducerCopilot, ProducerPlanDesk, referenceDisplayTags } from "./MovieStudio";
 import type { ModelInfo, MovieEdit, MoviePlan, MovieProject, MovieRenderPreviewEvent, PendingMovieReference } from "./types";
 
 afterEach(cleanup);
@@ -18,6 +18,18 @@ const baselineModel = {
 } satisfies ModelInfo;
 
 describe("Kestrel Movie Studio", () => {
+  it("keeps the planning room mounted and presents the fresh-context review", () => {
+    expect(moviePlanningLive({ status: "running", phase: "agent-submitted" })).toBe(true);
+    render(<IndependentReviewerResult review={{
+      summary: "The ending loses the producer's requested red suitcase.",
+      issues: [{ clipNumber: 8, category: "continuity", finding: "The suitcase disappears.", requiredFix: "Restore it in the final frame." }],
+    }} />);
+    expect(screen.getByRole("region", { name: "Latest fresh-context review" })).toBeInTheDocument();
+    expect(screen.getByText("1 blocking issue")).toBeInTheDocument();
+    expect(screen.getByText("Scene 8 · continuity")).toBeInTheDocument();
+    expect(screen.getByText(/Restore it in the final frame/)).toBeInTheDocument();
+  });
+
   it("presents a one-prompt offline production path", async () => {
     render(<MovieStudio advancedEnabled models={[baselineModel]} selectedModelId={baselineModel.id} onError={vi.fn()} />);
     expect(screen.getByText(/Shape the production brief together/i)).toBeInTheDocument();

@@ -35,9 +35,17 @@ pub struct MoviePlanningEvent {
     pub kind: PlanningEventKind,
     pub stage: PlanningStage,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_role: Option<PlanningModelRole>,
     pub session: u32,
     pub step: u32,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum PlanningModelRole {
+    #[serde(rename = "reviewer")]
+    Reviewer,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -134,6 +142,7 @@ pub struct MoviePlanningSnapshot {
     pub last_request: Value,
     pub transcript: Value,
     pub current_text: String,
+    pub reviewer_review: Value,
 }
 
 pub(super) fn load_control(path: &Path) -> Result<PlanningControl, StudioError> {
@@ -341,6 +350,7 @@ mod tests {
             kind: PlanningEventKind::AdvancedToken,
             stage: PlanningStage::ToolArguments,
             text: "{\"action\":".into(),
+            model_role: Some(PlanningModelRole::Reviewer),
             session: 2,
             step: 9,
             created_at: "2026-01-01T00:00:00Z".into(),
@@ -348,6 +358,7 @@ mod tests {
         let value = serde_json::to_value(event).unwrap();
         assert_eq!(value["kind"], "advanced-token");
         assert_eq!(value["stage"], "tool-arguments");
+        assert_eq!(value["modelRole"], "reviewer");
         assert_eq!(value["projectId"], "movie-1");
     }
 

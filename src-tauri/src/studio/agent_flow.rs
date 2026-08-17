@@ -449,7 +449,7 @@ async fn review_submission(
     let reviewer_runtime = request
         .runtime_settings
         .for_model(request.reviewer_model_id);
-    studio.emit_planning(
+    studio.emit_reviewer_planning(
         &project.id,
         PlanningEventKind::TurnStart,
         PlanningStage::Thinking,
@@ -473,7 +473,7 @@ async fn review_submission(
         _ = request.cancel.cancelled() => Err(StudioError::Cancelled),
     };
     drop(lease);
-    studio.emit_planning(
+    studio.emit_reviewer_planning(
         &project.id,
         PlanningEventKind::TurnComplete,
         PlanningStage::Planning,
