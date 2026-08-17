@@ -668,6 +668,11 @@ export async function getPromptPackText(): Promise<string> {
   return invoke<string>("get_prompt_pack_text");
 }
 
+export async function getDefaultPromptPackText(): Promise<string> {
+  if (!isTauri()) return getPromptPackText();
+  return invoke<string>("get_default_prompt_pack_text");
+}
+
 export async function savePromptPackText(text: string): Promise<string> {
   if (!isTauri()) return text;
   return invoke<string>("save_prompt_pack_text", { text });

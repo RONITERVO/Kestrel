@@ -408,6 +408,12 @@ pub fn current_text() -> Result<String, String> {
     serde_json::to_string_pretty(&pack).map_err(|error| error.to_string())
 }
 
+/// Read-only access to the build's embedded default pack, so the UI can offer a
+/// per-prompt "reset to build default" without mutating the active catalog.
+pub fn default_text() -> Result<String, String> {
+    serde_json::to_string_pretty(&default_pack()).map_err(|error| error.to_string())
+}
+
 pub fn save_text(value: &str) -> Result<String, String> {
     let pack = parse_and_validate(value)?;
     let lock = CATALOG
@@ -643,6 +649,13 @@ mod tests {
         assert!(parse_and_validate(&serde_json::to_string(&pack).unwrap())
             .unwrap_err()
             .contains("nonce"));
+    }
+
+    #[test]
+    fn default_text_round_trips_as_a_valid_pack() {
+        let text = default_text().unwrap();
+        let pack = parse_and_validate(&text).unwrap();
+        assert_eq!(pack, default_pack());
     }
 
     #[test]

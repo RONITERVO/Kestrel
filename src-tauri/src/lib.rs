@@ -2301,6 +2301,11 @@ fn get_prompt_pack_text() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn get_default_prompt_pack_text() -> Result<String, String> {
+    prompt_catalog::default_text()
+}
+
+#[tauri::command]
 fn save_prompt_pack_text(text: String) -> Result<String, String> {
     prompt_catalog::save_text(&text)
 }
@@ -3600,6 +3605,7 @@ pub fn run() {
             get_setup_profile_text,
             export_setup_profile_text,
             get_prompt_pack_text,
+            get_default_prompt_pack_text,
             save_prompt_pack_text,
             reset_prompt_pack,
             export_prompt_pack_text,

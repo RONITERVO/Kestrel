@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleStop,
   Clock3,
+  Code2,
   Cpu,
   Download,
   ExternalLink,
@@ -46,6 +47,7 @@ import {
   getReport,
   getSetupProfileText,
   getPromptPackText,
+  getDefaultPromptPackText,
   getSystemSnapshot,
   importSetupProfile,
   importSetupProfileText,
@@ -66,6 +68,7 @@ import { ControlPlane, DeveloperConsole } from "./ControlPlane";
 import { MovieStudio } from "./MovieStudio";
 import { MusicStudio } from "./MusicStudio";
 import { ImageStudio } from "./ImageStudio";
+import { PromptPackVisualEditor } from "./PromptPackVisualEditor";
 import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { SetupConsole } from "./Setup";
 import type {
@@ -533,6 +536,9 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
   const [profileText, setProfileText] = useState("");
   const [profileStatus, setProfileStatus] = useState("");
   const [promptText, setPromptText] = useState("");
+  const [lastAppliedPromptText, setLastAppliedPromptText] = useState("");
+  const [defaultPromptText, setDefaultPromptText] = useState("");
+  const [promptView, setPromptView] = useState<"visual" | "raw">("visual");
   const [promptPath, setPromptPath] = useState("");
   const [promptStatus, setPromptStatus] = useState("");
 
@@ -549,7 +555,9 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
   const refreshPromptText = useCallback(async () => {
     setBusy("reload-prompts");
     try {
-      setPromptText(await getPromptPackText());
+      const text = await getPromptPackText();
+      setPromptText(text);
+      setLastAppliedPromptText(text);
     } catch (cause) {
       onError(String(cause));
     } finally {
@@ -561,6 +569,7 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
     void refreshSystem();
     void getSetupProfileText().then(setProfileText).catch((cause) => onError(String(cause)));
     void refreshPromptText();
+    void getDefaultPromptPackText().then(setDefaultPromptText).catch(() => { /* per-prompt "reset to default" stays disabled if this fails */ });
     const timer = window.setInterval(() => void refreshSystem(), 2_500);
     return () => window.clearInterval(timer);
   }, [refreshSystem, onError, refreshPromptText]);
@@ -701,13 +710,13 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
   };
   const savePrompts = async () => {
     setBusy("save-prompts");
-    try { setPromptText(await savePromptPackText(promptText)); setPromptStatus("Validated and applied to future local-model requests. Active requests keep their captured payload."); }
+    try { const next = await savePromptPackText(promptText); setPromptText(next); setLastAppliedPromptText(next); setPromptStatus("Validated and applied to future local-model requests. Active requests keep their captured payload."); }
     catch (cause) { onError(String(cause)); } finally { setBusy(null); }
   };
   const resetPrompts = async () => {
     if (!window.confirm("Reset every app-owned prompt to this Kestrel build's defaults?")) return;
     setBusy("reset-prompts");
-    try { setPromptText(await resetPromptPack()); setPromptStatus("Default prompt pack restored."); }
+    try { const next = await resetPromptPack(); setPromptText(next); setLastAppliedPromptText(next); setPromptStatus("Default prompt pack restored."); }
     catch (cause) { onError(String(cause)); } finally { setBusy(null); }
   };
   const exportPrompts = async () => {
@@ -718,7 +727,7 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
   const importPrompts = async () => {
     if (!promptPath.trim() || !window.confirm("Import and activate this prompt-only pack for future local-model requests?")) return;
     setBusy("import-prompts");
-    try { setPromptText(await importPromptPack(promptPath.trim())); setPromptStatus("Prompt pack validated, imported, and activated."); }
+    try { const next = await importPromptPack(promptPath.trim()); setPromptText(next); setLastAppliedPromptText(next); setPromptStatus("Prompt pack validated, imported, and activated."); }
     catch (cause) { onError(String(cause)); } finally { setBusy(null); }
   };
   const gpu = system?.gpu;
@@ -780,8 +789,14 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
 
       {tab === "prompts" && <section className="settings-panel portability-panel system-tab-panel">
         <div className="settings-heading"><div><span className="eyebrow">Advanced · every local workspace</span><h2>Portable prompt pack</h2><p>One prompt-only JSON document owns Kestrel’s app-authored instructions for chat, Computer Tasks, Research, movie planning and review, image design, music writing, and model qualification. Producer text and generated runtime data remain in their projects.</p></div><FileText/></div>
-        <div className="advanced-warning"><TriangleAlert/><div><strong>Prompts guide models; native authority does not move.</strong><span>Editing wording cannot grant filesystem, network, rendering, or tool access, and cannot bypass schema, path, citation, or planning validation.</span></div></div>
-        <div className="portable-editor-grid"><label className="portable-json"><span>Editable prompt-only JSON</span><textarea value={promptText} disabled={!!busy} onChange={(event) => setPromptText(event.target.value)} spellCheck={false} aria-label="Editable portable prompt pack JSON"/></label><div className="portable-file-controls"><label className="wide-field"><span>Import prompt pack path</span><input value={promptPath} onChange={(event) => setPromptPath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\prompt-packs\\kestrel-prompts.json"/></label>{promptStatus && <div className="profile-status" role="status">{promptStatus}</div>}<button className="quiet-button" disabled={!!busy} onClick={() => void pickPromptPackFile().then((path) => path && setPromptPath(path)).catch((cause) => onError(String(cause)))}><FolderOpen size={15}/> Choose JSON file</button><button className="quiet-button" disabled={!!busy} onClick={() => void refreshPromptText()}><RefreshCw size={15}/> Reload active pack</button><button className="quiet-button" disabled={!!busy || !promptPath.trim()} onClick={() => void importPrompts()}><Upload size={15}/> Import & activate</button><button className="quiet-button" disabled={!!busy} onClick={() => void resetPrompts()}><RefreshCw size={15}/> Restore build defaults</button></div></div>
+        <div className="advanced-warning"><TriangleAlert/><div><strong>Prompts guide models; native authority does not move.</strong><span>Editing wording cannot grant filesystem, network, rendering, or tool access, and cannot bypass schema, path, citation, or planning validation. Prompt keys are fixed by this Kestrel build and cannot be added, renamed, or removed.</span></div></div>
+        <div className="system-tabs prompt-view-toggle"><button className={promptView === "visual" ? "active" : ""} onClick={() => setPromptView("visual")}><Layers3 size={14}/> Visual editor</button><button className={promptView === "raw" ? "active" : ""} onClick={() => setPromptView("raw")}><Code2 size={14}/> Raw JSON</button></div>
+        <div className="portable-editor-grid">
+          {promptView === "visual"
+            ? <PromptPackVisualEditor jsonText={promptText} savedJsonText={lastAppliedPromptText} defaultJsonText={defaultPromptText} disabled={!!busy} onChange={setPromptText}/>
+            : <label className="portable-json"><span>Editable prompt-only JSON</span><textarea value={promptText} disabled={!!busy} onChange={(event) => setPromptText(event.target.value)} spellCheck={false} aria-label="Editable portable prompt pack JSON"/></label>}
+          <div className="portable-file-controls"><label className="wide-field"><span>Import prompt pack path</span><input value={promptPath} onChange={(event) => setPromptPath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\prompt-packs\\kestrel-prompts.json"/></label>{promptStatus && <div className="profile-status" role="status">{promptStatus}</div>}<button className="quiet-button" disabled={!!busy} onClick={() => void pickPromptPackFile().then((path) => path && setPromptPath(path)).catch((cause) => onError(String(cause)))}><FolderOpen size={15}/> Choose JSON file</button><button className="quiet-button" disabled={!!busy} onClick={() => void refreshPromptText()}><RefreshCw size={15}/> Reload active pack</button><button className="quiet-button" disabled={!!busy || !promptPath.trim()} onClick={() => void importPrompts()}><Upload size={15}/> Import & activate</button><button className="quiet-button" disabled={!!busy} onClick={() => void resetPrompts()}><RefreshCw size={15}/> Restore build defaults</button></div>
+        </div>
         <div className="settings-actions"><button className="quiet-button" disabled={!!busy || !promptText.trim()} onClick={() => void savePrompts()}>{busy === "save-prompts" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Validate & apply</button><span/><button className="primary-button" disabled={!!busy || !promptText.trim()} onClick={() => void exportPrompts()}>{busy === "export-prompts" ? <LoaderCircle className="spin" size={15}/> : <Download size={15}/>} Export prompt-only JSON</button></div>
       </section>}
 
