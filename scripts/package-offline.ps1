@@ -72,7 +72,11 @@ Copy-Item -LiteralPath $releaseBinary -Destination $portablePath
 Copy-Item -LiteralPath $installer.FullName -Destination $installerPath
 
 function Get-KestrelAuthenticodeStatus([string]$TargetPath) {
-    $status = & powershell.exe -NoProfile -NonInteractive -Command '& { param([string]$Target) (Get-AuthenticodeSignature -LiteralPath $Target).Status.ToString() }' $TargetPath
+    $authenticodeShell = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if (-not $authenticodeShell) {
+        $authenticodeShell = Get-Command powershell.exe -ErrorAction Stop
+    }
+    $status = & $authenticodeShell.Source -NoProfile -NonInteractive -Command '& { param([string]$Target) (Get-AuthenticodeSignature -LiteralPath $Target).Status.ToString() }' $TargetPath
     if ($LASTEXITCODE -ne 0 -or -not $status) {
         throw "Could not inspect the Authenticode status of $TargetPath."
     }
