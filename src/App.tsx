@@ -795,14 +795,47 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
           {promptView === "visual"
             ? <PromptPackVisualEditor jsonText={promptText} savedJsonText={lastAppliedPromptText} defaultJsonText={defaultPromptText} disabled={!!busy} onChange={setPromptText}/>
             : <label className="portable-json"><span>Editable prompt-only JSON</span><textarea value={promptText} disabled={!!busy} onChange={(event) => setPromptText(event.target.value)} spellCheck={false} aria-label="Editable portable prompt pack JSON"/></label>}
-          <div className="portable-file-controls"><label className="wide-field"><span>Import prompt pack path</span><input value={promptPath} onChange={(event) => setPromptPath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\prompt-packs\\kestrel-prompts.json"/></label>{promptStatus && <div className="profile-status" role="status">{promptStatus}</div>}<button className="quiet-button" disabled={!!busy} onClick={() => void pickPromptPackFile().then((path) => path && setPromptPath(path)).catch((cause) => onError(String(cause)))}><FolderOpen size={15}/> Choose JSON file</button><button className="quiet-button" disabled={!!busy} onClick={() => void refreshPromptText()}><RefreshCw size={15}/> Reload active pack</button><button className="quiet-button" disabled={!!busy || !promptPath.trim()} onClick={() => void importPrompts()}><Upload size={15}/> Import & activate</button><button className="quiet-button" disabled={!!busy} onClick={() => void resetPrompts()}><RefreshCw size={15}/> Restore build defaults</button></div>
+          <aside className="portable-file-controls">
+            <div className="portable-file-heading">
+              <FolderOpen size={15}/>
+              <div>
+                <strong>Pack actions</strong>
+                <small>Import, activate, or reset defaults</small>
+              </div>
+            </div>
+            <label className="wide-field"><span>Import prompt pack path</span><input value={promptPath} onChange={(event) => setPromptPath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\prompt-packs\\kestrel-prompts.json"/></label>
+            {promptStatus && <div className="profile-status" role="status">{promptStatus}</div>}
+            <div className="portable-file-buttons">
+              <button className="quiet-button" disabled={!!busy} onClick={() => void pickPromptPackFile().then((path) => path && setPromptPath(path)).catch((cause) => onError(String(cause)))}><FolderOpen size={15}/> Choose JSON file</button>
+              <button className="quiet-button" disabled={!!busy} onClick={() => void refreshPromptText()}><RefreshCw size={15}/> Reload active pack</button>
+              <button className="quiet-button" disabled={!!busy || !promptPath.trim()} onClick={() => void importPrompts()}><Upload size={15}/> Import & activate</button>
+              <button className="quiet-button" disabled={!!busy} onClick={() => void resetPrompts()}><RefreshCw size={15}/> Restore build defaults</button>
+            </div>
+          </aside>
         </div>
         <div className="settings-actions"><button className="quiet-button" disabled={!!busy || !promptText.trim()} onClick={() => void savePrompts()}>{busy === "save-prompts" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Validate & apply</button><span/><button className="primary-button" disabled={!!busy || !promptText.trim()} onClick={() => void exportPrompts()}>{busy === "export-prompts" ? <LoaderCircle className="spin" size={15}/> : <Download size={15}/>} Export prompt-only JSON</button></div>
       </section>}
 
       {tab === "portable" && <section className="settings-panel portability-panel system-tab-panel">
         <div className="settings-heading"><div><span className="eyebrow">Entire safe app setup</span><h2>Portable setup JSON</h2><p>This editable document covers component locations, archive settings, global model policy, per-model exceptions, Research policy, and every discovered model identity. It intentionally excludes weights, projects, conversations, developer paths, credentials, and access grants.</p></div><ShieldCheck/></div>
-        <div className="portable-editor-grid"><label className="portable-json"><span>Editable profile text</span><textarea value={profileText} onChange={(event) => setProfileText(event.target.value)} spellCheck={false} aria-label="Editable portable setup JSON"/></label><div className="portable-file-controls"><label className="wide-field"><span>Import an existing profile path</span><input value={profilePath} onChange={(event) => setProfilePath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\setup-profiles\\kestrel-profile.json"/></label>{profileStatus && <div className="profile-status" role="status">{profileStatus}</div>}<button className="quiet-button" disabled={!!busy} onClick={() => void refreshProfileText()}>{busy === "refresh-profile" ? <LoaderCircle className="spin" size={15}/> : <RefreshCw size={15}/>} Refresh text from app</button><button className="quiet-button" disabled={!!busy || !profilePath.trim()} onClick={() => void importProfilePath()}><Upload size={15}/> Import file</button></div></div>
+        <div className="portable-editor-grid">
+          <label className="portable-json"><span>Editable profile text</span><textarea value={profileText} onChange={(event) => setProfileText(event.target.value)} spellCheck={false} aria-label="Editable portable setup JSON"/></label>
+          <aside className="portable-file-controls">
+            <div className="portable-file-heading">
+              <ShieldCheck size={15}/>
+              <div>
+                <strong>Setup profile actions</strong>
+                <small>Import or refresh from current state</small>
+              </div>
+            </div>
+            <label className="wide-field"><span>Import an existing profile path</span><input value={profilePath} onChange={(event) => setProfilePath(event.target.value)} placeholder="C:\\Users\\You\\Kestrel Research\\setup-profiles\\kestrel-profile.json"/></label>
+            {profileStatus && <div className="profile-status" role="status">{profileStatus}</div>}
+            <div className="portable-file-buttons">
+              <button className="quiet-button" disabled={!!busy} onClick={() => void refreshProfileText()}>{busy === "refresh-profile" ? <LoaderCircle className="spin" size={15}/> : <RefreshCw size={15}/>} Refresh text from app</button>
+              <button className="quiet-button" disabled={!!busy || !profilePath.trim()} onClick={() => void importProfilePath()}><Upload size={15}/> Import file</button>
+            </div>
+          </aside>
+        </div>
         <div className="settings-actions"><button className="quiet-button" disabled={!!busy || !profileText.trim()} onClick={() => void importProfileText()}>{busy === "import" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Validate & apply edited text</button><span/><button className="primary-button" disabled={!!busy || !profileText.trim()} onClick={() => void exportProfile()}>{busy === "export" ? <LoaderCircle className="spin" size={15}/> : <Download size={15}/>} Export edited JSON</button></div>
       </section>}
     </div>

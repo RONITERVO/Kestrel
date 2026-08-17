@@ -377,13 +377,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .advanced-warning > div { display: flex; flex-direction: column; gap: 3px; }
 .advanced-warning strong { font-size: 10px; }
 .advanced-warning span { font-size: 9px; line-height: 1.45; }
-.settings-actions { display: flex; gap: 8px; align-items: center; margin-top: 20px; }
+.settings-actions { display: flex; gap: 12px; align-items: center; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
 .settings-actions > span { flex: 1; }
 .settings-actions button:disabled { opacity: .45; cursor: default; }
 .portability-panel { margin-top: 0; }
 .portability-panel .settings-heading > svg { width: 28px; color: var(--green); }
-.portability-panel .wide-field { margin-top: 22px; }
-.profile-status { margin-top: 10px; padding: 10px 12px; border: 1px solid #cddbd2; border-radius: 8px; color: #496457; background: var(--green-wash); font-size: 10px; line-height: 1.45; }
+.portability-panel .wide-field { margin-top: 0; }
+.profile-status { margin-top: 4px; padding: 10px 12px; border: 1px solid #cddbd2; border-radius: 8px; color: #496457; background: var(--green-wash); font-size: 10px; line-height: 1.45; }
 .system-tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,253,248,.72); }
 .system-tabs button { height: 34px; padding: 0 15px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; font-size: 10px; font-weight: 750; }
 .system-tabs button.active { color: var(--ink); background: var(--yellow); box-shadow: inset 0 0 0 1px #d39b18; }
@@ -397,16 +397,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .model-exception-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .model-exception-heading > div { display: flex; flex-direction: column; gap: 3px; }
 .model-exception-heading > label { display: flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 700; }
-.portable-editor-grid { min-height: 0; margin-top: 14px; display: grid; grid-template-columns: minmax(0,1.65fr) minmax(260px,.75fr); gap: 16px; }
+.portable-editor-grid { min-height: 0; margin-top: 14px; display: grid; grid-template-columns: minmax(0,1.75fr) minmax(260px,.8fr); gap: 16px; align-items: stretch; }
 .portable-json { min-height: 0; display: flex; flex-direction: column; gap: 6px; font-size: 10px; font-weight: 750; }
 .portable-json textarea { width: 100%; height: 380px; min-height: 240px; resize: vertical; padding: 12px; border: 1px solid #d5d0c5; border-radius: 9px; color: #edf7ef; background: #17211b; font: 10px/1.45 var(--mono); outline: none; }
-.portable-file-controls { display: flex; flex-direction: column; gap: 9px; }
+.portable-file-controls { min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fbf9f4; }
+.portable-file-heading { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line-soft); }
+.portable-file-heading > svg { color: var(--green); flex: 0 0 auto; }
+.portable-file-heading > div { display: flex; flex-direction: column; gap: 2px; }
+.portable-file-heading strong { font-size: 11px; font-weight: 750; color: var(--ink); }
+.portable-file-heading small { font-size: 9px; color: var(--muted); }
 .portable-file-controls .wide-field { margin-top: 0; }
-.portable-file-controls .profile-status { margin-top: 0; }
+.portable-file-buttons { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+.portable-file-buttons button { width: 100%; justify-content: flex-start; padding: 0 12px; height: 34px; font-size: 10.5px; }
 .prompt-view-toggle { margin-bottom: 14px; }
 .prompt-visual-editor { min-height: 0; display: flex; flex-direction: column; gap: 12px; }
 .prompt-visual-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.prompt-visual-toolbar .search-field { flex: 1 1 240px; min-width: 200px; }
+.prompt-visual-toolbar .search-field { flex: 1 1 240px; min-width: 200px; margin: 0; }
 .prompt-visual-categories { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .prompt-visual-categories button { height: 30px; padding: 0 10px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 8px; background: #faf8f3; color: var(--muted); font-size: 10px; font-weight: 750; text-transform: capitalize; cursor: pointer; }
 .prompt-visual-categories button:hover { background: #f0ece3; }
