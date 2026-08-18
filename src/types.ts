@@ -550,6 +550,19 @@ export interface MoviePlanningSnapshot {
   lastRequest: unknown;
   transcript: unknown;
   currentText: string;
+  reviewerReview: MovieIndependentReview | null;
+}
+
+export interface MovieIndependentReviewIssue {
+  clipNumber: number;
+  category: string;
+  finding: string;
+  requiredFix: string;
+}
+
+export interface MovieIndependentReview {
+  summary: string;
+  issues: MovieIndependentReviewIssue[];
 }
 
 export interface MoviePlanningEvent {
@@ -558,6 +571,7 @@ export interface MoviePlanningEvent {
   kind: "token" | "advanced-token" | "reasoning" | "turn-start" | "turn-complete" | "activity" | "tool-result" | "direction-queued" | "checkpoint-requested" | "checkpoint-saved";
   stage: "planning" | "thinking" | "producer" | "native-check" | "checkpoint" | "model-text" | "tool-arguments" | "list" | "read" | "read_many" | "write" | "write_batch" | "delete" | "check" | "submit";
   text: string;
+  modelRole?: "reviewer";
   session: number;
   step: number;
   createdAt: string;

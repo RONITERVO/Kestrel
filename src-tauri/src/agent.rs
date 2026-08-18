@@ -8,6 +8,7 @@ use crate::{
     attachments::AttachmentStore,
     model::ModelInfo,
     models::{ComputerTaskAccess, ComputerTaskEvent, ComputerTaskRequest, ControlSettings},
+    prompt_catalog::{self, PromptId},
     runtime::{authorized, RuntimeManager},
     workspace::WorkspaceStore,
 };
@@ -75,9 +76,12 @@ pub async fn run(
         .cloned()
         .ok_or_else(|| "The selected model is no longer in the local catalog.".to_string())?;
     let objective = match continuation {
-        Some(continuation) => format!(
-            "Original objective:\n{}\n\n{}",
-            request.objective, continuation
+        Some(continuation) => prompt_catalog::render(
+            PromptId::ComputerObjectiveContinuation,
+            &[
+                ("objective", &request.objective),
+                ("continuation", &continuation),
+            ],
         ),
         None => request.objective.clone(),
     };
@@ -118,23 +122,20 @@ pub async fn run(
     let attachment_instruction = if context_attachments.is_empty() {
         String::new()
     } else {
-        " Attached documents are durable local inputs. Native image/audio content is included when this model supports it. Use read_attachment with an attachment ID and character range when an extracted document preview is incomplete; never claim to have interpreted a metadata-only binary.".into()
+        prompt_catalog::text(PromptId::ComputerAttachmentNotice)
     };
-    let system = format!(
-        "You are Kestrel's offline Windows computer assistant. You have {access_label}. Use tools to complete the objective. \
-         Never claim that an action happened unless a tool result confirms it. Inspect before changing. Prefer the smallest \
-         reversible change. Do not invent paths. If a missing decision could materially change the target, scope, output, safety, \
-         or an irreversible action, call ask_user before taking the affected action. Ask one focused question, include two to four \
-         concrete options when possible, and recommend the safest useful option. Do not ask about immaterial preferences when a \
-         reversible default is available. Never put a clarification only in prose: call ask_user. When complete, answer with a \
-         concise summary and exact artifact paths, and do not append an optional follow-up question. \
-         Workspace roots: {}{}",
-        if settings.agent_workspace_roots.is_empty() {
-            "full access explicitly enabled".into()
-        } else {
-            settings.agent_workspace_roots.join("; ")
-        },
-        attachment_instruction,
+    let roots = if settings.agent_workspace_roots.is_empty() {
+        "full access explicitly enabled".into()
+    } else {
+        settings.agent_workspace_roots.join("; ")
+    };
+    let system = prompt_catalog::render(
+        PromptId::ComputerSystem,
+        &[
+            ("access_label", access_label),
+            ("workspace_roots", &roots),
+            ("attachment_instruction", &attachment_instruction),
+        ],
     );
     let mut messages = vec![
         json!({"role":"system","content":system}),
@@ -511,22 +512,50 @@ fn event(
 
 fn tool_schemas(access: Access, has_attachments: bool) -> Vec<Value> {
     let mut tools = vec![
-        schema("ask_user", "Pause safely and ask one decision-critical clarification. Use this instead of guessing when different answers materially change the target, scope, format, safety, or an irreversible action.", json!({"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","minItems":2,"maxItems":4,"items":{"type":"string"}},"recommended_index":{"type":"integer","minimum":0,"maximum":3}},"required":["question"]})),
-        schema("list_directory", "List up to 500 files and folders at an absolute path.", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})),
-        schema("read_file", "Read a UTF-8 text file no larger than 1 MiB.", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})),
-        schema("write_file", "Write a UTF-8 file no larger than 5 MiB. Existing content receives a timestamped recovery copy.", json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})),
-        schema("create_directory", "Create a directory and missing parents.", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})),
-        schema("move_path", "Move or rename a path. The destination must not already exist.", json!({"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"]})),
-        schema("copy_file", "Copy one file. The destination must not already exist.", json!({"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"]})),
+        schema(
+            "ask_user",
+            &prompt_catalog::text(PromptId::ToolAskUser),
+            json!({"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","minItems":2,"maxItems":4,"items":{"type":"string"}},"recommended_index":{"type":"integer","minimum":0,"maximum":3}},"required":["question"]}),
+        ),
+        schema(
+            "list_directory",
+            &prompt_catalog::text(PromptId::ToolListDirectory),
+            json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
+        ),
+        schema(
+            "read_file",
+            &prompt_catalog::text(PromptId::ToolReadFile),
+            json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
+        ),
+        schema(
+            "write_file",
+            &prompt_catalog::text(PromptId::ToolWriteFile),
+            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}),
+        ),
+        schema(
+            "create_directory",
+            &prompt_catalog::text(PromptId::ToolCreateDirectory),
+            json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
+        ),
+        schema(
+            "move_path",
+            &prompt_catalog::text(PromptId::ToolMovePath),
+            json!({"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"]}),
+        ),
+        schema(
+            "copy_file",
+            &prompt_catalog::text(PromptId::ToolCopyFile),
+            json!({"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"]}),
+        ),
     ];
     if has_attachments {
-        tools.push(schema("read_attachment", "Read a bounded character range from a durable attachment's local text extraction. Use the attachment ID shown in the objective. This cannot interpret metadata-only binaries.", json!({"type":"object","properties":{"attachment_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100000}},"required":["attachment_id"]})));
+        tools.push(schema("read_attachment", &prompt_catalog::text(PromptId::ToolReadAttachment), json!({"type":"object","properties":{"attachment_id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100000}},"required":["attachment_id"]})));
     }
     if access == Access::Full {
         tools.extend([
-            schema("run_program", "Run a Windows program directly with an argument array and captured output. No command shell is used.", json!({"type":"object","properties":{"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":600}},"required":["program","args","cwd"]})),
-            schema("list_processes", "List Windows processes using the operating-system task list.", json!({"type":"object","properties":{}})),
-            schema("open_path", "Open an existing file or folder visibly with Windows Explorer.", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})),
+            schema("run_program", &prompt_catalog::text(PromptId::ToolRunProgram), json!({"type":"object","properties":{"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":600}},"required":["program","args","cwd"]})),
+            schema("list_processes", &prompt_catalog::text(PromptId::ToolListProcesses), json!({"type":"object","properties":{}})),
+            schema("open_path", &prompt_catalog::text(PromptId::ToolOpenPath), json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})),
         ]);
     }
     tools
@@ -935,10 +964,12 @@ fn compact_messages(messages: Vec<Value>, max_chars: usize) -> Vec<Value> {
             }
         }
     }
-    let memory = format!(
-        "COMPACT SHARED MEMORY — {} earlier action groups were removed from the live KV context but remain in Kestrel's durable transcript. Confirm important state with tools before changing it. Earlier tool results:\n{}",
-        groups.len(),
-        ledger.join("\n---\n")
+    let memory = prompt_catalog::render(
+        PromptId::ComputerCompaction,
+        &[
+            ("omitted_count", &groups.len().to_string()),
+            ("tool_results", &ledger.join("\n---\n")),
+        ],
     );
     let mut output = prefix;
     if let Some(system) = output.first_mut() {

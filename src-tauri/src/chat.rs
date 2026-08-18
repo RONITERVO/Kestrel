@@ -4,6 +4,7 @@ use crate::{
     attachments::{AttachmentStore, MediaCache},
     model::ModelInfo,
     models::{ChatMessage, ChatStreamEvent, ControlSettings, StartChatRequest},
+    prompt_catalog::{self, PromptId},
     runtime::{authorized, RuntimeManager},
     workspace::WorkspaceStore,
 };
@@ -12,8 +13,6 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
-
-const CHAT_SYSTEM_PROMPT: &str = "You are Kestrel, a capable fully offline assistant. Be clear, practical, and honest about uncertainty. Before committing to an answer, notice decision-critical ambiguity. Ask exactly one focused question per turn instead of guessing when different interpretations would materially change the target, scope, safety, irreversible action, required format, or success criteria. Choose the single most important ambiguity; never bundle several numbered questions. When useful, put two or three concise choices inside that one question and recommend one. Do not interrogate the user or ask about preferences that do not matter: take a safe, reversible default and state it. Never claim an action occurred in ordinary chat; computer actions require Computer Tasks.";
 
 pub struct ChatStreamJob {
     pub app: Option<AppHandle>,
@@ -58,9 +57,8 @@ impl ChatStreamJob {
             .and_then(|reserved| settings.context_window.checked_sub(reserved))
             .unwrap_or(1_024)
             .saturating_mul(4) as usize;
-        let history_budget = prompt_chars
-            .max(4_096)
-            .saturating_sub(CHAT_SYSTEM_PROMPT.len());
+        let system_prompt = prompt_catalog::text(PromptId::ChatSystem);
+        let history_budget = prompt_chars.max(4_096).saturating_sub(system_prompt.len());
         let (history, omitted, attachment_budget) =
             fit_chat_history(&session.messages, history_budget.max(2_048));
         let included = history.len();
@@ -71,7 +69,7 @@ impl ChatStreamJob {
             .ok_or_else(|| "The selected model is no longer in the local catalog.".to_string())?;
         let preparation = tokio::task::spawn_blocking(move || {
             let mut messages = Vec::with_capacity(history.len() + 1);
-            messages.push(json!({"role":"system","content":CHAT_SYSTEM_PROMPT}));
+            messages.push(json!({"role":"system","content":system_prompt}));
             let mut attachment_notices = Vec::new();
             let mut media_cache = MediaCache::default();
             for message in history {

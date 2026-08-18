@@ -8,6 +8,7 @@ use super::{
     model_stream::{reasoning_delta, OpenAiSseDecoder, OpenAiStreamEvent},
     write_json_atomic, MovieSettings, StudioError, MOVIE_THINKING_BUDGET,
 };
+use crate::prompt_catalog::{PromptId, render};
 use crate::runtime::{authorized, ModelConnection};
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -439,9 +440,7 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
             object.remove("reasoning_content");
         }
         messages.push(history_message);
-        messages.push(json!({"role":"user","content":format!(
-            "The {label} submission failed validation: {last_error}. Correct it and call {tool_name}; do not answer in prose.",
-        )}));
+        messages.push(json!({"role":"user","content":render(PromptId::StudioSubmissionCorrection, &[("label", label), ("error", &last_error), ("tool_name", tool_name)])}));
     }
     Err(StudioError::Planning(format!(
         "{} remained invalid after three attempts: {last_error}",

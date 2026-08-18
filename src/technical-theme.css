@@ -212,6 +212,13 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .advanced-toggle > span { border: 1px solid #111; background: #cfd3d1; }
 .advanced-toggle input:checked + span { background: var(--tech-green); }
 .wide-field input, .number-setting input, .dev-workspace input, .dev-workspace textarea { color: #111; border: var(--tech-rule); background: #fff; }
+.portable-file-controls { color: #111; border: var(--tech-rule); border-radius: 8px; background: #f5f6f2; }
+.portable-file-heading { border-bottom: 1px solid #111; }
+.portable-file-heading > svg { color: #111; }
+.portable-file-buttons .quiet-button { border: var(--tech-rule); background: #fff; box-shadow: 1px 1px 0 #000; }
+.settings-actions { border-top: var(--tech-rule); }
+.prompt-visual-list, .prompt-visual-detail { border: var(--tech-rule); border-radius: 8px; }
+.prompt-visual-list button.active { border-color: #111; }
 .dev-workspace > label, .dev-root { color: #343a3e; }
 .diagnostic-output { border: var(--tech-rule); border-radius: 8px; background: #101416; box-shadow: var(--tech-shadow); }
 .diagnostic-output > div { color: #fff; border-bottom: 1px solid #fff; background: #101416; }

@@ -1,4 +1,4 @@
-use super::{write_json_atomic, StudioError};
+use super::{write_json_atomic, MovieCodeReview, StudioError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,9 +35,17 @@ pub struct MoviePlanningEvent {
     pub kind: PlanningEventKind,
     pub stage: PlanningStage,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_role: Option<PlanningModelRole>,
     pub session: u32,
     pub step: u32,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum PlanningModelRole {
+    #[serde(rename = "reviewer")]
+    Reviewer,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -134,6 +142,7 @@ pub struct MoviePlanningSnapshot {
     pub last_request: Value,
     pub transcript: Value,
     pub current_text: String,
+    pub reviewer_review: Option<MovieCodeReview>,
 }
 
 pub(super) fn load_control(path: &Path) -> Result<PlanningControl, StudioError> {
@@ -250,6 +259,19 @@ pub(super) fn read_advanced_json(path: &Path) -> Result<Value, StudioError> {
     serde_json::from_slice(&bytes).map_err(StudioError::from)
 }
 
+/// Loads the independent reviewer's result as a typed `MovieCodeReview`, degrading to
+/// `None` (rather than exposing a shape-mismatched `Value`) when the file is missing,
+/// oversized, or fails to parse — the UI treats "no review yet" and "review unreadable"
+/// the same way.
+pub(super) fn read_reviewer_review(path: &Path) -> Option<MovieCodeReview> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_ADVANCED_DOCUMENT_BYTES {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 pub(super) fn read_prompt_document(
     path: &Path,
     id: &str,
@@ -341,6 +363,7 @@ mod tests {
             kind: PlanningEventKind::AdvancedToken,
             stage: PlanningStage::ToolArguments,
             text: "{\"action\":".into(),
+            model_role: Some(PlanningModelRole::Reviewer),
             session: 2,
             step: 9,
             created_at: "2026-01-01T00:00:00Z".into(),
@@ -348,6 +371,7 @@ mod tests {
         let value = serde_json::to_value(event).unwrap();
         assert_eq!(value["kind"], "advanced-token");
         assert_eq!(value["stage"], "tool-arguments");
+        assert_eq!(value["modelRole"], "reviewer");
         assert_eq!(value["projectId"], "movie-1");
     }
 

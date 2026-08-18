@@ -3,6 +3,7 @@ use crate::models::{
     Finding, ResearchDraft, ResearchProgress, ResearchReport, ResearchSection, ResearchSettings,
     RunResearchRequest, Source, Term, TimelineItem,
 };
+use crate::prompt_catalog::{self, PromptId};
 use crate::runtime::{authorized, ModelConnection};
 use crate::store::{slugify, ResearchStore, StoreError};
 use chrono::Utc;
@@ -225,8 +226,8 @@ impl ResearchHarness {
                 2,
             )?;
             let planning_messages = vec![
-                json!({"role":"system","content":format!("You are the planning pass for Kestrel's single-context offline researcher. Design complementary Wikipedia research lanes for breadth without duplicating work. Each lane needs a short name, a focused Wikipedia search query, and a one-sentence purpose. Cover mechanisms, chronology, competing interpretations, limitations, and useful context when relevant. Return strict JSON only. The archive snapshot is {}.", settings.wikipedia_snapshot)}),
-                json!({"role":"user","content":format!("Question: {query}\nCreate exactly {} distinct research lanes.", settings.research_lanes)}),
+                json!({"role":"system","content":prompt_catalog::render(PromptId::ResearchPlanningSystem, &[("archive_snapshot", &settings.wikipedia_snapshot)])}),
+                json!({"role":"user","content":prompt_catalog::render(PromptId::ResearchPlanningUser, &[("query", query), ("lane_count", &settings.research_lanes.to_string())])}),
             ];
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
@@ -258,8 +259,14 @@ impl ResearchHarness {
             "No preplanned lanes; use the tools adaptively.".into()
         };
         let system = system_prompt(thorough, expedition, &settings, &connection.model_label);
-        let user = format!(
-            "Research question: {query}\n\nExisting-library matches:\n{related_context}\n\nShared lane memory (candidate references, not evidence until opened):\n{lane_context}\n\nUse search_archive and read_source. Inspect at least {required_wikipedia} distinct relevant Wikipedia articles. If prior research exists, inspect it and make a concrete improvement. Distinguish sourced statements from inference, explain specialist terms, preserve uncertainty, and remember the archive cutoff. Do not claim the result is final or the best possible."
+        let user = prompt_catalog::render(
+            PromptId::ResearchQuestion,
+            &[
+                ("query", query),
+                ("related_context", &related_context),
+                ("lane_context", &lane_context),
+                ("required_wikipedia", &required_wikipedia.to_string()),
+            ],
         );
         let mut messages = vec![
             json!({"role":"system","content":system}),
@@ -309,7 +316,7 @@ impl ResearchHarness {
                     break;
                 }
                 required_tool = "search_archive";
-                messages.push(json!({"role":"user","content":format!("The required archive function was not called. You have inspected {wikipedia_count} Wikipedia articles. Search the local archive now, then inspect at least {required_wikipedia} distinct relevant articles before synthesis.")}));
+                messages.push(json!({"role":"user","content":prompt_catalog::render(PromptId::ResearchRequiredTool, &[("wikipedia_count", &wikipedia_count.to_string()), ("required_wikipedia", &required_wikipedia.to_string())])}));
                 continue;
             }
             let mut searched = false;
@@ -423,7 +430,7 @@ impl ResearchHarness {
                 "search_archive"
             };
             if wikipedia_after == wikipedia_before && !searched {
-                messages.push(json!({"role":"user","content":"That tool call did not add a new inspected Wikipedia article. Search with a different focused query and choose a new sourceRef."}));
+                messages.push(json!({"role":"user","content":prompt_catalog::text(PromptId::ResearchNewSource)}));
             }
         }
 
@@ -454,15 +461,21 @@ impl ResearchHarness {
             ),
             4,
         )?;
-        messages.push(json!({
-            "role":"user",
-            "content":format!(
-                "Now publish the research document as strict JSON. You inspected these valid citation IDs: {}. Every finding, section, and timeline entry must cite only these IDs. The improvement field must name a concrete improvement over {}. Use plain language without flattening uncertainty. Keep the short answer concise, but make the sections genuinely explanatory. {}",
-                evidence.iter().map(|source| format!("{} ({})", source.id, source.title)).collect::<Vec<_>>().join(", "),
-                parent.as_ref().map(|item| format!("edition {} of {}", item.edition, item.title)).unwrap_or_else(|| "a blank first-edition baseline".into()),
-                if expedition { "This is a solo expedition: integrate the distinct lanes, compare conflicts, state coverage gaps, and use the larger output budget for depth rather than repetition." } else { "" }
-            )
-        }));
+        let evidence_text = evidence
+            .iter()
+            .map(|source| format!("{} ({})", source.id, source.title))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let baseline = parent
+            .as_ref()
+            .map(|item| format!("edition {} of {}", item.edition, item.title))
+            .unwrap_or_else(|| "a blank first-edition baseline".into());
+        let expedition_text = if expedition {
+            "This is a solo expedition: integrate the distinct lanes, compare conflicts, state coverage gaps, and use the larger output budget for depth rather than repetition."
+        } else {
+            ""
+        };
+        messages.push(json!({"role":"user","content":prompt_catalog::render(PromptId::ResearchSynthesis, &[("evidence", &evidence_text), ("baseline", &baseline), ("expedition_instruction", expedition_text)])}));
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
             result = self.complete(connection, &messages, None, CompletionOptions { response_format: Some(report_schema(expedition)), max_tokens: max_output, thinking_budget, parallel_tool_calls: false, tool_choice: None }) => result?,
@@ -476,7 +489,7 @@ impl ResearchHarness {
             Ok(draft) => draft,
             Err(first_error) => {
                 messages.push(json!({"role":"assistant","content":content}));
-                messages.push(json!({"role":"user","content":if expedition { "The previous JSON was incomplete. Retry once with concise but complete prose that fits the schema. Return the strict JSON object only; preserve the evidence IDs, lane coverage, uncertainty, and concrete improvement." } else { "The previous JSON was incomplete. Retry once with compact prose: at most 4 findings, 4 sections, 2 paragraphs per section, 8 timeline items, and 8 terms. Return the complete strict JSON object only. Preserve the same evidence IDs and concrete improvement." }}));
+                messages.push(json!({"role":"user","content":prompt_catalog::text(if expedition { PromptId::ResearchExpeditionRetry } else { PromptId::ResearchRetry })}));
                 let retry = tokio::select! {
                     _ = cancel.cancelled() => return Err(ResearchError::Cancelled),
                     result = self.complete(connection, &messages, None, CompletionOptions { response_format: Some(report_schema(expedition)), max_tokens: if expedition { max_output } else { 9_000 }, thinking_budget: 0, parallel_tool_calls: false, tool_choice: None }) => result?,
@@ -779,18 +792,34 @@ fn system_prompt(
     settings: &ResearchSettings,
     model_label: &str,
 ) -> String {
-    format!(
-        "You are Kestrel's offline research model, running as {model_label}. You have two tools only: search_archive finds both immutable Kestrel reports and the configured English Wikipedia archive; read_source opens one result. Work entirely from these tools. Never imply internet access or knowledge newer than the archive. Read before citing. Wikipedia is tertiary: attribute it and preserve disputes, uncertainty, dates, and the snapshot cutoff. Search with multiple phrasings when useful. Related prior research is context to improve, never authority. Always make at least one concrete improvement and identify open questions; never call a report final or best possible. Use simple explanations first and define specialist language. Research depth: {}. {} Harness: {HARNESS_VERSION}.",
-        if expedition { "solo expedition" } else if thorough { "thorough" } else { "focused" },
-        if expedition { format!("Act as one lead researcher coordinating {} complementary lanes inside one shared GPU context. Treat the supplied lane map as candidate memory, inspect before citing, keep a coverage checklist, resolve duplication and disagreement, and aim for at least {} distinct Wikipedia sources.", settings.research_lanes, settings.source_target) } else { String::new() }
+    let depth = if expedition {
+        "solo expedition"
+    } else if thorough {
+        "thorough"
+    } else {
+        "focused"
+    };
+    let expedition_instruction = if expedition {
+        format!("Act as one lead researcher coordinating {} complementary lanes inside one shared GPU context. Treat the supplied lane map as candidate memory, inspect before citing, keep a coverage checklist, resolve duplication and disagreement, and aim for at least {} distinct Wikipedia sources.", settings.research_lanes, settings.source_target)
+    } else {
+        String::new()
+    };
+    prompt_catalog::render(
+        PromptId::ResearchSystem,
+        &[
+            ("model_label", model_label),
+            ("depth", depth),
+            ("expedition_instruction", &expedition_instruction),
+            ("harness_version", HARNESS_VERSION),
+        ],
     )
 }
 
 fn tool_schema(expedition: bool, max_source_chars: u32) -> Value {
     let max_chars = if expedition { max_source_chars } else { 40_000 };
     json!([
-      {"type":"function","function":{"name":"search_archive","description":"Search local Wikipedia and existing Kestrel research. Use several focused searches rather than one broad query.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"Short article title or focused keywords"},"limit":{"type":"integer","minimum":1,"maximum":12}},"required":["query"]}}},
-      {"type":"function","function":{"name":"read_source","description":"Open a sourceRef returned by search_archive. Reading is required before citation.","parameters":{"type":"object","properties":{"source_ref":{"type":"string","description":"Exact sourceRef from search_archive"},"section":{"type":"string","description":"Optional heading for a focused excerpt"},"max_chars":{"type":"integer","minimum":2000,"maximum":max_chars}},"required":["source_ref"]}}}
+      {"type":"function","function":{"name":"search_archive","description":prompt_catalog::text(PromptId::ResearchToolSearch),"parameters":{"type":"object","properties":{"query":{"type":"string","description":prompt_catalog::text(PromptId::ResearchToolSearchQuery)},"limit":{"type":"integer","minimum":1,"maximum":12}},"required":["query"]}}},
+      {"type":"function","function":{"name":"read_source","description":prompt_catalog::text(PromptId::ResearchToolRead),"parameters":{"type":"object","properties":{"source_ref":{"type":"string","description":prompt_catalog::text(PromptId::ResearchToolSourceRef)},"section":{"type":"string","description":prompt_catalog::text(PromptId::ResearchToolSection)},"max_chars":{"type":"integer","minimum":2000,"maximum":max_chars}},"required":["source_ref"]}}}
     ])
 }
 

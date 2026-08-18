@@ -88,14 +88,14 @@ pub(super) async fn run(
         lifecycle.ensure_session_budget()?;
         archive_previous_transcript(&workspace, &transcript_path, lifecycle.session())?;
         let instruction = if lifecycle.session() == 1 && !resuming_existing_workspace {
-            prompts::INITIAL_INSTRUCTION
+            &prompts::initial_instruction()
         } else {
-            prompts::RESUME_INSTRUCTION
+            &prompts::resume_instruction()
         };
         let mut transcript = AgentTranscript::begin(
             transcript_path.clone(),
             lifecycle.absolute_step(),
-            prompts::MOVIE_AGENT_SYSTEM,
+            &prompts::movie_agent_system(),
             instruction,
         )?;
         for _ in 0..MOVIE_AGENT_SESSION_STEPS {
@@ -173,7 +173,7 @@ pub(super) async fn run(
             transcript.push(turn.history_message(), step)?;
             if !turn.has_tool_calls() {
                 transcript.push(
-                    json!({"role":"user","content":prompts::CONTINUE_WITH_TOOLS}),
+                    json!({"role":"user","content":prompts::continue_with_tools()}),
                     step,
                 )?;
                 if lifecycle.record_model_turn(false) == TurnDecision::RestartSession {
@@ -449,7 +449,7 @@ async fn review_submission(
     let reviewer_runtime = request
         .runtime_settings
         .for_model(request.reviewer_model_id);
-    studio.emit_planning(
+    studio.emit_reviewer_planning(
         &project.id,
         PlanningEventKind::TurnStart,
         PlanningStage::Thinking,
@@ -473,7 +473,7 @@ async fn review_submission(
         _ = request.cancel.cancelled() => Err(StudioError::Cancelled),
     };
     drop(lease);
-    studio.emit_planning(
+    studio.emit_reviewer_planning(
         &project.id,
         PlanningEventKind::TurnComplete,
         PlanningStage::Planning,

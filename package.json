@@ -1,7 +1,7 @@
 {
   "name": "kestrel-local",
   "private": true,
-  "version": "0.15.0",
+  "version": "0.16.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,8 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package:offline": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-offline.ps1"
+    "package:offline": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-offline.ps1",
+    "launch": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/launch-from-shortcut.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
