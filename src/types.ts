@@ -153,6 +153,26 @@ export interface SetupProgress {
   bytesPerSecond: number;
 }
 
+export type ThinkingLevel = "off" | "low" | "medium" | "high" | "max";
+
+export function thinkingBudgetForLevel(level: ThinkingLevel, maxOutputTokens = 32768): number {
+  switch (level) {
+    case "off": return 0;
+    case "low": return Math.min(2048, maxOutputTokens);
+    case "medium": return Math.min(8192, maxOutputTokens);
+    case "high": return Math.min(16384, maxOutputTokens);
+    case "max": return maxOutputTokens;
+  }
+}
+
+export function thinkingLevelFromBudget(budget: number): ThinkingLevel {
+  if (budget <= 0) return "off";
+  if (budget <= 2048) return "low";
+  if (budget <= 8192) return "medium";
+  if (budget <= 20000) return "high";
+  return "max";
+}
+
 export interface MovieSettings {
   width: number;
   height: number;
@@ -164,6 +184,7 @@ export interface MovieSettings {
   topP: number;
   topK: number;
   thinkingBudget: number;
+  thinkingLevel?: ThinkingLevel;
   maxOutputTokens: number;
   comfyRoot: string;
   refImageSize: "match" | "max";
@@ -1074,6 +1095,7 @@ export interface ControlSettings {
   contextWindow: number;
   maxOutputTokens: number;
   threads: number;
+  thinkingLevel: ThinkingLevel;
   modelOverrides: ModelRuntimeOverride[];
   projectRoot: string;
   agentWorkspaceRoots: string[];
@@ -1087,6 +1109,7 @@ export interface ModelRuntimeOverride {
   contextWindow?: number;
   maxOutputTokens?: number;
   threads?: number;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface ManagedRuntimeSnapshot {
@@ -1175,6 +1198,7 @@ export interface StartChatRequest {
   topP: number;
   topK: number;
   maxOutputTokens: number;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface ChatStart {
@@ -1198,6 +1222,7 @@ export interface ComputerTaskRequest {
   access: "workspace" | "full";
   maxSteps: number;
   maxOutputTokens: number;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface ResumeComputerTaskRequest {

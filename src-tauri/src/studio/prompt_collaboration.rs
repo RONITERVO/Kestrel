@@ -40,6 +40,12 @@ impl PromptInferenceAllowance {
 
 fn prompt_inference_allowance(settings: &ControlSettings) -> PromptInferenceAllowance {
     let configured_limit = PROMPT_COLLABORATOR_MAX_TOKENS.min(settings.max_output_tokens);
+    if settings.thinking_level.is_off() {
+        return PromptInferenceAllowance {
+            thinking_budget_tokens: 0,
+            visible_output_tokens: PROMPT_COLLABORATOR_VISIBLE_OUTPUT_TOKENS.min(configured_limit),
+        };
+    }
     let thinking_budget =
         PROMPT_COLLABORATOR_THINKING_BUDGET.min(configured_limit.saturating_mul(3) / 4);
     let visible_output_allowance = PROMPT_COLLABORATOR_VISIBLE_OUTPUT_TOKENS
@@ -159,7 +165,7 @@ impl PromptDraftJob {
         let max_tokens = allowance.generation_limit();
         let thinking_budget_tokens = allowance.thinking_budget_tokens;
         let (temperature, top_p, top_k) = sampling(request.target);
-        let body = json!({
+        let mut body = json!({
             "model": lease.connection.model_id,
             "messages": messages,
             "temperature": temperature,
@@ -170,6 +176,16 @@ impl PromptDraftJob {
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        if settings.thinking_level.is_off() {
+            body["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
+            body["reasoning_effort"] = json!("off");
+        } else {
+            body["reasoning_effort"] = json!(settings.thinking_level.as_str());
+            body["chat_template_kwargs"] = json!({
+                "reasoning_effort": settings.thinking_level.as_str(),
+                "enable_thinking": true
+            });
+        }
         let receipt = PromptDraftReceipt {
             target: request.target,
             mode: request.mode,
@@ -676,6 +692,15 @@ mod tests {
         assert_eq!(allowance.thinking_budget_tokens, 24_576);
         assert_eq!(allowance.visible_output_tokens, 8_192);
         assert!(allowance.generation_limit() <= uncapped.max_output_tokens);
+
+        let off = ControlSettings {
+            max_output_tokens: 16_384,
+            thinking_level: crate::models::ThinkingLevel::Off,
+            ..ControlSettings::default()
+        };
+        let allowance_off = prompt_inference_allowance(&off);
+        assert_eq!(allowance_off.thinking_budget_tokens, 0);
+        assert_eq!(allowance_off.visible_output_tokens, 8_192);
     }
 
     #[test]

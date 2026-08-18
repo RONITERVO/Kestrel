@@ -6,7 +6,7 @@
 
 use super::{
     model_stream::{reasoning_delta, OpenAiSseDecoder, OpenAiStreamEvent},
-    write_json_atomic, MovieSettings, StudioError, MOVIE_THINKING_BUDGET,
+    write_json_atomic, MovieSettings, StudioError,
 };
 use crate::prompt_catalog::{PromptId, render};
 use crate::runtime::{authorized, ModelConnection};
@@ -164,7 +164,7 @@ pub(super) fn movie_agent_request(
     settings: &MovieSettings,
     runtime_max_output_tokens: u32,
 ) -> Value {
-    json!({
+    let mut req = json!({
         "model": model_id,
         "messages": messages,
         "tools": tools,
@@ -175,8 +175,20 @@ pub(super) fn movie_agent_request(
         "top_p": settings.top_p,
         "top_k": settings.top_k,
         "max_tokens": settings.max_output_tokens.min(runtime_max_output_tokens),
-        "thinking_budget_tokens": MOVIE_THINKING_BUDGET,
-    })
+        "thinking_budget_tokens": settings.thinking_budget,
+    });
+    if settings.thinking_budget == 0 {
+        req["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
+        req["reasoning_effort"] = json!("off");
+    } else {
+        let level = crate::models::ThinkingLevel::from_budget(settings.thinking_budget);
+        req["reasoning_effort"] = json!(level.as_str());
+        req["chat_template_kwargs"] = json!({
+            "reasoning_effort": level.as_str(),
+            "enable_thinking": true
+        });
+    }
+    req
 }
 
 pub(super) struct StreamCompletionRequest<'a> {

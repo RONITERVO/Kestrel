@@ -610,10 +610,7 @@ impl MovieSettings {
         self.temperature = self.temperature.clamp(0.0, 2.0);
         self.top_p = self.top_p.clamp(0.05, 1.0);
         self.top_k = self.top_k.clamp(1, 200);
-        // Studio's durable agent protocol is acceptance-tested at its full reasoning mode. Keep
-        // the serialized field for project/profile compatibility, but never permit a movie
-        // request (including an old saved one) to disable it.
-        self.thinking_budget = MOVIE_THINKING_BUDGET;
+        self.thinking_budget = self.thinking_budget.min(MOVIE_THINKING_BUDGET);
         self.max_output_tokens = self.max_output_tokens.clamp(1_024, 32_768);
         let root = PathBuf::from(&self.comfy_root);
         if !root.is_absolute() {
@@ -5769,14 +5766,21 @@ mod tests {
     }
 
     #[test]
-    fn movie_thinking_is_always_maximum() {
-        let settings = MovieSettings {
+    fn movie_thinking_budget_supports_custom_levels_and_off() {
+        let settings_off = MovieSettings {
             thinking_budget: 0,
             ..MovieSettings::default()
         }
         .validate(true)
         .unwrap();
-        assert_eq!(settings.thinking_budget, MOVIE_THINKING_BUDGET);
+        assert_eq!(settings_off.thinking_budget, 0);
+        let settings_max = MovieSettings {
+            thinking_budget: 99_999,
+            ..MovieSettings::default()
+        }
+        .validate(true)
+        .unwrap();
+        assert_eq!(settings_max.thinking_budget, MOVIE_THINKING_BUDGET);
         assert_eq!(
             MovieSettings::default().thinking_budget,
             MOVIE_THINKING_BUDGET

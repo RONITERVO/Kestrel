@@ -2987,6 +2987,7 @@ async fn resume_computer_task(
         max_steps: settings.agent_max_steps,
         max_output_tokens: settings.agent_max_output_tokens,
         attachment_ids: run.attachments.iter().map(|item| item.id.clone()).collect(),
+        thinking_level: None,
     };
     let continuation = task_continuation(&run, answer);
     let cancel = CancellationToken::new();

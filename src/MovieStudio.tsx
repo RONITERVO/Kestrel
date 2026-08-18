@@ -16,11 +16,12 @@ import {
 import { MovieTimeline } from "./MovieTimeline";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
+import { thinkingBudgetForLevel, thinkingLevelFromBudget } from "./types";
 import type {
   MovieClipSuggestion, MovieCopilotEvent, MovieCopilotProposal, MovieCopilotReceipt, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
   ModelCompatibility, ModelInfo, MovieImageAssetGeneration, MovieProject, MovieReferenceAsset, MovieRenderPreviewEvent, MovieSettings,
   MovieSummary, PendingMovieReference, PlannedClip, PromptDraftMode, PromptDraftReceipt,
-  RenderedClip,
+  RenderedClip, ThinkingLevel,
 } from "./types";
 
 type PromptField = { kind: "story" } | { kind: "imageAsset" } | {
@@ -636,8 +637,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       <NumberField label="Seed (0 = random)" value={settings.seed} min={0} max={Number.MAX_SAFE_INTEGER} step={1} onChange={(value) => onSettings({ ...settings, seed: value })} />
       <NumberField label="Temperature" value={settings.temperature} min={0} max={2} step={0.05} onChange={(value) => onSettings({ ...settings, temperature: value })} />
       <NumberField label="Top P" value={settings.topP} min={0.05} max={1} step={0.01} onChange={(value) => onSettings({ ...settings, topP: value })} />
-      <NumberField label="Top K" value={settings.topK} min={1} max={200} step={1} onChange={(value) => onSettings({ ...settings, topK: value })} />
-      <label>Thinking mode<input value="Maximum · 32,768" disabled aria-label="Thinking mode is fixed at maximum" /></label>
+      <label>Thinking mode<select value={thinkingLevelFromBudget(settings.thinkingBudget)} onChange={(event) => { const level = event.target.value as ThinkingLevel; const budget = thinkingBudgetForLevel(level, 32768); onSettings({ ...settings, thinkingBudget: budget, thinkingLevel: level }); }}><option value="off">Off (0 tokens)</option><option value="low">Low (2,048 tokens)</option><option value="medium">Medium (8,192 tokens)</option><option value="high">High (16,384 tokens)</option><option value="max">Maximum (32,768 tokens)</option></select></label>
       <NumberField label="Output budget" value={settings.maxOutputTokens} min={1024} max={32768} step={1024} onChange={(value) => onSettings({ ...settings, maxOutputTokens: value })} />
       <SelectField label="Reference image fidelity" value={settings.refImageSize} onChange={(value) => onSettings({ ...settings, refImageSize: value as MovieSettings["refImageSize"] })} options={["match", "max"]} />
       <label className="wide">ComfyUI root<input value={settings.comfyRoot} onChange={(event) => onSettings({ ...settings, comfyRoot: event.target.value })} /></label>
@@ -701,7 +701,7 @@ function PromptAssistBar({ label, existing, mode, models, modelId, active, disab
     {active
       ? <button className="prompt-stop" onClick={onStop}><CircleStop /> Stop & keep text</button>
       : <button disabled={disabled || !modelId} onClick={onGenerate}><Sparkles /> {action}</button>}
-    {thinking !== undefined && <ModelThinkingStream text={thinking} active={active} modelName={models.find((model) => model.id === modelId)?.name} className="prompt-thinking-stream" />}
+    {thinking !== undefined && <ModelThinkingStream text={thinking} active={active} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={thinking ? "high" : "off"} className="prompt-thinking-stream" />}
   </div>;
 }
 
@@ -1035,7 +1035,7 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
     <div className="producer-copilot-scroll">
       <section className="copilot-context"><strong>Shared context</strong><span>{contextLabel}</span><small>The model cannot watch media or change the project. Native linting checks every proposed cut.</small></section>
       {history.length > 0 && !response && <details className="copilot-history"><summary>Recent durable conversations ({history.length})</summary>{history.map((turn) => <article key={turn.id}><small>{turn.workspace} · {new Date(turn.createdAt).toLocaleString()}</small><b>{turn.producerRequest}</b><ProducerText text={turn.response || `Stopped: ${turn.status}`} />{turn.response && <SpeechPlaybackButton sourceKind="copilot" sourceId={project.id} passageId={turn.id} text={turn.response} label="Listen" />}{advancedEnabled && <button disabled={active} onClick={() => inspectTurn(turn.id, `${turn.workspace} · ${new Date(turn.createdAt).toLocaleString()}`)}>Inspect exact model receipt</button>}</article>)}</details>}
-      {(response || active || reasoning) && <ModelThinkingStream text={reasoning} active={active} modelName={models.find((model) => model.id === modelId)?.name} className="copilot-thinking-stream" />}
+      {(response || active || reasoning) && <ModelThinkingStream text={reasoning} active={active} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={thinkingLevelFromBudget(project.settings.thinkingBudget)} className="copilot-thinking-stream" />}
       {(response || active) && <section className="copilot-response"><span><i className={active ? "live" : ""} />{status}</span>{response ? <><ProducerText text={response} />{!active && <SpeechPlaybackButton sourceKind="copilot" sourceId={project.id} passageId={requestId ?? "latest"} text={response} label="Listen" />}</> : <div className="copilot-wait"><LoaderCircle className="spin" /> Waiting for the first streamed words…</div>}</section>}
       {proposal && <section className="copilot-proposal"><span className="eyebrow">Producer approval required</span><h3>{proposal.summary}</h3><ul>{proposal.changes.map((change, index) => <li key={`${change}-${index}`}><Check />{change}</li>)}</ul><div>{applied && beforeApply ? <button onClick={revert}><RotateCcw /> Revert copilot edit</button> : <button onClick={() => setProposal(undefined)}>Dismiss</button>}<button className="accent" disabled={applied} onClick={apply}>{applied ? <Check /> : <Film />}{applied ? "Applied to cut" : "Apply as one edit"}</button></div></section>}
       {proposalLint && <section className="copilot-lint"><ShieldCheck /><span><strong>Native safety check withheld the action</strong><small>{proposalLint}</small></span></section>}
@@ -1188,7 +1188,7 @@ export function ProducerPlanningRoom({ project, advancedEnabled, onError }: {
     <div className="planning-room-grid">
       <article className="planning-current-copy">
         <header><strong>What the {activeModelLabel} is saying now</strong><small>Streamed as the local model produces it</small></header>
-        {modelTurnObserved && <ModelThinkingStream text={reasoning} active={modelTurnActive && planning} modelName={activeModelName} className="planning-thinking-stream" />}
+        {modelTurnObserved && <ModelThinkingStream text={reasoning} active={modelTurnActive && planning} modelName={activeModelName} thinkingLevel={thinkingLevelFromBudget(project.settings.thinkingBudget)} className="planning-thinking-stream" />}
         <div className="planning-stream-text">{currentText.trim() || (planning ? `The ${activeModelLabel} is preparing its next structured production action…` : "No unfinished model text. The durable workspace is ready to resume.")}</div>
         {snapshot?.reviewerReview && <IndependentReviewerResult review={snapshot.reviewerReview} />}
         <div className="planning-activity-feed">{activities.length ? activities.map((event) => <div key={`${event.sequence}-${event.kind}`}><span>{event.kind.includes("checkpoint") ? <ShieldCheck /> : <Check />}</span><p><b>{event.modelRole === "reviewer" ? "Reviewer · " : ""}{friendlyPlanningStage(event.stage)}</b>{event.text}</p></div>) : <small>Production actions will appear here as the Director and Reviewer inspect and check the film.</small>}</div>
@@ -1405,7 +1405,7 @@ function SceneAssistant({ project, clip, planned: _planned, onProject, onError }
     <p>Give the Director a focused fix request. It receives this organized scene, its neighbors, continuity bible, and reference manifest—not an unstructured text dump.</p>
     <label>Producer fix request<textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Preserve the performance and story beat, but make the camera blocking legible and specify the sound transition into the next scene…" /></label>
     <button disabled={busy || feedback.trim().length < 3} onClick={() => void ask()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Ask Director for a structured fix</button>
-    {modelAttempted && <ModelThinkingStream text={reasoning} active={modelBusy} modelName={project.model} className="scene-thinking-stream" />}
+    {modelAttempted && <ModelThinkingStream text={reasoning} active={modelBusy} modelName={project.model} thinkingLevel={thinkingLevelFromBudget(project.settings.thinkingBudget)} className="scene-thinking-stream" />}
     {suggestion && <div className="scene-suggestion"><h4>{suggestion.summary}</h4><ul>{suggestion.checklist.map((item) => <li key={item}>{item}</li>)}</ul><PlannedClipFields clip={suggestion.clip} references={project.references} onClip={(next) => setSuggestion({ ...suggestion, clip: { ...next, id: clip.id } })} /><div className="scene-version-action"><NumberField label="New version seed" value={seed} min={0} max={Number.MAX_SAFE_INTEGER} step={1} onChange={setSeed} /><span>The current master and assembled review cut remain preserved. This explicit action renders a separate H3 master.</span><button disabled={busy} onClick={() => void renderVersion()}>{busy ? <LoaderCircle className="spin" /> : <Video />} Render new scene version</button></div></div>}
   </div>}</div>;
 }

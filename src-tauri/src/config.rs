@@ -152,6 +152,11 @@ fn legacy_control_settings() -> Option<ControlSettings> {
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(settings.agent_max_output_tokens);
+    if let Some(level) = value.get("thinking_level").or_else(|| value.get("thinkingLevel")) {
+        if let Ok(parsed) = serde_json::from_value::<crate::models::ThinkingLevel>(level.clone()) {
+            settings.thinking_level = parsed;
+        }
+    }
     Some(settings)
 }
 
@@ -381,11 +386,13 @@ mod tests {
         let settings = ControlSettings {
             context_window: 32_768,
             max_output_tokens: 8_192,
+            thinking_level: crate::models::ThinkingLevel::High,
             model_overrides: vec![crate::models::ModelRuntimeOverride {
                 model_id: "model-a".into(),
                 context_window: Some(65_536),
                 max_output_tokens: Some(16_384),
                 threads: Some(6),
+                thinking_level: Some(crate::models::ThinkingLevel::Off),
             }],
             ..ControlSettings::default()
         };
@@ -394,6 +401,8 @@ mod tests {
         assert_eq!(effective.context_window, 65_536);
         assert_eq!(effective.max_output_tokens, 16_384);
         assert_eq!(effective.threads, 6);
+        assert_eq!(effective.thinking_level, crate::models::ThinkingLevel::Off);
         assert_eq!(settings.for_model("model-b").context_window, 32_768);
+        assert_eq!(settings.for_model("model-b").thinking_level, crate::models::ThinkingLevel::High);
     }
 }

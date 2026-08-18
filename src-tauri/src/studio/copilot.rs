@@ -179,7 +179,8 @@ impl MovieCopilotJob {
             json!({"role":"user","content":prompt_catalog::render(PromptId::MovieCopilotRequest, &[("context", &context), ("instruction", request.instruction.trim())])}),
         ];
         let tool_schema = proposal_tool_schema();
-        let body = json!({
+        let thinking_level = settings.thinking_level;
+        let mut body = json!({
             "model": lease.connection.model_id,
             "messages": messages,
             "tools": [tool_schema],
@@ -192,6 +193,18 @@ impl MovieCopilotJob {
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        if thinking_level.is_off() || project.settings.thinking_budget == 0 {
+            body["thinking_budget_tokens"] = json!(0);
+            body["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
+            body["reasoning_effort"] = json!("off");
+        } else {
+            body["thinking_budget_tokens"] = json!(project.settings.thinking_budget);
+            body["reasoning_effort"] = json!(thinking_level.as_str());
+            body["chat_template_kwargs"] = json!({
+                "reasoning_effort": thinking_level.as_str(),
+                "enable_thinking": true
+            });
+        }
         let mut exact_request = body.clone();
         if let Some(request) = exact_request.as_object_mut() {
             request.remove("messages");

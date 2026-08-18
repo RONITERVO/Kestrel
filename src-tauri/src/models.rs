@@ -24,6 +24,58 @@ pub struct AppSnapshot {
     pub setup: crate::setup::SetupSnapshot,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingLevel {
+    Off,
+    Low,
+    Medium,
+    #[default]
+    High,
+    Max,
+}
+
+impl ThinkingLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+
+    pub fn is_off(self) -> bool {
+        matches!(self, Self::Off)
+    }
+
+    pub fn from_budget(budget: u32) -> Self {
+        if budget == 0 {
+            Self::Off
+        } else if budget <= 2_048 {
+            Self::Low
+        } else if budget <= 8_192 {
+            Self::Medium
+        } else if budget <= 20_000 {
+            Self::High
+        } else {
+            Self::Max
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn budget_tokens(self, max_output_tokens: u32) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::Low => 2_048.min(max_output_tokens),
+            Self::Medium => 8_192.min(max_output_tokens),
+            Self::High => 16_384.min(max_output_tokens),
+            Self::Max => max_output_tokens,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ControlSettings {
@@ -34,6 +86,7 @@ pub struct ControlSettings {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub threads: u32,
+    pub thinking_level: ThinkingLevel,
     pub model_overrides: Vec<ModelRuntimeOverride>,
     pub project_root: String,
     pub agent_workspace_roots: Vec<String>,
@@ -49,6 +102,7 @@ pub struct ModelRuntimeOverride {
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub threads: Option<u32>,
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 impl ControlSettings {
@@ -68,6 +122,9 @@ impl ControlSettings {
             }
             if let Some(value) = model.threads {
                 effective.threads = value;
+            }
+            if let Some(value) = model.thinking_level {
+                effective.thinking_level = value;
             }
         }
         effective
@@ -104,6 +161,7 @@ impl Default for ControlSettings {
             threads: std::thread::available_parallelism()
                 .map(|value| value.get() as u32)
                 .unwrap_or(4),
+            thinking_level: ThinkingLevel::High,
             model_overrides: Vec::new(),
             project_root,
             agent_workspace_roots: workspace_roots,
@@ -242,6 +300,8 @@ pub struct StartChatRequest {
     pub top_p: f32,
     pub top_k: u32,
     pub max_output_tokens: u32,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -272,6 +332,8 @@ pub struct ComputerTaskRequest {
     pub access: ComputerTaskAccess,
     pub max_steps: u32,
     pub max_output_tokens: u32,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

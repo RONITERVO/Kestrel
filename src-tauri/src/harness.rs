@@ -732,6 +732,17 @@ fn completion_request(
         "model": model_id, "messages": messages, "stream": false, "temperature": 0.2, "top_p": 0.9,
         "max_tokens": options.max_tokens, "thinking_budget_tokens": options.thinking_budget
     });
+    if options.thinking_budget == 0 {
+        request["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
+        request["reasoning_effort"] = json!("off");
+    } else {
+        let level = crate::models::ThinkingLevel::from_budget(options.thinking_budget);
+        request["reasoning_effort"] = json!(level.as_str());
+        request["chat_template_kwargs"] = json!({
+            "reasoning_effort": level.as_str(),
+            "enable_thinking": true
+        });
+    }
     if let Some(tools) = tools {
         request["tools"] = tools.clone();
         request["tool_choice"] = options.tool_choice.unwrap_or_else(|| json!("auto"));

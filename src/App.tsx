@@ -82,6 +82,7 @@ import type {
   ResearchSettings,
   ServiceState,
   SystemSnapshot,
+  ThinkingLevel,
 } from "./types";
 
 const emptyProgress: ResearchProgress = {
@@ -596,7 +597,7 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
     setControlDraft((current) => ({
       ...current,
       modelOverrides: enabled
-        ? [...current.modelOverrides.filter((item) => item.modelId !== overrideModelId), { modelId: overrideModelId, contextWindow: current.contextWindow, maxOutputTokens: current.maxOutputTokens, threads: current.threads }]
+        ? [...current.modelOverrides.filter((item) => item.modelId !== overrideModelId), { modelId: overrideModelId, contextWindow: current.contextWindow, maxOutputTokens: current.maxOutputTokens, threads: current.threads, thinkingLevel: current.thinkingLevel }]
         : current.modelOverrides.filter((item) => item.modelId !== overrideModelId),
     }));
   };
@@ -762,11 +763,13 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
           <div className="system-policy-column">
             <label className="wide-field"><span>Default local model</span><select value={controlDraft.selectedModelId ?? ""} onChange={(event) => { const value = event.target.value || undefined; setControlDraft((current) => ({ ...current, selectedModelId: value })); setOverrideModelId(event.target.value); }}><option value="">First available model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
             <label className="wide-field"><span>llama.cpp engine</span><input value={controlDraft.enginePath} onChange={(event) => setControlDraft((current) => ({ ...current, enginePath: event.target.value }))}/></label>
+            <label className="wide-field"><span>Thinking level (Global fallback)</span><select value={controlDraft.thinkingLevel ?? "high"} onChange={(event) => setControlDraft((current) => ({ ...current, thinkingLevel: event.target.value as ThinkingLevel }))}><option value="off">Off (direct response, no thinking)</option><option value="low">Low reasoning</option><option value="medium">Medium reasoning</option><option value="high">High reasoning (default)</option><option value="max">Max reasoning</option></select></label>
             <div className="model-runtime-row"><NumberSetting label="Context" hint="Global fallback" value={controlDraft.contextWindow} disabled={false} onChange={(value) => updateControlNumber("contextWindow", value)}/><NumberSetting label="Max output" hint="Global fallback" value={controlDraft.maxOutputTokens} disabled={false} onChange={(value) => updateControlNumber("maxOutputTokens", value)}/><NumberSetting label="CPU threads" hint="Global fallback" value={controlDraft.threads} disabled={false} onChange={(value) => updateControlNumber("threads", value)}/></div>
           </div>
           <div className="system-policy-column model-exception-card">
             <div className="model-exception-heading"><div><span className="eyebrow">More specific wins</span><strong>Per-model exception</strong></div><label><input type="checkbox" checked={!!modelOverride} disabled={!overrideModelId} onChange={(event) => toggleOverride(event.target.checked)}/> Override this model</label></div>
             <label className="wide-field"><span>Model</span><select value={overrideModelId} onChange={(event) => setOverrideModelId(event.target.value)}><option value="">Choose a model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+            <label className="wide-field"><span>Thinking level (Model exception)</span><select disabled={!modelOverride} value={modelOverride?.thinkingLevel ?? controlDraft.thinkingLevel ?? "high"} onChange={(event) => { const val = event.target.value as ThinkingLevel; if (!overrideModelId) return; setControlDraft((current) => { const known = current.modelOverrides.find((item) => item.modelId === overrideModelId) ?? { modelId: overrideModelId }; return { ...current, modelOverrides: [...current.modelOverrides.filter((item) => item.modelId !== overrideModelId), { ...known, thinkingLevel: val }] }; }); }}><option value="off">Off (direct response, no thinking)</option><option value="low">Low reasoning</option><option value="medium">Medium reasoning</option><option value="high">High reasoning</option><option value="max">Max reasoning</option></select></label>
             <div className="model-runtime-row"><NumberSetting label="Context" hint="Model only" value={modelOverride?.contextWindow ?? controlDraft.contextWindow} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("contextWindow", value)}/><NumberSetting label="Max output" hint="Model only" value={modelOverride?.maxOutputTokens ?? controlDraft.maxOutputTokens} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("maxOutputTokens", value)}/><NumberSetting label="CPU threads" hint="Model only" value={modelOverride?.threads ?? controlDraft.threads} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("threads", value)}/></div>
           </div>
         </div>

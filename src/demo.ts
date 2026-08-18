@@ -156,6 +156,7 @@ export const demoSnapshot: AppSnapshot = {
       contextWindow: 98_304,
       maxOutputTokens: 32_768,
       threads: 16,
+      thinkingLevel: "high",
       modelOverrides: [],
       projectRoot: "C:\\Kestrel Preview\\Source",
       agentWorkspaceRoots: ["C:\\Users\\Researcher\\Downloads", "C:\\Users\\Researcher\\Documents"],

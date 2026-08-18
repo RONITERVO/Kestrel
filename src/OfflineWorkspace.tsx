@@ -26,6 +26,7 @@ import {
   Wrench,
   X,
   Zap,
+  ZapOff,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
@@ -64,6 +65,7 @@ import type {
   ComputerTaskSummary,
   ContextAttachment,
   ControlSnapshot,
+  ThinkingLevel,
 } from "./types";
 
 type Props = {
@@ -94,6 +96,8 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
     content: string;
     reasoning: string;
     notice?: string;
+    thinkingLevel?: string;
+    data?: Record<string, unknown>;
     metrics?: Record<string, unknown>;
   } | null>(null);
   const [tasks, setTasks] = useState<ComputerTaskSummary[]>([]);
@@ -114,6 +118,9 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   const selectedOverride = settings.modelOverrides.find((item) => item.modelId === selectedId);
   const effectiveContext = selectedOverride?.contextWindow ?? settings.contextWindow;
   const effectiveMaxOutput = selectedOverride?.maxOutputTokens ?? settings.maxOutputTokens;
+  const effectiveThinkingLevel: ThinkingLevel = selectedOverride?.thinkingLevel ?? settings.thinkingLevel ?? "high";
+  const [chatThinkingLevel, setChatThinkingLevel] = useState<ThinkingLevel | "default">("default");
+  const [taskThinkingLevel, setTaskThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const chatRequestRef = useRef<string | null>(null);
   const pendingRedirectRef = useRef<{
     message: string;
@@ -234,14 +241,16 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             },
       );
     } else if (event.kind === "queued" || event.kind === "started") {
+      const thinkingLevel = (event.data?.thinkingLevel as string) || undefined;
       setStream((current) =>
         current
-          ? { ...current, phase: event.kind }
+          ? { ...current, phase: event.kind, thinkingLevel: thinkingLevel ?? current.thinkingLevel }
           : {
               requestId: event.requestId,
               phase: event.kind,
               content: "",
               reasoning: "",
+              thinkingLevel,
             },
       );
     } else if (["done", "cancelled", "error"].includes(event.kind)) {
@@ -405,6 +414,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
         topP: 0.9,
         topK: 40,
         maxOutputTokens: current.settings.modelOverrides.find((item) => item.modelId === current.selected?.id)?.maxOutputTokens ?? current.settings.maxOutputTokens,
+        thinkingLevel: chatThinkingLevel === "default" ? undefined : chatThinkingLevel,
       });
       chatRequestRef.current = started.requestId;
       setSession(started.session);
@@ -600,6 +610,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
         access,
         maxSteps: settings.agentMaxSteps,
         maxOutputTokens: settings.agentMaxOutputTokens,
+        thinkingLevel: taskThinkingLevel === "default" ? undefined : taskThinkingLevel,
       });
       const early = earlyTaskEventsRef.current.filter(
         (event) => event.runId === run.id,
@@ -773,11 +784,25 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       setSettings((current) => ({ ...current, [key]: next }));
   };
   const updateSelectedRuntime = (
-    key: "contextWindow" | "maxOutputTokens",
-    value: string,
+    key: "contextWindow" | "maxOutputTokens" | "threads" | "thinkingLevel",
+    value: string | ThinkingLevel,
   ) => {
+    if (!selectedId) return;
+    if (key === "thinkingLevel") {
+      setSettings((current) => {
+        const known = current.modelOverrides.find((item) => item.modelId === selectedId) ?? { modelId: selectedId };
+        return {
+          ...current,
+          modelOverrides: [
+            ...current.modelOverrides.filter((item) => item.modelId !== selectedId),
+            { ...known, thinkingLevel: value as ThinkingLevel },
+          ],
+        };
+      });
+      return;
+    }
     const next = Number(value);
-    if (!selectedId || !Number.isFinite(next) || next <= 0) return;
+    if (!Number.isFinite(next) || next <= 0) return;
     setSettings((current) => {
       const known = current.modelOverrides.find((item) => item.modelId === selectedId) ?? { modelId: selectedId };
       return {
@@ -801,6 +826,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
               contextWindow: current.contextWindow,
               maxOutputTokens: current.maxOutputTokens,
               threads: current.threads,
+              thinkingLevel: current.thinkingLevel,
             },
           ]
         : current.modelOverrides.filter((item) => item.modelId !== selectedId),
@@ -1078,12 +1104,21 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                   {stream.notice && (
                     <div className="context-notice">{stream.notice}</div>
                   )}
-                  {stream.reasoning && (
-                    <details open={!stream.content}>
-                      <summary>Reasoning · live</summary>
+                  {stream.reasoning ? (
+                    <details open={!stream.content} className="chat-reasoning-block">
+                      <summary>
+                        <span>Reasoning</span>
+                        <span className="thinking-level-badge">{(stream.thinkingLevel || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel)).toUpperCase()}</span>
+                        <small>live</small>
+                      </summary>
                       <pre>{stream.reasoning}</pre>
                     </details>
-                  )}
+                  ) : (stream.thinkingLevel === "off" || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel) === "off") && stream.phase !== "queued" ? (
+                    <div className="chat-thinking-off-indicator" style={{ display: "flex", alignItems: "center", gap: 6, margin: "6px 0", padding: "4px 8px", background: "rgba(30,35,30,0.5)", borderRadius: 4, border: "1px solid rgba(80,90,80,0.3)" }}>
+                      <span className="thinking-level-badge thinking-off-badge">THINKING OFF</span>
+                      <small style={{ color: "#8a948c", font: "8px var(--sans)" }}>Generating direct response without reasoning channel</small>
+                    </div>
+                  ) : null}
                   <RichText
                     value={
                       stream.content ||
@@ -1118,6 +1153,23 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                   }
                 />
               )}
+              <div className="composer-toolbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 6px", fontSize: 11 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 6, color: "#8b948d", fontSize: 10 }}>
+                  <span>Thinking:</span>
+                  <select
+                    value={chatThinkingLevel}
+                    onChange={(e) => setChatThinkingLevel(e.target.value as ThinkingLevel | "default")}
+                    style={{ background: "#18201a", color: "#b0c0b4", border: "1px solid #334036", borderRadius: 4, padding: "1px 4px", fontSize: 10 }}
+                  >
+                    <option value="default">Model default ({effectiveThinkingLevel})</option>
+                    <option value="off">Off (direct)</option>
+                    <option value="low">Low reasoning</option>
+                    <option value="medium">Medium reasoning</option>
+                    <option value="high">High reasoning</option>
+                    <option value="max">Max reasoning</option>
+                  </select>
+                </span>
+              </div>
               <div className="composer-row">
                 <button
                   className="attach-button"
@@ -1219,6 +1271,9 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             onRun={() => void runTask()}
             onResume={() => void resumeTask()}
             onStop={() => void stopTask()}
+            thinkingLevel={taskThinkingLevel}
+            effectiveThinkingLevel={effectiveThinkingLevel}
+            onThinkingLevel={setTaskThinkingLevel}
             onOpen={(path) => task && void openTaskArtifact(task.id, path)}
             onError={onError}
           />
@@ -1315,6 +1370,22 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                   updateSelectedRuntime("maxOutputTokens", event.target.value)
                 }
               />
+            </label>
+            <label>
+              Thinking level
+              <select
+                disabled={!selectedOverride}
+                value={effectiveThinkingLevel}
+                onChange={(event) =>
+                  updateSelectedRuntime("thinkingLevel", event.target.value as ThinkingLevel)
+                }
+              >
+                <option value="off">Off (direct response)</option>
+                <option value="low">Low reasoning</option>
+                <option value="medium">Medium reasoning</option>
+                <option value="high">High reasoning</option>
+                <option value="max">Max reasoning</option>
+              </select>
             </label>
             <label className="check-line inspector-wide-setting">
               <input
@@ -1462,6 +1533,9 @@ function ComputerTasks({
   resuming,
   attaching,
   fullUnlocked,
+  thinkingLevel = "default",
+  effectiveThinkingLevel = "high",
+  onThinkingLevel,
   onObjective,
   onRemoveAttachment,
   onAttach,
@@ -1484,6 +1558,9 @@ function ComputerTasks({
   resuming: boolean;
   attaching: boolean;
   fullUnlocked: boolean;
+  thinkingLevel?: ThinkingLevel | "default";
+  effectiveThinkingLevel?: ThinkingLevel;
+  onThinkingLevel?: (level: ThinkingLevel | "default") => void;
   onObjective: (value: string) => void;
   onRemoveAttachment: (id: string) => void;
   onAttach: () => void;
@@ -1568,6 +1645,23 @@ function ComputerTasks({
                 </small>
               </span>
             </button>
+            {onThinkingLevel && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", background: "#151c16", border: "1px solid #334036", borderRadius: 6, color: "#d0ded2", fontSize: 12 }}>
+                <span>Thinking:</span>
+                <select
+                  value={thinkingLevel}
+                  onChange={(e) => onThinkingLevel(e.target.value as ThinkingLevel | "default")}
+                  style={{ background: "#0e1410", color: "#b0c0b4", border: "1px solid #2f3e33", borderRadius: 4, padding: "4px 8px", fontSize: 12 }}
+                >
+                  <option value="default">Model default ({effectiveThinkingLevel})</option>
+                  <option value="off">Off (direct action)</option>
+                  <option value="low">Low reasoning</option>
+                  <option value="medium">Medium reasoning</option>
+                  <option value="high">High reasoning</option>
+                  <option value="max">Max reasoning</option>
+                </select>
+              </label>
+            )}
           </div>
           <button
             className="primary-button task-run"
@@ -1624,7 +1718,14 @@ function ComputerTasks({
                 </div>
                 <div>
                   <header>
-                    <strong>{event.title}</strong>
+                    <strong style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {event.title}
+                      {event.data?.thinkingLevel ? (
+                        <span className={`thinking-level-badge ${event.data.thinkingLevel === "off" ? "thinking-off-badge" : ""}`}>
+                          {String(event.data.thinkingLevel).toUpperCase()}
+                        </span>
+                      ) : null}
+                    </strong>
                     <span>
                       {event.step ? `Step ${event.step}` : "Setup"} ·{" "}
                       {timeOnly(event.at)}
