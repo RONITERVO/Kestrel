@@ -5242,24 +5242,64 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
     graph
 }
 
-fn find_output_media(entry: &Value, category: &str) -> Option<(String, String)> {
+pub(crate) fn find_output_media(entry: &Value, category: &str) -> Option<(String, String)> {
     let outputs = entry.get("outputs")?.as_object()?;
-    for output in outputs.values() {
-        for media in output
-            .get(category)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(filename) = media.get("filename").and_then(Value::as_str) {
-                return Some((
-                    filename.into(),
-                    media
-                        .get("subfolder")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .into(),
-                ));
+    let is_video_file = |name: &str| {
+        let lower = name.to_lowercase();
+        lower.ends_with(".mp4")
+            || lower.ends_with(".webm")
+            || lower.ends_with(".mov")
+            || lower.ends_with(".mkv")
+            || lower.ends_with(".avi")
+            || lower.ends_with(".gif")
+    };
+    let is_image_file = |name: &str| {
+        let lower = name.to_lowercase();
+        lower.ends_with(".png")
+            || lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".webp")
+    };
+    let is_audio_file = |name: &str| {
+        let lower = name.to_lowercase();
+        lower.ends_with(".flac")
+            || lower.ends_with(".wav")
+            || lower.ends_with(".mp3")
+            || lower.ends_with(".ogg")
+            || lower.ends_with(".m4a")
+    };
+
+    let fallback = [category];
+    let categories: &[&str] = match category {
+        "videos" => &["videos", "gifs", "images"],
+        "images" => &["images"],
+        "audio" => &["audio", "sounds"],
+        _ => &fallback,
+    };
+
+    for cat in categories {
+        for output in outputs.values() {
+            if let Some(media_list) = output.get(*cat).and_then(Value::as_array) {
+                for media in media_list {
+                    if let Some(filename) = media.get("filename").and_then(Value::as_str) {
+                        let matches_cat = match category {
+                            "videos" => is_video_file(filename) || *cat == "videos" || *cat == "gifs",
+                            "images" => is_image_file(filename) || *cat == "images",
+                            "audio" => is_audio_file(filename) || *cat == "audio",
+                            _ => true,
+                        };
+                        if matches_cat {
+                            return Some((
+                                filename.into(),
+                                media
+                                    .get("subfolder")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -5604,6 +5644,29 @@ mod tests {
         assert_eq!(
             find_output_media(&history, "audio"),
             Some(("sound.flac".into(), "audio".into()))
+        );
+
+        // Test ComfyUI standard SaveVideo node output where .mp4 is in images array
+        let comfy_save_video_history = json!({
+            "outputs": {
+                "14": {
+                    "images": [
+                        {
+                            "filename": "shot_001_00003_.mp4",
+                            "subfolder": "kestrel_movies/7d4301c4-d071-4b60-8360-d30a708c7677",
+                            "type": "output"
+                        }
+                    ],
+                    "animated": [true]
+                }
+            }
+        });
+        assert_eq!(
+            find_output_media(&comfy_save_video_history, "videos"),
+            Some((
+                "shot_001_00003_.mp4".into(),
+                "kestrel_movies/7d4301c4-d071-4b60-8360-d30a708c7677".into()
+            ))
         );
     }
 
