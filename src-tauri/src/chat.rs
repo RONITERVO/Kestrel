@@ -172,7 +172,7 @@ impl ChatStreamJob {
         } else {
             body["reasoning_effort"] = json!(thinking_level.as_str());
             body["chat_template_kwargs"] = json!({
-                "reasoning_effort": thinking_level.as_str(),
+                "reasoning_effort": thinking_level.as_template_effort(),
                 "enable_thinking": true
             });
         }

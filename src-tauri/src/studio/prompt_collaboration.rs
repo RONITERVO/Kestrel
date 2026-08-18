@@ -182,7 +182,7 @@ impl PromptDraftJob {
         } else {
             body["reasoning_effort"] = json!(settings.thinking_level.as_str());
             body["chat_template_kwargs"] = json!({
-                "reasoning_effort": settings.thinking_level.as_str(),
+                "reasoning_effort": settings.thinking_level.as_template_effort(),
                 "enable_thinking": true
             });
         }

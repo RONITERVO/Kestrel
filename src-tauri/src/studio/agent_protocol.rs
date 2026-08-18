@@ -184,7 +184,7 @@ pub(super) fn movie_agent_request(
         let level = crate::models::ThinkingLevel::from_budget(settings.thinking_budget);
         req["reasoning_effort"] = json!(level.as_str());
         req["chat_template_kwargs"] = json!({
-            "reasoning_effort": level.as_str(),
+            "reasoning_effort": level.as_template_effort(),
             "enable_thinking": true
         });
     }

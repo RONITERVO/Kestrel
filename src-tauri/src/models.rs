@@ -46,6 +46,18 @@ impl ThinkingLevel {
         }
     }
 
+    /// Jinja chat templates (e.g. Qwen 3.8) strictly enforce ('xhigh', 'high', 'medium', 'low')
+    /// and raise an exception on 'max'. This helper returns the Jinja template-compatible reasoning effort string.
+    pub fn as_template_effort(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "xhigh",
+        }
+    }
+
     pub fn is_off(self) -> bool {
         matches!(self, Self::Off)
     }
