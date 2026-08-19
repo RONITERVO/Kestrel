@@ -97,6 +97,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
     reasoning: string;
     notice?: string;
     thinkingLevel?: string;
+    startedAt?: number;
     data?: Record<string, unknown>;
     metrics?: Record<string, unknown>;
   } | null>(null);
@@ -216,6 +217,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       setStream((current) => ({
         requestId: event.requestId,
         phase: "generating",
+        startedAt: current?.startedAt ?? Date.now(),
         content:
           (current?.content ?? "") +
           (event.kind === "token" ? (event.content ?? "") : ""),
@@ -223,6 +225,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
           (current?.reasoning ?? "") +
           (event.kind === "reasoning" ? (event.content ?? "") : ""),
         metrics: current?.metrics,
+        thinkingLevel: current?.thinkingLevel,
       }));
     } else if (event.kind === "metrics") {
       setStream((current) =>
@@ -244,12 +247,18 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
       const thinkingLevel = (event.data?.thinkingLevel as string) || undefined;
       setStream((current) =>
         current
-          ? { ...current, phase: event.kind, thinkingLevel: thinkingLevel ?? current.thinkingLevel }
+          ? {
+              ...current,
+              phase: event.kind,
+              startedAt: current.startedAt ?? (event.kind === "started" ? Date.now() : undefined),
+              thinkingLevel: thinkingLevel ?? current.thinkingLevel,
+            }
           : {
               requestId: event.requestId,
               phase: event.kind,
               content: "",
               reasoning: "",
+              startedAt: event.kind === "started" ? Date.now() : undefined,
               thinkingLevel,
             },
       );
@@ -1127,7 +1136,13 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                         : "")
                     }
                   />
-                  {stream.metrics && <Metrics data={stream.metrics} />}
+                  <Metrics
+                    data={stream.metrics}
+                    content={stream.content}
+                    reasoning={stream.reasoning}
+                    startedAt={stream.startedAt}
+                    active={stream.phase === "generating"}
+                  />
                 </article>
               )}
               <div ref={chatEndRef} />
@@ -1954,14 +1969,75 @@ function inlineCode(value: string) {
     );
 }
 
-function Metrics({ data }: { data: Record<string, unknown> }) {
-  const usage = data.usage as Record<string, number> | undefined;
-  const timings = data.timings as Record<string, number> | undefined;
+function Metrics({
+  data,
+  content = "",
+  reasoning = "",
+  startedAt,
+  active = false,
+}: {
+  data?: Record<string, unknown>;
+  content?: string;
+  reasoning?: string;
+  startedAt?: number;
+  active?: boolean;
+}) {
+  const usage = data?.usage as Record<string, number> | undefined;
+  const timings = data?.timings as Record<string, number> | undefined;
+
+  const [liveElapsed, setLiveElapsed] = useState(() =>
+    startedAt ? Math.max(0.1, (Date.now() - startedAt) / 1000) : 0,
+  );
+
+  useEffect(() => {
+    if (!active || !startedAt) return;
+    const timer = window.setInterval(() => {
+      setLiveElapsed(Math.max(0.1, (Date.now() - startedAt) / 1000));
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [active, startedAt]);
+
+  const totalChars = content.length + reasoning.length;
+  const estTotalTokens = Math.max(1, Math.round(totalChars / 3.8));
+  const estReasoningTokens = reasoning ? Math.round(reasoning.length / 3.8) : 0;
+  const estContentTokens = content ? Math.round(content.length / 3.8) : 0;
+
+  const actualTokens = usage?.completion_tokens ?? estTotalTokens;
+  const speedTokPerSec = timings?.predicted_per_second
+    ? Number(timings.predicted_per_second.toFixed(1))
+    : liveElapsed > 0
+    ? Number((actualTokens / liveElapsed).toFixed(1))
+    : 0;
+
+  const promptSpeed = timings?.prompt_per_second
+    ? Number(timings.prompt_per_second.toFixed(1))
+    : undefined;
+  const promptTokens = (data?.usage as Record<string, number> | undefined)?.prompt_tokens ?? timings?.prompt_n;
+
+  if (!active && !data && !totalChars) return null;
+
   return (
     <div className="generation-metrics">
-      <span>{usage?.completion_tokens ?? 0} tokens</span>
-      {timings?.predicted_per_second && (
-        <span>{timings.predicted_per_second.toFixed(1)} tok/s</span>
+      <span className={active ? "live-metric" : ""}>
+        {actualTokens.toLocaleString()} tokens
+      </span>
+      {speedTokPerSec > 0 && (
+        <span className={active ? "live-metric" : ""}>
+          ⚡ {speedTokPerSec} tok/s
+        </span>
+      )}
+      {liveElapsed > 0 && (
+        <span>{liveElapsed.toFixed(1)}s</span>
+      )}
+      {reasoning.length > 0 && (
+        <span title={`Thinking: ~${estReasoningTokens} tok | Output: ~${estContentTokens} tok`}>
+          💭 {estReasoningTokens} think + {estContentTokens} ans
+        </span>
+      )}
+      {promptSpeed && promptTokens && (
+        <span title="Prompt evaluation speed">
+          📖 {promptSpeed} tok/s prompt ({promptTokens.toLocaleString()})
+        </span>
       )}
     </div>
   );
