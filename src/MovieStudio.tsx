@@ -1013,7 +1013,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
         <ProductionMasters project={project} onProject={onProject} onError={onError} controlSettings={controlSettings} />
       </section>}
       {workspace === "edit" && project.clips.length > 0 && <section className="project-edit-room">
-        <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} onRequestSave={onSave} />
+        <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} onRequestSave={onSave} controlSettings={controlSettings} />
       </section>}
       {workspace === "deliver" && <section className="project-room-scroll delivery-room">
         <div className="studio-room-heading"><span><small>Producer delivery room</small><strong>Review, export, and recover every approved cut</strong></span><button className="accent" disabled={busy || complete === 0 || project.status === "running" || !edit.clips.some((item) => item.enabled)} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export current cut</button></div>

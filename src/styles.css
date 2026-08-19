@@ -1431,6 +1431,42 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .fl2v-generate-action svg { width: 13px; color: #b7e868; }
 .fl2v-generate-action .spin { animation: spin 1s linear infinite; }
 
+.bridge-assistant { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #29352e; }
+.bridge-assistant-toggle { padding: 0 !important; border: 0 !important; color: #a8d65d !important; background: transparent !important; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font: 750 7.5px var(--sans); }
+.bridge-assistant-toggle svg:first-child { width: 13px; color: #b6e66a; }
+.bridge-assistant-toggle svg:last-child { width: 12px; transition: transform .2s ease; }
+.bridge-assistant-toggle svg.open { transform: rotate(180deg); }
+.bridge-assistant-body { margin-top: 8px; padding: 10px; border: 1px solid #35443a; border-radius: 6px; background: #0c120e; display: grid; gap: 8px; }
+.bridge-assistant-body > p { margin: 0; color: #78877e; font: 6.5px/1.45 var(--sans); }
+.bridge-quick-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.bridge-chip { padding: 2px 7px; border: 1px solid #334037; border-radius: 10px; color: #9bb0a3; background: #131a15; font: 6px var(--sans); cursor: pointer; transition: all .15s ease; }
+.bridge-chip:hover { border-color: #556c42; color: #eaf5dd; background: #1d271f; }
+.bridge-assistant-actions { display: grid; grid-template-columns: minmax(120px, 1fr) auto; align-items: end; gap: 8px; }
+.bridge-assistant-actions label { margin: 0; }
+.bridge-ask-btn { min-height: 29px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid #4b623a; border-radius: 5px; color: #d6f2af; background: #1f2d1a; cursor: pointer; font: 750 6.5px var(--sans); white-space: nowrap; }
+.bridge-ask-btn:hover:not(:disabled) { background: #2a3d24; border-color: #6a8b53; color: #fff; }
+.bridge-ask-btn:disabled { opacity: .42; cursor: default; }
+.bridge-ask-btn svg { width: 12px; color: #b6e66a; }
+.bridge-ask-btn .spin { animation: spin 1s linear infinite; }
+.bridge-error-banner { padding: 6px 8px; border: 1px solid #5a3028; border-radius: 4px; color: #e88d7d; background: #22120f; font: 6px/1.4 var(--sans); }
+.bridge-thinking-stream { margin-top: 4px; }
+.bridge-suggestion-card { padding: 9px; border: 1px solid #3b4e34; border-radius: 6px; background: #111a13; display: grid; gap: 7px; }
+.bridge-suggestion-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bridge-suggestion-header h4 { margin: 0; color: #d6e1d9; font: 650 9px var(--serif); }
+.bridge-duration-badge { font: 700 6.5px var(--mono); color: #f59e0b; background: rgba(245, 158, 11, 0.12); padding: 2px 6px; border-radius: 3px; border: 1px solid rgba(245, 158, 11, 0.28); }
+.bridge-motion-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; font: 6.5px/1.4 var(--sans); color: #9dacA3; }
+.bridge-motion-grid strong { color: #ccd6cf; }
+.bridge-motion-grid .wide { grid-column: 1 / -1; }
+.bridge-prompt-preview { font: 6.5px/1.45 var(--sans); color: #dce5df; background: #070b08; padding: 7px 8px; border-radius: 4px; border: 1px solid #232c26; display: grid; gap: 3px; }
+.bridge-prompt-preview strong { color: #87978c; font: 6px var(--mono); text-transform: uppercase; }
+.bridge-prompt-preview p { margin: 0; }
+.bridge-checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font: 6px var(--sans); color: #85958a; }
+.bridge-checklist li { display: flex; align-items: center; gap: 5px; }
+.bridge-checklist svg { width: 10px; height: 10px; color: #9bc655; flex-shrink: 0; }
+.bridge-apply-btn { min-height: 28px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid #556c42; border-radius: 5px; color: #eaf5dd; background: linear-gradient(180deg, #324a27, #23341b); cursor: pointer; font: 750 6.5px var(--sans); }
+.bridge-apply-btn:hover { filter: brightness(1.15); border-color: #729255; }
+.bridge-apply-btn svg { width: 11px; color: #b7e868; }
+
 .editor-index { padding-bottom: 8px; }
 .editor-index h4 { margin: 0; padding: 9px 9px 6px; color: #5f6c64; font: 750 6px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
 .editor-index > button { width: 100%; padding: 7px 8px; display: grid; grid-template-columns: 20px minmax(0,1fr); gap: 7px; border: 0; border-bottom: 1px solid #252e29; color: inherit; background: transparent; text-align: left; }

@@ -35,6 +35,9 @@ import type {
   SetupLocations,
   SetupProgress,
   SetupSnapshot,
+  MovieBridgeAssistEvent,
+  MovieBridgeAssistRequest,
+  MovieBridgeSuggestion,
   MovieClipAssistEvent,
   MovieClipRenderRequest,
   MovieClipSuggestion,
@@ -449,6 +452,11 @@ export async function askMovieDirectorClip(requestId: string, id: string, clipId
   return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { requestId, id, clipId, feedback, thinkingLevel } });
 }
 
+export async function askMovieDirectorBridge(request: MovieBridgeAssistRequest): Promise<MovieBridgeSuggestion> {
+  if (!isTauri()) throw new Error("Studio bridge assistance requires the desktop application.");
+  return invoke<MovieBridgeSuggestion>("ask_movie_director_bridge", { request });
+}
+
 export async function getMusicMidiDocument(projectId: string, takeId: string): Promise<MusicMidiSaveResult> {
   if (!isTauri()) throw new Error("The MIDI editor requires the desktop application.");
   return invoke<MusicMidiSaveResult>("get_music_midi_document", { request: { projectId, takeId } });
@@ -470,6 +478,11 @@ export async function revealMusicMidi(projectId: string, takeId: string): Promis
 
 export async function onMovieClipAssist(callback: (event: MovieClipAssistEvent) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MovieClipAssistEvent>("movie-clip-assist", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function onMovieBridgeAssist(callback: (event: MovieBridgeAssistEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieBridgeAssistEvent>("movie-bridge-assist", (event) => callback(event.payload));
   return () => undefined;
 }
 

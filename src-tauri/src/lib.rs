@@ -56,13 +56,14 @@ use std::{
 use store::ResearchStore;
 use studio::{
     ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
-    ImageSummary, MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion,
-    MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
-    MovieFl2vBridgeRequest, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
-    MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
-    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
-    MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, PromptDraftJob,
-    PromptDraftRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
+    ImageSummary, MovieBridgeAssistRequest, MovieBridgeSuggestion, MovieClipAssistRequest,
+    MovieClipRenderRequest, MovieClipSuggestion, MovieCopilotJob, MovieCopilotReceipt,
+    MovieCopilotRequest, MovieEdit, MovieFl2vBridgeRequest, MovieImageAssetGeneration,
+    MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest, MovieModelRoles,
+    MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot, MovieProject,
+    MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest, MusicMidiSaveResult,
+    MusicProject, MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest,
+    SaveMusicMidiDocumentRequest, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -1506,6 +1507,58 @@ async fn ask_movie_director_clip(
         state
             .studio
             .assist_clip(
+                &request,
+                &lease.connection,
+                director_runtime.max_output_tokens,
+                Some(&app),
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    let _ = state.runtime.stop_managed().await;
+    result
+}
+
+#[tauri::command]
+async fn ask_movie_director_bridge(
+    request: MovieBridgeAssistRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieBridgeSuggestion, String> {
+    let _guard = claim_workspace(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let (_, runtime_settings, models) = studio_model_context(&state).await?;
+    let project = state
+        .studio
+        .get(&request.id)
+        .map_err(|error| error.to_string())?;
+    let (director_model_id, _) = project_model_ids(
+        &project,
+        &models,
+        &runtime_settings,
+        &state.model_qualifications,
+        research.advanced_mode || runtime_settings.advanced_mode,
+    )?;
+    release_all_comfy_memory(&state).await;
+    state
+        .runtime
+        .stop_managed()
+        .await
+        .map_err(|error| error.to_string())?;
+    let director_runtime = runtime_settings.for_model(&director_model_id);
+    let result: Result<MovieBridgeSuggestion, String> = async {
+        let lease = state
+            .runtime
+            .lease_model(&director_model_id, &models, &runtime_settings, None)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .studio
+            .assist_bridge(
                 &request,
                 &lease.connection,
                 director_runtime.max_output_tokens,
@@ -3612,6 +3665,7 @@ pub fn run() {
             revise_movie_plan,
             approve_movie_plan,
             ask_movie_director_clip,
+            ask_movie_director_bridge,
             render_movie_clip_version,
             capture_movie_frame,
             generate_movie_fl2v_bridge,

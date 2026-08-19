@@ -455,7 +455,35 @@ export interface MovieFl2vBridgeRequest {
   prompt: string;
   durationSeconds: number;
   seed?: number;
-  insertMode?: "insert_at_cut" | "replace_range" | "add_to_masters";
+  insertMode: "insert_at_cut" | "replace_range" | "add_to_masters";
+}
+
+export interface MovieBridgeAssistRequest {
+  requestId: string;
+  id: string;
+  firstFrame: FrameCaptureSpec;
+  lastFrame: FrameCaptureSpec;
+  measuredDuration: number;
+  feedback: string;
+  thinkingLevel?: ThinkingLevel;
+}
+
+export interface MovieBridgeAssistEvent {
+  requestId: string;
+  projectId: string;
+  kind: "reasoning" | string;
+  content: string;
+  at: string;
+}
+
+export interface MovieBridgeSuggestion {
+  summary: string;
+  motionPrompt: string;
+  suggestedDuration: number;
+  cameraMotion: string;
+  subjectMotion: string;
+  transitionNotes: string;
+  checklist: string[];
 }
 
 export interface ClipEdit {

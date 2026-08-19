@@ -1,17 +1,29 @@
 import {
-  Archive, ArrowRight, AudioLines, Check, ChevronLeft, ChevronRight, CircleHelp, Copy,
-  Dices, Eye, EyeOff, Film, Flag, Gauge, Images, Info, List, Magnet, Maximize2,
+  Archive, ArrowRight, AudioLines, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy,
+  Dices, Eye, EyeOff, Film, Flag, Gauge, Images, Info, List, LoaderCircle, Magnet, Maximize2,
   Minimize2, MousePointer2, PanelLeft, PanelRight, Pause, Play, Plus, Redo2, RefreshCw,
   RotateCcw, Save, ScanLine, Scissors, Search, SkipBack, SkipForward, Sparkles,
   Trash2, Undo2, Video, Volume2, X, ZoomIn,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { captureMovieFrame, generateMovieFl2vBridge, movieMediaUrl } from "./api";
-import type {
-  ClipEdit, MovieEdit, MovieProject, MovieReference, RenderedClip, TimelineMarker,
+import {
+  askMovieDirectorBridge, captureMovieFrame, generateMovieFl2vBridge, movieMediaUrl, onMovieBridgeAssist,
+} from "./api";
+import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
+import {
+  effectiveThinkingLevelForModel,
+  type ClipEdit, type ControlSettings, type MovieBridgeSuggestion, type MovieEdit, type MovieProject, type MovieReference, type RenderedClip, type ThinkingLevel, type TimelineMarker,
 } from "./types";
 
 const FPS = 24;
+
+const QUICK_BRIDGE_PROMPTS = [
+  { label: "Match Cut & Push-In", prompt: "Match the subject framing smoothly and perform a gradual cinematic push-in towards the focal point." },
+  { label: "Smooth Dolly & Pan", prompt: "Perform a steady dolly motion with subtle horizontal pan, keeping subject momentum seamless." },
+  { label: "Dynamic Action Continuity", prompt: "Carry the kinetic momentum and velocity of the character action directly into the next composition." },
+  { label: "Atmospheric Dissolve", prompt: "Transition lighting and environmental weather elements gradually to set up the ambiance of the landing frame." },
+  { label: "Whip Pan Transition", prompt: "Execute a rapid whip-pan camera move that blurs mid-transition and lands crisply on the target frame." },
+];
 
 const STANDARD_H3_DURATIONS = [
   { value: 1.0, label: "1.0s · 25 frames (H3 Min)" },
@@ -142,10 +154,11 @@ function editId(prefix = "edit"): string {
     : `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function MovieTimeline({ project, value, disabled, onChange, onRequestSave }: {
+export function MovieTimeline({ project, value, disabled, controlSettings, onChange, onRequestSave }: {
   project: MovieProject;
   value: MovieEdit;
   disabled: boolean;
+  controlSettings?: ControlSettings;
   onChange: (edit: MovieEdit) => void;
   onRequestSave?: () => void;
 }) {
@@ -188,6 +201,16 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
   const [fl2vInsertMode, setFl2vInsertMode] = useState<"insert_at_cut" | "replace_range" | "add_to_masters">("insert_at_cut");
   const [fl2vRendering, setFl2vRendering] = useState(false);
   const [fl2vError, setFl2vError] = useState<string | null>(null);
+  const [bridgeAssistantOpen, setBridgeAssistantOpen] = useState(true);
+  const [bridgeFeedback, setBridgeFeedback] = useState("");
+  const [bridgeThinkingLevel, setBridgeThinkingLevel] = useState<ThinkingLevel | "default">("default");
+  const [bridgeBusy, setBridgeBusy] = useState(false);
+  const [bridgeModelBusy, setBridgeModelBusy] = useState(false);
+  const [bridgeReasoning, setBridgeReasoning] = useState("");
+  const [bridgeModelAttempted, setBridgeModelAttempted] = useState(false);
+  const [bridgeSuggestion, setBridgeSuggestion] = useState<MovieBridgeSuggestion | null>(null);
+  const [bridgeError, setBridgeError] = useState<string | null>(null);
+  const bridgeRequestIdRef = useRef("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const sourceVideoRef = useRef<HTMLVideoElement>(null);
   const skimThrottle = useRef(0);
@@ -224,6 +247,15 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     if (selectedId && items.some((item) => item.edit.id === selectedId)) return;
     setSelectedId(items[0]?.edit.id ?? "");
   }, [items, selectedId]);
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void onMovieBridgeAssist((event) => {
+      if (event.requestId !== bridgeRequestIdRef.current || event.projectId !== project.id) return;
+      if (event.kind === "reasoning") setBridgeReasoning((value) => appendModelThinking(value, event.content));
+    }).then((unlisten) => { dispose = unlisten; });
+    return () => dispose?.();
+  }, [project.id]);
 
   const commit = (next: MovieEdit) => {
     if (disabled) return;
@@ -431,14 +463,10 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
       setFl2vError("Please capture both a First Frame and a Last Frame.");
       return;
     }
-    if (!fl2vPrompt.trim()) {
-      setFl2vError("Please enter a motion/continuity description prompt.");
-      return;
-    }
     setFl2vRendering(true);
     setFl2vError(null);
     try {
-      const updated = await generateMovieFl2vBridge({
+      const updatedProject = await generateMovieFl2vBridge({
         id: project.id,
         firstFrame: {
           clipId: fl2vFirstFrame.clipId,
@@ -452,17 +480,91 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
           timeSeconds: fl2vLastFrame.timeSeconds,
           label: fl2vLastFrame.label,
         },
-        prompt: fl2vPrompt.trim(),
+        prompt: fl2vPrompt,
         durationSeconds: fl2vDuration,
-        seed: fl2vSeed !== undefined ? fl2vSeed : defaultSeed,
+        seed: fl2vSeed,
         insertMode: fl2vInsertMode,
       });
-      commit(updated.edit);
+
+      const newClip = updatedProject.clips.at(-1);
+      if (newClip && fl2vInsertMode === "insert_at_cut" && selected) {
+        const nextClips = [...normalizedValue.clips];
+        const selIdx = nextClips.findIndex((c) => c.id === selected.edit.id);
+        const newEditId = editId("fl2v");
+        const newDecision: ClipEdit = {
+          id: newEditId,
+          clipId: newClip.id,
+          enabled: true,
+          order: selIdx + 1,
+          trimStart: 0,
+          trimEnd: 0,
+          audioGain: 1,
+          sourceVersionId: "",
+          speed: 1,
+          fadeIn: 0,
+          fadeOut: 0,
+          audioFadeIn: 0,
+          audioFadeOut: 0,
+          label: `FL2V Bridge (${fl2vDuration}s)`,
+          notes: fl2vPrompt,
+        };
+        nextClips.splice(selIdx + 1, 0, newDecision);
+        commit({ ...normalizedValue, clips: nextClips.map((c, i) => ({ ...c, order: i })) });
+        setSelectedId(newEditId);
+      }
     } catch (err: unknown) {
       setFl2vError(err instanceof Error ? err.message : String(err));
     } finally {
       setFl2vRendering(false);
     }
+  };
+
+  const handleAskBridgeDirector = async () => {
+    if (!fl2vFirstFrame || !fl2vLastFrame) {
+      setBridgeError("Please capture both a First Frame and a Last Frame before asking the Director.");
+      return;
+    }
+    const requestId = crypto.randomUUID();
+    bridgeRequestIdRef.current = requestId;
+    setBridgeReasoning("");
+    setBridgeModelAttempted(true);
+    setBridgeModelBusy(true);
+    setBridgeBusy(true);
+    setBridgeError(null);
+    try {
+      const suggestion = await askMovieDirectorBridge({
+        requestId,
+        id: project.id,
+        firstFrame: {
+          clipId: fl2vFirstFrame.clipId,
+          sourcePath: fl2vFirstFrame.sourcePath,
+          timeSeconds: fl2vFirstFrame.timeSeconds,
+          label: fl2vFirstFrame.label,
+        },
+        lastFrame: {
+          clipId: fl2vLastFrame.clipId,
+          sourcePath: fl2vLastFrame.sourcePath,
+          timeSeconds: fl2vLastFrame.timeSeconds,
+          label: fl2vLastFrame.label,
+        },
+        measuredDuration: fl2vDuration,
+        feedback: bridgeFeedback,
+        thinkingLevel: bridgeThinkingLevel !== "default" ? bridgeThinkingLevel : undefined,
+      });
+      setBridgeSuggestion(suggestion);
+    } catch (err: unknown) {
+      setBridgeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      bridgeRequestIdRef.current = "";
+      setBridgeModelBusy(false);
+      setBridgeBusy(false);
+    }
+  };
+
+  const applyBridgeSuggestion = () => {
+    if (!bridgeSuggestion) return;
+    setFl2vPrompt(bridgeSuggestion.motionPrompt);
+    setFl2vDuration(bridgeSuggestion.suggestedDuration);
   };
 
   const setProgramPosition = (item: TimelineItem, time: number, play = false) => {
@@ -758,6 +860,131 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
             </InspectorSection>
 
             <InspectorSection title="2. Motion & Prompt" defaultOpen>
+              <div className="bridge-assistant wide">
+                <button
+                  type="button"
+                  className="bridge-assistant-toggle"
+                  onClick={() => setBridgeAssistantOpen(!bridgeAssistantOpen)}
+                >
+                  <Sparkles /> Director bridge assistant <ChevronDown className={bridgeAssistantOpen ? "open" : ""} />
+                </button>
+                {bridgeAssistantOpen && (
+                  <div className="bridge-assistant-body">
+                    <p>
+                      The Director synthesizes a high-fidelity MiniMax H3 motion prompt from Frame A, Frame B, and the project continuity bible.
+                    </p>
+
+                    <div className="bridge-quick-chips">
+                      {QUICK_BRIDGE_PROMPTS.map((chip) => (
+                        <button
+                          key={chip.label}
+                          type="button"
+                          className="bridge-chip"
+                          onClick={() => setBridgeFeedback(chip.prompt)}
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <label className="wide">
+                      Producer bridge direction
+                      <textarea
+                        rows={2}
+                        maxLength={1000}
+                        value={bridgeFeedback}
+                        onChange={(e) => setBridgeFeedback(e.target.value)}
+                        placeholder="Specify camera movement, character action, or sound transition connecting Frame A to B…"
+                      />
+                    </label>
+
+                    <div className="bridge-assistant-actions">
+                      <label>
+                        Thinking level
+                        <select
+                          aria-label="Director bridge assistant thinking level"
+                          value={bridgeThinkingLevel}
+                          disabled={bridgeBusy}
+                          onChange={(e) => setBridgeThinkingLevel(e.target.value as ThinkingLevel | "default")}
+                        >
+                          <option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, project.model)})</option>
+                          <option value="off">Off (direct)</option>
+                          <option value="low">Low reasoning</option>
+                          <option value="medium">Medium reasoning</option>
+                          <option value="high">High reasoning</option>
+                          <option value="max">Max reasoning</option>
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="bridge-ask-btn"
+                        disabled={bridgeBusy || !fl2vFirstFrame || !fl2vLastFrame}
+                        onClick={() => void handleAskBridgeDirector()}
+                      >
+                        {bridgeBusy ? <LoaderCircle className="spin" /> : <Sparkles />}
+                        Ask Director for bridge prompt
+                      </button>
+                    </div>
+
+                    {bridgeError && <div className="bridge-error-banner">{bridgeError}</div>}
+
+                    {bridgeModelAttempted && (
+                      <ModelThinkingStream
+                        text={bridgeReasoning}
+                        active={bridgeModelBusy}
+                        modelName={project.model}
+                        thinkingLevel={bridgeThinkingLevel !== "default" ? bridgeThinkingLevel : effectiveThinkingLevelForModel(controlSettings, project.model)}
+                        className="bridge-thinking-stream"
+                      />
+                    )}
+
+                    {bridgeSuggestion && (
+                      <div className="bridge-suggestion-card">
+                        <div className="bridge-suggestion-header">
+                          <h4>{bridgeSuggestion.summary}</h4>
+                          <span className="bridge-duration-badge">{bridgeSuggestion.suggestedDuration.toFixed(1)}s suggested</span>
+                        </div>
+
+                        <div className="bridge-motion-grid">
+                          <div className="bridge-motion-item">
+                            <strong>Camera:</strong> <span>{bridgeSuggestion.cameraMotion}</span>
+                          </div>
+                          <div className="bridge-motion-item">
+                            <strong>Subject:</strong> <span>{bridgeSuggestion.subjectMotion}</span>
+                          </div>
+                          {bridgeSuggestion.transitionNotes && (
+                            <div className="bridge-motion-item wide">
+                              <strong>Audio & Transition:</strong> <span>{bridgeSuggestion.transitionNotes}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="bridge-prompt-preview">
+                          <strong>Generated FL2V Prompt:</strong>
+                          <p>{bridgeSuggestion.motionPrompt}</p>
+                        </div>
+
+                        {bridgeSuggestion.checklist.length > 0 && (
+                          <ul className="bridge-checklist">
+                            {bridgeSuggestion.checklist.map((item) => (
+                              <li key={item}><Check /> {item}</li>
+                            ))}
+                          </ul>
+                        )}
+
+                        <button
+                          type="button"
+                          className="bridge-apply-btn primary-button"
+                          onClick={applyBridgeSuggestion}
+                        >
+                          <Check /> Apply to Bridge &amp; Duration
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <label className="wide">
                 Motion Description
                 <textarea

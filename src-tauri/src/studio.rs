@@ -418,6 +418,50 @@ pub struct MovieClipSuggestion {
     pub clip: PlannedClip,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieBridgeAssistRequest {
+    pub request_id: String,
+    pub id: String,
+    pub first_frame: MovieBridgeFrameInfo,
+    pub last_frame: MovieBridgeFrameInfo,
+    pub measured_duration: f64,
+    pub feedback: String,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieBridgeFrameInfo {
+    pub clip_id: String,
+    pub source_path: String,
+    pub time_seconds: f64,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieBridgeAssistEvent {
+    pub request_id: String,
+    pub project_id: String,
+    pub kind: String,
+    pub content: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieBridgeSuggestion {
+    pub summary: String,
+    pub motion_prompt: String,
+    pub suggested_duration: f64,
+    pub camera_motion: String,
+    pub subject_motion: String,
+    pub transition_notes: String,
+    pub checklist: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StudioProtocolQualification {
@@ -2351,6 +2395,120 @@ impl MovieStudio {
         Ok(suggestion)
     }
 
+    pub async fn assist_bridge(
+        &self,
+        request: &MovieBridgeAssistRequest,
+        connection: &ModelConnection,
+        runtime_max_output_tokens: u32,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieBridgeSuggestion, StudioError> {
+        validate_id(&request.request_id)?;
+        let feedback = request.feedback.trim();
+        let project = self.get(&request.id)?;
+
+        let clip_first = project
+            .clips
+            .iter()
+            .find(|c| c.id == request.first_frame.clip_id);
+        let clip_last = project
+            .clips
+            .iter()
+            .find(|c| c.id == request.last_frame.clip_id);
+
+        let plan_clip_first = project.plan.as_ref().and_then(|p| {
+            p.clips
+                .iter()
+                .find(|c| c.id == request.first_frame.clip_id)
+        });
+        let plan_clip_last = project.plan.as_ref().and_then(|p| {
+            p.clips
+                .iter()
+                .find(|c| c.id == request.last_frame.clip_id)
+        });
+
+        let payload = json!({
+            "producerMovieBrief": project.prompt,
+            "producerBridgeDirection": if feedback.is_empty() { "Create a smooth, cinematic transition connecting the two frames." } else { feedback },
+            "firstFrame": {
+                "clipId": request.first_frame.clip_id,
+                "label": request.first_frame.label.as_deref().unwrap_or("Frame A"),
+                "timeSeconds": request.first_frame.time_seconds,
+                "clipTitle": clip_first.map(|c| c.title.as_str()).or_else(|| plan_clip_first.map(|c| c.title.as_str())).unwrap_or("Source A"),
+                "clipPrompt": clip_first.map(|c| c.prompt.as_str()).or_else(|| plan_clip_first.map(|c| c.prompt.as_str())).unwrap_or(""),
+                "continuityOut": plan_clip_first.map(|c| c.continuity_out.as_str()).unwrap_or(""),
+            },
+            "lastFrame": {
+                "clipId": request.last_frame.clip_id,
+                "label": request.last_frame.label.as_deref().unwrap_or("Frame B"),
+                "timeSeconds": request.last_frame.time_seconds,
+                "clipTitle": clip_last.map(|c| c.title.as_str()).or_else(|| plan_clip_last.map(|c| c.title.as_str())).unwrap_or("Source B"),
+                "clipPrompt": clip_last.map(|c| c.prompt.as_str()).or_else(|| plan_clip_last.map(|c| c.prompt.as_str())).unwrap_or(""),
+                "continuityIn": plan_clip_last.map(|c| c.continuity_in.as_str()).unwrap_or(""),
+            },
+            "measuredRangeSeconds": request.measured_duration,
+            "creativeDirection": project.plan.as_ref().map(|p| p.creative_direction.as_str()).unwrap_or(""),
+            "continuityBible": project.plan.as_ref().map(|p| p.continuity_bible.as_slice()).unwrap_or(&[]),
+            "referenceManifest": reference_manifest(&project.references),
+        });
+
+        let system_prompt = "You are the Kestrel Studio Director at the professional editor's in-between bridge desk. \
+Your task is to synthesize an exact, high-continuity motion description for MiniMax H3 First-Frame-to-Last-Frame (FL2V) video generation. \
+An FL2V prompt must provide a detailed 60-250 word physical motion instruction: \
+1. Starting camera framing, perspective, and subject posture matching Frame A. \
+2. The physical action, movement velocity, trajectory, camera pan/tilt/dolly, and environmental dynamics connecting the two frames. \
+3. Seamless arrival at the framing, posture, and composition of Frame B. \
+4. Lighting, atmospheric, and spatial sound/audio transition cues matching the scene mood. \
+Do not invent unrelated characters or contradictory locations; bridge the physical reality of Frame A to Frame B smoothly. \
+Suggest a duration in seconds between 1.0 and 15.0 that best fits the natural pacing of the motion. \
+Return strict JSON adhering to the schema.";
+
+        let messages = vec![
+            json!({"role":"system","content":system_prompt}),
+            json!({"role":"user","content":payload.to_string()}),
+        ];
+
+        let mut on_event = |event| {
+            if let (Some(app), agent_protocol::StreamEvent::Reasoning(token)) = (app, event) {
+                let _ = app.emit(
+                    "movie-bridge-assist",
+                    MovieBridgeAssistEvent {
+                        request_id: request.request_id.clone(),
+                        project_id: request.id.clone(),
+                        kind: "reasoning".into(),
+                        content: token,
+                        at: Utc::now().to_rfc3339(),
+                    },
+                );
+            }
+        };
+
+        let mut movie_settings = project.settings.clone();
+        if let Some(level) = request.thinking_level {
+            movie_settings.thinking_budget = level.budget_tokens(32_768);
+        }
+
+        let mut suggestion: MovieBridgeSuggestion = agent_protocol::complete_tool_submission(
+            &self.http,
+            ToolSubmissionRequest {
+                connection,
+                initial_messages: &messages,
+                tool_name: "submit_bridge_suggestion",
+                tool_description: "Submit the organized bridge motion description and timing for FL2V in-between generation.",
+                response_format: bridge_suggestion_schema(),
+                settings: &movie_settings,
+                runtime_max_output_tokens,
+                label: "movie bridge suggestion",
+                audit_path: None,
+                cancel: None,
+                on_event: Some(&mut on_event),
+            },
+        )
+        .await?;
+
+        suggestion.suggested_duration = suggestion.suggested_duration.clamp(1.0, 15.0);
+        Ok(suggestion)
+    }
+
     async fn independently_review_movie_plan(
         &self,
         request: IndependentReviewRequest<'_>,
@@ -4146,6 +4304,20 @@ fn clip_suggestion_schema() -> Value {
                 "referenceIds":{"type":"array","description":text(PromptId::StudioReferenceIds),"maxItems":12,"items":{"type":"string","maxLength":128}}
             },"required":["id","title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}
         },"required":["clipId","summary","checklist","clip"]
+    }}})
+}
+
+fn bridge_suggestion_schema() -> Value {
+    json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_bridge_suggestion","strict":true,"schema":{
+        "type":"object","additionalProperties":false,"properties":{
+            "summary":{"type":"string","minLength":5,"maxLength":1200},
+            "motionPrompt":{"type":"string","minLength":10,"maxLength":2500},
+            "suggestedDuration":{"type":"number","minimum":1.0,"maximum":15.0},
+            "cameraMotion":{"type":"string","maxLength":400},
+            "subjectMotion":{"type":"string","maxLength":400},
+            "transitionNotes":{"type":"string","maxLength":600},
+            "checklist":{"type":"array","maxItems":12,"items":{"type":"string","minLength":3,"maxLength":400}}
+        },"required":["summary","motionPrompt","suggestedDuration","cameraMotion","subjectMotion","transitionNotes","checklist"]
     }}})
 }
 
