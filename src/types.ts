@@ -1178,6 +1178,7 @@ export interface DeveloperStatus {
 export interface ProvenHardwareProfile {
   id: string;
   modelPattern: string;
+  quantizationPattern?: string;
   displayName: string;
   minVramMib: number;
   maxVramMib?: number;
@@ -1198,6 +1199,9 @@ export function findProvenHardwareProfile(
   const lower = modelName.toLowerCase();
   return profiles.find((profile) => {
     if (!lower.includes(profile.modelPattern.toLowerCase())) return false;
+    if (profile.quantizationPattern && !lower.includes(profile.quantizationPattern.toLowerCase())) {
+      return false;
+    }
     if (vramMib !== undefined) {
       if (vramMib < profile.minVramMib) return false;
       if (profile.maxVramMib !== undefined && vramMib > profile.maxVramMib) return false;
