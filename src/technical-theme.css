@@ -531,6 +531,7 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 
 /* Editorial UI follows the same line system; only the image monitor remains dark. */
 .movie-editor-pro { --editor-line: #111416; --editor-panel: #f7f8f5; --editor-deep: #fff; --editor-text: #111416; --editor-muted: #596064; --editor-accent: var(--tech-blue); color: #111; border: var(--tech-rule); background: #fff; box-shadow: 4px 4px 0 #111; }
+.project-edit-room .movie-editor-pro { border: 0; box-shadow: none; }
 .movie-editor-pro:focus-visible { box-shadow: 0 0 0 3px var(--tech-blue),4px 4px 0 #111; }
 .editor-command-bar { border-bottom: var(--tech-rule); background: #fff; }
 .editor-project-identity > svg, .editor-project-identity strong { color: #111; }
