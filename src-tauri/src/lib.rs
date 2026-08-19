@@ -5,6 +5,7 @@ mod attachments;
 mod chat;
 mod config;
 mod developer;
+mod hardware_profiles;
 mod harness;
 mod html;
 mod kiwix;
@@ -3288,7 +3289,13 @@ async fn control_snapshot(
         gpu: services::gpu_snapshot().await,
         developer,
         runtime_logs: state.runtime.recent_logs(100).await,
+        proven_hardware_profiles: hardware_profiles::all_proven_profiles(),
     })
+}
+
+#[tauri::command]
+fn get_proven_hardware_profiles() -> Vec<hardware_profiles::ProvenHardwareProfile> {
+    hardware_profiles::all_proven_profiles()
 }
 
 async fn refresh_engine_candidates(
@@ -3601,6 +3608,7 @@ pub fn run() {
             reveal_library,
             get_system_snapshot,
             get_control_snapshot,
+            get_proven_hardware_profiles,
             scan_local_models,
             list_model_downloads,
             inspect_model_download,

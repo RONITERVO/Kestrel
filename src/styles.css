@@ -370,8 +370,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .advanced-settings label { min-width: 0; }
 .wide-field { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; }
 .wide-field > span, .number-setting > span { font-size: 10px; font-weight: 750; }
-.wide-field input, .wide-field select, .number-setting input { height: 40px; width: 100%; padding: 0 10px; border: 1px solid #d5d0c5; border-radius: 8px; background: #faf8f3; outline: none; font-size: 11px; }
-.wide-field input:focus, .wide-field select:focus, .number-setting input:focus { border-color: #759887; box-shadow: 0 0 0 3px rgba(72,121,102,.09); }
+.wide-field input, .wide-field select, .number-setting input, .number-setting select { height: 40px; width: 100%; padding: 0 10px; border: 1px solid #d5d0c5; border-radius: 8px; background: #faf8f3; outline: none; font-size: 11px; }
+.wide-field input:focus, .wide-field select:focus, .number-setting input:focus, .number-setting select:focus { border-color: #759887; box-shadow: 0 0 0 3px rgba(72,121,102,.09); }
 .number-setting { padding: 12px; display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--line-soft); border-radius: 9px; background: #fbf9f4; }
 .number-setting > span { display: flex; min-height: 28px; flex-direction: column; gap: 3px; }
 .number-setting small { color: var(--faint); font-size: 8px; font-weight: 500; }

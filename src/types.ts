@@ -1175,6 +1175,57 @@ export interface DeveloperStatus {
   lastReport?: string;
 }
 
+export interface ProvenHardwareProfile {
+  id: string;
+  modelPattern: string;
+  displayName: string;
+  minVramMib: number;
+  maxVramMib?: number;
+  recommendedContextWindow: number;
+  recommendedMaxOutputTokens: number;
+  recommendedThinkingLevel: ThinkingLevel;
+  recommendedThreads: number;
+  description: string;
+  provenSpeedNotes: string;
+}
+
+export function findProvenHardwareProfile(
+  profiles: ProvenHardwareProfile[] | undefined,
+  modelName: string | undefined,
+  vramMib: number | undefined,
+): ProvenHardwareProfile | undefined {
+  if (!profiles?.length || !modelName) return undefined;
+  const lower = modelName.toLowerCase();
+  return profiles.find((profile) => {
+    if (!lower.includes(profile.modelPattern.toLowerCase())) return false;
+    if (vramMib !== undefined) {
+      if (vramMib < profile.minVramMib) return false;
+      if (profile.maxVramMib !== undefined && vramMib > profile.maxVramMib) return false;
+    }
+    return true;
+  });
+}
+
+export const STANDARD_CONTEXT_OPTIONS: Array<{ value: number; label: string }> = [
+  { value: 4096, label: "4k (4,096 tokens)" },
+  { value: 8192, label: "8k (8,192 tokens)" },
+  { value: 16384, label: "16k (16,384 tokens)" },
+  { value: 24576, label: "24k (24,576 tokens)" },
+  { value: 32768, label: "32k (32,768 tokens)" },
+  { value: 49152, label: "48k (49,152 tokens)" },
+  { value: 65536, label: "64k (65,536 tokens)" },
+  { value: 131072, label: "128k (131,072 tokens)" },
+  { value: 262144, label: "256k (262,144 tokens)" },
+];
+
+export const STANDARD_OUTPUT_OPTIONS: Array<{ value: number; label: string }> = [
+  { value: 2048, label: "2k (2,048 tokens)" },
+  { value: 4096, label: "4k (4,096 tokens)" },
+  { value: 8192, label: "8k (8,192 tokens)" },
+  { value: 16384, label: "16k (16,384 tokens)" },
+  { value: 32768, label: "32k (32,768 tokens)" },
+];
+
 export interface ControlSnapshot {
   settings: ControlSettings;
   models: ModelInfo[];
@@ -1183,6 +1234,7 @@ export interface ControlSnapshot {
   gpu?: GpuSnapshot;
   developer: DeveloperStatus;
   runtimeLogs: RuntimeLog[];
+  provenHardwareProfiles?: ProvenHardwareProfile[];
 }
 
 export interface EngineCandidate {
@@ -1364,6 +1416,7 @@ export interface SystemSnapshot {
   control: ControlSettings;
   models: ModelInfo[];
   managedRuntime: ManagedRuntimeSnapshot;
+  provenHardwareProfiles?: ProvenHardwareProfile[];
 }
 
 export type ProgressStage =

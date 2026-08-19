@@ -239,6 +239,8 @@ pub struct ControlSnapshot {
     pub gpu: Option<GpuSnapshot>,
     pub developer: DeveloperStatus,
     pub runtime_logs: Vec<RuntimeLog>,
+    #[serde(default)]
+    pub proven_hardware_profiles: Vec<crate::hardware_profiles::ProvenHardwareProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -531,6 +533,8 @@ pub struct SystemSnapshot {
     pub control: ControlSettings,
     pub models: Vec<ModelInfo>,
     pub managed_runtime: ManagedRuntimeSnapshot,
+    #[serde(default)]
+    pub proven_hardware_profiles: Vec<crate::hardware_profiles::ProvenHardwareProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
