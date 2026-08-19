@@ -13,9 +13,10 @@ import {
 } from "./api";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import type {
-  ImageElement, ImageGenerationEvent, ImageProject, ImageSummary, ImageTake, ModelInfo,
-  PromptDraftReceipt,
+  ControlSettings, ImageElement, ImageGenerationEvent, ImageProject, ImageSummary, ImageTake, ModelInfo,
+  PromptDraftReceipt, ThinkingLevel,
 } from "./types";
+import { effectiveThinkingLevelForModel } from "./types";
 
 interface ImageCollaboration {
   id: string;
@@ -23,6 +24,7 @@ interface ImageCollaboration {
   reasoning: string;
   status: string;
   modelName: string;
+  thinkingLevel?: ThinkingLevel;
   receipt?: PromptDraftReceipt;
 }
 
@@ -45,12 +47,14 @@ export function ImageStudio({
   advancedEnabled,
   models = [],
   selectedModelId,
+  controlSettings,
   onError,
 }: {
   initialComfyRoot?: string;
   advancedEnabled: boolean;
   models?: ModelInfo[];
   selectedModelId?: string;
+  controlSettings?: ControlSettings;
   onError: (message: string) => void;
 }) {
   const [summaries, setSummaries] = useState<ImageSummary[]>([]);
@@ -58,6 +62,8 @@ export function ImageStudio({
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [modelId, setModelId] = useState(selectedModelId ?? models[0]?.id ?? "");
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const [newOpen, setNewOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newIdea, setNewIdea] = useState("");
@@ -71,7 +77,6 @@ export function ImageStudio({
   const [selectedElementId, setSelectedElementId] = useState("");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("compose");
   const [progress, setProgress] = useState<ImageGenerationEvent>();
-  const [modelId, setModelId] = useState(selectedModelId ?? models[0]?.id ?? "");
   const [collaboration, setCollaboration] = useState<ImageCollaboration>();
   const activeProjectId = useRef("");
   const artboardRef = useRef<HTMLDivElement>(null);
@@ -108,11 +113,12 @@ export function ImageStudio({
       if (event.kind === "error") onError(event.content ?? "The local image collaborator stopped.");
       setCollaboration((current) => {
         if (!current || current.id !== event.requestId) return current;
-        if (event.kind === "token") return { ...current, text: current.text + (event.content ?? ""), status: "writing", modelName: event.modelName ?? current.modelName };
-        if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt };
-        if (event.kind === "reasoning") return { ...current, reasoning: appendModelThinking(current.reasoning, event.content ?? ""), status: "thinking", modelName: event.modelName ?? current.modelName };
-        if (event.kind === "complete") return { ...current, status: "ready", modelName: event.modelName ?? current.modelName };
-        if (["limited", "cancelled"].includes(event.kind)) return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName };
+        const thinkingLevel = event.thinkingLevel ?? current.thinkingLevel;
+        if (event.kind === "token") return { ...current, text: current.text + (event.content ?? ""), status: "writing", modelName: event.modelName ?? current.modelName, thinkingLevel };
+        if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt, thinkingLevel };
+        if (event.kind === "reasoning") return { ...current, reasoning: appendModelThinking(current.reasoning, event.content ?? ""), status: "thinking", modelName: event.modelName ?? current.modelName, thinkingLevel };
+        if (event.kind === "complete") return { ...current, status: "ready", modelName: event.modelName ?? current.modelName, thinkingLevel };
+        if (["limited", "cancelled"].includes(event.kind)) return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName, thinkingLevel };
         if (event.kind === "error") return { ...current, status: "error" };
         return current;
       });
@@ -189,7 +195,8 @@ export function ImageStudio({
   const startCollaboration = async () => {
     if (!project || !modelId || assistantBusy) return;
     const id = crypto.randomUUID();
-    setCollaboration({ id, text: "", reasoning: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model" });
+    const effectiveLevel = thinkingLevel !== "default" ? thinkingLevel : effectiveThinkingLevelForModel(controlSettings, modelId);
+    setCollaboration({ id, text: "", reasoning: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model", thinkingLevel: effectiveLevel });
     try {
       await startMoviePromptDraft({
         requestId: id,
@@ -200,6 +207,7 @@ export function ImageStudio({
         existingText: JSON.stringify(compiledPrompt(project), null, 2),
         assetName: "",
         assetKind: "",
+        thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : undefined,
       });
     } catch (error) {
       setCollaboration(undefined);
@@ -394,7 +402,27 @@ export function ImageStudio({
       <nav><button className={inspectorTab === "compose" ? "active" : ""} onClick={() => setInspectorTab("compose")}><LayoutTemplate /> Compose</button><button className={inspectorTab === "output" ? "active" : ""} onClick={() => setInspectorTab("output")}><ImageIcon /> Takes</button>{advancedEnabled && <button className={inspectorTab === "advanced" ? "active" : ""} onClick={() => setInspectorTab("advanced")}><SlidersHorizontal /> Advanced</button>}</nav>
       {inspectorTab === "compose" && <div className="image-inspector-body">
         <label>Producer brief<textarea disabled={busy} value={project.idea} onChange={(event) => mutate((current) => ({ ...current, idea: event.target.value }))} placeholder="An idea, complete art direction, exact wording, or constraints…" /></label>
-        <div className="image-assist"><Bot /><select aria-label="Local image collaborator" disabled={busy} value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Choose local collaborator</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select><button disabled={busy || !modelId} onClick={() => void startCollaboration()}><Sparkles /> Develop design</button></div>
+        <div className="image-assist">
+          <Bot />
+          <select aria-label="Local image collaborator" disabled={busy} value={modelId} onChange={(event) => setModelId(event.target.value)}>
+            <option value="">Choose local collaborator</option>
+            {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+          </select>
+          <select
+            aria-label="Local image collaborator thinking level"
+            disabled={busy}
+            value={thinkingLevel}
+            onChange={(event) => setThinkingLevel(event.target.value as ThinkingLevel | "default")}
+          >
+            <option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, modelId)})</option>
+            <option value="off">Off (direct)</option>
+            <option value="low">Low reasoning</option>
+            <option value="medium">Medium reasoning</option>
+            <option value="high">High reasoning</option>
+            <option value="max">Max reasoning</option>
+          </select>
+          <button disabled={busy || !modelId} onClick={() => void startCollaboration()}><Sparkles /> Develop design</button>
+        </div>
         <label>High-level description<textarea disabled={busy} value={project.highLevelDescription} onChange={(event) => mutate((current) => ({ ...current, highLevelDescription: event.target.value }))} /></label>
         <div className="image-output-controls"><label>Canvas<select disabled={busy} value={`${project.settings.width}x${project.settings.height}`} onChange={(event) => { const [, width, height] = SIZE_PRESETS.find((item) => `${item[1]}x${item[2]}` === event.target.value) ?? SIZE_PRESETS[0]; mutate((current) => ({ ...current, settings: { ...current.settings, width, height } })); }}>{SIZE_PRESETS.map(([label, width, height]) => <option key={label} value={`${width}x${height}`}>{label}</option>)}</select></label><label>Variations<select disabled={busy} value={project.settings.batchSize} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, batchSize: Number(event.target.value) } }))}><option value={1}>1 image</option><option value={2}>2 images</option><option value={4}>4 images</option></select></label></div>
         <div className="image-style-mode" role="group" aria-label="Image style type"><button className={project.style.mode === "photo" ? "active" : ""} disabled={busy} onClick={() => mutate((current) => ({ ...current, style: { ...current.style, mode: "photo" } }))}>Photography</button><button className={project.style.mode === "art" ? "active" : ""} disabled={busy} onClick={() => mutate((current) => ({ ...current, style: { ...current.style, mode: "art" } }))}>Artwork</button></div>
@@ -421,7 +449,7 @@ export function ImageStudio({
       </div>}
     </aside>
 
-    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} active={assistantBusy} modelName={collaboration.modelName} thinkingLevel={collaboration.reasoning ? "high" : undefined} /><section className="model-result-stream"><strong>Proposed production settings</strong><pre>{collaboration.text || (assistantBusy ? "The structured proposal will stream here when the model begins its answer…" : "No structured proposal was returned.")}</pre></section></div><footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt, null, 2)}</pre></details>}</footer></section>}
+    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} active={assistantBusy} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>Proposed production settings</strong><pre>{collaboration.text || (assistantBusy ? "The structured proposal will stream here when the model begins its answer…" : "No structured proposal was returned.")}</pre></section></div><footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt, null, 2)}</pre></details>}</footer></section>}
     {newOpen && <NewImageDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
   </div>;
 }

@@ -6,7 +6,7 @@
 use crate::{
     model::ModelInfo,
     model_roles::STUDIO_PROTOCOL_REVISION,
-    models::{ControlSettings, ResearchSettings},
+    models::{ControlSettings, ResearchSettings, ThinkingLevel},
     runtime::{ModelConnection, RuntimeManager},
 };
 use crate::prompt_catalog::{PromptId, render, text};
@@ -390,6 +390,8 @@ pub struct MovieClipAssistRequest {
     pub id: String,
     pub clip_id: String,
     pub feedback: String,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2281,6 +2283,10 @@ impl MovieStudio {
                 );
             }
         };
+        let mut movie_settings = project.settings.clone();
+        if let Some(level) = request.thinking_level {
+            movie_settings.thinking_budget = level.budget_tokens(32_768);
+        }
         let mut suggestion: MovieClipSuggestion = agent_protocol::complete_tool_submission(
             &self.http,
             ToolSubmissionRequest {
@@ -2289,7 +2295,7 @@ impl MovieStudio {
                 tool_name: "submit_scene_suggestion",
                 tool_description: "Submit the organized replacement scene only after checking the producer feedback and neighboring continuity.",
                 response_format: clip_suggestion_schema(),
-                settings: &project.settings,
+                settings: &movie_settings,
                 runtime_max_output_tokens,
                 label: "movie scene suggestion",
                 audit_path: None,

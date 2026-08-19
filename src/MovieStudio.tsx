@@ -16,9 +16,9 @@ import {
 import { MovieTimeline } from "./MovieTimeline";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
-import { thinkingBudgetForLevel, thinkingLevelFromBudget } from "./types";
+import { effectiveThinkingLevelForModel, thinkingBudgetForLevel, thinkingLevelFromBudget } from "./types";
 import type {
-  MovieClipSuggestion, MovieCopilotEvent, MovieCopilotProposal, MovieCopilotReceipt, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
+  ControlSettings, MovieClipSuggestion, MovieCopilotEvent, MovieCopilotProposal, MovieCopilotReceipt, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
   ModelCompatibility, ModelInfo, MovieImageAssetGeneration, MovieProject, MovieReferenceAsset, MovieRenderPreviewEvent, MovieSettings,
   MovieSummary, PendingMovieReference, PlannedClip, PromptDraftMode, PromptDraftReceipt,
   RenderedClip, ThinkingLevel,
@@ -44,8 +44,8 @@ const defaultSettings: MovieSettings = {
   steps: 20,
   maxClips: 12,
   seed: 0,
-  temperature: 0.7,
-  topP: 0.95,
+  temperature: 0.45,
+  topP: 0.9,
   topK: 20,
   thinkingBudget: 32768,
   maxOutputTokens: 32768,
@@ -59,7 +59,7 @@ function useStableCallback<T extends (...args: never[]) => unknown>(callback: T)
   return useCallback(((...args: Parameters<T>) => callbackRef.current(...args)) as T, []);
 }
 
-export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], selectedModelId, onError: onErrorProp }: { initialComfyRoot?: string; advancedEnabled: boolean; models?: ModelInfo[]; selectedModelId?: string; onError: (message: string) => void }) {
+export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], selectedModelId, controlSettings, onError: onErrorProp }: { initialComfyRoot?: string; advancedEnabled: boolean; models?: ModelInfo[]; selectedModelId?: string; controlSettings?: ControlSettings; onError: (message: string) => void }) {
   const onError = useStableCallback(onErrorProp);
   const [movies, setMovies] = useState<MovieSummary[]>([]);
   const [project, setProject] = useState<MovieProject | null>(null);
@@ -69,6 +69,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const [advanced, setAdvanced] = useState(false);
   const [pauseAfterPlan, setPauseAfterPlan] = useState(true);
   const [promptModelId, setPromptModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
+  const [promptThinkingLevel, setPromptThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const [directorModelId, setDirectorModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
   const [reviewerModelId, setReviewerModelId] = useState("");
   const [modelCompatibility, setModelCompatibility] = useState<ModelCompatibility[]>([]);
@@ -377,6 +378,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
         existingText,
         assetName: reference ? (field.kind === "referenceDescription" && field.part === "embeddedAudioDescription" ? `embedded audio from ${reference.name}` : reference.name) : "",
         assetKind: reference ? (field.kind === "referenceDescription" && field.part === "embeddedAudioDescription" ? "audio" : reference.kind) : "",
+        thinkingLevel: promptThinkingLevel !== "default" ? promptThinkingLevel : undefined,
       });
     } catch (error) {
       promptDraftActiveRef.current = undefined;
@@ -494,7 +496,8 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
           <MovieLaunch prompt={prompt} settings={settings} references={references} advanced={advanced} advancedEnabled={advancedEnabled} busy={busy}
             pauseAfterPlan={pauseAfterPlan} onPauseAfterPlan={setPauseAfterPlan}
             directorModelId={directorModelId} reviewerModelId={reviewerModelId} modelCompatibility={modelCompatibility} qualifyingModelId={qualifyingModelId}
-            models={models} promptModelId={promptModelId} promptDraftActive={promptDraftActive} promptDraftLastField={promptDraftLastField} promptDraftStatus={promptDraftStatus} promptDraftReasoning={promptDraftReasoning}
+            models={models} promptModelId={promptModelId} promptThinkingLevel={promptThinkingLevel} onPromptThinkingLevel={setPromptThinkingLevel} controlSettings={controlSettings}
+            promptDraftActive={promptDraftActive} promptDraftLastField={promptDraftLastField} promptDraftStatus={promptDraftStatus} promptDraftReasoning={promptDraftReasoning}
             promptDraftReceipt={promptDraftReceipt} storyDraftMode={storyDraftMode} imageDraftMode={imageDraftMode} referenceDraftModes={referenceDraftModes}
             onPromptModel={setPromptModelId} onStoryDraftMode={setStoryDraftMode} onImageDraftMode={setImageDraftMode}
             onDirectorModel={setDirectorModelId} onReviewerModel={setReviewerModelId} onCheckModel={(id) => void checkStudioModel(id)}
@@ -508,7 +511,7 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
             onPrompt={setPrompt} onSettings={setSettings} onReferences={setReferences} onAttach={() => void attachReferences()} onAdvanced={setAdvanced}
             onMake={() => void makeMovie()} onMakeManual={() => void makeManualMovie()} />
         ) : (
-          <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} models={models} selectedModelId={promptModelId} modelCompatibility={modelCompatibility} qualifyingModelId={qualifyingModelId} preview={moviePreview} onError={onError} onEdit={setEdit} onCopilotHistory={handleCopilotHistory} onCheckModel={(id) => void checkStudioModel(id)}
+          <MovieProjectView project={project} edit={edit} busy={busy} advancedEnabled={advancedEnabled} models={models} selectedModelId={promptModelId} modelCompatibility={modelCompatibility} qualifyingModelId={qualifyingModelId} preview={moviePreview} onError={onError} onEdit={setEdit} onCopilotHistory={handleCopilotHistory} onCheckModel={(id) => void checkStudioModel(id)} controlSettings={controlSettings}
             onProject={(next) => { activeProjectId.current = next.id; setProject(next); setEdit(next.edit); void refreshList(); }}
             onNew={() => void beginNewProduction()}
             onCancel={() => void cancelMovie(project.id).then(setProject).catch((error) => onError(String(error)))}
@@ -521,11 +524,12 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   );
 }
 
-function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, directorModelId, reviewerModelId, modelCompatibility, qualifyingModelId, models, promptModelId, promptDraftActive, promptDraftLastField, promptDraftStatus, promptDraftReasoning, promptDraftReceipt, storyDraftMode, imageDraftMode, referenceDraftModes, onPromptModel, onDirectorModel, onReviewerModel, onCheckModel, onStoryDraftMode, onImageDraftMode, onReferenceDraftMode, onGeneratePrompt, onStopPrompt, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, imagePreview, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake, onMakeManual }: {
+function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, directorModelId, reviewerModelId, modelCompatibility, qualifyingModelId, models, promptModelId, promptThinkingLevel, onPromptThinkingLevel, controlSettings, promptDraftActive, promptDraftLastField, promptDraftStatus, promptDraftReasoning, promptDraftReceipt, storyDraftMode, imageDraftMode, referenceDraftModes, onPromptModel, onDirectorModel, onReviewerModel, onCheckModel, onStoryDraftMode, onImageDraftMode, onReferenceDraftMode, onGeneratePrompt, onStopPrompt, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, imagePreview, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake, onMakeManual }: {
   prompt: string; settings: MovieSettings; references: PendingMovieReference[]; advanced: boolean; advancedEnabled: boolean; busy: boolean;
   pauseAfterPlan: boolean; onPauseAfterPlan: (value: boolean) => void;
   directorModelId: string; reviewerModelId: string; modelCompatibility: ModelCompatibility[]; qualifyingModelId: string;
-  models: ModelInfo[]; promptModelId: string; promptDraftActive?: ActivePromptDraft; promptDraftLastField?: PromptField; promptDraftStatus: string; promptDraftReasoning: string; promptDraftReceipt?: PromptDraftReceipt;
+  models: ModelInfo[]; promptModelId: string; promptThinkingLevel: ThinkingLevel | "default"; onPromptThinkingLevel: (level: ThinkingLevel | "default") => void; controlSettings?: ControlSettings;
+  promptDraftActive?: ActivePromptDraft; promptDraftLastField?: PromptField; promptDraftStatus: string; promptDraftReasoning: string; promptDraftReceipt?: PromptDraftReceipt;
   storyDraftMode: PromptDraftMode; imageDraftMode: PromptDraftMode; referenceDraftModes: Record<string, PromptDraftMode>;
   onPromptModel: (value: string) => void; onDirectorModel: (value: string) => void; onReviewerModel: (value: string) => void; onCheckModel: (modelId: string) => void;
   onStoryDraftMode: (value: PromptDraftMode) => void; onImageDraftMode: (value: PromptDraftMode) => void;
@@ -574,7 +578,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       <textarea aria-label="Movie brief" autoFocus maxLength={65536} value={prompt} readOnly={storyWriting} onChange={(event) => onPrompt(event.target.value)} placeholder="Write or paste your story here—even an A4-length brief—or ask any local model to develop an idea…" />
       <div><span><Check size={14} /> Your pinned Director drafts, reviews, and repairs every H3 scene prompt</span><small>Existing text can be treated as notes or an exact draft.</small></div>
     </div>
-    <PromptAssistBar label="Movie brief" existing={prompt} mode={storyDraftMode} models={models} modelId={promptModelId}
+    <PromptAssistBar label="Movie brief" existing={prompt} mode={storyDraftMode} models={models} modelId={promptModelId} thinkingLevel={promptThinkingLevel} onThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings}
       active={storyWriting} disabled={busy || imageGenerating || (promptBusy && !storyWriting)} status={promptFieldMatches(statusField, { kind: "story" }) ? promptDraftStatus : ""}
       thinking={promptFieldMatches(statusField, { kind: "story" }) ? promptDraftReasoning : undefined}
       onModel={onPromptModel} onMode={onStoryDraftMode} onGenerate={() => onGeneratePrompt({ kind: "story" }, storyDraftMode)} onStop={onStopPrompt} />
@@ -584,7 +588,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       prompt={imagePrompt} width={imageWidth} height={imageHeight} steps={imageSteps} seed={imageSeed}
       stabilize={imageStabilize} generating={imageGenerating} status={imageStatus} generations={imageGenerations} preview={imagePreview}
       references={references} advanced={advanced} expertEnabled={advancedEnabled} disabled={busy || promptBusy}
-      models={models} modelId={promptModelId} draftMode={imageDraftMode} draftActive={imageWriting} draftStatus={promptFieldMatches(statusField, { kind: "imageAsset" }) ? promptDraftStatus : ""}
+      models={models} modelId={promptModelId} draftThinkingLevel={promptThinkingLevel} onDraftThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings} draftMode={imageDraftMode} draftActive={imageWriting} draftStatus={promptFieldMatches(statusField, { kind: "imageAsset" }) ? promptDraftStatus : ""}
       draftThinking={promptFieldMatches(statusField, { kind: "imageAsset" }) ? promptDraftReasoning : undefined}
       onModel={onPromptModel} onDraftMode={onImageDraftMode} onDraft={() => onGeneratePrompt({ kind: "imageAsset" }, imageDraftMode)} onStopDraft={onStopPrompt}
       onPrompt={onImagePrompt} onCanvas={onImageCanvas} onSteps={onImageSteps} onSeed={onImageSeed}
@@ -599,14 +603,14 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
           <div className="movie-reference-copy"><div className="movie-reference-meta"><span>{labels.join(" + ")}</span><strong>{reference.name}</strong><button aria-label={`Remove ${reference.name}`} disabled={promptBusy} onClick={() => onReferences(references.filter((item) => item.assetId !== reference.assetId))}><X /></button></div>
             <small>{reference.kind}{reference.durationSeconds > 0 ? ` · ${reference.durationSeconds.toFixed(1)}s` : ` · ${reference.width}×${reference.height}`}</small>
             <label>How should the Director place this?<textarea aria-label={`Describe ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" })} value={reference.description} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, description: event.target.value } : item))} placeholder={reference.kind === "image" ? "Character identity, costume, palette, composition, or style…" : reference.kind === "video" ? "Motion, camera move, pacing, continuation, or temporal structure…" : "Where this exact clip audio belongs: dialogue performance, music, rhythm, ambience, or effects…"} /></label>
-            <PromptAssistBar compact label={`${reference.kind} reference`} existing={reference.description} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "description")] ?? "develop"} models={models} modelId={promptModelId}
+            <PromptAssistBar compact label={`${reference.kind} reference`} existing={reference.description} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "description")] ?? "develop"} models={models} modelId={promptModelId} thinkingLevel={promptThinkingLevel} onThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings}
               active={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" })}
               disabled={busy || imageGenerating || (promptBusy && !promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" }))}
               status={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "description" }) ? promptDraftStatus : ""}
               thinking={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "description" }) ? promptDraftReasoning : undefined}
               onModel={onPromptModel} onMode={(mode) => onReferenceDraftMode(referenceDraftKey(reference.assetId, "description"), mode)}
               onGenerate={() => onGeneratePrompt({ kind: "referenceDescription", assetId: reference.assetId, part: "description" }, referenceDraftModes[referenceDraftKey(reference.assetId, "description")] ?? "develop")} onStop={onStopPrompt} />
-            {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" disabled={promptBusy} checked={reference.useEmbeddedAudio} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Use the video's existing audio as native clip audio</label>{reference.useEmbeddedAudio && <><label>Where should this audio be used?<input aria-label={`Describe audio from ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })} value={reference.embeddedAudioDescription} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="The scenes or beats where this exact audio belongs…" /></label><PromptAssistBar compact label={`audio from ${reference.name}`} existing={reference.embeddedAudioDescription} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop"} models={models} modelId={promptModelId}
+            {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" disabled={promptBusy} checked={reference.useEmbeddedAudio} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Use the video's existing audio as native clip audio</label>{reference.useEmbeddedAudio && <><label>Where should this audio be used?<input aria-label={`Describe audio from ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })} value={reference.embeddedAudioDescription} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="The scenes or beats where this exact audio belongs…" /></label><PromptAssistBar compact label={`audio from ${reference.name}`} existing={reference.embeddedAudioDescription} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop"} models={models} modelId={promptModelId} thinkingLevel={promptThinkingLevel} onThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings}
               active={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })}
               disabled={busy || imageGenerating || (promptBusy && !promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }))}
               status={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }) ? promptDraftStatus : ""}
@@ -687,21 +691,40 @@ function StudioModelRoles({ models, compatibility, directorModelId, reviewerMode
   </div>;
 }
 
-function PromptAssistBar({ label, existing, mode, models, modelId, active, disabled, status, thinking, compact = false, onModel, onMode, onGenerate, onStop }: {
+function PromptAssistBar({ label, existing, mode, models, modelId, active, disabled, status, thinking, compact = false, controlSettings, thinkingLevel, onModel, onMode, onThinkingLevel, onGenerate, onStop }: {
   label: string; existing: string; mode: PromptDraftMode; models: ModelInfo[]; modelId: string; active: boolean; disabled: boolean; status: string; thinking?: string; compact?: boolean;
-  onModel: (value: string) => void; onMode: (value: PromptDraftMode) => void; onGenerate: () => void; onStop: () => void;
+  controlSettings?: ControlSettings; thinkingLevel?: ThinkingLevel | "default";
+  onModel: (value: string) => void; onMode: (value: PromptDraftMode) => void; onThinkingLevel?: (level: ThinkingLevel | "default") => void; onGenerate: () => void; onStop: () => void;
 }) {
   const hasText = Boolean(existing.trim());
   const effectiveMode = hasText ? mode : "develop";
   const action = !hasText ? (label === "Movie brief" ? "Invent story" : "Generate description") : effectiveMode === "develop" ? "Develop idea / notes" : "Continue exact draft";
+  const effectiveLevel = thinkingLevel && thinkingLevel !== "default" ? thinkingLevel : effectiveThinkingLevelForModel(controlSettings, modelId);
   return <div className={`prompt-assist-bar ${compact ? "compact" : ""} ${active ? "active" : ""}`}>
     <div className="prompt-assist-copy"><span className="eyebrow">Offline prompt collaborator</span><strong>{label}</strong><small>{status || (hasText ? "Tell the model whether this text is source material or an exact draft. Nothing is inferred." : "No text yet: the model will create a complete draft from the movie context or invent a useful direction.")}</small></div>
     <label>Local writing model<select aria-label={`${label} model`} value={modelId} disabled={active || disabled || !models.length} onChange={(event) => onModel(event.target.value)}>{!models.length && <option value="">No local models discovered</option>}{models.map((model) => <option key={model.id} value={model.id}>{model.name}{model.quantization ? ` · ${model.quantization}` : ""}</option>)}</select></label>
+    {onThinkingLevel && (
+      <label>Thinking level
+        <select
+          aria-label={`${label} thinking level`}
+          value={thinkingLevel ?? "default"}
+          disabled={active || disabled}
+          onChange={(event) => onThinkingLevel(event.target.value as ThinkingLevel | "default")}
+        >
+          <option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, modelId)})</option>
+          <option value="off">Off (direct)</option>
+          <option value="low">Low reasoning</option>
+          <option value="medium">Medium reasoning</option>
+          <option value="high">High reasoning</option>
+          <option value="max">Max reasoning</option>
+        </select>
+      </label>
+    )}
     <label>Existing text means<select aria-label={`${label} existing text meaning`} value={effectiveMode} disabled={active || disabled || !hasText} onChange={(event) => onMode(event.target.value as PromptDraftMode)}><option value="develop">Idea or notes — replace with a complete draft</option><option value="continue">Exact draft — keep it and continue</option></select></label>
     {active
       ? <button className="prompt-stop" onClick={onStop}><CircleStop /> Stop & keep text</button>
       : <button disabled={disabled || !modelId} onClick={onGenerate}><Sparkles /> {action}</button>}
-    {thinking !== undefined && <ModelThinkingStream text={thinking} active={active} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={thinking ? "high" : "off"} className="prompt-thinking-stream" />}
+    {thinking !== undefined && <ModelThinkingStream text={thinking} active={active} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={effectiveLevel} className="prompt-thinking-stream" />}
   </div>;
 }
 
@@ -751,10 +774,10 @@ export function previewProvenanceAvailable(generation: Pick<MovieImageAssetGener
   });
 }
 
-function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, preview, references, advanced, expertEnabled, disabled, models, modelId, draftMode, draftActive, draftStatus, draftThinking, onModel, onDraftMode, onDraft, onStopDraft, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
+function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, preview, references, advanced, expertEnabled, disabled, models, modelId, draftThinkingLevel, onDraftThinkingLevel, controlSettings, draftMode, draftActive, draftStatus, draftThinking, onModel, onDraftMode, onDraft, onStopDraft, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
   prompt: string; width: number; height: number; steps: number; seed: number; stabilize: boolean;
   generating: boolean; status: string; generations: MovieImageAssetGeneration[]; preview?: MovieRenderPreviewEvent; references: PendingMovieReference[];
-  advanced: boolean; expertEnabled: boolean; disabled: boolean; models: ModelInfo[]; modelId: string; draftMode: PromptDraftMode; draftActive: boolean; draftStatus: string; draftThinking?: string;
+  advanced: boolean; expertEnabled: boolean; disabled: boolean; models: ModelInfo[]; modelId: string; draftThinkingLevel?: ThinkingLevel | "default"; onDraftThinkingLevel?: (level: ThinkingLevel | "default") => void; controlSettings?: ControlSettings; draftMode: PromptDraftMode; draftActive: boolean; draftStatus: string; draftThinking?: string;
   onModel: (value: string) => void; onDraftMode: (value: PromptDraftMode) => void; onDraft: () => void; onStopDraft: () => void;
   onPrompt: (value: string) => void; onCanvas: (width: number, height: number) => void;
   onSteps: (value: number) => void; onSeed: (value: number) => void; onStabilize: (value: boolean) => void;
@@ -770,7 +793,7 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
     </div>
     <div className="image-asset-compose">
       <label>Describe the exact image asset<textarea aria-label="Image asset prompt" maxLength={65536} value={prompt} readOnly={draftActive} disabled={generating} onChange={(event) => onPrompt(event.target.value)} placeholder="A precise character identity portrait, recurring location, hero prop, title poster, texture plate, or visual style frame… Include composition, lighting, palette, materials, and any exact text." /></label>
-      <PromptAssistBar compact label="Image description" existing={prompt} mode={draftMode} models={models} modelId={modelId}
+      <PromptAssistBar compact label="Image description" existing={prompt} mode={draftMode} models={models} modelId={modelId} thinkingLevel={draftThinkingLevel} onThinkingLevel={onDraftThinkingLevel} controlSettings={controlSettings}
         active={draftActive} disabled={disabled || generating} status={draftStatus} thinking={draftThinking} onModel={onModel} onMode={onDraftMode} onGenerate={onDraft} onStop={onStopDraft} />
       <div className="image-asset-controls">
         <label>Canvas<select aria-label="Image canvas" value={canvas} disabled={generating} onChange={(event) => {
@@ -800,12 +823,13 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
   </section>;
 }
 
-function MovieProjectView({ project, edit, busy, advancedEnabled, models, selectedModelId, modelCompatibility, qualifyingModelId, preview, onError, onProject, onEdit, onCopilotHistory, onCheckModel, onNew, onCancel, onResume, onReveal, onSave, onExport }: {
+function MovieProjectView({ project, edit, busy, advancedEnabled, models, selectedModelId, modelCompatibility, qualifyingModelId, preview, onError, onProject, onEdit, onCopilotHistory, onCheckModel, onNew, onCancel, onResume, onReveal, onSave, onExport, controlSettings }: {
   project: MovieProject; edit: MovieEdit; busy: boolean; advancedEnabled: boolean; models: ModelInfo[]; selectedModelId: string; modelCompatibility: ModelCompatibility[]; qualifyingModelId: string; preview?: MovieRenderPreviewEvent; onError: (message: string) => void;
   onProject: (project: MovieProject) => void; onEdit: (edit: MovieEdit) => void;
   onCopilotHistory: (history: MovieProject["copilotHistory"]) => void;
   onCheckModel: (modelId: string) => void;
   onNew: () => void; onCancel: () => void; onResume: () => void; onReveal: () => void; onSave: () => void; onExport: () => void;
+  controlSettings?: ControlSettings;
 }) {
   const [draftPlan, setDraftPlan] = useState<MoviePlan | undefined>(project.plan);
   const [working, setWorking] = useState(false);
@@ -882,7 +906,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
         <div className="studio-room-heading"><span><small>Producer + MiniMax H3</small><strong>Watch generation and manage preserved masters</strong></span><em>{complete} / {project.clips.length || "—"} complete</em></div>
         {preview && project.status === "running" && <LiveH3Preview event={preview} advanced={advancedEnabled} />}
         {project.references.length > 0 && <ProductionReferences project={project} />}
-        <ProductionMasters project={project} onProject={onProject} onError={onError} />
+        <ProductionMasters project={project} onProject={onProject} onError={onError} controlSettings={controlSettings} />
       </section>}
       {workspace === "edit" && project.clips.length > 0 && <section className="project-edit-room">
         <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} onRequestSave={onSave} />
@@ -893,7 +917,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
         {project.exports?.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2><small>Every cut remains addressable with its decision-list sidecar and SHA-256 identity.</small></div></div><div>{[...project.exports].reverse().map((item) => <article key={item.id}><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s · {readableSize(item.bytes)}</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>)}</div></section>}
       </section>}
     </div>
-    {copilotOpen && workspace !== "plan" && <ProducerCopilot project={project} edit={edit} workspace={workspace} models={models} selectedModelId={selectedModelId} advancedEnabled={advancedEnabled} onEdit={onEdit} onHistory={onCopilotHistory} onClose={() => setCopilotOpen(false)} onError={onError} />}
+    {copilotOpen && workspace !== "plan" && <ProducerCopilot project={project} edit={edit} workspace={workspace} models={models} selectedModelId={selectedModelId} advancedEnabled={advancedEnabled} controlSettings={controlSettings} onEdit={onEdit} onHistory={onCopilotHistory} onClose={() => setCopilotOpen(false)} onError={onError} />}
   </div>;
 }
 
@@ -904,11 +928,13 @@ function preferredProjectWorkspace(project: MovieProject): ProjectWorkspace {
   return "plan";
 }
 
-export function ProducerCopilot({ project, edit, workspace, models, selectedModelId, advancedEnabled, onEdit, onHistory, onClose, onError }: {
+export function ProducerCopilot({ project, edit, workspace, models, selectedModelId, advancedEnabled, controlSettings, onEdit, onHistory, onClose, onError }: {
   project: MovieProject; edit: MovieEdit; workspace: Exclude<ProjectWorkspace, "plan">; models: ModelInfo[]; selectedModelId: string; advancedEnabled: boolean;
+  controlSettings?: ControlSettings;
   onEdit: (edit: MovieEdit) => void; onHistory?: (history: MovieProject["copilotHistory"]) => void; onClose: () => void; onError: (message: string) => void;
 }) {
   const [modelId, setModelId] = useState(() => models.some((model) => model.id === selectedModelId) ? selectedModelId : models[0]?.id ?? "");
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const [instruction, setInstruction] = useState("");
   const [dictating, setDictating] = useState(false);
   const [requestId, setRequestId] = useState<string>();
@@ -992,7 +1018,15 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
     setProposalLint("");
     setStatus("Queuing on Kestrel’s single local inference lane…");
     try {
-      await startMovieCopilot({ requestId: id, projectId: project.id, modelId, workspace, instruction, edit });
+      await startMovieCopilot({
+        requestId: id,
+        projectId: project.id,
+        modelId,
+        workspace,
+        instruction,
+        edit,
+        thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : undefined,
+      });
     } catch (error) {
       requestIdRef.current = undefined;
       setRequestId(undefined);
@@ -1030,18 +1064,42 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
       ? "Story intent, masters, current timeline, markers, mix, and delivery settings"
       : "Current approved cut, markers, mix, presets, and immutable export history";
 
+  const effectiveLevel = thinkingLevel !== "default" ? thinkingLevel : effectiveThinkingLevelForModel(controlSettings, modelId);
+
   return <aside className="producer-copilot" aria-label="Producer copilot">
     <header><span><Sparkles /><b>Producer copilot</b><small>{workspace} room · local and private</small></span><button aria-label="Close copilot" title={active ? "Stop at a checkpoint before closing" : "Close copilot"} disabled={active} onClick={onClose}><X /></button></header>
     <div className="producer-copilot-scroll">
       <section className="copilot-context"><strong>Shared context</strong><span>{contextLabel}</span><small>The model cannot watch media or change the project. Native linting checks every proposed cut.</small></section>
       {history.length > 0 && !response && <details className="copilot-history"><summary>Recent durable conversations ({history.length})</summary>{history.map((turn) => <article key={turn.id}><small>{turn.workspace} · {new Date(turn.createdAt).toLocaleString()}</small><b>{turn.producerRequest}</b><ProducerText text={turn.response || `Stopped: ${turn.status}`} />{turn.response && <SpeechPlaybackButton sourceKind="copilot" sourceId={project.id} passageId={turn.id} text={turn.response} label="Listen" />}{advancedEnabled && <button disabled={active} onClick={() => inspectTurn(turn.id, `${turn.workspace} · ${new Date(turn.createdAt).toLocaleString()}`)}>Inspect exact model receipt</button>}</article>)}</details>}
-      {(response || active || reasoning) && <ModelThinkingStream text={reasoning} active={active} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={thinkingLevelFromBudget(project.settings.thinkingBudget)} className="copilot-thinking-stream" />}
+      {(response || active || reasoning) && <ModelThinkingStream text={reasoning} active={active} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={effectiveLevel} className="copilot-thinking-stream" />}
       {(response || active) && <section className="copilot-response"><span><i className={active ? "live" : ""} />{status}</span>{response ? <><ProducerText text={response} />{!active && <SpeechPlaybackButton sourceKind="copilot" sourceId={project.id} passageId={requestId ?? "latest"} text={response} label="Listen" />}</> : <div className="copilot-wait"><LoaderCircle className="spin" /> Waiting for the first streamed words…</div>}</section>}
       {proposal && <section className="copilot-proposal"><span className="eyebrow">Producer approval required</span><h3>{proposal.summary}</h3><ul>{proposal.changes.map((change, index) => <li key={`${change}-${index}`}><Check />{change}</li>)}</ul><div>{applied && beforeApply ? <button onClick={revert}><RotateCcw /> Revert copilot edit</button> : <button onClick={() => setProposal(undefined)}>Dismiss</button>}<button className="accent" disabled={applied} onClick={apply}>{applied ? <Check /> : <Film />}{applied ? "Applied to cut" : "Apply as one edit"}</button></div></section>}
       {proposalLint && <section className="copilot-lint"><ShieldCheck /><span><strong>Native safety check withheld the action</strong><small>{proposalLint}</small></span></section>}
       {advancedEnabled && receipt && <details className="copilot-advanced"><summary>Exact model context, system prompt, tool schema, and streamed arguments</summary><section><h4>Receipt</h4><pre>{receiptLabel}</pre></section><section><h4>System prompt</h4><pre>{receipt.systemPrompt}</pre></section><section><h4>Messages received</h4><pre>{JSON.stringify(receipt.messages, null, 2)}</pre></section><section><h4>Native action schema</h4><pre>{JSON.stringify(receipt.toolSchema, null, 2)}</pre></section><section><h4>Exact request</h4><pre>{JSON.stringify(receipt.exactRequest, null, 2)}</pre></section>{receipt.lintResult && <section><h4>Native lint result</h4><pre>{receipt.lintResult}</pre></section>}{advancedTokens && <section><h4>Raw streamed tool arguments</h4><pre>{advancedTokens}</pre></section>}</details>}
     </div>
-    <footer><label>Local collaborator<select value={modelId} disabled={active || dictating} onChange={(event) => setModelId(event.target.value)}>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label><div className="speech-input-wrap"><textarea value={instruction} readOnly={dictating} disabled={active} onChange={(event) => setInstruction(event.target.value)} placeholder={workspace === "generate" ? "What should we protect or improve in these scene masters?" : workspace === "edit" ? "Make the middle move faster without losing the quiet ending…" : "Review this cut for a client review export and flag unresolved issues…"} /><SpeechDictationButton sourceKind="copilot" sourceId={project.id} value={instruction} onChange={setInstruction} onActiveChange={setDictating} disabled={active} label="Dictate direction" /></div>{active ? <button className="danger" onClick={() => void stop()}><CircleStop /> Stop + checkpoint</button> : <button className="accent" disabled={dictating || !modelId || instruction.trim().length < 3} onClick={() => void ask()}><Send /> Collaborate</button>}</footer>
+    <footer>
+      <label>Local collaborator
+        <select value={modelId} disabled={active || dictating} onChange={(event) => setModelId(event.target.value)}>
+          {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+        </select>
+      </label>
+      <label>Thinking level
+        <select
+          aria-label="Local collaborator thinking level"
+          value={thinkingLevel}
+          disabled={active || dictating}
+          onChange={(event) => setThinkingLevel(event.target.value as ThinkingLevel | "default")}
+        >
+          <option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, modelId)})</option>
+          <option value="off">Off (direct)</option>
+          <option value="low">Low reasoning</option>
+          <option value="medium">Medium reasoning</option>
+          <option value="high">High reasoning</option>
+          <option value="max">Max reasoning</option>
+        </select>
+      </label>
+      <div className="speech-input-wrap"><textarea value={instruction} readOnly={dictating} disabled={active} onChange={(event) => setInstruction(event.target.value)} placeholder={workspace === "generate" ? "What should we protect or improve in these scene masters?" : workspace === "edit" ? "Make the middle move faster without losing the quiet ending…" : "Review this cut for a client review export and flag unresolved issues…"} /><SpeechDictationButton sourceKind="copilot" sourceId={project.id} value={instruction} onChange={setInstruction} onActiveChange={setDictating} disabled={active} label="Dictate direction" /></div>{active ? <button className="danger" onClick={() => void stop()}><CircleStop /> Stop + checkpoint</button> : <button className="accent" disabled={dictating || !modelId || instruction.trim().length < 3} onClick={() => void ask()}><Send /> Collaborate</button>}
+    </footer>
   </aside>;
 }
 
@@ -1053,11 +1111,11 @@ function ProductionReferences({ project }: { project: MovieProject }) {
   return <section className="movie-project-references"><div className="movie-section-heading"><div><span className="eyebrow">Native H3 inputs</span><h2>Producer references</h2></div><small>Immutable copies preserved with this production</small></div><div>{project.references.map((reference) => <article key={reference.assetId}><ReferencePreview reference={reference} /><span><strong>{reference.tag}{reference.audioTag ? ` + ${reference.audioTag}` : ""} · {reference.name}</strong><small>{reference.description}</small>{reference.audioTag && <small>{reference.audioTag}: {reference.embeddedAudioDescription}</small>}{reference.generation && <details><summary>Generated-image provenance</summary><small>Frame {reference.generation.frameIndex} · seed {reference.generation.seed} · {reference.generation.steps} steps · {reference.generation.width} × {reference.generation.height}</small><pre>{reference.generation.renderedPrompt}</pre><pre>{JSON.stringify(reference.generation.exactGraph, null, 2)}</pre></details>}</span></article>)}</div></section>;
 }
 
-function ProductionMasters({ project, onProject, onError }: { project: MovieProject; onProject: (project: MovieProject) => void; onError: (message: string) => void }) {
-  return <section className="production-masters"><div className="movie-section-heading"><div><span className="eyebrow">Preserved master bin</span><h2>Generated scenes</h2><small>Each master remains immutable. Any producer can ask the local model for a reviewed new scene version.</small></div></div><div className="movie-clip-grid">{project.clips.map((clip) => <ProductionMasterCard key={clip.id} project={project} clip={clip} onProject={onProject} onError={onError} />)}</div>{!project.clips.length && <div className="studio-room-empty"><Video /><strong>Waiting for H3 masters</strong><span>Generation status and live approximate frames appear here as soon as the approved plan enters rendering.</span></div>}</section>;
+function ProductionMasters({ project, onProject, onError, controlSettings }: { project: MovieProject; onProject: (project: MovieProject) => void; onError: (message: string) => void; controlSettings?: ControlSettings }) {
+  return <section className="production-masters"><div className="movie-section-heading"><div><span className="eyebrow">Preserved master bin</span><h2>Generated scenes</h2><small>Each master remains immutable. Any producer can ask the local model for a reviewed new scene version.</small></div></div><div className="movie-clip-grid">{project.clips.map((clip) => <ProductionMasterCard key={clip.id} project={project} clip={clip} onProject={onProject} onError={onError} controlSettings={controlSettings} />)}</div>{!project.clips.length && <div className="studio-room-empty"><Video /><strong>Waiting for H3 masters</strong><span>Generation status and live approximate frames appear here as soon as the approved plan enters rendering.</span></div>}</section>;
 }
 
-function ProductionMasterCard({ project, clip, onProject, onError }: { project: MovieProject; clip: RenderedClip; onProject: (project: MovieProject) => void; onError: (message: string) => void }) {
+function ProductionMasterCard({ project, clip, onProject, onError, controlSettings }: { project: MovieProject; clip: RenderedClip; onProject: (project: MovieProject) => void; onError: (message: string) => void; controlSettings?: ControlSettings }) {
   const planned = project.plan?.clips.find((item) => item.id === clip.id);
   const mediaUrl = movieMediaUrl(clip.path);
   return <article className={`movie-clip ${clip.status}`}>
@@ -1065,7 +1123,7 @@ function ProductionMasterCard({ project, clip, onProject, onError }: { project: 
     <div className="clip-copy"><div><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {clip.seed}{clip.versions.length ? ` · ${clip.versions.length} preserved versions` : ""}</small></span></div>
       {planned && <div className="clip-organization"><span><b>Story job</b>{planned.purpose}</span><span><b>Transition</b>{planned.transition}</span><span><b>Continuity in</b>{planned.continuityIn}</span><span><b>Continuity out</b>{planned.continuityOut}</span>{planned.referenceIds.length > 0 && <span><b>References</b>{planned.referenceIds.map((id) => project.references.find((reference) => reference.assetId === id)?.name ?? id).join(", ")}</span>}</div>}
       <details><summary>H3 renderer direction</summary><p>{clip.prompt}</p></details>
-      {clip.status === "complete" && planned && <SceneAssistant project={project} clip={clip} planned={planned} onProject={onProject} onError={onError} />}
+      {clip.status === "complete" && planned && <SceneAssistant project={project} clip={clip} planned={planned} onProject={onProject} onError={onError} controlSettings={controlSettings} />}
     </div>{clip.error && <pre>{clip.error}</pre>}
   </article>;
 }
@@ -1369,9 +1427,10 @@ function PlannedClipFields({ clip, references, canUsePreviousFrame = true, disab
   </div>;
 }
 
-function SceneAssistant({ project, clip, planned: _planned, onProject, onError }: { project: MovieProject; clip: RenderedClip; planned: PlannedClip; onProject: (project: MovieProject) => void; onError: (message: string) => void }) {
+function SceneAssistant({ project, clip, planned: _planned, onProject, onError, controlSettings }: { project: MovieProject; clip: RenderedClip; planned: PlannedClip; onProject: (project: MovieProject) => void; onError: (message: string) => void; controlSettings?: ControlSettings }) {
   const [open, setOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const [suggestion, setSuggestion] = useState<MovieClipSuggestion | null>(null);
   const [seed, setSeed] = useState(clip.seed + 1);
   const [busy, setBusy] = useState(false);
@@ -1379,6 +1438,9 @@ function SceneAssistant({ project, clip, planned: _planned, onProject, onError }
   const [reasoning, setReasoning] = useState("");
   const [modelAttempted, setModelAttempted] = useState(false);
   const requestIdRef = useRef("");
+  const directorModelId = project.modelRoles?.director.modelId ?? project.model;
+  const effectiveLevel = thinkingLevel !== "default" ? thinkingLevel : effectiveThinkingLevelForModel(controlSettings, directorModelId);
+
   useEffect(() => {
     let dispose: (() => void) | undefined;
     void onMovieClipAssist((event) => {
@@ -1394,7 +1456,21 @@ function SceneAssistant({ project, clip, planned: _planned, onProject, onError }
     setModelAttempted(true);
     setModelBusy(true);
     setBusy(true);
-    try { setSuggestion(await askMovieDirectorClip(requestId, project.id, clip.id, feedback)); } catch (error) { onError(String(error)); } finally { requestIdRef.current = ""; setModelBusy(false); setBusy(false); }
+    try {
+      setSuggestion(await askMovieDirectorClip(
+        requestId,
+        project.id,
+        clip.id,
+        feedback,
+        thinkingLevel !== "default" ? thinkingLevel : undefined,
+      ));
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      requestIdRef.current = "";
+      setModelBusy(false);
+      setBusy(false);
+    }
   };
   const renderVersion = async () => {
     if (!suggestion) return;
@@ -1404,8 +1480,25 @@ function SceneAssistant({ project, clip, planned: _planned, onProject, onError }
   return <div className="scene-assistant"><button className="scene-assistant-toggle" onClick={() => setOpen(!open)}><Sparkles /> Director scene assistant <ChevronDown className={open ? "open" : ""} /></button>{open && <div className="scene-assistant-body">
     <p>Give the Director a focused fix request. It receives this organized scene, its neighbors, continuity bible, and reference manifest—not an unstructured text dump.</p>
     <label>Producer fix request<textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="Preserve the performance and story beat, but make the camera blocking legible and specify the sound transition into the next scene…" /></label>
-    <button disabled={busy || feedback.trim().length < 3} onClick={() => void ask()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Ask Director for a structured fix</button>
-    {modelAttempted && <ModelThinkingStream text={reasoning} active={modelBusy} modelName={project.model} thinkingLevel={thinkingLevelFromBudget(project.settings.thinkingBudget)} className="scene-thinking-stream" />}
+    <div className="scene-assistant-actions">
+      <label>Thinking level
+        <select
+          aria-label="Director scene assistant thinking level"
+          value={thinkingLevel}
+          disabled={busy}
+          onChange={(event) => setThinkingLevel(event.target.value as ThinkingLevel | "default")}
+        >
+          <option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, directorModelId)})</option>
+          <option value="off">Off (direct)</option>
+          <option value="low">Low reasoning</option>
+          <option value="medium">Medium reasoning</option>
+          <option value="high">High reasoning</option>
+          <option value="max">Max reasoning</option>
+        </select>
+      </label>
+      <button disabled={busy || feedback.trim().length < 3} onClick={() => void ask()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Ask Director for a structured fix</button>
+    </div>
+    {modelAttempted && <ModelThinkingStream text={reasoning} active={modelBusy} modelName={project.model} thinkingLevel={effectiveLevel} className="scene-thinking-stream" />}
     {suggestion && <div className="scene-suggestion"><h4>{suggestion.summary}</h4><ul>{suggestion.checklist.map((item) => <li key={item}>{item}</li>)}</ul><PlannedClipFields clip={suggestion.clip} references={project.references} onClip={(next) => setSuggestion({ ...suggestion, clip: { ...next, id: clip.id } })} /><div className="scene-version-action"><NumberField label="New version seed" value={seed} min={0} max={Number.MAX_SAFE_INTEGER} step={1} onChange={setSeed} /><span>The current master and assembled review cut remain preserved. This explicit action renders a separate H3 master.</span><button disabled={busy} onClick={() => void renderVersion()}>{busy ? <LoaderCircle className="spin" /> : <Video />} Render new scene version</button></div></div>}
   </div>}</div>;
 }

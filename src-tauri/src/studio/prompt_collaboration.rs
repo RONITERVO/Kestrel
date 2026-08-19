@@ -1,6 +1,6 @@
 use crate::{
     model::ModelInfo,
-    models::ControlSettings,
+    models::{ControlSettings, ThinkingLevel},
     prompt_catalog::{self, PromptId},
     runtime::{authorized, RuntimeManager},
 };
@@ -89,6 +89,8 @@ pub struct PromptDraftRequest {
     pub asset_name: String,
     #[serde(default)]
     pub asset_kind: String,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,6 +114,7 @@ pub struct PromptDraftEvent {
     pub kind: String,
     pub content: Option<String>,
     pub model_name: Option<String>,
+    pub thinking_level: Option<ThinkingLevel>,
     pub receipt: Option<PromptDraftReceipt>,
     pub at: String,
 }
@@ -136,7 +139,11 @@ impl PromptDraftJob {
             cancel,
         } = self;
         validate_request(&request, &models)?;
-        let settings = settings.for_model(&request.model_id);
+        let mut settings = settings.for_model(&request.model_id);
+        if let Some(level) = request.thinking_level {
+            settings.thinking_level = level;
+        }
+        let effective_thinking_level = settings.thinking_level;
         let model = models
             .iter()
             .find(|model| model.id == request.model_id)
@@ -147,6 +154,7 @@ impl PromptDraftJob {
             "queued",
             None,
             Some(&model.name),
+            Some(effective_thinking_level),
             None,
         );
         let lease = tokio::select! {
@@ -154,7 +162,7 @@ impl PromptDraftJob {
                 result.map_err(|error| error.to_string())?
             }
             _ = cancel.cancelled() => {
-                emit(&app, &request.request_id, "cancelled", None, Some(&model.name), None);
+                emit(&app, &request.request_id, "cancelled", None, Some(&model.name), Some(effective_thinking_level), None);
                 return Ok(());
             }
         };
@@ -224,6 +232,7 @@ impl PromptDraftJob {
             "started",
             None,
             Some(&model.name),
+            Some(effective_thinking_level),
             Some(receipt),
         );
 
@@ -250,6 +259,7 @@ impl PromptDraftJob {
                             "token",
                             Some(accepted),
                             Some(&model.name),
+                            Some(effective_thinking_level),
                             None,
                         );
                     }
@@ -260,6 +270,7 @@ impl PromptDraftJob {
                             "limited",
                             None,
                             Some(&model.name),
+                            Some(effective_thinking_level),
                             None,
                         );
                         return true;
@@ -279,6 +290,7 @@ impl PromptDraftJob {
                         "reasoning",
                         Some(token),
                         Some(&model.name),
+                        Some(effective_thinking_level),
                         None,
                     );
                 }
@@ -289,7 +301,7 @@ impl PromptDraftJob {
             let next = tokio::select! {
                 value = bytes.next() => value,
                 _ = cancel.cancelled() => {
-                    emit(&app, &request.request_id, "cancelled", None, Some(&model.name), None);
+                    emit(&app, &request.request_id, "cancelled", None, Some(&model.name), Some(effective_thinking_level), None);
                     return Ok(());
                 }
             };
@@ -313,6 +325,7 @@ impl PromptDraftJob {
             },
             None,
             Some(&model.name),
+            Some(effective_thinking_level),
             None,
         );
         Ok(())
@@ -577,11 +590,11 @@ fn target_name(target: PromptDraftTarget) -> &'static str {
 }
 
 pub fn emit_error(app: &AppHandle, request_id: &str, error: String) {
-    emit(app, request_id, "error", Some(&error), None, None);
+    emit(app, request_id, "error", Some(&error), None, None, None);
 }
 
 pub fn emit_settled(app: &AppHandle, request_id: &str) {
-    emit(app, request_id, "settled", None, None, None);
+    emit(app, request_id, "settled", None, None, None, None);
 }
 
 fn emit(
@@ -590,6 +603,7 @@ fn emit(
     kind: &str,
     content: Option<&str>,
     model_name: Option<&str>,
+    thinking_level: Option<ThinkingLevel>,
     receipt: Option<PromptDraftReceipt>,
 ) {
     let _ = app.emit(
@@ -599,6 +613,7 @@ fn emit(
             kind: kind.into(),
             content: content.map(str::to_owned),
             model_name: model_name.map(str::to_owned),
+            thinking_level,
             receipt,
             at: Utc::now().to_rfc3339(),
         },
@@ -652,6 +667,7 @@ mod tests {
             existing_text: "blue light, brass compass".into(),
             asset_name: "compass.png".into(),
             asset_kind: "image".into(),
+            thinking_level: None,
         }
     }
 

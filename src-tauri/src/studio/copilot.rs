@@ -1,6 +1,6 @@
 use crate::{
     model::ModelInfo,
-    models::ControlSettings,
+    models::{ControlSettings, ThinkingLevel},
     prompt_catalog::{self, PromptId},
     runtime::{authorized, RuntimeManager},
 };
@@ -40,6 +40,8 @@ pub struct MovieCopilotRequest {
     pub workspace: MovieCopilotWorkspace,
     pub instruction: String,
     pub edit: MovieEdit,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -69,6 +71,7 @@ pub struct MovieCopilotEvent {
     pub kind: String,
     pub content: Option<String>,
     pub model_name: Option<String>,
+    pub thinking_level: Option<ThinkingLevel>,
     pub receipt: Option<MovieCopilotReceipt>,
     pub proposal: Option<MovieCopilotProposal>,
     pub at: String,
@@ -146,7 +149,9 @@ impl MovieCopilotJob {
             .get(&request.project_id)
             .map_err(|error| error.to_string())?;
         validate_request(&request, &models, &project)?;
-        let settings = settings.for_model(&request.model_id);
+        let mut settings = settings.for_model(&request.model_id);
+        let thinking_level = request.thinking_level.unwrap_or(settings.thinking_level);
+        settings.thinking_level = thinking_level;
         let model = models
             .iter()
             .find(|candidate| candidate.id == request.model_id)
@@ -157,6 +162,7 @@ impl MovieCopilotJob {
             &request.project_id,
             "queued",
             (None, Some(&model.name)),
+            Some(thinking_level),
             None,
             None,
         );
@@ -166,7 +172,7 @@ impl MovieCopilotJob {
                 result.map_err(|error| error.to_string())?
             }
             _ = cancel.cancelled() => {
-                emit(&app, &request.request_id, &request.project_id, "cancelled", (None, Some(&model.name)), None, None);
+                emit(&app, &request.request_id, &request.project_id, "cancelled", (None, Some(&model.name)), Some(thinking_level), None, None);
                 record_turn(&studio, &request, "", "cancelled", "").await?;
                 return Ok(());
             }
@@ -248,6 +254,7 @@ impl MovieCopilotJob {
             &request.project_id,
             "started",
             (None, Some(&model.name)),
+            Some(thinking_level),
             Some(receipt.clone()),
             None,
         );
@@ -260,7 +267,7 @@ impl MovieCopilotJob {
             let next = tokio::select! {
                 value = stream.next() => value,
                 _ = cancel.cancelled() => {
-                    emit(&app, &request.request_id, &request.project_id, "cancelled", (None, Some(&model.name)), None, None);
+                    emit(&app, &request.request_id, &request.project_id, "cancelled", (None, Some(&model.name)), Some(thinking_level), None, None);
                     record_turn(&studio, &request, &response_text, "cancelled", "").await?;
                     return Ok(());
                 }
@@ -287,6 +294,7 @@ impl MovieCopilotJob {
                 &app,
                 &request,
                 &model.name,
+                thinking_level,
                 &mut response_text,
                 &mut tool_calls,
             );
@@ -303,6 +311,7 @@ impl MovieCopilotJob {
             &app,
             &request,
             &model.name,
+            thinking_level,
             &mut response_text,
             &mut tool_calls,
         );
@@ -317,6 +326,7 @@ impl MovieCopilotJob {
                     &request.project_id,
                     "proposal-rejected",
                     (Some(&error), Some(&model.name)),
+                    Some(thinking_level),
                     None,
                     None,
                 );
@@ -350,6 +360,7 @@ impl MovieCopilotJob {
             &request.project_id,
             "complete",
             (None, Some(&model.name)),
+            Some(thinking_level),
             None,
             proposal,
         );
@@ -362,6 +373,7 @@ fn accept_copilot_stream_events(
     app: &AppHandle,
     request: &MovieCopilotRequest,
     model_name: &str,
+    thinking_level: ThinkingLevel,
     response_text: &mut String,
     tool_calls: &mut Vec<StreamedToolCall>,
 ) {
@@ -383,6 +395,7 @@ fn accept_copilot_stream_events(
                     &request.project_id,
                     "token",
                     (Some(accepted), Some(model_name)),
+                    Some(thinking_level),
                     None,
                     None,
                 );
@@ -395,6 +408,7 @@ fn accept_copilot_stream_events(
                 &request.project_id,
                 "reasoning",
                 (Some(token), Some(model_name)),
+                Some(thinking_level),
                 None,
                 None,
             );
@@ -423,6 +437,7 @@ fn accept_copilot_stream_events(
                         &request.project_id,
                         "advanced-token",
                         (Some(fragment), Some(model_name)),
+                        None,
                         None,
                         None,
                     );
@@ -700,12 +715,14 @@ fn workspace_name(workspace: MovieCopilotWorkspace) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit(
     app: &AppHandle,
     request_id: &str,
     project_id: &str,
     kind: &str,
     presentation: (Option<&str>, Option<&str>),
+    thinking_level: Option<ThinkingLevel>,
     receipt: Option<MovieCopilotReceipt>,
     proposal: Option<MovieCopilotProposal>,
 ) {
@@ -718,6 +735,7 @@ fn emit(
             kind: kind.into(),
             content: content.map(str::to_owned),
             model_name: model_name.map(str::to_owned),
+            thinking_level,
             receipt,
             proposal,
             at: Utc::now().to_rfc3339(),
@@ -734,6 +752,7 @@ pub fn emit_error(app: &AppHandle, request_id: &str, project_id: &str, error: St
         (Some(&error), None),
         None,
         None,
+        None,
     );
 }
 
@@ -744,6 +763,7 @@ pub fn emit_settled(app: &AppHandle, request_id: &str, project_id: &str) {
         project_id,
         "settled",
         (None, None),
+        None,
         None,
         None,
     );

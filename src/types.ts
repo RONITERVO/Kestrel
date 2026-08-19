@@ -173,6 +173,20 @@ export function thinkingLevelFromBudget(budget: number): ThinkingLevel {
   return "max";
 }
 
+export function effectiveThinkingLevelForModel(
+  control?: ControlSettings,
+  modelId?: string,
+): ThinkingLevel {
+  if (!control) return "high";
+  if (modelId) {
+    const override = control.modelOverrides?.find((item) => item.modelId === modelId);
+    if (override?.thinkingLevel) {
+      return override.thinkingLevel;
+    }
+  }
+  return control.thinkingLevel ?? "high";
+}
+
 export interface MovieSettings {
   width: number;
   height: number;
@@ -482,6 +496,7 @@ export interface MovieCopilotRequest {
   workspace: MovieCopilotWorkspace;
   instruction: string;
   edit: MovieEdit;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface MovieCopilotReceipt {
@@ -504,6 +519,7 @@ export interface MovieCopilotEvent {
   kind: "queued" | "started" | "reasoning" | "token" | "advanced-token" | "complete" | "cancelled" | "error" | "settled" | string;
   content?: string;
   modelName?: string;
+  thinkingLevel?: ThinkingLevel;
   receipt?: MovieCopilotReceipt;
   proposal?: MovieCopilotProposal;
   at: string;
@@ -984,6 +1000,7 @@ export interface PromptDraftRequest {
   existingText: string;
   assetName: string;
   assetKind: string;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface PromptDraftReceipt {
@@ -1003,6 +1020,7 @@ export interface PromptDraftEvent {
   kind: "queued" | "started" | "token" | "reasoning" | "complete" | "limited" | "cancelled" | "error" | "settled" | string;
   content?: string;
   modelName?: string;
+  thinkingLevel?: ThinkingLevel;
   receipt?: PromptDraftReceipt;
   at: string;
 }
