@@ -71,6 +71,11 @@ import { ImageStudio } from "./ImageStudio";
 import { PromptPackVisualEditor } from "./PromptPackVisualEditor";
 import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { SetupConsole } from "./Setup";
+import {
+  STANDARD_CONTEXT_OPTIONS,
+  STANDARD_OUTPUT_OPTIONS,
+  findProvenHardwareProfile,
+} from "./types";
 import type {
   AppSnapshot,
   ControlSettings,
@@ -82,6 +87,7 @@ import type {
   ResearchSettings,
   ServiceState,
   SystemSnapshot,
+  ThinkingLevel,
 } from "./types";
 
 const emptyProgress: ResearchProgress = {
@@ -237,11 +243,11 @@ function App() {
               onError={(message) => setError(message)}
             />
           ) : view === "studio" ? (
-            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
+            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={(message) => setError(message)} />
           ) : view === "music" ? (
-            <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} installRoot={snapshot.settings.installRoot} muscriptorSetupReady={snapshot.setup.components.find((component) => component.id === "muscriptor")?.status === "ready"} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
+            <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} installRoot={snapshot.settings.installRoot} muscriptorSetupReady={snapshot.setup.components.find((component) => component.id === "muscriptor")?.status === "ready"} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={(message) => setError(message)} />
           ) : view === "image" ? (
-            <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} onError={(message) => setError(message)} />
+            <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={(message) => setError(message)} />
           ) : view === "developer" ? (
             <DeveloperConsole
               control={snapshot.control}
@@ -596,7 +602,7 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
     setControlDraft((current) => ({
       ...current,
       modelOverrides: enabled
-        ? [...current.modelOverrides.filter((item) => item.modelId !== overrideModelId), { modelId: overrideModelId, contextWindow: current.contextWindow, maxOutputTokens: current.maxOutputTokens, threads: current.threads }]
+        ? [...current.modelOverrides.filter((item) => item.modelId !== overrideModelId), { modelId: overrideModelId, contextWindow: current.contextWindow, maxOutputTokens: current.maxOutputTokens, threads: current.threads, thinkingLevel: current.thinkingLevel }]
         : current.modelOverrides.filter((item) => item.modelId !== overrideModelId),
     }));
   };
@@ -756,23 +762,123 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
       </div>
 
       <div className="system-console-body">
-      {tab === "models" && <section className="settings-panel system-tab-panel">
-        <div className="settings-heading"><div><span className="eyebrow">Fallback everywhere</span><h2>App-wide local model policy</h2><p>Chat, Computer Tasks, Research, and every Studio inherit these values unless their selected model or workspace has an explicit override.</p></div><label className="advanced-toggle"><input type="checkbox" checked={controlDraft.advancedMode} onChange={(event) => setControlDraft((current) => ({ ...current, advancedMode: event.target.checked }))}/><span/><strong>Allow uncapped values</strong></label></div>
-        <div className="system-policy-grid">
-          <div className="system-policy-column">
-            <label className="wide-field"><span>Default local model</span><select value={controlDraft.selectedModelId ?? ""} onChange={(event) => { const value = event.target.value || undefined; setControlDraft((current) => ({ ...current, selectedModelId: value })); setOverrideModelId(event.target.value); }}><option value="">First available model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
-            <label className="wide-field"><span>llama.cpp engine</span><input value={controlDraft.enginePath} onChange={(event) => setControlDraft((current) => ({ ...current, enginePath: event.target.value }))}/></label>
-            <div className="model-runtime-row"><NumberSetting label="Context" hint="Global fallback" value={controlDraft.contextWindow} disabled={false} onChange={(value) => updateControlNumber("contextWindow", value)}/><NumberSetting label="Max output" hint="Global fallback" value={controlDraft.maxOutputTokens} disabled={false} onChange={(value) => updateControlNumber("maxOutputTokens", value)}/><NumberSetting label="CPU threads" hint="Global fallback" value={controlDraft.threads} disabled={false} onChange={(value) => updateControlNumber("threads", value)}/></div>
-          </div>
-          <div className="system-policy-column model-exception-card">
-            <div className="model-exception-heading"><div><span className="eyebrow">More specific wins</span><strong>Per-model exception</strong></div><label><input type="checkbox" checked={!!modelOverride} disabled={!overrideModelId} onChange={(event) => toggleOverride(event.target.checked)}/> Override this model</label></div>
-            <label className="wide-field"><span>Model</span><select value={overrideModelId} onChange={(event) => setOverrideModelId(event.target.value)}><option value="">Choose a model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
-            <div className="model-runtime-row"><NumberSetting label="Context" hint="Model only" value={modelOverride?.contextWindow ?? controlDraft.contextWindow} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("contextWindow", value)}/><NumberSetting label="Max output" hint="Model only" value={modelOverride?.maxOutputTokens ?? controlDraft.maxOutputTokens} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("maxOutputTokens", value)}/><NumberSetting label="CPU threads" hint="Model only" value={modelOverride?.threads ?? controlDraft.threads} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("threads", value)}/></div>
-          </div>
-        </div>
-        <div className="advanced-warning"><TriangleAlert/><div><strong>No GPU model is assumed.</strong><span>Kestrel uses detected telemetry and the values you save. Uncapped or oversized settings can still exceed a model or machine limit.</span></div></div>
-        <div className="settings-actions"><span/><button className="quiet-button" disabled={!!busy} onClick={() => void saveModels()}>{busy === "save-models" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Save app-wide policy</button><button className="primary-button" disabled={!!busy || models.length === 0} onClick={() => void apply()}>{busy === "apply" ? <LoaderCircle className="spin" size={15}/> : <Zap size={15}/>} Save & restart selected model</button></div>
-      </section>}
+      {tab === "models" && (() => {
+        const selectedModel = models.find((m) => m.id === controlDraft.selectedModelId);
+        const overrideModel = models.find((m) => m.id === overrideModelId);
+        const globalProvenProfile = findProvenHardwareProfile(
+          system?.provenHardwareProfiles,
+          selectedModel?.name ?? selectedModel?.id,
+          gpu?.totalMib,
+        );
+        const overrideProvenProfile = findProvenHardwareProfile(
+          system?.provenHardwareProfiles,
+          overrideModel?.name ?? overrideModel?.id,
+          gpu?.totalMib,
+        );
+
+        return (
+          <section className="settings-panel system-tab-panel">
+            <div className="settings-heading"><div><span className="eyebrow">Fallback everywhere</span><h2>App-wide local model policy</h2><p>Chat, Computer Tasks, Research, and every Studio inherit these values unless their selected model or workspace has an explicit override.</p></div><label className="advanced-toggle"><input type="checkbox" checked={controlDraft.advancedMode} onChange={(event) => setControlDraft((current) => ({ ...current, advancedMode: event.target.checked }))}/><span/><strong>Allow uncapped values</strong></label></div>
+            <div className="system-policy-grid">
+              <div className="system-policy-column">
+                <label className="wide-field"><span>Default local model</span><select value={controlDraft.selectedModelId ?? ""} onChange={(event) => { const value = event.target.value || undefined; setControlDraft((current) => ({ ...current, selectedModelId: value })); setOverrideModelId(event.target.value); }}><option value="">First available model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+                <label className="wide-field"><span>llama.cpp engine</span><input value={controlDraft.enginePath} onChange={(event) => setControlDraft((current) => ({ ...current, enginePath: event.target.value }))}/></label>
+                <label className="wide-field"><span>Thinking level (Global fallback)</span><select value={controlDraft.thinkingLevel ?? "high"} onChange={(event) => setControlDraft((current) => ({ ...current, thinkingLevel: event.target.value as ThinkingLevel }))}><option value="off">Off (direct response, no thinking)</option><option value="low">Low reasoning</option><option value="medium">Medium reasoning</option><option value="high">High reasoning (default)</option><option value="max">Max reasoning</option></select></label>
+                <div className="model-runtime-row">
+                  <TokenDropdownSetting
+                    label="Context"
+                    hint="Global fallback"
+                    value={controlDraft.contextWindow}
+                    options={STANDARD_CONTEXT_OPTIONS}
+                    recommendedValue={globalProvenProfile?.recommendedContextWindow}
+                    recommendedLabel={gpu ? `${formatMib(gpu.totalMib)} GPU` : undefined}
+                    disabled={false}
+                    allowCustom={controlDraft.advancedMode}
+                    onChange={(value) => updateControlNumber("contextWindow", value)}
+                  />
+                  <TokenDropdownSetting
+                    label="Max output"
+                    hint="Global fallback"
+                    value={controlDraft.maxOutputTokens}
+                    options={STANDARD_OUTPUT_OPTIONS}
+                    recommendedValue={globalProvenProfile?.recommendedMaxOutputTokens}
+                    disabled={false}
+                    allowCustom={controlDraft.advancedMode}
+                    onChange={(value) => updateControlNumber("maxOutputTokens", value)}
+                  />
+                  <NumberSetting label="CPU threads" hint="Global fallback" value={controlDraft.threads} disabled={false} onChange={(value) => updateControlNumber("threads", value)}/>
+                </div>
+              </div>
+              <div className="system-policy-column model-exception-card">
+                <div className="model-exception-heading"><div><span className="eyebrow">More specific wins</span><strong>Per-model exception</strong></div><label><input type="checkbox" checked={!!modelOverride} disabled={!overrideModelId} onChange={(event) => toggleOverride(event.target.checked)}/> Override this model</label></div>
+                <label className="wide-field"><span>Model</span><select value={overrideModelId} onChange={(event) => setOverrideModelId(event.target.value)}><option value="">Choose a model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+                {overrideProvenProfile && modelOverride && (
+                  <div className="proven-profile-banner" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", margin: "4px 0 8px", background: "rgba(183, 232, 102, 0.08)", border: "1px solid #4f683a", borderRadius: 6, fontSize: "11px" }}>
+                    <div>
+                      <strong style={{ color: "#b7e866" }}>⚡ {overrideProvenProfile.displayName}</strong>
+                      <p style={{ margin: "2px 0 0", color: "#9ead9f", fontSize: "10px" }}>{overrideProvenProfile.provenSpeedNotes}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="quiet-button"
+                      style={{ fontSize: "10px", padding: "4px 8px" }}
+                      disabled={!modelOverride}
+                      onClick={() => {
+                        if (!overrideModelId) return;
+                        setControlDraft((current) => {
+                          const known = current.modelOverrides.find((item) => item.modelId === overrideModelId) ?? { modelId: overrideModelId };
+                          return {
+                            ...current,
+                            modelOverrides: [
+                              ...current.modelOverrides.filter((item) => item.modelId !== overrideModelId),
+                              {
+                                ...known,
+                                contextWindow: overrideProvenProfile.recommendedContextWindow,
+                                maxOutputTokens: overrideProvenProfile.recommendedMaxOutputTokens,
+                                thinkingLevel: overrideProvenProfile.recommendedThinkingLevel,
+                                threads: overrideProvenProfile.recommendedThreads,
+                              },
+                            ],
+                          };
+                        });
+                      }}
+                    >
+                      Auto-tune for GPU
+                    </button>
+                  </div>
+                )}
+                <label className="wide-field"><span>Thinking level (Model exception)</span><select disabled={!modelOverride} value={modelOverride?.thinkingLevel ?? controlDraft.thinkingLevel ?? "high"} onChange={(event) => { const val = event.target.value as ThinkingLevel; if (!overrideModelId) return; setControlDraft((current) => { const known = current.modelOverrides.find((item) => item.modelId === overrideModelId) ?? { modelId: overrideModelId }; return { ...current, modelOverrides: [...current.modelOverrides.filter((item) => item.modelId !== overrideModelId), { ...known, thinkingLevel: val }] }; }); }}><option value="off">Off (direct response, no thinking)</option><option value="low">Low reasoning</option><option value="medium">Medium reasoning</option><option value="high">High reasoning</option><option value="max">Max reasoning</option></select></label>
+                <div className="model-runtime-row">
+                  <TokenDropdownSetting
+                    label="Context"
+                    hint="Model only"
+                    value={modelOverride?.contextWindow ?? controlDraft.contextWindow}
+                    options={STANDARD_CONTEXT_OPTIONS}
+                    recommendedValue={overrideProvenProfile?.recommendedContextWindow}
+                    recommendedLabel={gpu ? `${formatMib(gpu.totalMib)} GPU` : undefined}
+                    disabled={!modelOverride}
+                    allowCustom={controlDraft.advancedMode}
+                    onChange={(value) => updateOverrideNumber("contextWindow", value)}
+                  />
+                  <TokenDropdownSetting
+                    label="Max output"
+                    hint="Model only"
+                    value={modelOverride?.maxOutputTokens ?? controlDraft.maxOutputTokens}
+                    options={STANDARD_OUTPUT_OPTIONS}
+                    recommendedValue={overrideProvenProfile?.recommendedMaxOutputTokens}
+                    disabled={!modelOverride}
+                    allowCustom={controlDraft.advancedMode}
+                    onChange={(value) => updateOverrideNumber("maxOutputTokens", value)}
+                  />
+                  <NumberSetting label="CPU threads" hint="Model only" value={modelOverride?.threads ?? controlDraft.threads} disabled={!modelOverride} onChange={(value) => updateOverrideNumber("threads", value)}/>
+                </div>
+              </div>
+            </div>
+            <div className="advanced-warning"><TriangleAlert/><div><strong>No GPU model is assumed.</strong><span>Kestrel uses detected telemetry and the values you save. Uncapped or oversized settings can still exceed a model or machine limit.</span></div></div>
+            <div className="settings-actions"><span/><button className="quiet-button" disabled={!!busy} onClick={() => void saveModels()}>{busy === "save-models" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Save app-wide policy</button><button className="primary-button" disabled={!!busy || models.length === 0} onClick={() => void apply()}>{busy === "apply" ? <LoaderCircle className="spin" size={15}/> : <Zap size={15}/>} Save & restart selected model</button></div>
+          </section>
+        );
+      })()}
 
       {tab === "research" && <section className="settings-panel system-tab-panel">
         <div className="settings-heading"><div><span className="eyebrow">Workspace-specific override</span><h2>Offline Research policy</h2><p>Standard Research inherits the selected model's System policy. Enable this only when research genuinely needs a different context/output budget or deeper orchestration.</p></div><label className="advanced-toggle"><input type="checkbox" checked={researchDraft.advancedMode} onChange={(event) => setResearchDraft((current) => ({ ...current, advancedMode: event.target.checked }))}/><span/><strong>Research override</strong></label></div>
@@ -848,6 +954,86 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
 
 function NumberSetting({ label, hint, value, disabled, onChange }: { label: string; hint: string; value: number; disabled: boolean; onChange: (value: string) => void }) {
   return <label className="number-setting"><span>{label}<small>{hint}</small></span><input type="number" step="1" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} /></label>;
+}
+
+function TokenDropdownSetting({
+  label,
+  hint,
+  value,
+  options,
+  recommendedValue,
+  recommendedLabel,
+  disabled,
+  allowCustom,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  options: Array<{ value: number; label: string }>;
+  recommendedValue?: number;
+  recommendedLabel?: string;
+  disabled: boolean;
+  allowCustom?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const isKnown = options.some((opt) => opt.value === value);
+  const [customMode, setCustomMode] = useState(() => !isKnown);
+
+  return (
+    <label className="number-setting token-tier-setting">
+      <span>
+        {label}
+        <small>{hint}</small>
+      </span>
+      {!customMode ? (
+        <select
+          value={isKnown ? value : "custom"}
+          disabled={disabled}
+          onChange={(event) => {
+            if (event.target.value === "custom") {
+              setCustomMode(true);
+            } else {
+              onChange(event.target.value);
+            }
+          }}
+        >
+          {options.map((opt) => {
+            const isRec = recommendedValue === opt.value;
+            const text = isRec
+              ? `${opt.label} · Recommended ${recommendedLabel ? `(${recommendedLabel})` : ""}`
+              : opt.label;
+            return (
+              <option key={opt.value} value={opt.value}>
+                {text}
+              </option>
+            );
+          })}
+          {allowCustom && <option value="custom">Custom...</option>}
+        </select>
+      ) : (
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          <input
+            type="number"
+            step="1024"
+            value={value}
+            disabled={disabled}
+            onChange={(event) => onChange(event.target.value)}
+            style={{ flex: 1 }}
+          />
+          <button
+            type="button"
+            className="quiet-button"
+            style={{ padding: "0 6px", minHeight: 28, fontSize: 10 }}
+            onClick={() => setCustomMode(false)}
+            title="Switch back to presets"
+          >
+            Presets
+          </button>
+        </div>
+      )}
+    </label>
+  );
 }
 
 function formatMib(value: number): string {

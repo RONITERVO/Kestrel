@@ -174,9 +174,7 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByText("Live reasoning stream")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Advanced production controls/i }));
     expect(screen.getByLabelText("Maximum clips")).toHaveAttribute("max", "96");
-    expect(screen.getByLabelText("Thinking mode is fixed at maximum")).toHaveValue(
-      "Maximum · 32,768",
-    );
+    expect(screen.getByLabelText("Thinking mode")).toHaveValue("max");
     expect(screen.getByLabelText("ComfyUI root")).toHaveValue("C:\\Configured\\ComfyUI");
     expect(screen.getByLabelText("Reference image fidelity")).toHaveValue("match");
     const checkpoint = screen.getByLabelText(/Review the plan before rendering/i);

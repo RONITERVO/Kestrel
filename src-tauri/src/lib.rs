@@ -5,6 +5,7 @@ mod attachments;
 mod chat;
 mod config;
 mod developer;
+mod hardware_profiles;
 mod harness;
 mod html;
 mod kiwix;
@@ -687,6 +688,7 @@ fn model_binding(model: &ModelInfo, compatibility: &ModelCompatibility) -> Movie
         compatibility_tier: compatibility.tier.clone(),
         protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
         bound_at: chrono::Utc::now().to_rfc3339(),
+        thinking_level: None,
     }
 }
 
@@ -768,9 +770,13 @@ fn resolve_movie_model_roles(
             ));
         }
     }
+    let mut director_binding = model_binding(director, &director_compatibility);
+    director_binding.thinking_level = request.director_thinking_level;
+    let mut reviewer_binding = model_binding(reviewer, &reviewer_compatibility);
+    reviewer_binding.thinking_level = request.reviewer_thinking_level;
     Ok(MovieModelRoles {
-        director: model_binding(director, &director_compatibility),
-        reviewer: model_binding(reviewer, &reviewer_compatibility),
+        director: director_binding,
+        reviewer: reviewer_binding,
     })
 }
 
@@ -2987,6 +2993,7 @@ async fn resume_computer_task(
         max_steps: settings.agent_max_steps,
         max_output_tokens: settings.agent_max_output_tokens,
         attachment_ids: run.attachments.iter().map(|item| item.id.clone()).collect(),
+        thinking_level: None,
     };
     let continuation = task_continuation(&run, answer);
     let cancel = CancellationToken::new();
@@ -3282,7 +3289,13 @@ async fn control_snapshot(
         gpu: services::gpu_snapshot().await,
         developer,
         runtime_logs: state.runtime.recent_logs(100).await,
+        proven_hardware_profiles: hardware_profiles::all_proven_profiles(),
     })
+}
+
+#[tauri::command]
+fn get_proven_hardware_profiles() -> Vec<hardware_profiles::ProvenHardwareProfile> {
+    hardware_profiles::all_proven_profiles()
 }
 
 async fn refresh_engine_candidates(
@@ -3595,6 +3608,7 @@ pub fn run() {
             reveal_library,
             get_system_snapshot,
             get_control_snapshot,
+            get_proven_hardware_profiles,
             scan_local_models,
             list_model_downloads,
             inspect_model_download,

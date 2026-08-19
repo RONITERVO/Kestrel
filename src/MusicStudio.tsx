@@ -15,9 +15,10 @@ import {
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import { MusicMidiEditor } from "./MusicMidiEditor";
 import type {
-  ModelInfo, MusicGenerationEvent, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
-  PromptDraftMode, PromptDraftReceipt, PromptDraftTarget,
+  ControlSettings, ModelInfo, MusicGenerationEvent, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
+  PromptDraftMode, PromptDraftReceipt, PromptDraftTarget, ThinkingLevel,
 } from "./types";
+import { effectiveThinkingLevelForModel } from "./types";
 
 const SECTION_TAGS: MusicSection["tag"][] = [
   "Intro", "Verse", "Pre-Chorus", "Chorus", "Post-Chorus", "Bridge",
@@ -33,6 +34,7 @@ interface CollaborationDraft {
   reasoning: string;
   status: string;
   modelName: string;
+  thinkingLevel?: ThinkingLevel;
   receipt?: PromptDraftReceipt;
 }
 
@@ -43,6 +45,7 @@ export function MusicStudio({
   advancedEnabled,
   models = [],
   selectedModelId,
+  controlSettings,
   onError,
 }: {
   initialComfyRoot?: string;
@@ -51,6 +54,7 @@ export function MusicStudio({
   advancedEnabled: boolean;
   models?: ModelInfo[];
   selectedModelId?: string;
+  controlSettings?: ControlSettings;
   onError: (message: string) => void;
 }) {
   const [summaries, setSummaries] = useState<MusicSummary[]>([]);
@@ -58,6 +62,8 @@ export function MusicStudio({
   const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [modelId, setModelId] = useState(selectedModelId ?? models[0]?.id ?? "");
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const [creating, setCreating] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -67,7 +73,6 @@ export function MusicStudio({
   const [progress, setProgress] = useState<MusicGenerationEvent>();
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [modelId, setModelId] = useState(selectedModelId ?? models[0]?.id ?? "");
   const [draftMode, setDraftMode] = useState<PromptDraftMode>("develop");
   const [collaboration, setCollaboration] = useState<CollaborationDraft>();
   const [midiBusy, setMidiBusy] = useState(false);
@@ -109,12 +114,13 @@ export function MusicStudio({
       if (event.kind === "error") onError(event.content ?? "The local music collaborator stopped.");
       setCollaboration((current) => {
         if (!current || current.id !== event.requestId) return current;
-        if (event.kind === "token") return { ...current, text: current.text + (event.content ?? ""), status: "writing", modelName: event.modelName ?? current.modelName };
-        if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt };
-        if (event.kind === "reasoning") return { ...current, reasoning: appendModelThinking(current.reasoning, event.content ?? ""), status: "thinking", modelName: event.modelName ?? current.modelName };
-        if (event.kind === "complete") return { ...current, status: "ready", modelName: event.modelName ?? current.modelName };
-        if (event.kind === "limited") return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName };
-        if (event.kind === "cancelled") return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName };
+        const thinkingLevel = event.thinkingLevel ?? current.thinkingLevel;
+        if (event.kind === "token") return { ...current, text: current.text + (event.content ?? ""), status: "writing", modelName: event.modelName ?? current.modelName, thinkingLevel };
+        if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt, thinkingLevel };
+        if (event.kind === "reasoning") return { ...current, reasoning: appendModelThinking(current.reasoning, event.content ?? ""), status: "thinking", modelName: event.modelName ?? current.modelName, thinkingLevel };
+        if (event.kind === "complete") return { ...current, status: "ready", modelName: event.modelName ?? current.modelName, thinkingLevel };
+        if (event.kind === "limited") return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName, thinkingLevel };
+        if (event.kind === "cancelled") return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName, thinkingLevel };
         if (event.kind === "error") return { ...current, status: "error" };
         return current;
       });
@@ -279,9 +285,20 @@ export function MusicStudio({
     const context = target === "musicCaption"
       ? `Song idea:\n${project.idea}\n\nProducer section plan:\n${sectionPlan}\n\nCurrent lyrics:\n${compiledLyrics(project)}`
       : `Song idea:\n${project.idea}\n\nMusic description:\n${project.caption}\n\nProducer section plan:\n${sectionPlan}`;
-    setCollaboration({ id, target, mode: draftMode, base, text: "", reasoning: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model" });
+    const effectiveLevel = thinkingLevel !== "default" ? thinkingLevel : effectiveThinkingLevelForModel(controlSettings, modelId);
+    setCollaboration({ id, target, mode: draftMode, base, text: "", reasoning: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model", thinkingLevel: effectiveLevel });
     try {
-      await startMoviePromptDraft({ requestId: id, modelId, target, mode: draftMode, storyText: context, existingText: base, assetName: "", assetKind: "" });
+      await startMoviePromptDraft({
+        requestId: id,
+        modelId,
+        target,
+        mode: draftMode,
+        storyText: context,
+        existingText: base,
+        assetName: "",
+        assetKind: "",
+        thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : undefined,
+      });
     } catch (error) {
       setCollaboration(undefined);
       onError(String(error));
@@ -453,6 +470,19 @@ export function MusicStudio({
           <textarea aria-label="Music description" disabled={busy || assistantBusy} value={project.caption} onChange={(event) => mutate((current) => ({ ...current, caption: event.target.value }))} placeholder={`Global Metadata: genre, BPM, key, emotion, production profile…\n\nVocal Details: timbre, performance, harmonies, effects…\n\nArrangement: instruments, groove, section evolution, textures, space…`} />
           <div className="music-assist-bar">
             <Bot /><select aria-label="Music collaborator model" disabled={assistantBusy || busy} value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Choose local model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select>
+            <select
+              aria-label="Music collaborator thinking level"
+              disabled={assistantBusy || busy}
+              value={thinkingLevel}
+              onChange={(event) => setThinkingLevel(event.target.value as ThinkingLevel | "default")}
+            >
+              <option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, modelId)})</option>
+              <option value="off">Off (direct)</option>
+              <option value="low">Low reasoning</option>
+              <option value="medium">Medium reasoning</option>
+              <option value="high">High reasoning</option>
+              <option value="max">Max reasoning</option>
+            </select>
             <select aria-label="Music collaborator mode" disabled={assistantBusy || busy} value={draftMode} onChange={(event) => setDraftMode(event.target.value as PromptDraftMode)}><option value="develop">Develop idea / notes</option><option value="continue">Continue exact draft</option></select>
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicCaption")}><Sparkles /> Develop description</button>
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicLyrics")}><ListMusic /> Write full lyrics</button>
@@ -499,7 +529,7 @@ export function MusicStudio({
 
       {collaboration && <section className="music-collaboration-sheet">
         <header><span><Sparkles /><strong>{collaboration.target === "musicCaption" ? "Description proposal" : "Lyrics proposal"}</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header>
-        <div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} active={assistantBusy} modelName={collaboration.modelName} /><section className="model-result-stream"><strong>{collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}</strong><pre>{collaboration.text || (assistantBusy ? "The proposal will stream here when the model begins its answer…" : "No proposal was returned.")}</pre></section></div>
+        <div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} active={assistantBusy} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>{collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}</strong><pre>{collaboration.text || (assistantBusy ? "The proposal will stream here when the model begins its answer…" : "No proposal was returned.")}</pre></section></div>
         <footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt.exactRequest, null, 2)}</pre></details>}</footer>
       </section>}
 

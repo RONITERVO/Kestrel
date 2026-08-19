@@ -1,6 +1,6 @@
 use crate::{
     model::ModelInfo,
-    models::ControlSettings,
+    models::{ControlSettings, ThinkingLevel},
     prompt_catalog::{self, PromptId},
     runtime::{authorized, RuntimeManager},
 };
@@ -40,6 +40,12 @@ impl PromptInferenceAllowance {
 
 fn prompt_inference_allowance(settings: &ControlSettings) -> PromptInferenceAllowance {
     let configured_limit = PROMPT_COLLABORATOR_MAX_TOKENS.min(settings.max_output_tokens);
+    if settings.thinking_level.is_off() {
+        return PromptInferenceAllowance {
+            thinking_budget_tokens: 0,
+            visible_output_tokens: PROMPT_COLLABORATOR_VISIBLE_OUTPUT_TOKENS.min(configured_limit),
+        };
+    }
     let thinking_budget =
         PROMPT_COLLABORATOR_THINKING_BUDGET.min(configured_limit.saturating_mul(3) / 4);
     let visible_output_allowance = PROMPT_COLLABORATOR_VISIBLE_OUTPUT_TOKENS
@@ -83,6 +89,8 @@ pub struct PromptDraftRequest {
     pub asset_name: String,
     #[serde(default)]
     pub asset_kind: String,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +114,7 @@ pub struct PromptDraftEvent {
     pub kind: String,
     pub content: Option<String>,
     pub model_name: Option<String>,
+    pub thinking_level: Option<ThinkingLevel>,
     pub receipt: Option<PromptDraftReceipt>,
     pub at: String,
 }
@@ -130,7 +139,11 @@ impl PromptDraftJob {
             cancel,
         } = self;
         validate_request(&request, &models)?;
-        let settings = settings.for_model(&request.model_id);
+        let mut settings = settings.for_model(&request.model_id);
+        if let Some(level) = request.thinking_level {
+            settings.thinking_level = level;
+        }
+        let effective_thinking_level = settings.thinking_level;
         let model = models
             .iter()
             .find(|model| model.id == request.model_id)
@@ -141,6 +154,7 @@ impl PromptDraftJob {
             "queued",
             None,
             Some(&model.name),
+            Some(effective_thinking_level),
             None,
         );
         let lease = tokio::select! {
@@ -148,7 +162,7 @@ impl PromptDraftJob {
                 result.map_err(|error| error.to_string())?
             }
             _ = cancel.cancelled() => {
-                emit(&app, &request.request_id, "cancelled", None, Some(&model.name), None);
+                emit(&app, &request.request_id, "cancelled", None, Some(&model.name), Some(effective_thinking_level), None);
                 return Ok(());
             }
         };
@@ -159,7 +173,7 @@ impl PromptDraftJob {
         let max_tokens = allowance.generation_limit();
         let thinking_budget_tokens = allowance.thinking_budget_tokens;
         let (temperature, top_p, top_k) = sampling(request.target);
-        let body = json!({
+        let mut body = json!({
             "model": lease.connection.model_id,
             "messages": messages,
             "temperature": temperature,
@@ -170,6 +184,16 @@ impl PromptDraftJob {
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        if settings.thinking_level.is_off() {
+            body["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
+            body["reasoning_effort"] = json!("off");
+        } else {
+            body["reasoning_effort"] = json!(settings.thinking_level.as_str());
+            body["chat_template_kwargs"] = json!({
+                "reasoning_effort": settings.thinking_level.as_template_effort(),
+                "enable_thinking": true
+            });
+        }
         let receipt = PromptDraftReceipt {
             target: request.target,
             mode: request.mode,
@@ -208,6 +232,7 @@ impl PromptDraftJob {
             "started",
             None,
             Some(&model.name),
+            Some(effective_thinking_level),
             Some(receipt),
         );
 
@@ -234,6 +259,7 @@ impl PromptDraftJob {
                             "token",
                             Some(accepted),
                             Some(&model.name),
+                            Some(effective_thinking_level),
                             None,
                         );
                     }
@@ -244,6 +270,7 @@ impl PromptDraftJob {
                             "limited",
                             None,
                             Some(&model.name),
+                            Some(effective_thinking_level),
                             None,
                         );
                         return true;
@@ -263,6 +290,7 @@ impl PromptDraftJob {
                         "reasoning",
                         Some(token),
                         Some(&model.name),
+                        Some(effective_thinking_level),
                         None,
                     );
                 }
@@ -273,7 +301,7 @@ impl PromptDraftJob {
             let next = tokio::select! {
                 value = bytes.next() => value,
                 _ = cancel.cancelled() => {
-                    emit(&app, &request.request_id, "cancelled", None, Some(&model.name), None);
+                    emit(&app, &request.request_id, "cancelled", None, Some(&model.name), Some(effective_thinking_level), None);
                     return Ok(());
                 }
             };
@@ -297,6 +325,7 @@ impl PromptDraftJob {
             },
             None,
             Some(&model.name),
+            Some(effective_thinking_level),
             None,
         );
         Ok(())
@@ -561,11 +590,11 @@ fn target_name(target: PromptDraftTarget) -> &'static str {
 }
 
 pub fn emit_error(app: &AppHandle, request_id: &str, error: String) {
-    emit(app, request_id, "error", Some(&error), None, None);
+    emit(app, request_id, "error", Some(&error), None, None, None);
 }
 
 pub fn emit_settled(app: &AppHandle, request_id: &str) {
-    emit(app, request_id, "settled", None, None, None);
+    emit(app, request_id, "settled", None, None, None, None);
 }
 
 fn emit(
@@ -574,6 +603,7 @@ fn emit(
     kind: &str,
     content: Option<&str>,
     model_name: Option<&str>,
+    thinking_level: Option<ThinkingLevel>,
     receipt: Option<PromptDraftReceipt>,
 ) {
     let _ = app.emit(
@@ -583,6 +613,7 @@ fn emit(
             kind: kind.into(),
             content: content.map(str::to_owned),
             model_name: model_name.map(str::to_owned),
+            thinking_level,
             receipt,
             at: Utc::now().to_rfc3339(),
         },
@@ -636,6 +667,7 @@ mod tests {
             existing_text: "blue light, brass compass".into(),
             asset_name: "compass.png".into(),
             asset_kind: "image".into(),
+            thinking_level: None,
         }
     }
 
@@ -676,6 +708,15 @@ mod tests {
         assert_eq!(allowance.thinking_budget_tokens, 24_576);
         assert_eq!(allowance.visible_output_tokens, 8_192);
         assert!(allowance.generation_limit() <= uncapped.max_output_tokens);
+
+        let off = ControlSettings {
+            max_output_tokens: 16_384,
+            thinking_level: crate::models::ThinkingLevel::Off,
+            ..ControlSettings::default()
+        };
+        let allowance_off = prompt_inference_allowance(&off);
+        assert_eq!(allowance_off.thinking_budget_tokens, 0);
+        assert_eq!(allowance_off.visible_output_tokens, 8_192);
     }
 
     #[test]

@@ -68,6 +68,7 @@ import type {
   StartMovieRequest,
   PromptDraftEvent,
   PromptDraftRequest,
+  ThinkingLevel,
 } from "./types";
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -442,9 +443,9 @@ export async function approveMoviePlan(id: string): Promise<MovieProject> {
   return invoke<MovieProject>("approve_movie_plan", { id });
 }
 
-export async function askMovieDirectorClip(requestId: string, id: string, clipId: string, feedback: string): Promise<MovieClipSuggestion> {
+export async function askMovieDirectorClip(requestId: string, id: string, clipId: string, feedback: string, thinkingLevel?: ThinkingLevel): Promise<MovieClipSuggestion> {
   if (!isTauri()) throw new Error("Studio scene assistance requires the desktop application.");
-  return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { requestId, id, clipId, feedback } });
+  return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { requestId, id, clipId, feedback, thinkingLevel } });
 }
 
 export async function getMusicMidiDocument(projectId: string, takeId: string): Promise<MusicMidiSaveResult> {

@@ -113,6 +113,7 @@ pub async fn system_snapshot(settings: ResearchSettings) -> SystemSnapshot {
         control: ControlSettings::default(),
         models: Vec::new(),
         managed_runtime: ManagedRuntimeSnapshot::default(),
+        proven_hardware_profiles: crate::hardware_profiles::all_proven_profiles(),
     }
 }
 

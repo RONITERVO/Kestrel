@@ -169,6 +169,8 @@ pub fn default_roots(extra: &[String], bonsai_root: &str) -> Vec<PathBuf> {
         let data = base.data_dir();
         roots.extend([
             home.join("jan").join("models"),
+            home.join("Kestrel Research").join("model-downloads").join("models"),
+            home.join("Kestrel AI").join("model-downloads").join("models"),
             home.join(".cache").join("lm-studio").join("models"),
             home.join(".lmstudio").join("models"),
             home.join(".cache").join("huggingface").join("hub"),

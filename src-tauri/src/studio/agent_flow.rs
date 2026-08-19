@@ -138,11 +138,18 @@ pub(super) async fn run(
                 ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
                 _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
             };
+            let director_thinking = project
+                .model_roles
+                .director
+                .thinking_level
+                .unwrap_or(director_runtime.thinking_level);
+            let mut director_settings = request.settings.clone();
+            director_settings.thinking_budget = director_thinking.budget_tokens(32_768);
             let stream_request = StreamRequest {
                 connection: &lease.connection,
                 messages: &request_messages,
                 tools: &tools,
-                settings: request.settings,
+                settings: &director_settings,
                 runtime_max_output_tokens: director_runtime.max_output_tokens,
                 cancel: request.cancel,
                 project_id: &project.id,
@@ -457,6 +464,13 @@ async fn review_submission(
         lifecycle.position(),
         request.app,
     );
+    let reviewer_thinking = project
+        .model_roles
+        .reviewer
+        .thinking_level
+        .unwrap_or(reviewer_runtime.thinking_level);
+    let mut reviewer_settings = request.settings.clone();
+    reviewer_settings.thinking_budget = reviewer_thinking.budget_tokens(32_768);
     let review_result = tokio::select! {
         result = studio.independently_review_movie_plan(IndependentReviewRequest {
             project_id: &project.id,
@@ -464,7 +478,7 @@ async fn review_submission(
             references: &project.references,
             plan: &plan,
             connection: &lease.connection,
-            settings: request.settings,
+            settings: &reviewer_settings,
             runtime_max_output_tokens: reviewer_runtime.max_output_tokens,
             cancel: request.cancel,
             app: request.app,

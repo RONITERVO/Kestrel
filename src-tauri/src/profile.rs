@@ -669,6 +669,7 @@ mod tests {
                 context_window: Some(65_536),
                 max_output_tokens: Some(16_384),
                 threads: Some(6),
+                thinking_level: None,
             }],
             ..ControlSettings::default()
         };

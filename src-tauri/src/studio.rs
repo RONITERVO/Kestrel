@@ -6,7 +6,7 @@
 use crate::{
     model::ModelInfo,
     model_roles::STUDIO_PROTOCOL_REVISION,
-    models::{ControlSettings, ResearchSettings},
+    models::{ControlSettings, ResearchSettings, ThinkingLevel},
     runtime::{ModelConnection, RuntimeManager},
 };
 use crate::prompt_catalog::{PromptId, render, text};
@@ -336,6 +336,8 @@ pub struct StartMovieRequest {
 pub struct MovieModelRoleRequest {
     pub director_model_id: String,
     pub reviewer_model_id: String,
+    pub director_thinking_level: Option<ThinkingLevel>,
+    pub reviewer_thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -346,6 +348,7 @@ pub struct MovieModelBinding {
     pub compatibility_tier: String,
     pub protocol_revision: String,
     pub bound_at: String,
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 impl Default for MovieModelBinding {
@@ -356,6 +359,7 @@ impl Default for MovieModelBinding {
             compatibility_tier: "legacy-release-validated".into(),
             protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
             bound_at: String::new(),
+            thinking_level: None,
         }
     }
 }
@@ -390,6 +394,8 @@ pub struct MovieClipAssistRequest {
     pub id: String,
     pub clip_id: String,
     pub feedback: String,
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -610,10 +616,7 @@ impl MovieSettings {
         self.temperature = self.temperature.clamp(0.0, 2.0);
         self.top_p = self.top_p.clamp(0.05, 1.0);
         self.top_k = self.top_k.clamp(1, 200);
-        // Studio's durable agent protocol is acceptance-tested at its full reasoning mode. Keep
-        // the serialized field for project/profile compatibility, but never permit a movie
-        // request (including an old saved one) to disable it.
-        self.thinking_budget = MOVIE_THINKING_BUDGET;
+        self.thinking_budget = self.thinking_budget.min(MOVIE_THINKING_BUDGET);
         self.max_output_tokens = self.max_output_tokens.clamp(1_024, 32_768);
         let root = PathBuf::from(&self.comfy_root);
         if !root.is_absolute() {
@@ -2284,6 +2287,10 @@ impl MovieStudio {
                 );
             }
         };
+        let mut movie_settings = project.settings.clone();
+        if let Some(level) = request.thinking_level {
+            movie_settings.thinking_budget = level.budget_tokens(32_768);
+        }
         let mut suggestion: MovieClipSuggestion = agent_protocol::complete_tool_submission(
             &self.http,
             ToolSubmissionRequest {
@@ -2292,7 +2299,7 @@ impl MovieStudio {
                 tool_name: "submit_scene_suggestion",
                 tool_description: "Submit the organized replacement scene only after checking the producer feedback and neighboring continuity.",
                 response_format: clip_suggestion_schema(),
-                settings: &project.settings,
+                settings: &movie_settings,
                 runtime_max_output_tokens,
                 label: "movie scene suggestion",
                 audit_path: None,
@@ -5245,24 +5252,64 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
     graph
 }
 
-fn find_output_media(entry: &Value, category: &str) -> Option<(String, String)> {
+pub(crate) fn find_output_media(entry: &Value, category: &str) -> Option<(String, String)> {
     let outputs = entry.get("outputs")?.as_object()?;
-    for output in outputs.values() {
-        for media in output
-            .get(category)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(filename) = media.get("filename").and_then(Value::as_str) {
-                return Some((
-                    filename.into(),
-                    media
-                        .get("subfolder")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .into(),
-                ));
+    let is_video_file = |name: &str| {
+        let lower = name.to_lowercase();
+        lower.ends_with(".mp4")
+            || lower.ends_with(".webm")
+            || lower.ends_with(".mov")
+            || lower.ends_with(".mkv")
+            || lower.ends_with(".avi")
+            || lower.ends_with(".gif")
+    };
+    let is_image_file = |name: &str| {
+        let lower = name.to_lowercase();
+        lower.ends_with(".png")
+            || lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".webp")
+    };
+    let is_audio_file = |name: &str| {
+        let lower = name.to_lowercase();
+        lower.ends_with(".flac")
+            || lower.ends_with(".wav")
+            || lower.ends_with(".mp3")
+            || lower.ends_with(".ogg")
+            || lower.ends_with(".m4a")
+    };
+
+    let fallback = [category];
+    let categories: &[&str] = match category {
+        "videos" => &["videos", "gifs", "images"],
+        "images" => &["images"],
+        "audio" => &["audio", "sounds"],
+        _ => &fallback,
+    };
+
+    for cat in categories {
+        for output in outputs.values() {
+            if let Some(media_list) = output.get(*cat).and_then(Value::as_array) {
+                for media in media_list {
+                    if let Some(filename) = media.get("filename").and_then(Value::as_str) {
+                        let matches_cat = match category {
+                            "videos" => is_video_file(filename) || *cat == "videos" || *cat == "gifs",
+                            "images" => is_image_file(filename) || *cat == "images",
+                            "audio" => is_audio_file(filename) || *cat == "audio",
+                            _ => true,
+                        };
+                        if matches_cat {
+                            return Some((
+                                filename.into(),
+                                media
+                                    .get("subfolder")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -5608,6 +5655,29 @@ mod tests {
             find_output_media(&history, "audio"),
             Some(("sound.flac".into(), "audio".into()))
         );
+
+        // Test ComfyUI standard SaveVideo node output where .mp4 is in images array
+        let comfy_save_video_history = json!({
+            "outputs": {
+                "14": {
+                    "images": [
+                        {
+                            "filename": "shot_001_00003_.mp4",
+                            "subfolder": "kestrel_movies/7d4301c4-d071-4b60-8360-d30a708c7677",
+                            "type": "output"
+                        }
+                    ],
+                    "animated": [true]
+                }
+            }
+        });
+        assert_eq!(
+            find_output_media(&comfy_save_video_history, "videos"),
+            Some((
+                "shot_001_00003_.mp4".into(),
+                "kestrel_movies/7d4301c4-d071-4b60-8360-d30a708c7677".into()
+            ))
+        );
     }
 
     fn live_bonsai_studio_context(
@@ -5769,14 +5839,21 @@ mod tests {
     }
 
     #[test]
-    fn movie_thinking_is_always_maximum() {
-        let settings = MovieSettings {
+    fn movie_thinking_budget_supports_custom_levels_and_off() {
+        let settings_off = MovieSettings {
             thinking_budget: 0,
             ..MovieSettings::default()
         }
         .validate(true)
         .unwrap();
-        assert_eq!(settings.thinking_budget, MOVIE_THINKING_BUDGET);
+        assert_eq!(settings_off.thinking_budget, 0);
+        let settings_max = MovieSettings {
+            thinking_budget: 99_999,
+            ..MovieSettings::default()
+        }
+        .validate(true)
+        .unwrap();
+        assert_eq!(settings_max.thinking_budget, MOVIE_THINKING_BUDGET);
         assert_eq!(
             MovieSettings::default().thinking_budget,
             MOVIE_THINKING_BUDGET
@@ -6054,6 +6131,7 @@ mod tests {
                 compatibility_tier: "protocol-ready".into(),
                 protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
                 bound_at: Utc::now().to_rfc3339(),
+                thinking_level: None,
             },
             reviewer: MovieModelBinding {
                 model_id: "reviewer-v1".into(),
@@ -6061,6 +6139,7 @@ mod tests {
                 compatibility_tier: "protocol-ready".into(),
                 protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
                 bound_at: Utc::now().to_rfc3339(),
+                thinking_level: None,
             },
         };
 
@@ -6088,6 +6167,7 @@ mod tests {
             compatibility_tier: "protocol-ready".into(),
             protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
             bound_at: Utc::now().to_rfc3339(),
+            thinking_level: None,
         };
         let root = tempfile::tempdir().unwrap();
         let studio = MovieStudio::new(root.path()).unwrap();

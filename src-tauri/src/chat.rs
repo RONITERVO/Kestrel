@@ -146,15 +146,16 @@ impl ChatStreamJob {
                 return Ok(());
             }
         };
+        let thinking_level = request.thinking_level.unwrap_or(settings.thinking_level);
         emit(
             app.as_ref(),
             &request_id,
             &session_id,
             "started",
             None,
-            None,
+            Some(json!({"thinkingLevel": thinking_level.as_str()})),
         );
-        let body = json!({
+        let mut body = json!({
             "model": lease.connection.model_id,
             "messages": messages,
             "temperature": request.temperature,
@@ -164,6 +165,17 @@ impl ChatStreamJob {
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        if thinking_level.is_off() {
+            body["thinking_budget_tokens"] = json!(0);
+            body["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
+            body["reasoning_effort"] = json!("off");
+        } else {
+            body["reasoning_effort"] = json!(thinking_level.as_str());
+            body["chat_template_kwargs"] = json!({
+                "reasoning_effort": thinking_level.as_template_effort(),
+                "enable_thinking": true
+            });
+        }
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(std::time::Duration::from_secs(3_600))

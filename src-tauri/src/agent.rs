@@ -194,6 +194,7 @@ pub async fn run(
         &format!("{} · {}", lease.connection.model_label, access_label),
         None,
     );
+    let thinking_level = request.thinking_level.unwrap_or(settings.thinking_level);
     for step in 1..=max_steps {
         if cancel.is_cancelled() {
             event(
@@ -208,6 +209,14 @@ pub async fn run(
             );
             return Ok(());
         }
+        let thinking_detail = if thinking_level.is_off() {
+            "Planning the next visible action (Thinking off).".to_string()
+        } else {
+            format!(
+                "Planning the next visible action ({} thinking).",
+                thinking_level.as_str()
+            )
+        };
         event(
             &app,
             &store,
@@ -215,8 +224,8 @@ pub async fn run(
             step,
             "thinking",
             "Model is deciding",
-            "Planning the next visible action.",
-            None,
+            &thinking_detail,
+            Some(json!({"thinkingLevel": thinking_level.as_str()})),
         );
         let prompt_chars = max_output_tokens
             .checked_add(2_048)
@@ -224,11 +233,7 @@ pub async fn run(
             .unwrap_or(4_096)
             .saturating_mul(4) as usize;
         messages = compact_messages(messages, prompt_chars.max(16_384));
-        let response_request = authorized(
-            client.post(format!("{}/chat/completions", lease.connection.endpoint)),
-            &lease.connection,
-        )
-        .json(&json!({
+        let mut request_body = json!({
             "model": lease.connection.model_id,
             "messages": messages,
             "tools": tools,
@@ -236,7 +241,23 @@ pub async fn run(
             "stream": false,
             "temperature": 0.2,
             "max_tokens": max_output_tokens
-        }))
+        });
+        if thinking_level.is_off() {
+            request_body["thinking_budget_tokens"] = json!(0);
+            request_body["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
+            request_body["reasoning_effort"] = json!("off");
+        } else {
+            request_body["reasoning_effort"] = json!(thinking_level.as_str());
+            request_body["chat_template_kwargs"] = json!({
+                "reasoning_effort": thinking_level.as_template_effort(),
+                "enable_thinking": true
+            });
+        }
+        let response_request = authorized(
+            client.post(format!("{}/chat/completions", lease.connection.endpoint)),
+            &lease.connection,
+        )
+        .json(&request_body)
         .send();
         let response = tokio::select! {
             response = response_request => response.map_err(|error| format!("computer task model request failed: {error}"))?,
