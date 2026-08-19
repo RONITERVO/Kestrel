@@ -1,6 +1,6 @@
 import {
   Archive, ArrowRight, AudioLines, Check, ChevronLeft, ChevronRight, CircleHelp, Copy,
-  Eye, EyeOff, Film, Flag, Gauge, Images, Info, List, Magnet, Maximize2,
+  Dices, Eye, EyeOff, Film, Flag, Gauge, Images, Info, List, Magnet, Maximize2,
   Minimize2, MousePointer2, PanelLeft, PanelRight, Pause, Play, Plus, Redo2, RefreshCw,
   RotateCcw, Save, ScanLine, Scissors, Search, SkipBack, SkipForward, Sparkles,
   Trash2, Undo2, Video, Volume2, X, ZoomIn,
@@ -167,7 +167,6 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
   const [fl2vLastFrame, setFl2vLastFrame] = useState<CapturedFrame | null>(null);
   const [fl2vPrompt, setFl2vPrompt] = useState("");
   const [fl2vDuration, setFl2vDuration] = useState(5.0);
-  const [fl2vSeed, setFl2vSeed] = useState<number | undefined>(undefined);
   const [fl2vInsertMode, setFl2vInsertMode] = useState<"insert_at_cut" | "replace_range" | "add_to_masters">("insert_at_cut");
   const [fl2vRendering, setFl2vRendering] = useState(false);
   const [fl2vError, setFl2vError] = useState<string | null>(null);
@@ -180,6 +179,17 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
   const sourceVersion = sourceVersionId ? sourceClip?.versions.find((version) => version.id === sourceVersionId) : undefined;
   const sourceReference = project.references.find((reference) => reference.assetId === sourceReferenceId);
   const sourcePath = sourceReference?.path ?? sourceVersion?.path ?? sourceClip?.path ?? "";
+  const defaultSeed = useMemo(() => {
+    if (fl2vFirstFrame?.clipId) {
+      const clip = project.clips.find((c) => c.id === fl2vFirstFrame.clipId);
+      if (clip?.seed) return clip.seed;
+    }
+    if (selected?.clip.seed) return selected.clip.seed;
+    if (project.clips[0]?.seed) return project.clips[0].seed;
+    if (project.settings.seed) return project.settings.seed;
+    return undefined;
+  }, [fl2vFirstFrame, selected, project]);
+  const [fl2vSeed, setFl2vSeed] = useState<number | undefined>(() => project.clips[0]?.seed ?? (project.settings.seed || undefined));
   const programMediaUrl = preview ? movieMediaUrl(preview.sourcePath) : "";
   const sourceDuration = sourceReference?.durationSeconds ?? sourceVersion?.durationSeconds ?? sourceClip?.durationSeconds ?? 0;
   const totalDuration = enabledItems.reduce((sum, item) => sum + item.outputDuration, 0);
@@ -266,8 +276,13 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     try {
       const thumbPath = await captureMovieFrame(project.id, sPath, time);
       const frame: CapturedFrame = { clipId, sourcePath: sPath, timeSeconds: time, label, thumbPath };
-      if (slot === "first") setFl2vFirstFrame(frame);
-      else setFl2vLastFrame(frame);
+      if (slot === "first") {
+        setFl2vFirstFrame(frame);
+        const clipSeed = project.clips.find((c) => c.id === clipId)?.seed;
+        if (clipSeed) setFl2vSeed(clipSeed);
+      } else {
+        setFl2vLastFrame(frame);
+      }
       setFl2vError(null);
     } catch (err: unknown) {
       setFl2vError(err instanceof Error ? err.message : String(err));
@@ -302,6 +317,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
         thumbPath: thumb2,
       });
       setFl2vInsertMode("insert_at_cut");
+      setFl2vSeed(selected.clip.seed || project.settings.seed || undefined);
       setFl2vError(null);
     } catch (err: unknown) {
       setFl2vError(err instanceof Error ? err.message : String(err));
@@ -330,6 +346,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
         thumbPath: thumb2,
       });
       setFl2vInsertMode("replace_range");
+      setFl2vSeed(selected.clip.seed || project.settings.seed || undefined);
       setFl2vError(null);
     } catch (err: unknown) {
       setFl2vError(err instanceof Error ? err.message : String(err));
@@ -364,7 +381,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
         },
         prompt: fl2vPrompt.trim(),
         durationSeconds: fl2vDuration,
-        seed: fl2vSeed,
+        seed: fl2vSeed !== undefined ? fl2vSeed : defaultSeed,
         insertMode: fl2vInsertMode,
       });
       commit(updated.edit);
@@ -691,11 +708,12 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
                 <div className="fl2v-seed-input">
                   <input
                     type="number"
-                    placeholder="Random"
-                    value={fl2vSeed ?? ""}
+                    placeholder={defaultSeed ? String(defaultSeed) : "Generation seed"}
+                    value={fl2vSeed !== undefined ? fl2vSeed : (defaultSeed ?? "")}
                     onChange={(e) => setFl2vSeed(e.target.value === "" ? undefined : Number(e.target.value))}
                   />
-                  <button title="Randomize seed" onClick={() => setFl2vSeed(Math.floor(Math.random() * 1_000_000_000))}><RotateCcw /></button>
+                  <button title="Reset to generation seed" onClick={() => setFl2vSeed(defaultSeed)}><RotateCcw /></button>
+                  <button title="Randomize seed" onClick={() => setFl2vSeed(Math.floor(Math.random() * 1_000_000_000))}><Dices /></button>
                 </div>
               </label>
             </InspectorSection>

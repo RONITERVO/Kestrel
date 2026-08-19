@@ -2719,7 +2719,20 @@ impl MovieStudio {
         self.ensure_comfy(&comfy_root, &mut project, app).await?;
 
         let bridge_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
-        let chosen_seed = seed.unwrap_or_else(|| (uuid::Uuid::new_v4().as_u128() as u64) % 1_000_000_000);
+        let default_gen_seed = project
+            .clips
+            .iter()
+            .find(|c| c.id == first_frame.clip_id)
+            .map(|c| c.seed)
+            .or_else(|| {
+                if project.settings.seed != 0 {
+                    Some(project.settings.seed)
+                } else {
+                    project.clips.first().map(|c| c.seed)
+                }
+            })
+            .unwrap_or_else(|| (uuid::Uuid::new_v4().as_u128() as u64) % 1_000_000_000);
+        let chosen_seed = seed.unwrap_or(default_gen_seed);
 
         // 1. Extract first_frame PNG
         let first_target_rel = format!("kestrel/{}/fl2v-first-{bridge_id}.png", project.id);
