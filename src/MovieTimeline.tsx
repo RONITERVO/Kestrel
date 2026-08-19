@@ -13,6 +13,24 @@ import type {
 
 const FPS = 24;
 
+const STANDARD_H3_DURATIONS = [
+  { value: 1.0, label: "1.0s · 25 frames (H3 Min)" },
+  { value: 2.0, label: "2.0s · 49 frames" },
+  { value: 3.0, label: "3.0s · 73 frames" },
+  { value: 4.0, label: "4.0s · 97 frames" },
+  { value: 5.0, label: "5.0s · 121 frames (Standard)" },
+  { value: 6.0, label: "6.0s · 145 frames" },
+  { value: 7.0, label: "7.0s · 169 frames" },
+  { value: 8.0, label: "8.0s · 193 frames" },
+  { value: 9.0, label: "9.0s · 217 frames" },
+  { value: 10.0, label: "10.0s · 241 frames" },
+  { value: 11.0, label: "11.0s · 265 frames" },
+  { value: 12.0, label: "12.0s · 289 frames" },
+  { value: 13.0, label: "13.0s · 313 frames" },
+  { value: 14.0, label: "14.0s · 337 frames" },
+  { value: 15.0, label: "15.0s · 361 frames (H3 Max)" },
+];
+
 export interface TimelineItem {
   edit: ClipEdit;
   clip: RenderedClip;
@@ -245,6 +263,31 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     commit({ ...normalizedValue, clips: normalizedValue.clips.map((item) => item.id === selected.edit.id ? next : item) });
   };
 
+  const computeFrameDistance = (frame1: CapturedFrame, frame2: CapturedFrame): number => {
+    if (frame1.sourcePath === frame2.sourcePath) {
+      return Math.abs(frame2.timeSeconds - frame1.timeSeconds);
+    }
+    const idx1 = enabledItems.findIndex((item) => item.clip.id === frame1.clipId || item.sourcePath === frame1.sourcePath);
+    const idx2 = enabledItems.findIndex((item) => item.clip.id === frame2.clipId || item.sourcePath === frame2.sourcePath);
+    if (idx1 !== -1 && idx2 !== -1) {
+      if (idx1 === idx2) {
+        return Math.abs(frame2.timeSeconds - frame1.timeSeconds);
+      }
+      const [startIdx, endIdx, startFrame, endFrame] = idx1 < idx2
+        ? [idx1, idx2, frame1, frame2]
+        : [idx2, idx1, frame2, frame1];
+      const startItem = enabledItems[startIdx];
+      const endItem = enabledItems[endIdx];
+      const startRemaining = Math.max(0, (startItem.sourceDuration - startItem.edit.trimEnd) - startFrame.timeSeconds);
+      const intermediateSum = enabledItems
+        .slice(startIdx + 1, endIdx)
+        .reduce((sum, item) => sum + item.outputDuration, 0);
+      const endElapsed = Math.max(0, endFrame.timeSeconds - endItem.edit.trimStart);
+      return startRemaining + intermediateSum + endElapsed;
+    }
+    return 0;
+  };
+
   const captureFrameSlot = async (slot: "first" | "last") => {
     let clipId = "";
     let sPath = "";
@@ -280,8 +323,22 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
         setFl2vFirstFrame(frame);
         const clipSeed = project.clips.find((c) => c.id === clipId)?.seed;
         if (clipSeed) setFl2vSeed(clipSeed);
+        if (fl2vLastFrame) {
+          const dist = computeFrameDistance(frame, fl2vLastFrame);
+          if (dist > 0) {
+            const matched = Math.min(15.0, Math.max(1.0, Math.round(dist * 10) / 10));
+            setFl2vDuration(matched);
+          }
+        }
       } else {
         setFl2vLastFrame(frame);
+        if (fl2vFirstFrame) {
+          const dist = computeFrameDistance(fl2vFirstFrame, frame);
+          if (dist > 0) {
+            const matched = Math.min(15.0, Math.max(1.0, Math.round(dist * 10) / 10));
+            setFl2vDuration(matched);
+          }
+        }
       }
       setFl2vError(null);
     } catch (err: unknown) {
@@ -302,22 +359,31 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
       const t2 = nextItem.edit.trimStart;
       const thumb1 = await captureMovieFrame(project.id, selected.sourcePath, t1);
       const thumb2 = await captureMovieFrame(project.id, nextItem.sourcePath, t2);
-      setFl2vFirstFrame({
+      const f1: CapturedFrame = {
         clipId: selected.clip.id,
         sourcePath: selected.sourcePath,
         timeSeconds: t1,
         label: `${selected.clip.title} (Cut Out)`,
         thumbPath: thumb1,
-      });
-      setFl2vLastFrame({
+      };
+      const f2: CapturedFrame = {
         clipId: nextItem.clip.id,
         sourcePath: nextItem.sourcePath,
         timeSeconds: t2,
         label: `${nextItem.clip.title} (Cut In)`,
         thumbPath: thumb2,
-      });
+      };
+      setFl2vFirstFrame(f1);
+      setFl2vLastFrame(f2);
       setFl2vInsertMode("insert_at_cut");
       setFl2vSeed(selected.clip.seed || project.settings.seed || undefined);
+      const dist = computeFrameDistance(f1, f2);
+      if (dist > 0) {
+        const matched = Math.min(15.0, Math.max(1.0, Math.round(dist * 10) / 10));
+        setFl2vDuration(matched);
+      } else {
+        setFl2vDuration(5.0);
+      }
       setFl2vError(null);
     } catch (err: unknown) {
       setFl2vError(err instanceof Error ? err.message : String(err));
@@ -331,22 +397,29 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
       const t2 = Math.max(0, selected.sourceDuration - selected.edit.trimEnd - 0.04);
       const thumb1 = await captureMovieFrame(project.id, selected.sourcePath, t1);
       const thumb2 = await captureMovieFrame(project.id, selected.sourcePath, t2);
-      setFl2vFirstFrame({
+      const f1: CapturedFrame = {
         clipId: selected.clip.id,
         sourcePath: selected.sourcePath,
         timeSeconds: t1,
         label: `${selected.clip.title} (In)`,
         thumbPath: thumb1,
-      });
-      setFl2vLastFrame({
+      };
+      const f2: CapturedFrame = {
         clipId: selected.clip.id,
         sourcePath: selected.sourcePath,
         timeSeconds: t2,
         label: `${selected.clip.title} (Out)`,
         thumbPath: thumb2,
-      });
+      };
+      setFl2vFirstFrame(f1);
+      setFl2vLastFrame(f2);
       setFl2vInsertMode("replace_range");
       setFl2vSeed(selected.clip.seed || project.settings.seed || undefined);
+      const rawDiff = Math.max(0, t2 - t1);
+      if (rawDiff > 0) {
+        const matched = Math.min(15.0, Math.max(1.0, Math.round(rawDiff * 10) / 10));
+        setFl2vDuration(matched);
+      }
       setFl2vError(null);
     } catch (err: unknown) {
       setFl2vError(err instanceof Error ? err.message : String(err));
@@ -698,9 +771,16 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
               <label>
                 Duration
                 <select value={fl2vDuration} onChange={(e) => setFl2vDuration(Number(e.target.value))}>
-                  <option value={3.0}>3.0s · 73 frames</option>
-                  <option value={5.0}>5.0s · 121 frames (Standard)</option>
-                  <option value={6.0}>6.0s · 145 frames</option>
+                  {!STANDARD_H3_DURATIONS.some((d) => Math.abs(d.value - fl2vDuration) < 0.05) && (
+                    <option value={fl2vDuration}>
+                      {fl2vDuration.toFixed(1)}s · {Math.round(fl2vDuration * 24)} frames (Matched Range)
+                    </option>
+                  )}
+                  {STANDARD_H3_DURATIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>

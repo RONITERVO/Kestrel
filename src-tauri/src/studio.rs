@@ -2767,11 +2767,12 @@ impl MovieStudio {
         let prefix = format!("kestrel_movies/{}/fl2v_{bridge_id}", project.id);
         let preview_available = self.comfy_preview_available().await;
 
+        let bounded_duration = duration_seconds.clamp(1.0, 15.0);
         let graph = h3_graph(H3GraphRequest {
             prompt: &prompt,
             width: project.settings.width,
             height: project.settings.height,
-            seconds: duration_seconds,
+            seconds: bounded_duration,
             steps: project.settings.steps,
             seed: chosen_seed,
             prefix: &prefix,
@@ -2876,7 +2877,7 @@ impl MovieStudio {
             index: project.clips.len() as u32,
             title: format!("Bridge: {} → {}", first_label, last_label),
             prompt: prompt.clone(),
-            duration_seconds,
+            duration_seconds: bounded_duration,
             seed: chosen_seed,
             status: "complete".into(),
             path: target_mp4,
