@@ -336,6 +336,8 @@ pub struct StartMovieRequest {
 pub struct MovieModelRoleRequest {
     pub director_model_id: String,
     pub reviewer_model_id: String,
+    pub director_thinking_level: Option<ThinkingLevel>,
+    pub reviewer_thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -346,6 +348,7 @@ pub struct MovieModelBinding {
     pub compatibility_tier: String,
     pub protocol_revision: String,
     pub bound_at: String,
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 impl Default for MovieModelBinding {
@@ -356,6 +359,7 @@ impl Default for MovieModelBinding {
             compatibility_tier: "legacy-release-validated".into(),
             protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
             bound_at: String::new(),
+            thinking_level: None,
         }
     }
 }
@@ -6127,6 +6131,7 @@ mod tests {
                 compatibility_tier: "protocol-ready".into(),
                 protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
                 bound_at: Utc::now().to_rfc3339(),
+                thinking_level: None,
             },
             reviewer: MovieModelBinding {
                 model_id: "reviewer-v1".into(),
@@ -6134,6 +6139,7 @@ mod tests {
                 compatibility_tier: "protocol-ready".into(),
                 protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
                 bound_at: Utc::now().to_rfc3339(),
+                thinking_level: None,
             },
         };
 
@@ -6161,6 +6167,7 @@ mod tests {
             compatibility_tier: "protocol-ready".into(),
             protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
             bound_at: Utc::now().to_rfc3339(),
+            thinking_level: None,
         };
         let root = tempfile::tempdir().unwrap();
         let studio = MovieStudio::new(root.path()).unwrap();

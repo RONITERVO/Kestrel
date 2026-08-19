@@ -537,6 +537,27 @@ export interface MovieExport {
   clipCount: number;
 }
 
+export interface MovieModelRoleRequest {
+  directorModelId: string;
+  reviewerModelId: string;
+  directorThinkingLevel?: ThinkingLevel;
+  reviewerThinkingLevel?: ThinkingLevel;
+}
+
+export interface MovieModelBinding {
+  modelId: string;
+  modelName: string;
+  compatibilityTier: string;
+  protocolRevision: string;
+  boundAt: string;
+  thinkingLevel?: ThinkingLevel;
+}
+
+export interface MovieModelRoles {
+  director: MovieModelBinding;
+  reviewer: MovieModelBinding;
+}
+
 export interface MovieProject {
   schemaVersion: number;
   id: string;

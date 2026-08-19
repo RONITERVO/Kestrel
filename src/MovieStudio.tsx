@@ -71,7 +71,9 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const [promptModelId, setPromptModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
   const [promptThinkingLevel, setPromptThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const [directorModelId, setDirectorModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
+  const [directorThinkingLevel, setDirectorThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const [reviewerModelId, setReviewerModelId] = useState("");
+  const [reviewerThinkingLevel, setReviewerThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const [modelCompatibility, setModelCompatibility] = useState<ModelCompatibility[]>([]);
   const [qualifyingModelId, setQualifyingModelId] = useState("");
   const [storyDraftMode, setStoryDraftMode] = useState<PromptDraftMode>("develop");
@@ -306,7 +308,12 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
           assetId, description, useEmbeddedAudio, embeddedAudioDescription,
         })),
         pauseAfterPlan,
-        modelRoles: { directorModelId, reviewerModelId },
+        modelRoles: {
+          directorModelId,
+          reviewerModelId,
+          directorThinkingLevel: directorThinkingLevel !== "default" ? directorThinkingLevel : undefined,
+          reviewerThinkingLevel: reviewerThinkingLevel !== "default" ? reviewerThinkingLevel : undefined,
+        },
       });
       activeProjectId.current = next.id;
       setProject(next); setEdit(next.edit); setCreating(false); await refreshList();
@@ -324,7 +331,12 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
           assetId, description, useEmbeddedAudio, embeddedAudioDescription,
         })),
         pauseAfterPlan: true,
-        modelRoles: { directorModelId, reviewerModelId },
+        modelRoles: {
+          directorModelId,
+          reviewerModelId,
+          directorThinkingLevel: directorThinkingLevel !== "default" ? directorThinkingLevel : undefined,
+          reviewerThinkingLevel: reviewerThinkingLevel !== "default" ? reviewerThinkingLevel : undefined,
+        },
       });
       activeProjectId.current = next.id;
       setProject(next); setEdit(next.edit); setCreating(false); await refreshList();
@@ -495,7 +507,10 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
         {creating || !project ? (
           <MovieLaunch prompt={prompt} settings={settings} references={references} advanced={advanced} advancedEnabled={advancedEnabled} busy={busy}
             pauseAfterPlan={pauseAfterPlan} onPauseAfterPlan={setPauseAfterPlan}
-            directorModelId={directorModelId} reviewerModelId={reviewerModelId} modelCompatibility={modelCompatibility} qualifyingModelId={qualifyingModelId}
+            directorModelId={directorModelId} reviewerModelId={reviewerModelId}
+            directorThinkingLevel={directorThinkingLevel} reviewerThinkingLevel={reviewerThinkingLevel}
+            onDirectorThinkingLevel={setDirectorThinkingLevel} onReviewerThinkingLevel={setReviewerThinkingLevel}
+            modelCompatibility={modelCompatibility} qualifyingModelId={qualifyingModelId}
             models={models} promptModelId={promptModelId} promptThinkingLevel={promptThinkingLevel} onPromptThinkingLevel={setPromptThinkingLevel} controlSettings={controlSettings}
             promptDraftActive={promptDraftActive} promptDraftLastField={promptDraftLastField} promptDraftStatus={promptDraftStatus} promptDraftReasoning={promptDraftReasoning}
             promptDraftReceipt={promptDraftReceipt} storyDraftMode={storyDraftMode} imageDraftMode={imageDraftMode} referenceDraftModes={referenceDraftModes}
@@ -524,10 +539,13 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   );
 }
 
-function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, directorModelId, reviewerModelId, modelCompatibility, qualifyingModelId, models, promptModelId, promptThinkingLevel, onPromptThinkingLevel, controlSettings, promptDraftActive, promptDraftLastField, promptDraftStatus, promptDraftReasoning, promptDraftReceipt, storyDraftMode, imageDraftMode, referenceDraftModes, onPromptModel, onDirectorModel, onReviewerModel, onCheckModel, onStoryDraftMode, onImageDraftMode, onReferenceDraftMode, onGeneratePrompt, onStopPrompt, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, imagePreview, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake, onMakeManual }: {
+function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, busy, pauseAfterPlan, onPauseAfterPlan, directorModelId, reviewerModelId, directorThinkingLevel, reviewerThinkingLevel, onDirectorThinkingLevel, onReviewerThinkingLevel, modelCompatibility, qualifyingModelId, models, promptModelId, promptThinkingLevel, onPromptThinkingLevel, controlSettings, promptDraftActive, promptDraftLastField, promptDraftStatus, promptDraftReasoning, promptDraftReceipt, storyDraftMode, imageDraftMode, referenceDraftModes, onPromptModel, onDirectorModel, onReviewerModel, onCheckModel, onStoryDraftMode, onImageDraftMode, onReferenceDraftMode, onGeneratePrompt, onStopPrompt, imagePrompt, imageWidth, imageHeight, imageSteps, imageSeed, imageStabilize, imageGenerating, imageStatus, imageGenerations, imagePreview, onImagePrompt, onImageCanvas, onImageSteps, onImageSeed, onImageStabilize, onGenerateImage, onStopImage, onUseGeneratedImage, onPrompt, onSettings, onReferences, onAttach, onAdvanced, onMake, onMakeManual }: {
   prompt: string; settings: MovieSettings; references: PendingMovieReference[]; advanced: boolean; advancedEnabled: boolean; busy: boolean;
   pauseAfterPlan: boolean; onPauseAfterPlan: (value: boolean) => void;
-  directorModelId: string; reviewerModelId: string; modelCompatibility: ModelCompatibility[]; qualifyingModelId: string;
+  directorModelId: string; reviewerModelId: string;
+  directorThinkingLevel?: ThinkingLevel | "default"; reviewerThinkingLevel?: ThinkingLevel | "default";
+  onDirectorThinkingLevel?: (level: ThinkingLevel | "default") => void; onReviewerThinkingLevel?: (level: ThinkingLevel | "default") => void;
+  modelCompatibility: ModelCompatibility[]; qualifyingModelId: string;
   models: ModelInfo[]; promptModelId: string; promptThinkingLevel: ThinkingLevel | "default"; onPromptThinkingLevel: (level: ThinkingLevel | "default") => void; controlSettings?: ControlSettings;
   promptDraftActive?: ActivePromptDraft; promptDraftLastField?: PromptField; promptDraftStatus: string; promptDraftReasoning: string; promptDraftReceipt?: PromptDraftReceipt;
   storyDraftMode: PromptDraftMode; imageDraftMode: PromptDraftMode; referenceDraftModes: Record<string, PromptDraftMode>;
@@ -626,8 +644,11 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       <div className="studio-room-heading"><span><small>Production setup</small><strong>Choose the working quality and review boundary</strong></span><em>Saved with the production</em></div>
     <StudioModelRoles
       models={models} compatibility={modelCompatibility} directorModelId={directorModelId} reviewerModelId={reviewerModelId}
+      directorThinkingLevel={directorThinkingLevel} reviewerThinkingLevel={reviewerThinkingLevel} controlSettings={controlSettings}
       advancedEnabled={advancedEnabled} disabled={busy || promptBusy || imageGenerating} qualifyingModelId={qualifyingModelId}
-      onDirector={onDirectorModel} onReviewer={onReviewerModel} onCheck={onCheckModel}
+      onDirector={onDirectorModel} onReviewer={onReviewerModel}
+      onDirectorThinkingLevel={onDirectorThinkingLevel} onReviewerThinkingLevel={onReviewerThinkingLevel}
+      onCheck={onCheckModel}
     />
     <div className="movie-presets">
       <button className={quality === "master" ? "active" : ""} onClick={() => onSettings({ ...settings, width: 1344, height: 768 })}><strong>Publish master</strong><span>1344 × 768 · highest H3 native canvas</span></button>
@@ -661,14 +682,20 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
   </div>;
 }
 
-function StudioModelRoles({ models, compatibility, directorModelId, reviewerModelId, advancedEnabled, disabled, qualifyingModelId, onDirector, onReviewer, onCheck }: {
+function StudioModelRoles({ models, compatibility, directorModelId, reviewerModelId, directorThinkingLevel, reviewerThinkingLevel, controlSettings, advancedEnabled, disabled, qualifyingModelId, onDirector, onReviewer, onDirectorThinkingLevel, onReviewerThinkingLevel, onCheck }: {
   models: ModelInfo[]; compatibility: ModelCompatibility[]; directorModelId: string; reviewerModelId: string;
+  directorThinkingLevel?: ThinkingLevel | "default"; reviewerThinkingLevel?: ThinkingLevel | "default";
+  controlSettings?: ControlSettings;
   advancedEnabled: boolean; disabled: boolean; qualifyingModelId: string;
-  onDirector: (modelId: string) => void; onReviewer: (modelId: string) => void; onCheck: (modelId: string) => void;
+  onDirector: (modelId: string) => void; onReviewer: (modelId: string) => void;
+  onDirectorThinkingLevel?: (level: ThinkingLevel | "default") => void; onReviewerThinkingLevel?: (level: ThinkingLevel | "default") => void;
+  onCheck: (modelId: string) => void;
 }) {
   const byId = (id: string) => compatibility.find((entry) => entry.modelId === id);
   const director = byId(directorModelId);
   const reviewer = reviewerModelId ? byId(reviewerModelId) : director;
+  const effectiveDirectorLevel = effectiveThinkingLevelForModel(controlSettings, directorModelId);
+  const effectiveReviewerLevel = effectiveThinkingLevelForModel(controlSettings, reviewerModelId || directorModelId);
   const checkTarget = [directorModelId, reviewerModelId]
     .find((id) => id && byId(id)?.requiresQualification);
   const badge = (entry?: ModelCompatibility) => entry?.tier === "release-validated"
@@ -684,8 +711,72 @@ function StudioModelRoles({ models, compatibility, directorModelId, reviewerMode
   };
   return <div className="studio-model-roles">
     <div className="studio-model-role-heading"><span><small>Offline production models</small><strong>Pin the creative team to this project</strong></span><p>Kestrel loads one local model at a time. A different reviewer is swapped in only after the Director returns its GPU lease.</p></div>
-    <label><span>Director</span><small>Plans, revises, and assists scenes</small><select value={directorModelId} disabled={disabled || !models.length} onChange={(event) => onDirector(event.target.value)}>{!models.length && <option value="">No local models discovered</option>}{models.map((model) => <option key={model.id} value={model.id}>{optionLabel(model)}</option>)}</select><em className={`model-tier ${director?.studioReady ? "ready" : "warning"}`}>{badge(director)} · {director?.detail ?? "Waiting for the local model catalog."}</em></label>
-    <label><span>Independent reviewer</span><small>Fresh context after the Director submits</small><select value={reviewerModelId} disabled={disabled || !models.length} onChange={(event) => onReviewer(event.target.value)}><option value="">Same model as Director</option>{models.map((model) => <option key={model.id} value={model.id}>{optionLabel(model)}</option>)}</select><em className={`model-tier ${reviewer?.studioReady ? "ready" : "warning"}`}>{badge(reviewer)} · {reviewer?.detail ?? "Uses the Director when no separate reviewer is selected."}</em></label>
+    <label>
+      <span>Director</span>
+      <small>Plans, revises, and assists scenes</small>
+      <div className="studio-role-select-row" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <select
+          aria-label="Director model"
+          value={directorModelId}
+          disabled={disabled || !models.length}
+          onChange={(event) => onDirector(event.target.value)}
+          style={{ flex: 1 }}
+        >
+          {!models.length && <option value="">No local models discovered</option>}
+          {models.map((model) => <option key={model.id} value={model.id}>{optionLabel(model)}</option>)}
+        </select>
+        {onDirectorThinkingLevel && (
+          <select
+            aria-label="Director thinking level"
+            value={directorThinkingLevel ?? "default"}
+            disabled={disabled}
+            onChange={(event) => onDirectorThinkingLevel(event.target.value as ThinkingLevel | "default")}
+            style={{ width: "auto", minWidth: 150 }}
+          >
+            <option value="default">Default ({effectiveDirectorLevel})</option>
+            <option value="off">Off (direct)</option>
+            <option value="low">Low reasoning</option>
+            <option value="medium">Medium reasoning</option>
+            <option value="high">High reasoning</option>
+            <option value="max">Max reasoning</option>
+          </select>
+        )}
+      </div>
+      <em className={`model-tier ${director?.studioReady ? "ready" : "warning"}`}>{badge(director)} · {director?.detail ?? "Waiting for the local model catalog."}</em>
+    </label>
+    <label>
+      <span>Independent reviewer</span>
+      <small>Fresh context after the Director submits</small>
+      <div className="studio-role-select-row" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <select
+          aria-label="Independent reviewer model"
+          value={reviewerModelId}
+          disabled={disabled || !models.length}
+          onChange={(event) => onReviewer(event.target.value)}
+          style={{ flex: 1 }}
+        >
+          <option value="">Same model as Director</option>
+          {models.map((model) => <option key={model.id} value={model.id}>{optionLabel(model)}</option>)}
+        </select>
+        {onReviewerThinkingLevel && (
+          <select
+            aria-label="Independent reviewer thinking level"
+            value={reviewerThinkingLevel ?? "default"}
+            disabled={disabled}
+            onChange={(event) => onReviewerThinkingLevel(event.target.value as ThinkingLevel | "default")}
+            style={{ width: "auto", minWidth: 150 }}
+          >
+            <option value="default">Default ({effectiveReviewerLevel})</option>
+            <option value="off">Off (direct)</option>
+            <option value="low">Low reasoning</option>
+            <option value="medium">Medium reasoning</option>
+            <option value="high">High reasoning</option>
+            <option value="max">Max reasoning</option>
+          </select>
+        )}
+      </div>
+      <em className={`model-tier ${reviewer?.studioReady ? "ready" : "warning"}`}>{badge(reviewer)} · {reviewer?.detail ?? "Uses the Director when no separate reviewer is selected."}</em>
+    </label>
     {checkTarget && <button disabled={disabled || Boolean(qualifyingModelId)} onClick={() => onCheck(checkTarget)}>{qualifyingModelId === checkTarget ? <LoaderCircle className="spin" /> : <ShieldCheck />} Check {models.find((model) => model.id === checkTarget)?.name ?? "model"} for Studio</button>}
     {advancedEnabled && (director?.studioReady === false || reviewer?.studioReady === false) && <small className="studio-model-warning">Advanced mode permits a supervised trial, but Kestrel forces producer review before rendering and records the unverified role in the project.</small>}
   </div>;
@@ -836,16 +927,22 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
   const [workspace, setWorkspace] = useState<ProjectWorkspace>(() => preferredProjectWorkspace(project));
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [directorModelId, setDirectorModelId] = useState(() => project.modelRoles?.director.modelId || selectedModelId || models[0]?.id || "");
+  const [directorThinkingLevel, setDirectorThinkingLevel] = useState<ThinkingLevel | "default">(() => project.modelRoles?.director.thinkingLevel ?? "default");
   const [reviewerModelId, setReviewerModelId] = useState(() => project.modelRoles?.reviewer.modelId || "");
+  const [reviewerThinkingLevel, setReviewerThinkingLevel] = useState<ThinkingLevel | "default">(() => project.modelRoles?.reviewer.thinkingLevel ?? "default");
   const availableModelIds = models.map((model) => model.id).join("\u0000");
   const persistedDirectorModelId = project.modelRoles?.director.modelId || "";
   const persistedReviewerModelId = project.modelRoles?.reviewer.modelId || "";
+  const persistedDirectorThinkingLevel = project.modelRoles?.director.thinkingLevel ?? "default";
+  const persistedReviewerThinkingLevel = project.modelRoles?.reviewer.thinkingLevel ?? "default";
   useEffect(() => setDraftPlan(project.plan), [project.id, project.plan]);
   useEffect(() => setWorkspace(preferredProjectWorkspace(project)), [project.id]);
   useEffect(() => {
     setDirectorModelId(persistedDirectorModelId || selectedModelId || models[0]?.id || "");
     setReviewerModelId(persistedReviewerModelId);
-  }, [availableModelIds, persistedDirectorModelId, persistedReviewerModelId, project.id, selectedModelId]);
+    setDirectorThinkingLevel(persistedDirectorThinkingLevel);
+    setReviewerThinkingLevel(persistedReviewerThinkingLevel);
+  }, [availableModelIds, persistedDirectorModelId, persistedReviewerModelId, persistedDirectorThinkingLevel, persistedReviewerThinkingLevel, project.id, selectedModelId]);
   useEffect(() => {
     if (project.status === "awaiting-review" || project.status === "planning-checkpoint") setWorkspace("plan");
     else if (project.status === "running") setWorkspace(project.phase.includes("render") || project.clips.length ? "generate" : "plan");
@@ -871,7 +968,9 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
   const planningLive = moviePlanningLive(project);
   const planningRoomVisible = planningLive || project.status === "awaiting-review";
   const modelRolesChanged = directorModelId !== (project.modelRoles?.director.modelId || "")
-    || reviewerModelId !== (project.modelRoles?.reviewer.modelId || "");
+    || reviewerModelId !== (project.modelRoles?.reviewer.modelId || "")
+    || directorThinkingLevel !== persistedDirectorThinkingLevel
+    || reviewerThinkingLevel !== persistedReviewerThinkingLevel;
   const modelRolesLocked = busy || working || project.status === "running"
     || project.clips.some((clip) => clip.status === "rendering" || clip.status === "complete" || Boolean(clip.path));
   return <div className="movie-project-view movie-production-shell">
@@ -892,8 +991,13 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
     </nav>
     <div className={`studio-workspace-body project-${workspace}`}>
       {workspace === "plan" && <section className="project-room-scroll">
-        <div className="project-model-team"><StudioModelRoles models={models} compatibility={modelCompatibility} directorModelId={directorModelId} reviewerModelId={reviewerModelId} advancedEnabled={advancedEnabled} disabled={modelRolesLocked} qualifyingModelId={qualifyingModelId} onDirector={setDirectorModelId} onReviewer={setReviewerModelId} onCheck={onCheckModel} />
-          <button disabled={modelRolesLocked || !modelRolesChanged || !directorModelId} onClick={() => void runProjectAction(() => setMovieModelRoles(project.id, { directorModelId, reviewerModelId }))}><Save /> Save model team at checkpoint</button>
+        <div className="project-model-team"><StudioModelRoles models={models} compatibility={modelCompatibility} directorModelId={directorModelId} reviewerModelId={reviewerModelId} directorThinkingLevel={directorThinkingLevel} reviewerThinkingLevel={reviewerThinkingLevel} controlSettings={controlSettings} advancedEnabled={advancedEnabled} disabled={modelRolesLocked} qualifyingModelId={qualifyingModelId} onDirector={setDirectorModelId} onReviewer={setReviewerModelId} onDirectorThinkingLevel={setDirectorThinkingLevel} onReviewerThinkingLevel={setReviewerThinkingLevel} onCheck={onCheckModel} />
+          <button disabled={modelRolesLocked || !modelRolesChanged || !directorModelId} onClick={() => void runProjectAction(() => setMovieModelRoles(project.id, {
+            directorModelId,
+            reviewerModelId,
+            directorThinkingLevel: directorThinkingLevel !== "default" ? directorThinkingLevel : undefined,
+            reviewerThinkingLevel: reviewerThinkingLevel !== "default" ? reviewerThinkingLevel : undefined,
+          }))}><Save /> Save model team at checkpoint</button>
         </div>
         {planningRoomVisible && <ProducerPlanningRoom key={project.id} project={project} advancedEnabled={advancedEnabled} onError={onError} />}
         {project.status === "awaiting-review" && draftPlan && <ProducerPlanDesk project={project} plan={draftPlan} busy={busy || working} onPlan={setDraftPlan}

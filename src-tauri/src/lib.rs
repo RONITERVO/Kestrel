@@ -687,6 +687,7 @@ fn model_binding(model: &ModelInfo, compatibility: &ModelCompatibility) -> Movie
         compatibility_tier: compatibility.tier.clone(),
         protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
         bound_at: chrono::Utc::now().to_rfc3339(),
+        thinking_level: None,
     }
 }
 
@@ -768,9 +769,13 @@ fn resolve_movie_model_roles(
             ));
         }
     }
+    let mut director_binding = model_binding(director, &director_compatibility);
+    director_binding.thinking_level = request.director_thinking_level;
+    let mut reviewer_binding = model_binding(reviewer, &reviewer_compatibility);
+    reviewer_binding.thinking_level = request.reviewer_thinking_level;
     Ok(MovieModelRoles {
-        director: model_binding(director, &director_compatibility),
-        reviewer: model_binding(reviewer, &reviewer_compatibility),
+        director: director_binding,
+        reviewer: reviewer_binding,
     })
 }
 
