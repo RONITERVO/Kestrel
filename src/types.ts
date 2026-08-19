@@ -441,6 +441,23 @@ export interface MovieClipRenderRequest {
   seed: number;
 }
 
+export interface FrameCaptureSpec {
+  clipId: string;
+  sourcePath: string;
+  timeSeconds: number;
+  label?: string;
+}
+
+export interface MovieFl2vBridgeRequest {
+  id: string;
+  firstFrame: FrameCaptureSpec;
+  lastFrame: FrameCaptureSpec;
+  prompt: string;
+  durationSeconds: number;
+  seed?: number;
+  insertMode?: "insert_at_cut" | "replace_range" | "add_to_masters";
+}
+
 export interface ClipEdit {
   id: string;
   clipId: string;

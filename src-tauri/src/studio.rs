@@ -756,6 +756,34 @@ fn default_speed() -> f32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct FrameCaptureSpec {
+    pub clip_id: String,
+    pub source_path: String,
+    pub time_seconds: f64,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieFl2vBridgeRequest {
+    pub id: String,
+    pub first_frame: FrameCaptureSpec,
+    pub last_frame: FrameCaptureSpec,
+    pub prompt: String,
+    pub duration_seconds: f32,
+    #[serde(default)]
+    pub seed: Option<u64>,
+    #[serde(default = "default_fl2v_insert_mode")]
+    pub insert_mode: String,
+}
+
+fn default_fl2v_insert_mode() -> String {
+    "insert_at_cut".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct MovieEdit {
     #[serde(default)]
     pub clips: Vec<ClipEdit>,
@@ -2654,6 +2682,291 @@ impl MovieStudio {
         Ok(project)
     }
 
+    pub async fn capture_frame(
+        &self,
+        project_id: &str,
+        source_path: &str,
+        time_seconds: f64,
+    ) -> Result<String, StudioError> {
+        let stills_dir = self.project_dir(project_id).join("stills");
+        fs::create_dir_all(&stills_dir)?;
+        let frame_id = uuid::Uuid::new_v4().simple().to_string()[..10].to_string();
+        let target_png = stills_dir.join(format!("frame-{frame_id}.png"));
+        extract_exact_frame(Path::new(source_path), time_seconds, &target_png).await?;
+        Ok(target_png.to_string_lossy().into_owned())
+    }
+
+    pub async fn render_fl2v_bridge(
+        &self,
+        request: MovieFl2vBridgeRequest,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let MovieFl2vBridgeRequest {
+            id,
+            first_frame,
+            last_frame,
+            prompt,
+            duration_seconds,
+            seed,
+            insert_mode,
+        } = request;
+        let lock = self.project_lock(&id)?;
+        let _guard = lock.lock().await;
+        let mut project = self.get(&id)?;
+        ensure_producer_render_approval(&project)?;
+        let comfy_root = project.settings.comfy_root.clone();
+        self.ensure_comfy(&comfy_root, &mut project, app).await?;
+
+        let bridge_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+        let chosen_seed = seed.unwrap_or_else(|| (uuid::Uuid::new_v4().as_u128() as u64) % 1_000_000_000);
+
+        // 1. Extract first_frame PNG
+        let first_target_rel = format!("kestrel/{}/fl2v-first-{bridge_id}.png", project.id);
+        let first_target_path = PathBuf::from(&project.settings.comfy_root)
+            .join("input")
+            .join(&first_target_rel);
+        extract_exact_frame(
+            Path::new(&first_frame.source_path),
+            first_frame.time_seconds,
+            &first_target_path,
+        )
+        .await?;
+
+        // 2. Extract last_frame PNG
+        let last_target_rel = format!("kestrel/{}/fl2v-last-{bridge_id}.png", project.id);
+        let last_target_path = PathBuf::from(&project.settings.comfy_root)
+            .join("input")
+            .join(&last_target_rel);
+        extract_exact_frame(
+            Path::new(&last_frame.source_path),
+            last_frame.time_seconds,
+            &last_target_path,
+        )
+        .await?;
+
+        // Also save thumbnails into project stills/
+        let stills_dir = self.project_dir(&project.id).join("stills");
+        let _ = fs::create_dir_all(&stills_dir);
+        let _ = tokio::fs::copy(&first_target_path, stills_dir.join(format!("fl2v-first-{bridge_id}.png"))).await;
+        let _ = tokio::fs::copy(&last_target_path, stills_dir.join(format!("fl2v-last-{bridge_id}.png"))).await;
+
+        let prefix = format!("kestrel_movies/{}/fl2v_{bridge_id}", project.id);
+        let preview_available = self.comfy_preview_available().await;
+
+        let graph = h3_graph(H3GraphRequest {
+            prompt: &prompt,
+            width: project.settings.width,
+            height: project.settings.height,
+            seconds: duration_seconds,
+            steps: project.settings.steps,
+            seed: chosen_seed,
+            prefix: &prefix,
+            first_frame: Some(&first_target_rel),
+            last_frame: Some(&last_target_rel),
+            references: &[],
+            ref_image_size: &project.settings.ref_image_size,
+            preview_available,
+        });
+
+        let client_id = format!("kestrel-preview-{}", uuid::Uuid::new_v4().simple());
+        let job_id = format!("fl2v-{bridge_id}");
+        let preview_target = PreviewTarget::movie_clip(job_id.clone(), &project.id, &job_id, project.clips.len());
+        let preview = if preview_available {
+            LivePreviewSession::connect(app, &client_id, preview_target).await
+        } else {
+            emit_preview_unavailable(app, preview_target);
+            None
+        };
+
+        let response = self
+            .http
+            .post(format!("{COMFY_BASE}/prompt"))
+            .json(&json!({"prompt":graph,"client_id":client_id}))
+            .send()
+            .await?;
+        let status = response.status();
+        let value: Value = response.json().await?;
+        if !status.is_success() {
+            return Err(StudioError::Render(format!(
+                "ComfyUI rejected FL2V bridge: {}",
+                truncate(&value.to_string(), 700)
+            )));
+        }
+        let prompt_id = value
+            .get("prompt_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                StudioError::Render(format!("ComfyUI returned no prompt id: {value}"))
+            })?;
+        let deadline = tokio::time::Instant::now() + COMFY_RENDER_TIMEOUT;
+        let target_mp4 = loop {
+            if cancel.is_cancelled() {
+                let _ = self
+                    .http
+                    .post(format!("{COMFY_BASE}/interrupt"))
+                    .send()
+                    .await;
+                return Err(StudioError::Cancelled);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(StudioError::Render(
+                    "ComfyUI did not finish FL2V bridge within 24 hours.".to_string(),
+                ));
+            }
+            let history: Value = self
+                .http
+                .get(format!("{COMFY_BASE}/history/{prompt_id}"))
+                .send()
+                .await?
+                .json()
+                .await?;
+            if let Some(entry) = history.get(prompt_id) {
+                if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
+                    let detail = comfy_execution_error(entry).unwrap_or_else(|| {
+                        format!("execution failed: {}", truncate(&entry.to_string(), 1_000))
+                    });
+                    return Err(StudioError::Render(format!("ComfyUI {detail}")));
+                }
+                if entry.pointer("/status/completed").and_then(Value::as_bool) == Some(true) {
+                    if let Some(preview) = &preview {
+                        preview.finish();
+                    }
+                    let media = find_output_media(entry, "videos").ok_or_else(|| {
+                        StudioError::Render("completed FL2V job exposed no saved video".into())
+                    })?;
+                    let source = PathBuf::from(&project.settings.comfy_root)
+                        .join("output")
+                        .join(&media.1)
+                        .join(&media.0);
+                    let target = self
+                        .project_dir(&project.id)
+                        .join("raw")
+                        .join(format!("clip-fl2v-{bridge_id}.mp4"));
+                    tokio::fs::copy(&source, &target).await.map_err(|error| {
+                        StudioError::Render(format!(
+                            "could not preserve {}: {error}",
+                            source.display()
+                        ))
+                    })?;
+                    break target.to_string_lossy().into_owned();
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        };
+
+        let first_label = first_frame.label.unwrap_or_else(|| format!("{:.1}s", first_frame.time_seconds));
+        let last_label = last_frame.label.unwrap_or_else(|| format!("{:.1}s", last_frame.time_seconds));
+        let new_clip_id = format!("fl2v-{bridge_id}");
+        let new_clip = RenderedClip {
+            id: new_clip_id.clone(),
+            index: project.clips.len() as u32,
+            title: format!("Bridge: {} → {}", first_label, last_label),
+            prompt: prompt.clone(),
+            duration_seconds,
+            seed: chosen_seed,
+            status: "complete".into(),
+            path: target_mp4,
+            error: String::new(),
+            versions: Vec::new(),
+        };
+        project.clips.push(new_clip);
+
+        if insert_mode == "insert_at_cut" {
+            let pos = project.edit.clips.iter().position(|c| c.clip_id == first_frame.clip_id).unwrap_or(project.edit.clips.len());
+            let insert_idx = if pos < project.edit.clips.len() { pos + 1 } else { project.edit.clips.len() };
+            let new_edit = ClipEdit {
+                id: format!("edit-{bridge_id}"),
+                clip_id: new_clip_id,
+                enabled: true,
+                order: insert_idx as u32,
+                trim_start: 0.0,
+                trim_end: 0.0,
+                audio_gain: 1.0,
+                source_version_id: String::new(),
+                speed: 1.0,
+                fade_in: 0.0,
+                fade_out: 0.0,
+                audio_fade_in: 0.0,
+                audio_fade_out: 0.0,
+                label: "Bridge (FL2V)".into(),
+                notes: format!("First frame at {:.2}s, Last frame at {:.2}s", first_frame.time_seconds, last_frame.time_seconds),
+            };
+            project.edit.clips.insert(insert_idx, new_edit);
+            for (idx, clip) in project.edit.clips.iter_mut().enumerate() {
+                clip.order = idx as u32;
+            }
+        } else if insert_mode == "replace_range" {
+            if first_frame.clip_id == last_frame.clip_id {
+                if let Some(pos) = project.edit.clips.iter().position(|c| c.clip_id == first_frame.clip_id) {
+                    let orig = project.edit.clips[pos].clone();
+                    let mut part1 = orig.clone();
+                    part1.trim_end = (orig.trim_start + first_frame.time_seconds as f32).max(0.0);
+
+                    let mut part2 = orig.clone();
+                    part2.id = format!("edit-{}-b", uuid::Uuid::new_v4().simple());
+                    part2.trim_start = (last_frame.time_seconds as f32).max(0.0);
+
+                    let bridge_edit = ClipEdit {
+                        id: format!("edit-{bridge_id}"),
+                        clip_id: new_clip_id,
+                        enabled: true,
+                        order: (pos + 1) as u32,
+                        trim_start: 0.0,
+                        trim_end: 0.0,
+                        audio_gain: 1.0,
+                        source_version_id: String::new(),
+                        speed: 1.0,
+                        fade_in: 0.0,
+                        fade_out: 0.0,
+                        audio_fade_in: 0.0,
+                        audio_fade_out: 0.0,
+                        label: "Bridge (FL2V)".into(),
+                        notes: String::new(),
+                    };
+
+                    project.edit.clips.remove(pos);
+                    project.edit.clips.insert(pos, part1);
+                    project.edit.clips.insert(pos + 1, bridge_edit);
+                    project.edit.clips.insert(pos + 2, part2);
+                    for (idx, clip) in project.edit.clips.iter_mut().enumerate() {
+                        clip.order = idx as u32;
+                    }
+                }
+            } else if let Some(pos1) = project.edit.clips.iter().position(|c| c.clip_id == first_frame.clip_id) {
+                project.edit.clips[pos1].trim_end = (first_frame.time_seconds as f32).max(0.0);
+                let insert_pos = pos1 + 1;
+                if let Some(pos2) = project.edit.clips.iter().position(|c| c.clip_id == last_frame.clip_id) {
+                    project.edit.clips[pos2].trim_start = (last_frame.time_seconds as f32).max(0.0);
+                }
+                let bridge_edit = ClipEdit {
+                    id: format!("edit-{bridge_id}"),
+                    clip_id: new_clip_id,
+                    enabled: true,
+                    order: insert_pos as u32,
+                    trim_start: 0.0,
+                    trim_end: 0.0,
+                    audio_gain: 1.0,
+                    source_version_id: String::new(),
+                    speed: 1.0,
+                    fade_in: 0.0,
+                    fade_out: 0.0,
+                    audio_fade_in: 0.0,
+                    audio_fade_out: 0.0,
+                    label: "Bridge (FL2V)".into(),
+                    notes: String::new(),
+                };
+                project.edit.clips.insert(insert_pos, bridge_edit);
+                for (idx, clip) in project.edit.clips.iter_mut().enumerate() {
+                    clip.order = idx as u32;
+                }
+            }
+        }
+
+        self.persist_emit(&mut project, app)?;
+        Ok(project)
+    }
+
     async fn ensure_comfy(
         &self,
         root: &str,
@@ -2874,6 +3187,7 @@ impl MovieStudio {
             seed,
             prefix: &prefix,
             first_frame: continuity_input.as_deref(),
+            last_frame: None,
             references: &graph_references,
             ref_image_size: &project.settings.ref_image_size,
             preview_available,
@@ -5092,6 +5406,39 @@ fn movie_schema(max_clips: u32) -> Value {
     }}})
 }
 
+pub async fn extract_exact_frame(
+    video_path: &Path,
+    time_seconds: f64,
+    output_png: &Path,
+) -> Result<(), StudioError> {
+    if let Some(parent) = output_png.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let output = tokio::process::Command::new(media_program("ffmpeg"))
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            &format!("{:.3}", time_seconds.max(0.0)),
+            "-i",
+        ])
+        .arg(video_path)
+        .args(["-frames:v", "1", "-q:v", "2"])
+        .arg(output_png)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        return Err(StudioError::Render(format!(
+            "frame extraction failed: {}",
+            truncate(&String::from_utf8_lossy(&output.stderr), 500)
+        )));
+    }
+    Ok(())
+}
+
 struct H3GraphRequest<'a> {
     prompt: &'a str,
     width: u32,
@@ -5101,6 +5448,7 @@ struct H3GraphRequest<'a> {
     seed: u64,
     prefix: &'a str,
     first_frame: Option<&'a str>,
+    last_frame: Option<&'a str>,
     references: &'a [H3ReferenceInput<'a>],
     ref_image_size: &'a str,
     preview_available: bool,
@@ -5160,6 +5508,7 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
         seed,
         prefix,
         first_frame,
+        last_frame,
         references,
         ref_image_size,
         preview_available,
@@ -5202,6 +5551,10 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
         if let Some(image) = first_frame {
             graph["15"] = json!({"class_type":"LoadImage","inputs":{"image":image}});
             graph["5"]["inputs"]["first_frame"] = json!(["15", 0]);
+        }
+        if let Some(image) = last_frame {
+            graph["16"] = json!({"class_type":"LoadImage","inputs":{"image":image}});
+            graph["5"]["inputs"]["last_frame"] = json!(["16", 0]);
         }
         return graph;
     }
@@ -5709,6 +6062,7 @@ mod tests {
             seed: 7,
             prefix: "test",
             first_frame: None,
+            last_frame: None,
             references: &[],
             ref_image_size: "match",
             preview_available: true,
@@ -5731,6 +6085,7 @@ mod tests {
             seed: 7,
             prefix: "test",
             first_frame: None,
+            last_frame: None,
             references: &[],
             ref_image_size: "match",
             preview_available: false,
@@ -5751,12 +6106,42 @@ mod tests {
             seed: 7,
             prefix: "test",
             first_frame: Some("kestrel/frame.png"),
+            last_frame: None,
             references: &[],
             ref_image_size: "match",
             preview_available: true,
         });
         assert_eq!(graph["15"]["class_type"], "LoadImage");
         assert_eq!(graph["5"]["inputs"]["first_frame"], json!(["15", 0]));
+    }
+
+    #[test]
+    fn h3_graph_supports_first_and_last_frame_fl2v() {
+        let graph = h3_graph(H3GraphRequest {
+            prompt: "camera pans between two keyframes",
+            width: 864,
+            height: 480,
+            seconds: 5.0,
+            steps: 20,
+            seed: 42,
+            prefix: "test_fl2v",
+            first_frame: Some("kestrel/first.png"),
+            last_frame: Some("kestrel/last.png"),
+            references: &[],
+            ref_image_size: "match",
+            preview_available: false,
+        });
+        assert_eq!(
+            graph["1"]["inputs"]["unet_name"],
+            "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+        );
+        assert_eq!(graph["5"]["class_type"], "MiniMaxH3ImageToVideo");
+        assert_eq!(graph["15"]["class_type"], "LoadImage");
+        assert_eq!(graph["15"]["inputs"]["image"], "kestrel/first.png");
+        assert_eq!(graph["16"]["class_type"], "LoadImage");
+        assert_eq!(graph["16"]["inputs"]["image"], "kestrel/last.png");
+        assert_eq!(graph["5"]["inputs"]["first_frame"], json!(["15", 0]));
+        assert_eq!(graph["5"]["inputs"]["last_frame"], json!(["16", 0]));
     }
 
     #[test]
@@ -5795,6 +6180,7 @@ mod tests {
             seed: 7,
             prefix: "test",
             first_frame: Some("must-not-be-used.png"),
+            last_frame: None,
             references: &references,
             ref_image_size: "max",
             preview_available: true,

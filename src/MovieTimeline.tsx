@@ -1,12 +1,12 @@
 import {
-  Archive, AudioLines, Check, ChevronLeft, ChevronRight, CircleHelp, Copy,
+  Archive, ArrowRight, AudioLines, Check, ChevronLeft, ChevronRight, CircleHelp, Copy,
   Eye, EyeOff, Film, Flag, Gauge, Images, Info, List, Magnet, Maximize2,
-  Minimize2, MousePointer2, PanelLeft, PanelRight, Pause, Play, Plus, Redo2,
-  RotateCcw, Save, ScanLine, Scissors, Search, SkipBack, SkipForward,
+  Minimize2, MousePointer2, PanelLeft, PanelRight, Pause, Play, Plus, Redo2, RefreshCw,
+  RotateCcw, Save, ScanLine, Scissors, Search, SkipBack, SkipForward, Sparkles,
   Trash2, Undo2, Video, Volume2, X, ZoomIn,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { movieMediaUrl } from "./api";
+import { captureMovieFrame, generateMovieFl2vBridge, movieMediaUrl } from "./api";
 import type {
   ClipEdit, MovieEdit, MovieProject, MovieReference, RenderedClip, TimelineMarker,
 } from "./types";
@@ -22,9 +22,17 @@ export interface TimelineItem {
   versionLabel: string;
 }
 
+export interface CapturedFrame {
+  clipId: string;
+  sourcePath: string;
+  timeSeconds: number;
+  label?: string;
+  thumbPath?: string;
+}
+
 type EditorTool = "select" | "trim" | "blade";
 type BrowserTab = "masters" | "references" | "index";
-type InspectorTab = "video" | "audio" | "info";
+type InspectorTab = "video" | "audio" | "inbetween" | "info";
 type ViewerMode = "program" | "source";
 
 export function timelineItems(project: MovieProject, edit: MovieEdit): TimelineItem[] {
@@ -155,6 +163,14 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
   const [markerComposer, setMarkerComposer] = useState(false);
   const [markerLabel, setMarkerLabel] = useState("");
   const [markerKind, setMarkerKind] = useState<TimelineMarker["kind"]>("marker");
+  const [fl2vFirstFrame, setFl2vFirstFrame] = useState<CapturedFrame | null>(null);
+  const [fl2vLastFrame, setFl2vLastFrame] = useState<CapturedFrame | null>(null);
+  const [fl2vPrompt, setFl2vPrompt] = useState("");
+  const [fl2vDuration, setFl2vDuration] = useState(5.0);
+  const [fl2vSeed, setFl2vSeed] = useState<number | undefined>(undefined);
+  const [fl2vInsertMode, setFl2vInsertMode] = useState<"insert_at_cut" | "replace_range" | "add_to_masters">("insert_at_cut");
+  const [fl2vRendering, setFl2vRendering] = useState(false);
+  const [fl2vError, setFl2vError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const sourceVideoRef = useRef<HTMLVideoElement>(null);
   const skimThrottle = useRef(0);
@@ -218,6 +234,147 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     [next.audioFadeIn, next.audioFadeOut] = fitFades(next.audioFadeIn, next.audioFadeOut);
     commit({ ...normalizedValue, clips: normalizedValue.clips.map((item) => item.id === selected.edit.id ? next : item) });
   };
+
+  const captureFrameSlot = async (slot: "first" | "last") => {
+    let clipId = "";
+    let sPath = "";
+    let time = 0;
+    let label = "";
+
+    if (viewerMode === "program" && preview) {
+      clipId = preview.clip.id;
+      sPath = preview.sourcePath;
+      time = previewTime;
+      label = `${preview.clip.title} @ ${formatTimecode(previewTime)}`;
+    } else if (viewerMode === "source" && sourceClip) {
+      clipId = sourceClip.id;
+      sPath = sourcePath;
+      time = sourceTime;
+      label = `${sourceClip.title} @ ${formatTimecode(sourceTime)}`;
+    } else if (selected) {
+      clipId = selected.clip.id;
+      sPath = selected.sourcePath;
+      time = selected.edit.trimStart;
+      label = `${selected.clip.title} @ ${formatTimecode(time)}`;
+    }
+
+    if (!sPath) {
+      setFl2vError("No active video source to capture from. Select a clip or master first.");
+      return;
+    }
+
+    try {
+      const thumbPath = await captureMovieFrame(project.id, sPath, time);
+      const frame: CapturedFrame = { clipId, sourcePath: sPath, timeSeconds: time, label, thumbPath };
+      if (slot === "first") setFl2vFirstFrame(frame);
+      else setFl2vLastFrame(frame);
+      setFl2vError(null);
+    } catch (err: unknown) {
+      setFl2vError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const autoSetAcrossCut = async () => {
+    if (!selected) return;
+    const idx = enabledItems.findIndex((item) => item.edit.id === selected.edit.id);
+    const nextItem = enabledItems[idx + 1];
+    if (!nextItem) {
+      setFl2vError("Select a clip that has a following clip to bridge across a cut.");
+      return;
+    }
+    try {
+      const t1 = Math.max(0, selected.sourceDuration - selected.edit.trimEnd - 0.04);
+      const t2 = nextItem.edit.trimStart;
+      const thumb1 = await captureMovieFrame(project.id, selected.sourcePath, t1);
+      const thumb2 = await captureMovieFrame(project.id, nextItem.sourcePath, t2);
+      setFl2vFirstFrame({
+        clipId: selected.clip.id,
+        sourcePath: selected.sourcePath,
+        timeSeconds: t1,
+        label: `${selected.clip.title} (Cut Out)`,
+        thumbPath: thumb1,
+      });
+      setFl2vLastFrame({
+        clipId: nextItem.clip.id,
+        sourcePath: nextItem.sourcePath,
+        timeSeconds: t2,
+        label: `${nextItem.clip.title} (Cut In)`,
+        thumbPath: thumb2,
+      });
+      setFl2vInsertMode("insert_at_cut");
+      setFl2vError(null);
+    } catch (err: unknown) {
+      setFl2vError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const autoSetFromSelectedRange = async () => {
+    if (!selected) return;
+    try {
+      const t1 = selected.edit.trimStart;
+      const t2 = Math.max(0, selected.sourceDuration - selected.edit.trimEnd - 0.04);
+      const thumb1 = await captureMovieFrame(project.id, selected.sourcePath, t1);
+      const thumb2 = await captureMovieFrame(project.id, selected.sourcePath, t2);
+      setFl2vFirstFrame({
+        clipId: selected.clip.id,
+        sourcePath: selected.sourcePath,
+        timeSeconds: t1,
+        label: `${selected.clip.title} (In)`,
+        thumbPath: thumb1,
+      });
+      setFl2vLastFrame({
+        clipId: selected.clip.id,
+        sourcePath: selected.sourcePath,
+        timeSeconds: t2,
+        label: `${selected.clip.title} (Out)`,
+        thumbPath: thumb2,
+      });
+      setFl2vInsertMode("replace_range");
+      setFl2vError(null);
+    } catch (err: unknown) {
+      setFl2vError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleGenerateFl2v = async () => {
+    if (!fl2vFirstFrame || !fl2vLastFrame) {
+      setFl2vError("Please capture both a First Frame and a Last Frame.");
+      return;
+    }
+    if (!fl2vPrompt.trim()) {
+      setFl2vError("Please enter a motion/continuity description prompt.");
+      return;
+    }
+    setFl2vRendering(true);
+    setFl2vError(null);
+    try {
+      const updated = await generateMovieFl2vBridge({
+        id: project.id,
+        firstFrame: {
+          clipId: fl2vFirstFrame.clipId,
+          sourcePath: fl2vFirstFrame.sourcePath,
+          timeSeconds: fl2vFirstFrame.timeSeconds,
+          label: fl2vFirstFrame.label,
+        },
+        lastFrame: {
+          clipId: fl2vLastFrame.clipId,
+          sourcePath: fl2vLastFrame.sourcePath,
+          timeSeconds: fl2vLastFrame.timeSeconds,
+          label: fl2vLastFrame.label,
+        },
+        prompt: fl2vPrompt.trim(),
+        durationSeconds: fl2vDuration,
+        seed: fl2vSeed,
+        insertMode: fl2vInsertMode,
+      });
+      commit(updated.edit);
+    } catch (err: unknown) {
+      setFl2vError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFl2vRendering(false);
+    }
+  };
+
   const setProgramPosition = (item: TimelineItem, time: number, play = false) => {
     const bounded = Math.max(item.edit.trimStart, Math.min(item.sourceDuration - item.edit.trimEnd, time));
     setViewerMode("program");
@@ -441,31 +598,192 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
       </main>
 
       {showInspector && <aside className="editor-inspector">
-        <div className="editor-panel-tabs"><button className={inspectorTab === "video" ? "active" : ""} onClick={() => setInspectorTab("video")}><Video /> Video</button><button className={inspectorTab === "audio" ? "active" : ""} onClick={() => setInspectorTab("audio")}><AudioLines /> Audio</button><button className={inspectorTab === "info" ? "active" : ""} onClick={() => setInspectorTab("info")}><Info /> Info</button></div>
-        <header><span>Timeline selection</span><strong>{selected?.edit.label || selected?.clip.title || "No selection"}</strong><small>{selected ? `${formatTimecode(selected.outputDuration)} · ${selected.versionLabel}` : "Select an edit in the primary storyline"}</small></header>
-        {selected ? <div className="editor-inspector-body">
-          {inspectorTab === "video" && <>
-            <InspectorSection title="Source" defaultOpen><label className="wide">Preserved version<select value={selected.edit.sourceVersionId} onChange={(event) => patchSelected({ sourceVersionId: event.target.value, trimStart: 0, trimEnd: 0 })}><option value="">Active master</option>{selected.clip.versions.map((version) => <option key={version.id} value={version.id}>{version.id === "original" ? "Original master" : `Version ${version.id}`} · {version.durationSeconds.toFixed(1)}s</option>)}</select></label></InspectorSection>
-            <InspectorSection title="Timing" defaultOpen><TimelineNumber label="Trim start" value={selected.edit.trimStart} min={0} max={Math.max(0, selected.sourceDuration - selected.edit.trimEnd - .1)} step={1 / FPS} suffix="s" onChange={(trimStart) => patchSelected({ trimStart })} /><TimelineNumber label="Trim end" value={selected.edit.trimEnd} min={0} max={Math.max(0, selected.sourceDuration - selected.edit.trimStart - .1)} step={1 / FPS} suffix="s" onChange={(trimEnd) => patchSelected({ trimEnd })} /><TimelineNumber label="Speed" value={selected.edit.speed} min={.25} max={4} step={.05} suffix="×" onChange={(speed) => patchSelected({ speed })} /><div className="inspector-nudge wide"><button onClick={() => patchSelected({ trimStart: Math.max(0, selected.edit.trimStart - 1 / FPS) })}>Start −1f</button><button onClick={() => patchSelected({ trimStart: Math.min(selected.sourceDuration - selected.edit.trimEnd - .1, selected.edit.trimStart + 1 / FPS) })}>Start +1f</button><button onClick={() => patchSelected({ trimEnd: Math.min(selected.sourceDuration - selected.edit.trimStart - .1, selected.edit.trimEnd + 1 / FPS) })}>End −1f</button><button onClick={() => patchSelected({ trimEnd: Math.max(0, selected.edit.trimEnd - 1 / FPS) })}>End +1f</button></div></InspectorSection>
-            <InspectorSection title="Picture fades"><TimelineNumber label="Fade in" value={selected.edit.fadeIn} min={0} max={Math.max(0, selected.outputDuration - selected.edit.fadeOut)} step={.05} suffix="s" onChange={(fadeIn) => patchSelected({ fadeIn })} /><TimelineNumber label="Fade out" value={selected.edit.fadeOut} min={0} max={Math.max(0, selected.outputDuration - selected.edit.fadeIn)} step={.05} suffix="s" onChange={(fadeOut) => patchSelected({ fadeOut })} /><button className="inspector-reset wide" onClick={() => patchSelected({ speed: 1, fadeIn: 0, fadeOut: 0 })}><RotateCcw /> Reset picture timing</button></InspectorSection>
-          </>}
-          {inspectorTab === "audio" && <>
-            <div className="native-mix-role"><span><Volume2 /><b>Native Mix</b></span><small>H3 picture and sound stay synchronized as one preserved source. Dialogue, music, ambience, and effects are not falsely presented as separate stems.</small></div>
-            <InspectorSection title="Level" defaultOpen><TimelineNumber label="Gain" value={selected.edit.audioGain} min={0} max={4} step={.05} suffix="×" onChange={(audioGain) => patchSelected({ audioGain })} /><label className="wide inspector-range">Clip level<input aria-label="Selected clip audio level" type="range" min={0} max={2} step={.01} value={Math.min(2, selected.edit.audioGain)} onChange={(event) => patchSelected({ audioGain: Number(event.target.value) })} /></label></InspectorSection>
-            <InspectorSection title="Audio fades" defaultOpen><TimelineNumber label="Fade in" value={selected.edit.audioFadeIn} min={0} max={Math.max(0, selected.outputDuration - selected.edit.audioFadeOut)} step={.05} suffix="s" onChange={(audioFadeIn) => patchSelected({ audioFadeIn })} /><TimelineNumber label="Fade out" value={selected.edit.audioFadeOut} min={0} max={Math.max(0, selected.outputDuration - selected.edit.audioFadeIn)} step={.05} suffix="s" onChange={(audioFadeOut) => patchSelected({ audioFadeOut })} /><button className="inspector-reset wide" onClick={() => patchSelected({ audioGain: 1, audioFadeIn: 0, audioFadeOut: 0 })}><RotateCcw /> Reset audio</button></InspectorSection>
-          </>}
-          {inspectorTab === "info" && <>
-            <InspectorSection title="Producer metadata" defaultOpen><label className="wide">Timeline label<input maxLength={120} value={selected.edit.label} onChange={(event) => patchSelected({ label: event.target.value })} placeholder={selected.clip.title} /></label><label className="wide">Producer notes<textarea maxLength={4000} value={selected.edit.notes} onChange={(event) => patchSelected({ notes: event.target.value })} placeholder="Performance, pacing, continuity, review notes, or handoff details…" /></label></InspectorSection>
-            <InspectorSection title="Source facts" defaultOpen><dl className="inspector-facts wide"><div><dt>Master</dt><dd>{selected.clip.title}</dd></div><div><dt>Seed</dt><dd>{selected.clip.seed}</dd></div><div><dt>Source</dt><dd>{formatTimecode(selected.sourceDuration)}</dd></div><div><dt>Output</dt><dd>{formatTimecode(selected.outputDuration)}</dd></div></dl></InspectorSection>
-            <label className="inspector-enable"><input type="checkbox" checked={selected.edit.enabled} onChange={(event) => patchSelected({ enabled: event.target.checked })} /> <span>{selected.edit.enabled ? <Eye /> : <EyeOff />}<b>Include in program and export</b><small>Disabling removes this decision from playback; the preserved source remains in Masters.</small></span></label>
-          </>}
-        </div> : <EditorEmpty text="Select a timeline edit to inspect its preserved source, timing, audio, and notes." />}
+        <div className="editor-panel-tabs">
+          <button className={inspectorTab === "video" ? "active" : ""} onClick={() => setInspectorTab("video")}><Video /> Video</button>
+          <button className={inspectorTab === "audio" ? "active" : ""} onClick={() => setInspectorTab("audio")}><AudioLines /> Audio</button>
+          <button className={inspectorTab === "inbetween" ? "active" : ""} onClick={() => setInspectorTab("inbetween")}><Sparkles /> Bridge</button>
+          <button className={inspectorTab === "info" ? "active" : ""} onClick={() => setInspectorTab("info")}><Info /> Info</button>
+        </div>
+        <header>
+          <span>{inspectorTab === "inbetween" ? "FL2V Bridge Generator" : "Timeline selection"}</span>
+          <strong>{inspectorTab === "inbetween" ? "First-Frame / Last-Frame Video" : (selected?.edit.label || selected?.clip.title || "No selection")}</strong>
+          <small>{inspectorTab === "inbetween" ? "MiniMax H3 Generative In-Betweening" : (selected ? `${formatTimecode(selected.outputDuration)} · ${selected.versionLabel}` : "Select an edit in the primary storyline")}</small>
+        </header>
+        {inspectorTab === "inbetween" ? (
+          <div className="editor-inspector-body editor-fl2v-inspector">
+            <div className="fl2v-header-banner">
+              <span><Sparkles /><b>FL2V In-Between Bridge (MiniMax H3)</b></span>
+              <small>Generate AI motion connecting any two arbitrary timeline frames.</small>
+            </div>
+
+            <InspectorSection title="1. Anchor Frames" defaultOpen>
+              <div className="fl2v-quick-actions wide">
+                <button className="fl2v-quick-btn" title="Bridge between current clip and next clip" onClick={autoSetAcrossCut}><Scissors /> Bridge Selected Cut</button>
+                <button className="fl2v-quick-btn" title="Use current clip In and Out points" onClick={autoSetFromSelectedRange}><ScanLine /> In/Out Range</button>
+              </div>
+
+              <div className="fl2v-frame-cards wide">
+                <div className={`fl2v-frame-card ${fl2vFirstFrame ? "set" : ""}`}>
+                  <div className="fl2v-frame-head">
+                    <strong>First Frame (Start)</strong>
+                    {fl2vFirstFrame && <button className="fl2v-clear-btn" onClick={() => setFl2vFirstFrame(null)}><X /></button>}
+                  </div>
+                  <div className="fl2v-frame-thumb-box">
+                    {fl2vFirstFrame?.thumbPath ? (
+                      <img src={movieMediaUrl(fl2vFirstFrame.thumbPath)} alt="First Frame" />
+                    ) : (
+                      <div className="fl2v-thumb-empty"><Film /><span>No frame captured</span></div>
+                    )}
+                  </div>
+                  <div className="fl2v-frame-meta">
+                    <small>{fl2vFirstFrame ? fl2vFirstFrame.label : "Position playhead & capture"}</small>
+                  </div>
+                  <button className="fl2v-capture-btn" onClick={() => void captureFrameSlot("first")}>
+                    <Eye /> Capture from Playhead
+                  </button>
+                </div>
+
+                <div className="fl2v-frame-connector"><ArrowRight /></div>
+
+                <div className={`fl2v-frame-card ${fl2vLastFrame ? "set" : ""}`}>
+                  <div className="fl2v-frame-head">
+                    <strong>Last Frame (End)</strong>
+                    {fl2vLastFrame && <button className="fl2v-clear-btn" onClick={() => setFl2vLastFrame(null)}><X /></button>}
+                  </div>
+                  <div className="fl2v-frame-thumb-box">
+                    {fl2vLastFrame?.thumbPath ? (
+                      <img src={movieMediaUrl(fl2vLastFrame.thumbPath)} alt="Last Frame" />
+                    ) : (
+                      <div className="fl2v-thumb-empty"><Film /><span>No frame captured</span></div>
+                    )}
+                  </div>
+                  <div className="fl2v-frame-meta">
+                    <small>{fl2vLastFrame ? fl2vLastFrame.label : "Position playhead & capture"}</small>
+                  </div>
+                  <button className="fl2v-capture-btn" onClick={() => void captureFrameSlot("last")}>
+                    <Eye /> Capture from Playhead
+                  </button>
+                </div>
+              </div>
+            </InspectorSection>
+
+            <InspectorSection title="2. Motion & Prompt" defaultOpen>
+              <label className="wide">
+                Motion Description
+                <textarea
+                  rows={3}
+                  maxLength={1000}
+                  value={fl2vPrompt}
+                  onChange={(e) => setFl2vPrompt(e.target.value)}
+                  placeholder="Describe the action, camera movement, and visual transition connecting Frame A to Frame B…"
+                />
+              </label>
+              <label>
+                Duration
+                <select value={fl2vDuration} onChange={(e) => setFl2vDuration(Number(e.target.value))}>
+                  <option value={3.0}>3.0s · 73 frames</option>
+                  <option value={5.0}>5.0s · 121 frames (Standard)</option>
+                  <option value={6.0}>6.0s · 145 frames</option>
+                </select>
+              </label>
+              <label>
+                Seed
+                <div className="fl2v-seed-input">
+                  <input
+                    type="number"
+                    placeholder="Random"
+                    value={fl2vSeed ?? ""}
+                    onChange={(e) => setFl2vSeed(e.target.value === "" ? undefined : Number(e.target.value))}
+                  />
+                  <button title="Randomize seed" onClick={() => setFl2vSeed(Math.floor(Math.random() * 1_000_000_000))}><RotateCcw /></button>
+                </div>
+              </label>
+            </InspectorSection>
+
+            <InspectorSection title="3. Placement" defaultOpen>
+              <div className="fl2v-insert-modes wide">
+                <label className="fl2v-radio">
+                  <input
+                    type="radio"
+                    name="fl2v_mode"
+                    checked={fl2vInsertMode === "insert_at_cut"}
+                    onChange={() => setFl2vInsertMode("insert_at_cut")}
+                  />
+                  <span><b>Insert at Cut / Playhead</b><small>Splice the new bridge clip into the primary storyline.</small></span>
+                </label>
+                <label className="fl2v-radio">
+                  <input
+                    type="radio"
+                    name="fl2v_mode"
+                    checked={fl2vInsertMode === "replace_range"}
+                    onChange={() => setFl2vInsertMode("replace_range")}
+                  />
+                  <span><b>Replace Range Between Frames</b><small>Trim out footage between Frame A &amp; B and replace with bridge.</small></span>
+                </label>
+                <label className="fl2v-radio">
+                  <input
+                    type="radio"
+                    name="fl2v_mode"
+                    checked={fl2vInsertMode === "add_to_masters"}
+                    onChange={() => setFl2vInsertMode("add_to_masters")}
+                  />
+                  <span><b>Add to Masters Pool</b><small>Save to project masters for manual dragging/placement.</small></span>
+                </label>
+              </div>
+
+              {fl2vError && <div className="fl2v-error-box wide"><X /><span>{fl2vError}</span></div>}
+
+              <button
+                className="fl2v-generate-action wide"
+                disabled={disabled || fl2vRendering || !fl2vFirstFrame || !fl2vLastFrame}
+                onClick={handleGenerateFl2v}
+              >
+                {fl2vRendering ? (
+                  <><RefreshCw className="spin" /> Generating FL2V Bridge in ComfyUI…</>
+                ) : (
+                  <><Sparkles /> 🚀 Generate In-Between Video</>
+                )}
+              </button>
+            </InspectorSection>
+          </div>
+        ) : selected ? (
+          <div className="editor-inspector-body">
+            {inspectorTab === "video" && <>
+              <InspectorSection title="Source" defaultOpen><label className="wide">Preserved version<select value={selected.edit.sourceVersionId} onChange={(event) => patchSelected({ sourceVersionId: event.target.value, trimStart: 0, trimEnd: 0 })}><option value="">Active master</option>{selected.clip.versions.map((version) => <option key={version.id} value={version.id}>{version.id === "original" ? "Original master" : `Version ${version.id}`} · {version.durationSeconds.toFixed(1)}s</option>)}</select></label></InspectorSection>
+              <InspectorSection title="Timing" defaultOpen><TimelineNumber label="Trim start" value={selected.edit.trimStart} min={0} max={Math.max(0, selected.sourceDuration - selected.edit.trimEnd - .1)} step={1 / FPS} suffix="s" onChange={(trimStart) => patchSelected({ trimStart })} /><TimelineNumber label="Trim end" value={selected.edit.trimEnd} min={0} max={Math.max(0, selected.sourceDuration - selected.edit.trimStart - .1)} step={1 / FPS} suffix="s" onChange={(trimEnd) => patchSelected({ trimEnd })} /><TimelineNumber label="Speed" value={selected.edit.speed} min={.25} max={4} step={.05} suffix="×" onChange={(speed) => patchSelected({ speed })} /><div className="inspector-nudge wide"><button onClick={() => patchSelected({ trimStart: Math.max(0, selected.edit.trimStart - 1 / FPS) })}>Start −1f</button><button onClick={() => patchSelected({ trimStart: Math.min(selected.sourceDuration - selected.edit.trimEnd - .1, selected.edit.trimStart + 1 / FPS) })}>Start +1f</button><button onClick={() => patchSelected({ trimEnd: Math.min(selected.sourceDuration - selected.edit.trimStart - .1, selected.edit.trimEnd + 1 / FPS) })}>End −1f</button><button onClick={() => patchSelected({ trimEnd: Math.max(0, selected.edit.trimEnd - 1 / FPS) })}>End +1f</button></div></InspectorSection>
+              <InspectorSection title="Picture fades"><TimelineNumber label="Fade in" value={selected.edit.fadeIn} min={0} max={Math.max(0, selected.outputDuration - selected.edit.fadeOut)} step={.05} suffix="s" onChange={(fadeIn) => patchSelected({ fadeIn })} /><TimelineNumber label="Fade out" value={selected.edit.fadeOut} min={0} max={Math.max(0, selected.outputDuration - selected.edit.fadeIn)} step={.05} suffix="s" onChange={(fadeOut) => patchSelected({ fadeOut })} /><button className="inspector-reset wide" onClick={() => patchSelected({ speed: 1, fadeIn: 0, fadeOut: 0 })}><RotateCcw /> Reset picture timing</button></InspectorSection>
+            </>}
+            {inspectorTab === "audio" && <>
+              <div className="native-mix-role"><span><Volume2 /><b>Native Mix</b></span><small>H3 picture and sound stay synchronized as one preserved source. Dialogue, music, ambience, and effects are not falsely presented as separate stems.</small></div>
+              <InspectorSection title="Level" defaultOpen><TimelineNumber label="Gain" value={selected.edit.audioGain} min={0} max={4} step={.05} suffix="×" onChange={(audioGain) => patchSelected({ audioGain })} /><label className="wide inspector-range">Clip level<input aria-label="Selected clip audio level" type="range" min={0} max={2} step={.01} value={Math.min(2, selected.edit.audioGain)} onChange={(event) => patchSelected({ audioGain: Number(event.target.value) })} /></label></InspectorSection>
+              <InspectorSection title="Audio fades" defaultOpen><TimelineNumber label="Fade in" value={selected.edit.audioFadeIn} min={0} max={Math.max(0, selected.outputDuration - selected.edit.audioFadeOut)} step={.05} suffix="s" onChange={(audioFadeIn) => patchSelected({ audioFadeIn })} /><TimelineNumber label="Fade out" value={selected.edit.audioFadeOut} min={0} max={Math.max(0, selected.outputDuration - selected.edit.audioFadeIn)} step={.05} suffix="s" onChange={(audioFadeOut) => patchSelected({ audioFadeOut })} /><button className="inspector-reset wide" onClick={() => patchSelected({ audioGain: 1, audioFadeIn: 0, audioFadeOut: 0 })}><RotateCcw /> Reset audio</button></InspectorSection>
+            </>}
+            {inspectorTab === "info" && <>
+              <InspectorSection title="Producer metadata" defaultOpen><label className="wide">Timeline label<input maxLength={120} value={selected.edit.label} onChange={(event) => patchSelected({ label: event.target.value })} placeholder={selected.clip.title} /></label><label className="wide">Producer notes<textarea maxLength={4000} value={selected.edit.notes} onChange={(event) => patchSelected({ notes: event.target.value })} placeholder="Performance, pacing, continuity, review notes, or handoff details…" /></label></InspectorSection>
+              <InspectorSection title="Source facts" defaultOpen><dl className="inspector-facts wide"><div><dt>Master</dt><dd>{selected.clip.title}</dd></div><div><dt>Seed</dt><dd>{selected.clip.seed}</dd></div><div><dt>Source</dt><dd>{formatTimecode(selected.sourceDuration)}</dd></div><div><dt>Output</dt><dd>{formatTimecode(selected.outputDuration)}</dd></div></dl></InspectorSection>
+              <label className="inspector-enable"><input type="checkbox" checked={selected.edit.enabled} onChange={(event) => patchSelected({ enabled: event.target.checked })} /> <span>{selected.edit.enabled ? <Eye /> : <EyeOff />}<b>Include in program and export</b><small>Disabling removes this decision from playback; the preserved source remains in Masters.</small></span></label>
+            </>}
+          </div>
+        ) : <EditorEmpty text="Select a timeline edit to inspect its preserved source, timing, audio, and notes." />}
       </aside>}
     </div>
 
     <section className="editor-timeline-panel">
       <div className="editor-tool-bar">
-        <div><button aria-label="Undo timeline change" title="Undo · ⌘Z" disabled={disabled || !undo.length} onClick={undoEdit}><Undo2 /></button><button aria-label="Redo timeline change" title="Redo · ⇧⌘Z" disabled={disabled || !redo.length} onClick={redoEdit}><Redo2 /></button><i /><button className={tool === "select" ? "active" : ""} title="Select tool · A" onClick={() => setTool("select")}><MousePointer2 /><kbd>A</kbd></button><button className={tool === "trim" ? "active" : ""} title="Trim tool · T" onClick={() => setTool("trim")}><ScanLine /><kbd>T</kbd></button><button className={tool === "blade" ? "active" : ""} title="Blade tool · B" onClick={() => setTool("blade")}><Scissors /><kbd>B</kbd></button><i /><button aria-label="Split at playhead" title="Split at playhead" disabled={!selected} onClick={split}><Scissors /></button><button aria-label="Duplicate timeline item" title="Duplicate" disabled={!selected || items.length >= 512} onClick={duplicate}><Copy /></button><button aria-label="Remove timeline item" title="Remove decision" disabled={!selected} onClick={remove}><Trash2 /></button></div>
+        <div>
+          <button aria-label="Undo timeline change" title="Undo · ⌘Z" disabled={disabled || !undo.length} onClick={undoEdit}><Undo2 /></button>
+          <button aria-label="Redo timeline change" title="Redo · ⇧⌘Z" disabled={disabled || !redo.length} onClick={redoEdit}><Redo2 /></button>
+          <i />
+          <button className={tool === "select" ? "active" : ""} title="Select tool · A" onClick={() => setTool("select")}><MousePointer2 /><kbd>A</kbd></button>
+          <button className={tool === "trim" ? "active" : ""} title="Trim tool · T" onClick={() => setTool("trim")}><ScanLine /><kbd>T</kbd></button>
+          <button className={tool === "blade" ? "active" : ""} title="Blade tool · B" onClick={() => setTool("blade")}><Scissors /><kbd>B</kbd></button>
+          <i />
+          <button aria-label="Split at playhead" title="Split at playhead" disabled={!selected} onClick={split}><Scissors /></button>
+          <button aria-label="Duplicate timeline item" title="Duplicate" disabled={!selected || items.length >= 512} onClick={duplicate}><Copy /></button>
+          <button aria-label="Remove timeline item" title="Remove decision" disabled={!selected} onClick={remove}><Trash2 /></button>
+          <i />
+          <button className={inspectorTab === "inbetween" && showInspector ? "active" : ""} title="FL2V In-Between Bridge" onClick={() => { setShowInspector(true); setInspectorTab("inbetween"); }}><Sparkles /> Bridge</button>
+        </div>
         <div><button className={snapping ? "active" : ""} title="Snapping · N" onClick={() => setSnapping((active) => !active)}><Magnet /><kbd>N</kbd></button><button className={skimming ? "active" : ""} title="Skimming · S" onClick={() => setSkimming((active) => !active)}><Eye /><kbd>S</kbd></button><button title="Keyboard shortcuts · ?" onClick={() => setShowShortcuts((visible) => !visible)}><CircleHelp /></button><span>{items.length} edits · {formatTimecode(totalDuration)}</span><ZoomIn /><input aria-label="Timeline zoom" type="range" min={28} max={180} value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><button className="zoom-fit" onClick={() => setZoom(Math.max(28, Math.min(180, 900 / Math.max(1, totalDuration))))}>Fit</button></div>
       </div>
       {markerComposer && <div className="editor-marker-composer"><Flag /><select aria-label="Marker type" value={markerKind} onChange={(event) => setMarkerKind(event.target.value as TimelineMarker["kind"])}><option value="marker">Marker</option><option value="todo">To-do</option><option value="chapter">Chapter</option></select><input autoFocus maxLength={120} value={markerLabel} onChange={(event) => setMarkerLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addMarker(markerLabel, markerKind); if (event.key === "Escape") setMarkerComposer(false); }} placeholder={`Note at ${formatTimecode(elapsed)}`} /><button onClick={() => addMarker(markerLabel, markerKind)}>Add at playhead</button><button aria-label="Close marker composer" onClick={() => setMarkerComposer(false)}><X /></button></div>}

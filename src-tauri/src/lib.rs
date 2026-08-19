@@ -58,10 +58,10 @@ use studio::{
     ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
     ImageSummary, MovieClipAssistRequest, MovieClipRenderRequest, MovieClipSuggestion,
     MovieCopilotJob, MovieCopilotReceipt, MovieCopilotRequest, MovieEdit,
-    MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest,
-    MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot,
-    MovieProject, MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest,
-    MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, PromptDraftJob,
+    MovieFl2vBridgeRequest, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
+    MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
+    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
+    MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, PromptDraftJob,
     PromptDraftRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -1537,6 +1537,46 @@ async fn render_movie_clip_version(
     let result = state
         .studio
         .render_clip_version(request, &cancel, Some(&app))
+        .await
+        .map_err(|error| error.to_string());
+    if let Ok(mut jobs) = state.movie_jobs.lock() {
+        jobs.remove(&id);
+    }
+    result
+}
+
+#[tauri::command]
+async fn capture_movie_frame(
+    project_id: String,
+    source_path: String,
+    time_seconds: f64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state
+        .studio
+        .capture_frame(&project_id, &source_path, time_seconds)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn generate_movie_fl2v_bridge(
+    request: MovieFl2vBridgeRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let _guard = claim_workspace(&state)?;
+    let _ = state.runtime.stop_managed().await;
+    let cancel = CancellationToken::new();
+    state
+        .movie_jobs
+        .lock()
+        .map_err(|_| "movie job registry is unavailable".to_string())?
+        .insert(request.id.clone(), cancel.clone());
+    let id = request.id.clone();
+    let result = state
+        .studio
+        .render_fl2v_bridge(request, &cancel, Some(&app))
         .await
         .map_err(|error| error.to_string());
     if let Ok(mut jobs) = state.movie_jobs.lock() {
@@ -3573,6 +3613,8 @@ pub fn run() {
             approve_movie_plan,
             ask_movie_director_clip,
             render_movie_clip_version,
+            capture_movie_frame,
+            generate_movie_fl2v_bridge,
             save_movie_edits,
             render_movie_edit,
             reveal_movie,

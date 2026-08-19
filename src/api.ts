@@ -42,6 +42,7 @@ import type {
   MovieCopilotReceipt,
   MovieCopilotRequest,
   MovieEdit,
+  MovieFl2vBridgeRequest,
   MovieImageAssetEvent,
   MovieImageAssetGeneration,
   MovieImageAssetRequest,
@@ -480,6 +481,16 @@ export async function setMovieModelRoles(id: string, modelRoles: MovieModelRoleR
 export async function renderMovieClipVersion(request: MovieClipRenderRequest): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Scene version rendering requires the desktop application.");
   return invoke<MovieProject>("render_movie_clip_version", { request });
+}
+
+export async function captureMovieFrame(projectId: string, sourcePath: string, timeSeconds: number): Promise<string> {
+  if (!isTauri()) throw new Error("Frame capture requires the desktop application.");
+  return invoke<string>("capture_movie_frame", { projectId, sourcePath, timeSeconds });
+}
+
+export async function generateMovieFl2vBridge(request: MovieFl2vBridgeRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("FL2V bridge generation requires the desktop application.");
+  return invoke<MovieProject>("generate_movie_fl2v_bridge", { request });
 }
 
 export async function saveMovieEdits(id: string, edit: MovieEdit): Promise<MovieProject> {
