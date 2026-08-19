@@ -1055,8 +1055,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .movie-project-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 25px; }
 .movie-project-header > div:first-child { min-width: 0; }
 .movie-project-header h1 { margin: 8px 0 7px; color: #eff3ef; font: 500 38px/1.08 var(--serif); letter-spacing: -.025em; }
-.movie-project-header p { max-width: 720px; margin: 0; color: #829087; font: 11px/1.6 var(--sans); }
-.movie-project-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.movie-project-actions { display: flex; flex-wrap: nowrap; flex-shrink: 0; align-items: center; justify-content: flex-end; gap: 7px; }
 .movie-project-actions button { min-height: 34px; padding: 0 10px; color: #9ead9f; border-color: #35423a; background: #131a16; font-size: 8px; }
 .movie-project-actions button.accent { color: #13180f; border-color: #607d42; background: #b7e866; }
 .movie-project-actions button.danger { color: #efaaa1; border-color: #71443e; background: #251815; }
@@ -1593,9 +1592,8 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .studio-window-header > span, .studio-project-bar > div:first-child > span:last-child { min-width: 0; display: grid; gap: 2px; }
 .studio-window-header small, .studio-project-bar small { overflow: hidden; color: #718078; text-overflow: ellipsis; white-space: nowrap; font: 9px var(--mono); }
 .studio-window-header strong, .studio-project-bar strong { overflow: hidden; color: #e0e7e2; text-overflow: ellipsis; white-space: nowrap; font: 650 12px var(--sans); }
-.studio-window-header > p { min-width: 0; margin: 0 0 0 auto; overflow: hidden; color: #68766d; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--sans); }
 .studio-project-bar { justify-content: space-between; }
-.studio-project-bar > div:first-child { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.studio-project-bar > div:first-child { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 10px; overflow: hidden; }
 .studio-project-state { min-height: 26px; padding: 0 8px; display: inline-flex !important; grid-auto-flow: column; align-items: center; gap: 5px !important; border: 1px solid #46563f; border-radius: 99px; color: #b5d489; background: #182118; white-space: nowrap; font: 700 9px var(--sans); }
 .studio-project-state svg { width: 12px; }
 .studio-production-strip { min-width: 0; padding: 0 13px; display: grid; grid-template-columns: minmax(0,1fr) minmax(100px,240px) auto; align-items: center; gap: 12px; border-bottom: 1px solid #29332d; background: #101612; }
