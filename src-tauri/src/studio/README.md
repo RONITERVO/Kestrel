@@ -1,7 +1,7 @@
 # Studio maintainer guide
 
 This directory contains every model-assisted part of Kestrel Studio. Start here before changing
-Director/Reviewer planning, prompt generation, Producer Copilot, H3 image assets, live previews, Image Studio, or Music. The root
+Director/Reviewer planning, generative movie edits, prompt generation, Producer Copilot, H3 image assets, live previews, Image Studio, or Music. The root
 `studio.rs` file remains the domain and persistence facade; child modules own one bounded concern
 and must not acquire authority implicitly.
 
@@ -11,8 +11,10 @@ and must not acquire authority implicitly.
   is fixed to loopback.
 - `RuntimeManager` owns the only local language-model process and inference semaphore. A Studio
   feature never starts a second model server or bypasses its lease.
-- Model text is data. Only `movie_agent.rs` may mutate the planning workspace, and only through its
-  deserialized `WorkspaceAction` contract. Producer Copilot proposes edits but cannot apply them.
+- Model text is data. `movie_agent.rs` mutates only the planning workspace through its deserialized
+  `WorkspaceAction` contract. `generation_agent.rs` writes only a checked candidate workspace;
+  rendering and storyline placement remain separate, explicit producer actions. Producer Copilot
+  proposes edits but cannot apply them.
 - `project.json`, immutable reference objects, raw masters, edit decisions, receipts, transcripts,
   and planning controls are durable user data. Interrupted work is surfaced, never silently resumed.
 - The model receives the original producer request and a fresh authoritative workspace snapshot on
@@ -21,6 +23,11 @@ and must not acquire authority implicitly.
   runtime is unloaded from the GPU.
 - Director and Reviewer bindings are durable project data. Missing pinned models fail visibly; an
   explicit checkpointed role change records provenance and forces producer review.
+- Language-model limits resolve in one order: System defaults, selected-model exceptions, then the
+  durable movie-project policy. `MovieSettings::runtime_settings_for` is the only movie-layer
+  resolver; planning, fresh review, frame analysis, generative edits, and Copilot must use it before
+  acquiring a lease. Context changes may restart the one managed runtime; output changes are
+  per-request. Never introduce a stage-specific hidden copy of either value.
 - Every local model must pass the current local Studio protocol check before standard-mode unattended
   planning. Advanced mode may run an unverified compatible model only with forced producer review.
 
@@ -30,6 +37,7 @@ and must not acquire authority implicitly.
 | --- | --- | --- |
 | `studio.rs` | Public Tauri-facing domain types, project persistence, job coordination, rendering and edit facade | Model stream framing or workspace action semantics |
 | `agent_flow.rs` | Director planning orchestration, producer-control boundaries, per-turn model leases, tool dispatch, independent-review coordination | Wire parsing or file mutation rules |
+| `generation_agent.rs` | Durable shot/transition candidate orchestration, typed workspace actions, two-check gate, fresh-context review, and visible events | Rendering, arbitrary media paths, or storyline mutation |
 | `agent_lifecycle.rs` | Pure session, tool-use, and reviewer-budget transitions | HTTP, filesystem, UI events, or project state |
 | `agent_protocol.rs` | Exact planning requests, lossless transcript history, assistant/tool-call assembly | Workspace mutation or producer copy |
 | `model_stream.rs` | Shared OpenAI-compatible SSE framing, UTF-8 fragmentation, JSON validation, completion markers, and explicit reasoning-channel extraction | Tool schemas or producer-facing UI events |
@@ -40,7 +48,7 @@ and must not acquire authority implicitly.
 | `copilot.rs` | Timeline advice and validated, unapplied edit proposals | Applying edits or rendering |
 | `image_assets.rs` | Durable H3 pseudo-image generations, graph/receipt provenance, imported candidates | Planning authority |
 | `image_studio.rs` | Recoverable image projects, structured compositions, native Ideogram 4 graphs, immutable PNG takes, and progress | LLM process ownership, arbitrary imported workflows, bundled license rights, or public-network fallback |
-| `live_preview.rs` | TAE preview graph nodes and producer-visible preview events | Final-render truth |
+| `live_preview.rs` | TAE preview graph nodes, bounded project-level reconnect state, and producer-visible preview events | Final-render truth or durable base64 preview storage |
 | `music.rs` | Recoverable song projects, producer arrangement, native Music 3 graphs, immutable takes, progress, and optional MuScriptor adapter | LLM process ownership, fake stem separation, bundled gated weights, or public-network fallback |
 | `music_midi.rs` | Bounded Standard MIDI parsing/writing, typed piano-roll documents, and recoverable binary replacement | MuScriptor execution, project path selection, source mutation, or UI state |
 
@@ -76,6 +84,13 @@ Producer directions enter only between complete model/tool turns. This is the sa
 allows redirection without corrupting an accepted assistant/tool-call pair. A checkpoint is graceful;
 immediate cancellation remains a separate explicit producer action.
 
+H3 preview frames are approximate process-local state. `LivePreviewRegistry` retains at most one
+latest estimate for four movie projects, merges terminal status into the last picture, and lets a
+remounted Studio query `get_movie_render_state`. Starting a new render clears the prior estimate;
+once the registered render job is no longer active the estimate is discarded and the preserved
+full-VAE master becomes the only picture shown. Project status and receipts remain the durable
+restart boundary—never put large preview data URLs in `project.json`.
+
 ## Model transport
 
 All Studio language-model streams pass response bytes through `OpenAiSseDecoder`. Features retain
@@ -85,9 +100,16 @@ completion markers, and events after completion so token loss cannot look like s
 
 Explicit `reasoning_content` or `reasoning` deltas are streamed to the same bounded, provisional
 thinking pane in prompt collaboration, Director planning and review, Producer Copilot, and the
-per-scene Director assistant. They are never inferred from ordinary answer text, treated as a
+Generative Director and Reviewer. They are never inferred from ordinary answer text, treated as a
 production instruction, or copied into the model's durable tool transcript. A model that exposes no
 separate channel is identified honestly in the UI.
+
+Generative-edit sessions additionally append every reasoning, prose, and typed-tool fragment to the
+bounded project-local `events.jsonl` journal before emitting it to the window. Attempt boundaries,
+schema rejection details, finish reasons, and completion-marker state use the same sequence. Generate
+replays that journal after navigation or restart and then reconciles it while a backend request is
+active. The accepted transcript remains the model-input authority; the event journal is lossless
+producer-facing evidence and must never be treated as an executable tool request.
 
 When adding a compatible runtime variation:
 
@@ -112,10 +134,43 @@ The project directory is the source of truth. Important planning files include:
 | `agent-workspace/state.json` | Workspace revision and clean-check gate |
 | `agent-workspace/agent-transcript*.json` | Lossless accepted conversation by context session |
 | `agent-workspace/agent-last-request.json` | Exact last planning request envelope for audit |
+| `agent-workspace/generative-edits/<request>/` | Exact task/context, candidate revisions, native-check state, transcript, fresh review, and accepted result |
+| `generations/transition-*/graph.json` and `receipt.json` | Exact endpoint hashes, H3 graph, seed, placement decision, and immutable output hash |
+| `agent-workspace/generative-edits/<request>/endpoint-frames/*.png` | Exact bounded endpoint pixels shown to the selected local Frame Analyst |
+| `agent-workspace/generative-edits/<request>/frame-analysis*.json` | Vision-model request manifest, per-frame observations, uncertainties, model identity, hashes, and recoverable failure |
 | `../../model-qualifications.json` | Recoverable protocol receipts bound to model, engine, runtime profile, and protocol revision |
 
 Atomic replacement and recovery copies are deliberate. Do not trade them for in-memory convenience.
 The advanced UI reads bounded redacted views; the unmodified files remain available as durable truth.
+
+## Generative edit lifecycle
+
+```text
+select one storyline shot or two exact frame anchors in Generate
+  -> producer writes renderer direction directly or opens a durable Generative Director session
+  -> when a checked vision model is selected, native code extracts and hashes each exact endpoint PNG
+  -> local Frame Analyst streams its reasoning and producer-readable observations, then records separate visible facts and uncertainties per endpoint
+  -> append complete current story, plan, references, storyline, and selected source facts every turn
+  -> typed generation_write_candidate writes one durable candidate
+  -> two clean native checks on the unchanged candidate
+  -> empty-object generation_submit references that durable candidate instead of streaming it again
+  -> independent fresh-context Reviewer accepts or returns blocking repairs
+  -> producer edits or discards the accepted candidate
+  -> H3 writes a preserved audition plus exact graph/endpoint/output receipt
+  -> producer explicitly chooses an audition or before/between/after placement
+```
+
+The React surface sends storyline edit IDs and source times, never absolute input paths. Native code
+resolves the selected preserved version inside the project boundary before extracting a frame. Only
+these bounded endpoint PNGs may enter the authenticated local vision-model request; the Director and
+Reviewer receive the durable observations rather than a claim that they inspected pixels. The request
+manifest records the exact image paths and hashes without duplicating base64, and resume reuses an
+integrity-checked observation only for the unchanged anchor task. A shot
+audition never rewrites the active master or approved plan. A transition defaults to the Masters bin and
+changes the storyline only when the producer selected insert or replace before generation. An internal
+shot replacement uses frame-aligned In and Out points: native placement splits the existing edit into
+untouched leading and trailing decisions, clears only the obsolete fades at the new joins, and inserts the
+generated master between them. The original source and every prior audition remain immutable.
 
 ## Music production lifecycle
 

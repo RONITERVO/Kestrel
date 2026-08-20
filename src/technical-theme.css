@@ -531,6 +531,7 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 
 /* Editorial UI follows the same line system; only the image monitor remains dark. */
 .movie-editor-pro { --editor-line: #111416; --editor-panel: #f7f8f5; --editor-deep: #fff; --editor-text: #111416; --editor-muted: #596064; --editor-accent: var(--tech-blue); color: #111; border: var(--tech-rule); background: #fff; box-shadow: 4px 4px 0 #111; }
+.project-edit-room .movie-editor-pro { border: 0; box-shadow: none; }
 .movie-editor-pro:focus-visible { box-shadow: 0 0 0 3px var(--tech-blue),4px 4px 0 #111; }
 .editor-command-bar { border-bottom: var(--tech-rule); background: #fff; }
 .editor-project-identity > svg, .editor-project-identity strong { color: #111; }
@@ -544,8 +545,9 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .editor-upper { background: #fff; }
 .editor-media-browser, .editor-inspector { color: #111; background: #f7f8f5; }
 .editor-panel-tabs { border-bottom: var(--tech-rule); background: #fff; }
-.editor-panel-tabs button { color: #555d61; }
-.editor-panel-tabs button.active { color: #111; border-bottom-color: #111; background: var(--tech-blue); }
+.editor-panel-tabs button { color: #555d61; font-weight: 700; white-space: nowrap; }
+.editor-panel-tabs button:hover:not(.active) { color: #111; background: var(--tech-blue-soft); }
+.editor-panel-tabs button.active { color: #111; border-bottom: 2px solid #111; background: var(--tech-blue); }
 .editor-search { color: #111; border-bottom: var(--tech-rule); background: #fff; }
 .editor-search input { color: #111; }
 .editor-search button { color: #111; }
@@ -587,7 +589,8 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .editor-inspector .inspector-section textarea, .editor-delivery-strip input:not([type="checkbox"]):not([type="range"]),
 .editor-delivery-strip select, .timeline-number { color: #111; border-color: #111; background: #fff; }
 .timeline-number b { color: #4e565a; }
-.inspector-nudge button, .inspector-reset { color: #111; border-color: #111; background: #fff; }
+.inspector-nudge button, .inspector-reset { color: #111; border: var(--tech-rule); border-radius: 4px; background: #fff; font-weight: 700; }
+.inspector-nudge button:hover, .inspector-reset:hover { background: var(--tech-blue-soft); }
 .native-mix-role { color: #0b6030; border: var(--tech-rule); background: var(--tech-green-soft); }
 .native-mix-role b, .native-mix-role small { color: #17462a; }
 .inspector-facts dt, .inspector-facts dd, .inspector-enable, .inspector-enable small { color: #4e565a; }
@@ -600,7 +603,7 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .editor-timeline-panel { border-top: var(--tech-rule); background: #fff; }
 .editor-tool-bar { border-bottom: var(--tech-rule); background: #fff; }
 .editor-tool-bar button { color: #41494d; }
-.editor-tool-bar button:hover { color: #111; background: var(--tech-blue-soft); }
+.editor-tool-bar button:hover { color: #111; background: var(--tech-blue-soft); border-color: #111; }
 .editor-tool-bar button.active { color: #111; border-color: #111; background: var(--tech-blue); box-shadow: inset 0 -3px #111; }
 .editor-tool-bar > div > i { background: #111; }
 .editor-marker-composer { color: #111; border-bottom: var(--tech-rule); background: var(--tech-yellow-soft); }
@@ -609,13 +612,13 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .editor-shortcut-map { color: #41494d; border-bottom-color: #111; background: #f7f8f5; }
 .editor-shortcut-map kbd { color: #111; border-color: #111; background: #fff; }
 .editor-timeline-scroll { scrollbar-color: #111 #e8ebe8; }
-.editor-track-label { color: #111; border-right-color: #111; background: #f7f8f5; box-shadow: 4px 0 0 #111; }
+.editor-track-label { color: #111; border-right: 1px solid #111; background: #f7f8f5; box-shadow: none; }
 .editor-track-label small { color: #596064; }
 .editor-ruler { border-bottom-color: #111; background: repeating-linear-gradient(90deg,#fff 0,#fff 9px,#cbd1d3 10px); }
 .editor-ruler > span { color: #4e565a; border-left-color: #111; }
 .editor-track-row { border-bottom-color: #111; }
-.editor-track-row.picture .editor-track-label { border-left-color: var(--tech-orange); }
-.editor-track-row.audio .editor-track-label { border-left-color: var(--tech-green); }
+.editor-track-row.picture .editor-track-label { border-left: 3px solid var(--tech-orange); }
+.editor-track-row.audio .editor-track-label { border-left: 3px solid var(--tech-green); }
 .editor-track-canvas { background: repeating-linear-gradient(90deg,#fff 0,#fff 49px,#d9dedb 50px); }
 .editor-track-row.picture .editor-track-canvas > button { color: #111; border-color: #111; background: var(--tech-orange); }
 .editor-track-row.picture .editor-track-canvas > button:nth-child(4n+2) { background: var(--tech-blue); }

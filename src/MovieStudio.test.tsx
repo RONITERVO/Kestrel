@@ -149,6 +149,55 @@ describe("Kestrel Movie Studio", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("keeps the Generate workspace attached while another production stage is visible", async () => {
+    const project: MovieProject = {
+      ...makeRunningProject("movie-retained", "Retained Director"),
+      status: "complete",
+      phase: "complete",
+      detail: "Review cut ready",
+      plan: {
+        title: "Retained Director",
+        logline: "A single completed shot.",
+        audience: "Producers",
+        creativeDirection: "Keep every approved frame available.",
+        continuityBible: ["Preserve the subject."],
+        sourceCredits: [],
+        qualityReview: { attempts: 1, score: 100, verdict: "Ready" },
+        clips: [{ id: "clip-1", title: "The Shot", purpose: "Open", durationSeconds: 5, prompt: "A precise cinematic shot.", continuityIn: "Start", continuityOut: "End", transition: "cut", usePreviousFrame: false, sourceRefs: [], referenceIds: [] }],
+      },
+      clips: [{ id: "clip-1", index: 1, title: "The Shot", prompt: "A precise cinematic shot.", durationSeconds: 5, seed: 7, status: "complete", path: "C:\\Movies\\clip-1.mp4", error: "", versions: [] }],
+      edit: {
+        clips: [{ id: "edit-1", clipId: "clip-1", enabled: true, order: 0, trimStart: 0, trimEnd: 0, audioGain: 1, sourceVersionId: "", speed: 1, fadeIn: 0, fadeOut: 0, audioFadeIn: 0, audioFadeOut: 0, label: "", notes: "" }],
+        exportTitle: "Retained Director", exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [],
+      },
+    };
+    vi.mocked(api.listMovies).mockResolvedValue([{ ...makeMovieSummary(project.id, project.title), status: "complete", phase: "complete", clipCount: 1 }]);
+    vi.mocked(api.getMovie).mockResolvedValue(project);
+
+    render(<MovieStudio advancedEnabled models={[baselineModel]} selectedModelId={baselineModel.id} onError={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Retained Director/i }));
+    fireEvent.click(await screen.findByText("Model limits"));
+    expect(screen.getByLabelText("This production context window")).toHaveValue(32_768);
+    expect(screen.getByLabelText("This production maximum output")).toHaveValue(32_768);
+    fireEvent.click(await screen.findByRole("button", { name: /GenerateH3 picture and sound/i }));
+    const direction = await screen.findByLabelText("Producer direction");
+    fireEvent.change(direction, { target: { value: "Preserve this unfinished producer direction." } });
+
+    const generateWorkspace = direction.closest("section.retained-studio-workspace");
+    expect(generateWorkspace).not.toHaveAttribute("hidden");
+    fireEvent.click(screen.getByRole("button", { name: /EditStoryline and native mix/i }));
+    expect(generateWorkspace).toHaveAttribute("hidden");
+    const editWorkspace = document.querySelector("section.project-edit-room.retained-studio-workspace");
+    expect(editWorkspace).not.toHaveAttribute("hidden");
+    fireEvent.click(screen.getByRole("button", { name: /GenerateH3 picture and sound/i }));
+    expect(generateWorkspace).not.toHaveAttribute("hidden");
+    expect(editWorkspace).toHaveAttribute("hidden");
+
+    expect(screen.getByLabelText("Producer direction")).toBe(direction);
+    expect(direction).toHaveValue("Preserve this unfinished producer direction.");
+    expect(screen.getByLabelText("This production context window")).toHaveValue(32_768);
+  });
+
   it("presents a one-prompt offline production path", async () => {
     render(<MovieStudio advancedEnabled models={[baselineModel]} selectedModelId={baselineModel.id} onError={vi.fn()} />);
     expect(screen.getByText(/Shape the production brief together/i)).toBeInTheDocument();
@@ -177,6 +226,8 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByLabelText("Thinking mode")).toHaveValue("max");
     expect(screen.getByLabelText("ComfyUI root")).toHaveValue("C:\\Configured\\ComfyUI");
     expect(screen.getByLabelText("Reference image fidelity")).toHaveValue("match");
+    expect(screen.getByLabelText("This production context window")).toHaveValue(32_768);
+    expect(screen.getByLabelText("This production maximum output")).toHaveValue(32_768);
     const checkpoint = screen.getByLabelText(/Review the plan before rendering/i);
     expect(checkpoint).toBeChecked();
     fireEvent.click(checkpoint);
@@ -299,7 +350,7 @@ describe("Kestrel Movie Studio", () => {
       at: new Date().toISOString(),
     };
     render(<LiveH3Preview event={event} advanced />);
-    expect(screen.getByText("Live H3 preview")).toBeInTheDocument();
+    expect(screen.getByText("Live H3 estimate")).toBeInTheDocument();
     expect(screen.getByText("Sample 7 of 20")).toBeInTheDocument();
     expect(screen.getByAltText(/Approximate live MiniMax H3/i)).toHaveAttribute("src", event.dataUrl);
     fireEvent.click(screen.getByText("Preview pipeline details"));
@@ -308,6 +359,16 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByText(/taehv-revision/)).toBeInTheDocument();
     expect(screen.getByText(/decoder-sha256/)).toBeInTheDocument();
     expect(screen.getByText(/Ephemeral preview bytes are not stored/i)).toBeInTheDocument();
+  });
+
+  it("shows an explicit safe terminal state when an H3 estimate stops before its first frame", () => {
+    render(<LiveH3Preview event={{
+      kind: "stopped", target: "movieClip", jobId: "job-1", projectId: "movie-1",
+      detail: "The H3 live estimate stopped before a full master was preserved.",
+      previewNodeRevision: "kj", previewDecoderRevision: "taehv", previewDecoderSha256: "sha", at: new Date().toISOString(),
+    }} advanced={false} />);
+    expect(screen.getByText("Stopped safely")).toBeInTheDocument();
+    expect(screen.getByText(/source master and storyline remain unchanged/i)).toBeInTheDocument();
   });
 
   it("numbers native H3 labels by type and puts embedded video audio first", () => {

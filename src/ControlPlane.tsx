@@ -8,6 +8,7 @@ type ControlProps = {
   control: ControlSnapshot;
   onChanged: (control: ControlSnapshot) => void;
   onError: (message: string) => void;
+  visible?: boolean;
 };
 
 export function ControlPlane(props: ControlProps) {

@@ -200,6 +200,7 @@ export interface MovieSettings {
   thinkingBudget: number;
   thinkingLevel?: ThinkingLevel;
   maxOutputTokens: number;
+  contextWindow?: number;
   comfyRoot: string;
   refImageSize: "match" | "max";
 }
@@ -301,7 +302,7 @@ export interface MovieImageAssetEvent {
 }
 
 export interface MovieRenderPreviewEvent {
-  kind: "connected" | "frame" | "finished" | "unavailable" | string;
+  kind: "connected" | "frame" | "finished" | "unavailable" | "stopped" | string;
   target: "imageAsset" | "movieClip" | string;
   jobId: string;
   projectId?: string;
@@ -426,19 +427,74 @@ export interface MovieClipSuggestion {
   clip: PlannedClip;
 }
 
-export interface MovieClipAssistEvent {
-  requestId: string;
-  projectId: string;
-  clipId: string;
-  kind: "reasoning" | string;
-  content: string;
-  at: string;
-}
-
 export interface MovieClipRenderRequest {
   id: string;
   suggestion: MovieClipSuggestion;
   seed: number;
+}
+
+export interface MovieFrameAnchor {
+  editId: string;
+  timeSeconds: number;
+  label?: string;
+}
+
+export interface MovieRenderState {
+  active: boolean;
+  preview?: MovieRenderPreviewEvent;
+}
+
+export interface MovieCapturedFrame {
+  anchor: MovieFrameAnchor;
+  path: string;
+}
+
+export type MovieTransitionPosition = "before" | "between" | "after";
+export type MovieTransitionPlacement = "add_to_masters" | "insert_before_right" | "insert_after_left" | "replace_range";
+
+export interface MovieFl2vTransitionRequest {
+  id: string;
+  position: MovieTransitionPosition;
+  firstAnchor?: MovieFrameAnchor;
+  lastAnchor?: MovieFrameAnchor;
+  prompt: string;
+  durationSeconds: number;
+  seed?: number;
+  placement: MovieTransitionPlacement;
+}
+
+export type MovieGenerationTask =
+  | { kind: "shotVersion"; clipId: string; direction: string }
+  | { kind: "transition"; position: MovieTransitionPosition; firstAnchor?: MovieFrameAnchor; lastAnchor?: MovieFrameAnchor; direction: string; durationSeconds: number };
+
+export type MovieGenerationCandidate =
+  | { kind: "shotVersion"; clipId: string; clip: PlannedClip; checklist: string[] }
+  | { kind: "transition"; motionPrompt: string; durationSeconds: number; cameraMotion: string; subjectMotion: string; transitionNotes: string; checklist: string[] };
+
+export interface MovieGenerationAgentRequest {
+  requestId: string;
+  projectId: string;
+  task: MovieGenerationTask;
+  thinkingLevel?: ThinkingLevel;
+  frameAnalystModelId?: string;
+}
+
+export interface MovieGenerationProposal {
+  summary: string;
+  reviewSummary: string;
+  candidate: MovieGenerationCandidate;
+}
+
+export interface MovieGenerationAgentEvent {
+  sequence: number;
+  requestId: string;
+  projectId: string;
+  kind: "turn-start" | "reasoning" | "token" | "activity" | "advanced-token" | "complete" | string;
+  modelRole: "director" | "reviewer" | string;
+  content: string;
+  at: string;
+  completionMarkerSeen?: boolean;
+  finishReason?: string;
 }
 
 export interface ClipEdit {
@@ -542,6 +598,11 @@ export interface MovieModelRoleRequest {
   reviewerModelId: string;
   directorThinkingLevel?: ThinkingLevel;
   reviewerThinkingLevel?: ThinkingLevel;
+}
+
+export interface MovieRuntimePolicyRequest {
+  contextWindow: number;
+  maxOutputTokens: number;
 }
 
 export interface MovieModelBinding {
@@ -1022,6 +1083,8 @@ export interface PromptDraftRequest {
   assetName: string;
   assetKind: string;
   thinkingLevel?: ThinkingLevel;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
 export interface PromptDraftReceipt {

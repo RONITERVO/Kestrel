@@ -8,14 +8,17 @@ use super::{
     model_stream::{reasoning_delta, OpenAiSseDecoder, OpenAiStreamEvent},
     write_json_atomic, MovieSettings, StudioError,
 };
-use crate::prompt_catalog::{PromptId, render};
+use crate::prompt_catalog::{render, PromptId};
 use crate::runtime::{authorized, ModelConnection};
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tokio_util::sync::CancellationToken;
 
 /// Durable conversation state for one Studio Director context session.
@@ -47,8 +50,49 @@ impl AgentTranscript {
         Ok(transcript)
     }
 
+    /// Continue a producer-visible session without discarding any completed turns.
+    pub(super) fn resume(path: PathBuf, instruction: &str) -> Result<Self, StudioError> {
+        const MAX_TRANSCRIPT_BYTES: u64 = 2 * 1024 * 1024;
+        let metadata = fs::metadata(&path)?;
+        if metadata.len() > MAX_TRANSCRIPT_BYTES {
+            return Err(StudioError::Invalid(
+                "the saved agent transcript exceeds the 2 MiB resume limit".into(),
+            ));
+        }
+        let value: Value = serde_json::from_slice(&fs::read(&path)?)?;
+        let step = value
+            .get("step")
+            .and_then(Value::as_u64)
+            .unwrap_or_default() as u32;
+        let mut messages = value
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| {
+                StudioError::Invalid("the saved agent transcript has no messages".into())
+            })?;
+        if messages.is_empty() || messages.len() > 2_048 {
+            return Err(StudioError::Invalid(
+                "the saved agent transcript has an invalid message count".into(),
+            ));
+        }
+        messages.push(json!({"role":"user","content":instruction}));
+        let transcript = Self {
+            path,
+            messages,
+            step,
+        };
+        transcript.persist()?;
+        Ok(transcript)
+    }
+
     pub(super) fn request_messages(&self, authoritative_memory: String) -> Vec<Value> {
-        let mut messages = self.messages.clone();
+        let mut messages = self
+            .messages
+            .iter()
+            .cloned()
+            .map(compact_superseded_context_for_request)
+            .collect::<Vec<_>>();
         messages.push(json!({"role":"user","content":authoritative_memory}));
         messages
     }
@@ -78,6 +122,18 @@ impl AgentTranscript {
             }),
         )
     }
+}
+
+fn compact_superseded_context_for_request(mut message: Value) -> Value {
+    let is_tool = message.get("role").and_then(Value::as_str) == Some("tool");
+    let is_legacy_context = message
+        .get("content")
+        .and_then(Value::as_str)
+        .is_some_and(|content| content.starts_with("CONTEXT: "));
+    if is_tool && is_legacy_context {
+        message["content"] = json!("The complete current authoritative context is supplied as the final user message of this turn. This older duplicate is omitted from model input but remains unchanged in the durable transcript.");
+    }
+    message
 }
 
 #[derive(Debug)]
@@ -208,6 +264,17 @@ pub(super) enum StreamEvent {
     Reasoning(String),
     ToolArgumentsStarted,
     ToolArguments(String),
+    AttemptStarted {
+        attempt: u8,
+        maximum: u8,
+    },
+    SubmissionInvalid(String),
+    Terminal {
+        status: &'static str,
+        detail: String,
+        completion_marker_seen: bool,
+        finish_reason: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -216,6 +283,58 @@ struct StreamedToolCall {
     name: String,
     arguments: String,
     activity_announced: bool,
+}
+
+fn accept_stream_events(
+    events: Vec<OpenAiStreamEvent>,
+    content: &mut String,
+    tool_calls: &mut Vec<StreamedToolCall>,
+    finish_reason: &mut Option<String>,
+    on_event: &mut impl FnMut(StreamEvent),
+) {
+    for event in events {
+        let OpenAiStreamEvent::Message(value) = event else {
+            continue;
+        };
+        if let Some(reason) = value
+            .pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str)
+        {
+            *finish_reason = Some(reason.to_string());
+        }
+        if let Some(token) = value
+            .pointer("/choices/0/delta/content")
+            .and_then(Value::as_str)
+        {
+            content.push_str(token);
+            on_event(StreamEvent::Content(token.to_string()));
+        }
+        if let Some(token) = reasoning_delta(&value) {
+            on_event(StreamEvent::Reasoning(token.to_string()));
+        }
+        if let Some(deltas) = value
+            .pointer("/choices/0/delta/tool_calls")
+            .and_then(Value::as_array)
+        {
+            collect_tool_deltas(tool_calls, deltas, on_event);
+        }
+    }
+}
+
+pub(super) fn terminal_detail(
+    detail: &str,
+    completion_marker_seen: bool,
+    finish_reason: Option<&str>,
+) -> String {
+    format!(
+        "{detail} (completion marker {}; finish reason {})",
+        if completion_marker_seen {
+            "received"
+        } else {
+            "missing"
+        },
+        finish_reason.unwrap_or("not reported")
+    )
 }
 
 /// Streams one tool-only model turn while assembling an OpenAI-compatible response object.
@@ -236,16 +355,36 @@ pub(super) async fn complete_stream(
     if let Some(path) = request.audit_path {
         write_json_atomic(path, &body)?;
     }
-    let response = authorized(
+    let response = match authorized(
         client.post(format!("{}/chat/completions", request.connection.endpoint)),
         request.connection,
     )
     .json(&body)
     .send()
-    .await?;
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            on_event(StreamEvent::Terminal {
+                status: "failed",
+                detail: format!(
+                    "The model request could not start or lost its connection: {error}"
+                ),
+                completion_marker_seen: false,
+                finish_reason: None,
+            });
+            return Err(error.into());
+        }
+    };
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
+        on_event(StreamEvent::Terminal {
+            status: "failed",
+            detail: format!("Model HTTP request failed with status {status}"),
+            completion_marker_seen: false,
+            finish_reason: None,
+        });
         return Err(StudioError::Planning(format!(
             "movie agent HTTP {status}: {}",
             super::truncate(&text, 500)
@@ -256,44 +395,92 @@ pub(super) async fn complete_stream(
     let mut decoder = OpenAiSseDecoder::default();
     let mut content = String::new();
     let mut tool_calls = Vec::<StreamedToolCall>::new();
-    let mut accept_events = |events: Vec<OpenAiStreamEvent>| {
-        for event in events {
-            let OpenAiStreamEvent::Message(value) = event else {
-                continue;
-            };
-            if let Some(token) = value
-                .pointer("/choices/0/delta/content")
-                .and_then(Value::as_str)
-            {
-                content.push_str(token);
-                on_event(StreamEvent::Content(token.to_string()));
-            }
-            if let Some(token) = reasoning_delta(&value) {
-                on_event(StreamEvent::Reasoning(token.to_string()));
-            }
-            if let Some(deltas) = value
-                .pointer("/choices/0/delta/tool_calls")
-                .and_then(Value::as_array)
-            {
-                collect_tool_deltas(&mut tool_calls, deltas, &mut on_event);
-            }
-        }
-    };
+    let mut finish_reason = None::<String>;
     loop {
         let next = tokio::select! {
             value = stream.next() => value,
-            _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
+            _ = request.cancel.cancelled() => {
+                on_event(StreamEvent::Terminal {
+                    status: "cancelled",
+                    detail: "Producer stopped this model turn; every token received before the checkpoint is retained".into(),
+                    completion_marker_seen: false,
+                    finish_reason: None,
+                });
+                return Err(StudioError::Cancelled);
+            },
         };
         let Some(chunk) = next else { break };
-        let events = decoder
-            .push(&chunk?)
-            .map_err(|error| StudioError::Planning(format!("movie agent stream error: {error}")))?;
-        accept_events(events);
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                on_event(StreamEvent::Terminal {
+                    status: "failed",
+                    detail: format!("The model response connection failed: {error}"),
+                    completion_marker_seen: false,
+                    finish_reason: finish_reason.clone(),
+                });
+                return Err(error.into());
+            }
+        };
+        let events = match decoder.push(&chunk) {
+            Ok(events) => events,
+            Err(error) => {
+                let detail = format!("movie agent stream error: {error}");
+                on_event(StreamEvent::Terminal {
+                    status: "failed",
+                    detail: detail.clone(),
+                    completion_marker_seen: stream_error_saw_completion_marker(&error),
+                    finish_reason: finish_reason.clone(),
+                });
+                return Err(StudioError::Planning(detail));
+            }
+        };
+        accept_stream_events(
+            events,
+            &mut content,
+            &mut tool_calls,
+            &mut finish_reason,
+            &mut on_event,
+        );
     }
-    let final_events = decoder
-        .finish()
-        .map_err(|error| StudioError::Planning(format!("movie agent stream error: {error}")))?;
-    accept_events(final_events);
+    let final_events = match decoder.finish() {
+        Ok(events) => events,
+        Err(error) => {
+            let detail = format!("movie agent stream error: {error}");
+            on_event(StreamEvent::Terminal {
+                status: "failed",
+                detail: detail.clone(),
+                completion_marker_seen: stream_error_saw_completion_marker(&error),
+                finish_reason: finish_reason.clone(),
+            });
+            return Err(StudioError::Planning(detail));
+        }
+    };
+    accept_stream_events(
+        final_events,
+        &mut content,
+        &mut tool_calls,
+        &mut finish_reason,
+        &mut on_event,
+    );
+    if finish_reason_indicates_truncation(finish_reason.as_deref()) {
+        on_event(StreamEvent::Terminal {
+            status: "truncated",
+            detail: "The local model reached its generation or context limit; its incomplete output is retained but cannot be accepted as a typed action".into(),
+            completion_marker_seen: true,
+            finish_reason: finish_reason.clone(),
+        });
+        return Err(StudioError::Planning(
+            "the local model reached its generation or context limit while streaming a Studio tool call; the incomplete call was discarded and the durable workspace can resume in a clean context"
+                .into(),
+        ));
+    }
+    on_event(StreamEvent::Terminal {
+        status: "complete",
+        detail: "The model stream supplied its completion marker".into(),
+        completion_marker_seen: true,
+        finish_reason: finish_reason.clone(),
+    });
     let tool_calls = tool_calls
         .into_iter()
         .enumerate()
@@ -315,6 +502,15 @@ pub(super) async fn complete_stream(
         "content":if content.is_empty() { Value::Null } else { Value::String(content) },
         "tool_calls":tool_calls,
     }}]}))
+}
+
+fn stream_error_saw_completion_marker(error: &str) -> bool {
+    error.contains("after its completion marker")
+        || error.contains("more than one completion marker")
+}
+
+fn finish_reason_indicates_truncation(reason: Option<&str>) -> bool {
+    matches!(reason, Some("length" | "max_tokens"))
 }
 
 fn collect_tool_deltas(
@@ -400,6 +596,12 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
     let local_cancel = CancellationToken::new();
     let cancel = cancel.unwrap_or(&local_cancel);
     for attempt in 0..3 {
+        if let Some(handler) = on_event.as_deref_mut() {
+            handler(StreamEvent::AttemptStarted {
+                attempt: attempt + 1,
+                maximum: 3,
+            });
+        }
         let fallback_tool_call_prefix = format!("studio-submission-{attempt}");
         let response = complete_stream(
             client,
@@ -419,7 +621,25 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
                 }
             },
         )
-        .await?;
+        .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(StudioError::Cancelled) => return Err(StudioError::Cancelled),
+            Err(error) => {
+                last_error = error.to_string();
+                if let Some(handler) = on_event.as_deref_mut() {
+                    handler(StreamEvent::SubmissionInvalid(format!(
+                        "{label} attempt {} could not be accepted: {last_error}",
+                        attempt + 1
+                    )));
+                }
+                // The model's partial response is deliberately absent from history. A transport
+                // failure is not semantic feedback and adding a correction prompt makes small
+                // models repeat or explain an output they never see. Retry the same complete,
+                // fresh-context request; only schema/parse failures below enter corrective history.
+                continue;
+            }
+        };
         let message = response_message(&response)?;
         let tool_call = message
             .get("tool_calls")
@@ -446,6 +666,12 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
         } else {
             last_error = format!("The Studio Director did not call {tool_name}");
         }
+        if let Some(handler) = on_event.as_deref_mut() {
+            handler(StreamEvent::SubmissionInvalid(format!(
+                "{label} attempt {} could not be accepted: {last_error}",
+                attempt + 1
+            )));
+        }
         let mut history_message = message;
         if let Some(object) = history_message.as_object_mut() {
             object.remove("reasoning");
@@ -463,6 +689,52 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct TestReview {
+        summary: String,
+        issues: Vec<String>,
+    }
+
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 8_192];
+        let header_end = loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0, "request ended before its headers");
+            bytes.extend_from_slice(&buffer[..read]);
+            if let Some(position) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
+                break position + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or_default();
+        while bytes.len() < header_end + content_length {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0, "request ended before its body");
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        String::from_utf8(bytes[header_end..header_end + content_length].to_vec()).unwrap()
+    }
+
+    async fn write_sse_response(stream: &mut tokio::net::TcpStream, body: &str) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.shutdown().await.unwrap();
+    }
 
     #[test]
     fn assistant_turn_removes_private_reasoning_but_preserves_tool_calls() {
@@ -496,6 +768,52 @@ mod tests {
         let serialized = value.to_string();
         assert!(serialized.contains("```"));
         assert!(serialized.contains("<think>hidden</think>"));
+    }
+
+    #[test]
+    fn legacy_context_tool_output_is_compacted_only_in_the_model_request() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("transcript.json");
+        let mut transcript =
+            AgentTranscript::begin(path.clone(), 0, "system", "instruction").unwrap();
+        let durable_context = format!("CONTEXT: {}", "x".repeat(20_000));
+        transcript
+            .push(
+                json!({"role":"tool","tool_call_id":"call-1","content":durable_context}),
+                1,
+            )
+            .unwrap();
+
+        let request = transcript.request_messages("CURRENT AUTHORITATIVE MEMORY".into());
+        assert!(request[2]["content"].as_str().unwrap().len() < 512);
+        assert_eq!(
+            request.last().unwrap()["content"],
+            "CURRENT AUTHORITATIVE MEMORY"
+        );
+
+        let durable: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            durable["messages"][2]["content"].as_str().unwrap().len(),
+            20_009
+        );
+    }
+
+    #[test]
+    fn transcript_resume_keeps_prior_turns_and_adds_a_visible_resume_instruction() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent-transcript.json");
+        let mut transcript = AgentTranscript::begin(path.clone(), 0, "system", "start").unwrap();
+        transcript
+            .push(json!({"role":"assistant","content":"saved candidate"}), 4)
+            .unwrap();
+
+        AgentTranscript::resume(path.clone(), "resume from checkpoint").unwrap();
+
+        let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(value["step"], 4);
+        assert_eq!(value["messages"].as_array().unwrap().len(), 4);
+        assert_eq!(value["messages"][2]["content"], "saved candidate");
+        assert_eq!(value["messages"][3]["content"], "resume from checkpoint");
     }
 
     #[test]
@@ -569,5 +887,114 @@ mod tests {
                 StreamEvent::ToolArguments("\"list\"}".into()),
             ]
         );
+    }
+
+    #[test]
+    fn output_limit_finish_reasons_discard_partial_tool_calls() {
+        assert!(finish_reason_indicates_truncation(Some("length")));
+        assert!(finish_reason_indicates_truncation(Some("max_tokens")));
+        assert!(!finish_reason_indicates_truncation(Some("tool_calls")));
+        assert!(!finish_reason_indicates_truncation(Some("stop")));
+        assert!(!finish_reason_indicates_truncation(None));
+    }
+
+    #[test]
+    fn completion_marker_state_is_derived_from_decoder_errors_without_guessing() {
+        assert!(!stream_error_saw_completion_marker(
+            "the model stream ended before its completion marker; received output remains retained for inspection"
+        ));
+        assert!(stream_error_saw_completion_marker(
+            "the model stream sent data after its completion marker"
+        ));
+        assert!(stream_error_saw_completion_marker(
+            "the model stream sent more than one completion marker"
+        ));
+    }
+
+    #[test]
+    fn terminal_details_use_one_producer_visible_format() {
+        assert_eq!(
+            terminal_detail("The turn ended", true, Some("tool_calls")),
+            "The turn ended (completion marker received; finish reason tool_calls)"
+        );
+        assert_eq!(
+            terminal_detail("The turn ended", false, None),
+            "The turn ended (completion marker missing; finish reason not reported)"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_submission_retries_a_dropped_stream_with_fresh_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut request_bodies = Vec::new();
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                request_bodies.push(read_http_request(&mut stream).await);
+                let arguments = if attempt == 0 {
+                    "{\"summary\":\"partial"
+                } else {
+                    "{\"summary\":\"The candidate preserves both endpoints.\",\"issues\":[]}"
+                };
+                let event = json!({"choices":[{"delta":{"tool_calls":[{
+                    "index":0,"id":"review-call","function":{
+                        "name":"submit_review","arguments":arguments
+                    }
+                }]}}]});
+                let body = if attempt == 0 {
+                    format!("data: {event}\n\n")
+                } else {
+                    format!(
+                        "data: {event}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]})
+                    )
+                };
+                write_sse_response(&mut stream, &body).await;
+            }
+            request_bodies
+        });
+        let connection = ModelConnection {
+            endpoint: format!("http://{address}/v1"),
+            api_key: None,
+            model_id: "test-model".into(),
+            model_label: "Test model".into(),
+        };
+        let messages = vec![json!({"role":"user","content":"Review this candidate."})];
+        let schema = json!({"type":"json_schema","json_schema":{"schema":{
+            "type":"object","additionalProperties":false,
+            "properties":{"summary":{"type":"string"},"issues":{"type":"array","items":{"type":"string"}}},
+            "required":["summary","issues"]
+        }}});
+        let result: TestReview = complete_tool_submission(
+            &Client::builder().no_proxy().build().unwrap(),
+            ToolSubmissionRequest {
+                connection: &connection,
+                initial_messages: &messages,
+                tool_name: "submit_review",
+                tool_description: "Submit the review.",
+                response_format: schema,
+                settings: &MovieSettings::default(),
+                runtime_max_output_tokens: 4_096,
+                label: "test review",
+                audit_path: None,
+                cancel: None,
+                on_event: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result,
+            TestReview {
+                summary: "The candidate preserves both endpoints.".into(),
+                issues: vec![],
+            }
+        );
+        let request_bodies = server.await.unwrap();
+        let first: Value = serde_json::from_str(&request_bodies[0]).unwrap();
+        let second: Value = serde_json::from_str(&request_bodies[1]).unwrap();
+        assert_eq!(first["messages"], second["messages"]);
+        assert_eq!(second["messages"], json!(messages));
     }
 }

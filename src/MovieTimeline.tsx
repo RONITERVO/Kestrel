@@ -1,14 +1,14 @@
 import {
-  Archive, AudioLines, Check, ChevronLeft, ChevronRight, CircleHelp, Copy,
-  Eye, EyeOff, Film, Flag, Gauge, Images, Info, List, Magnet, Maximize2,
+  Archive, AudioLines, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy,
+  Eye, EyeOff, Film, Flag, Gauge, Images, Info, List, LoaderCircle, Magnet, Maximize2,
   Minimize2, MousePointer2, PanelLeft, PanelRight, Pause, Play, Plus, Redo2,
   RotateCcw, Save, ScanLine, Scissors, Search, SkipBack, SkipForward,
   Trash2, Undo2, Video, Volume2, X, ZoomIn,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { movieMediaUrl } from "./api";
-import type {
-  ClipEdit, MovieEdit, MovieProject, MovieReference, RenderedClip, TimelineMarker,
+import {
+  type ClipEdit, type MovieEdit, type MovieProject, type MovieReference, type RenderedClip, type TimelineMarker,
 } from "./types";
 
 const FPS = 24;
@@ -218,6 +218,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     [next.audioFadeIn, next.audioFadeOut] = fitFades(next.audioFadeIn, next.audioFadeOut);
     commit({ ...normalizedValue, clips: normalizedValue.clips.map((item) => item.id === selected.edit.id ? next : item) });
   };
+
   const setProgramPosition = (item: TimelineItem, time: number, play = false) => {
     const bounded = Math.max(item.edit.trimStart, Math.min(item.sourceDuration - item.edit.trimEnd, time));
     setViewerMode("program");
@@ -411,7 +412,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
         <label className="editor-search"><Search /><input aria-label="Search editor media" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={browserTab === "index" ? "Clips, markers, notes" : "Search this production"} />{search && <button aria-label="Clear media search" onClick={() => setSearch("")}><X /></button>}</label>
         <div className="editor-browser-body">
           {browserTab === "masters" && <>{filteredClips.map((clip) => <button key={clip.id} className={`editor-media-row ${sourceClip?.id === clip.id && !sourceReference ? "selected" : ""}`} onClick={() => { setSourceReferenceId(""); setSourceClipId(clip.id); setSourceVersionId(""); setViewerMode("source"); setSourceTime(0); }} onDoubleClick={() => appendClip(clip)}>
-            <span className="editor-media-thumb"><Video /><b>{clip.index + 1}</b></span><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {clip.seed}</small><em>{clip.versions.length ? `${clip.versions.length} preserved versions` : "Active master"}</em></span><i className={normalizedValue.clips.some((item) => item.clipId === clip.id) ? "used" : ""} />
+            <span className="editor-media-thumb video"><Video /><b>{clip.index + 1}</b></span><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {String(clip.seed).length > 8 ? `${String(clip.seed).slice(0, 8)}…` : clip.seed}</small><em>{clip.versions.length ? `${clip.versions.length} preserved versions` : "Active master"}</em></span><i className={normalizedValue.clips.some((item) => item.clipId === clip.id) ? "used" : ""} />
           </button>)}{!filteredClips.length && <EditorEmpty text="No preserved masters match this search." />}</>}
           {browserTab === "references" && <>{filteredReferences.map((reference) => <button key={reference.assetId} className={`editor-media-row ${sourceReference?.assetId === reference.assetId ? "selected" : ""}`} onClick={() => { setSourceReferenceId(reference.assetId); setViewerMode("source"); setSourceTime(0); }}>
             <ReferenceThumb reference={reference} /><span><strong>{reference.name}</strong><small>{reference.kind} · {reference.durationSeconds ? `${reference.durationSeconds.toFixed(1)}s` : `${reference.width}×${reference.height}`}</small><em>{reference.description || "Producer reference"}</em></span>
@@ -441,31 +442,52 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
       </main>
 
       {showInspector && <aside className="editor-inspector">
-        <div className="editor-panel-tabs"><button className={inspectorTab === "video" ? "active" : ""} onClick={() => setInspectorTab("video")}><Video /> Video</button><button className={inspectorTab === "audio" ? "active" : ""} onClick={() => setInspectorTab("audio")}><AudioLines /> Audio</button><button className={inspectorTab === "info" ? "active" : ""} onClick={() => setInspectorTab("info")}><Info /> Info</button></div>
-        <header><span>Timeline selection</span><strong>{selected?.edit.label || selected?.clip.title || "No selection"}</strong><small>{selected ? `${formatTimecode(selected.outputDuration)} · ${selected.versionLabel}` : "Select an edit in the primary storyline"}</small></header>
-        {selected ? <div className="editor-inspector-body">
-          {inspectorTab === "video" && <>
-            <InspectorSection title="Source" defaultOpen><label className="wide">Preserved version<select value={selected.edit.sourceVersionId} onChange={(event) => patchSelected({ sourceVersionId: event.target.value, trimStart: 0, trimEnd: 0 })}><option value="">Active master</option>{selected.clip.versions.map((version) => <option key={version.id} value={version.id}>{version.id === "original" ? "Original master" : `Version ${version.id}`} · {version.durationSeconds.toFixed(1)}s</option>)}</select></label></InspectorSection>
-            <InspectorSection title="Timing" defaultOpen><TimelineNumber label="Trim start" value={selected.edit.trimStart} min={0} max={Math.max(0, selected.sourceDuration - selected.edit.trimEnd - .1)} step={1 / FPS} suffix="s" onChange={(trimStart) => patchSelected({ trimStart })} /><TimelineNumber label="Trim end" value={selected.edit.trimEnd} min={0} max={Math.max(0, selected.sourceDuration - selected.edit.trimStart - .1)} step={1 / FPS} suffix="s" onChange={(trimEnd) => patchSelected({ trimEnd })} /><TimelineNumber label="Speed" value={selected.edit.speed} min={.25} max={4} step={.05} suffix="×" onChange={(speed) => patchSelected({ speed })} /><div className="inspector-nudge wide"><button onClick={() => patchSelected({ trimStart: Math.max(0, selected.edit.trimStart - 1 / FPS) })}>Start −1f</button><button onClick={() => patchSelected({ trimStart: Math.min(selected.sourceDuration - selected.edit.trimEnd - .1, selected.edit.trimStart + 1 / FPS) })}>Start +1f</button><button onClick={() => patchSelected({ trimEnd: Math.min(selected.sourceDuration - selected.edit.trimStart - .1, selected.edit.trimEnd + 1 / FPS) })}>End −1f</button><button onClick={() => patchSelected({ trimEnd: Math.max(0, selected.edit.trimEnd - 1 / FPS) })}>End +1f</button></div></InspectorSection>
-            <InspectorSection title="Picture fades"><TimelineNumber label="Fade in" value={selected.edit.fadeIn} min={0} max={Math.max(0, selected.outputDuration - selected.edit.fadeOut)} step={.05} suffix="s" onChange={(fadeIn) => patchSelected({ fadeIn })} /><TimelineNumber label="Fade out" value={selected.edit.fadeOut} min={0} max={Math.max(0, selected.outputDuration - selected.edit.fadeIn)} step={.05} suffix="s" onChange={(fadeOut) => patchSelected({ fadeOut })} /><button className="inspector-reset wide" onClick={() => patchSelected({ speed: 1, fadeIn: 0, fadeOut: 0 })}><RotateCcw /> Reset picture timing</button></InspectorSection>
-          </>}
-          {inspectorTab === "audio" && <>
-            <div className="native-mix-role"><span><Volume2 /><b>Native Mix</b></span><small>H3 picture and sound stay synchronized as one preserved source. Dialogue, music, ambience, and effects are not falsely presented as separate stems.</small></div>
-            <InspectorSection title="Level" defaultOpen><TimelineNumber label="Gain" value={selected.edit.audioGain} min={0} max={4} step={.05} suffix="×" onChange={(audioGain) => patchSelected({ audioGain })} /><label className="wide inspector-range">Clip level<input aria-label="Selected clip audio level" type="range" min={0} max={2} step={.01} value={Math.min(2, selected.edit.audioGain)} onChange={(event) => patchSelected({ audioGain: Number(event.target.value) })} /></label></InspectorSection>
-            <InspectorSection title="Audio fades" defaultOpen><TimelineNumber label="Fade in" value={selected.edit.audioFadeIn} min={0} max={Math.max(0, selected.outputDuration - selected.edit.audioFadeOut)} step={.05} suffix="s" onChange={(audioFadeIn) => patchSelected({ audioFadeIn })} /><TimelineNumber label="Fade out" value={selected.edit.audioFadeOut} min={0} max={Math.max(0, selected.outputDuration - selected.edit.audioFadeIn)} step={.05} suffix="s" onChange={(audioFadeOut) => patchSelected({ audioFadeOut })} /><button className="inspector-reset wide" onClick={() => patchSelected({ audioGain: 1, audioFadeIn: 0, audioFadeOut: 0 })}><RotateCcw /> Reset audio</button></InspectorSection>
-          </>}
-          {inspectorTab === "info" && <>
-            <InspectorSection title="Producer metadata" defaultOpen><label className="wide">Timeline label<input maxLength={120} value={selected.edit.label} onChange={(event) => patchSelected({ label: event.target.value })} placeholder={selected.clip.title} /></label><label className="wide">Producer notes<textarea maxLength={4000} value={selected.edit.notes} onChange={(event) => patchSelected({ notes: event.target.value })} placeholder="Performance, pacing, continuity, review notes, or handoff details…" /></label></InspectorSection>
-            <InspectorSection title="Source facts" defaultOpen><dl className="inspector-facts wide"><div><dt>Master</dt><dd>{selected.clip.title}</dd></div><div><dt>Seed</dt><dd>{selected.clip.seed}</dd></div><div><dt>Source</dt><dd>{formatTimecode(selected.sourceDuration)}</dd></div><div><dt>Output</dt><dd>{formatTimecode(selected.outputDuration)}</dd></div></dl></InspectorSection>
-            <label className="inspector-enable"><input type="checkbox" checked={selected.edit.enabled} onChange={(event) => patchSelected({ enabled: event.target.checked })} /> <span>{selected.edit.enabled ? <Eye /> : <EyeOff />}<b>Include in program and export</b><small>Disabling removes this decision from playback; the preserved source remains in Masters.</small></span></label>
-          </>}
-        </div> : <EditorEmpty text="Select a timeline edit to inspect its preserved source, timing, audio, and notes." />}
+        <div className="editor-panel-tabs">
+          <button className={inspectorTab === "video" ? "active" : ""} onClick={() => setInspectorTab("video")}><Video /> Video</button>
+          <button className={inspectorTab === "audio" ? "active" : ""} onClick={() => setInspectorTab("audio")}><AudioLines /> Audio</button>
+          <button className={inspectorTab === "info" ? "active" : ""} onClick={() => setInspectorTab("info")}><Info /> Info</button>
+        </div>
+        <header>
+          <span>Timeline selection</span>
+          <strong>{selected?.edit.label || selected?.clip.title || "No selection"}</strong>
+          <small>{selected ? `${formatTimecode(selected.outputDuration)} · ${selected.versionLabel}` : "Select an edit in the primary storyline"}</small>
+        </header>
+        {selected ? (
+          <div className="editor-inspector-body">
+            {inspectorTab === "video" && <>
+              <InspectorSection title="Source" defaultOpen><label className="wide">Preserved version<select value={selected.edit.sourceVersionId} onChange={(event) => patchSelected({ sourceVersionId: event.target.value, trimStart: 0, trimEnd: 0 })}><option value="">Active master</option>{selected.clip.versions.map((version) => <option key={version.id} value={version.id}>{version.id === "original" ? "Original master" : `Version ${version.id}`} · {version.durationSeconds.toFixed(1)}s</option>)}</select></label></InspectorSection>
+              <InspectorSection title="Timing" defaultOpen><TimelineNumber label="Trim start" value={selected.edit.trimStart} min={0} max={Math.max(0, selected.sourceDuration - selected.edit.trimEnd - .1)} step={1 / FPS} suffix="s" onChange={(trimStart) => patchSelected({ trimStart })} /><TimelineNumber label="Trim end" value={selected.edit.trimEnd} min={0} max={Math.max(0, selected.sourceDuration - selected.edit.trimStart - .1)} step={1 / FPS} suffix="s" onChange={(trimEnd) => patchSelected({ trimEnd })} /><TimelineNumber label="Speed" value={selected.edit.speed} min={.25} max={4} step={.05} suffix="×" onChange={(speed) => patchSelected({ speed })} /><div className="inspector-nudge wide"><button onClick={() => patchSelected({ trimStart: Math.max(0, selected.edit.trimStart - 1 / FPS) })}>Start −1f</button><button onClick={() => patchSelected({ trimStart: Math.min(selected.sourceDuration - selected.edit.trimEnd - .1, selected.edit.trimStart + 1 / FPS) })}>Start +1f</button><button onClick={() => patchSelected({ trimEnd: Math.min(selected.sourceDuration - selected.edit.trimStart - .1, selected.edit.trimEnd + 1 / FPS) })}>End −1f</button><button onClick={() => patchSelected({ trimEnd: Math.max(0, selected.edit.trimEnd - 1 / FPS) })}>End +1f</button></div></InspectorSection>
+              <InspectorSection title="Picture fades"><TimelineNumber label="Fade in" value={selected.edit.fadeIn} min={0} max={Math.max(0, selected.outputDuration - selected.edit.fadeOut)} step={.05} suffix="s" onChange={(fadeIn) => patchSelected({ fadeIn })} /><TimelineNumber label="Fade out" value={selected.edit.fadeOut} min={0} max={Math.max(0, selected.outputDuration - selected.edit.fadeIn)} step={.05} suffix="s" onChange={(fadeOut) => patchSelected({ fadeOut })} /><button className="inspector-reset wide" onClick={() => patchSelected({ speed: 1, fadeIn: 0, fadeOut: 0 })}><RotateCcw /> Reset picture timing</button></InspectorSection>
+            </>}
+            {inspectorTab === "audio" && <>
+              <div className="native-mix-role"><span><Volume2 /><b>Native Mix</b></span><small>H3 picture and sound stay synchronized as one preserved source. Dialogue, music, ambience, and effects are not falsely presented as separate stems.</small></div>
+              <InspectorSection title="Level" defaultOpen><TimelineNumber label="Gain" value={selected.edit.audioGain} min={0} max={4} step={.05} suffix="×" onChange={(audioGain) => patchSelected({ audioGain })} /><label className="wide inspector-range">Clip level<input aria-label="Selected clip audio level" type="range" min={0} max={2} step={.01} value={Math.min(2, selected.edit.audioGain)} onChange={(event) => patchSelected({ audioGain: Number(event.target.value) })} /></label></InspectorSection>
+              <InspectorSection title="Audio fades" defaultOpen><TimelineNumber label="Fade in" value={selected.edit.audioFadeIn} min={0} max={Math.max(0, selected.outputDuration - selected.edit.audioFadeOut)} step={.05} suffix="s" onChange={(audioFadeIn) => patchSelected({ audioFadeIn })} /><TimelineNumber label="Fade out" value={selected.edit.audioFadeOut} min={0} max={Math.max(0, selected.outputDuration - selected.edit.audioFadeIn)} step={.05} suffix="s" onChange={(audioFadeOut) => patchSelected({ audioFadeOut })} /><button className="inspector-reset wide" onClick={() => patchSelected({ audioGain: 1, audioFadeIn: 0, audioFadeOut: 0 })}><RotateCcw /> Reset audio</button></InspectorSection>
+            </>}
+            {inspectorTab === "info" && <>
+              <InspectorSection title="Producer metadata" defaultOpen><label className="wide">Timeline label<input maxLength={120} value={selected.edit.label} onChange={(event) => patchSelected({ label: event.target.value })} placeholder={selected.clip.title} /></label><label className="wide">Producer notes<textarea maxLength={4000} value={selected.edit.notes} onChange={(event) => patchSelected({ notes: event.target.value })} placeholder="Performance, pacing, continuity, review notes, or handoff details…" /></label></InspectorSection>
+              <InspectorSection title="Source facts" defaultOpen><dl className="inspector-facts wide"><div><dt>Master</dt><dd>{selected.clip.title}</dd></div><div><dt>Seed</dt><dd>{selected.clip.seed}</dd></div><div><dt>Source</dt><dd>{formatTimecode(selected.sourceDuration)}</dd></div><div><dt>Output</dt><dd>{formatTimecode(selected.outputDuration)}</dd></div></dl></InspectorSection>
+              <label className="inspector-enable"><input type="checkbox" checked={selected.edit.enabled} onChange={(event) => patchSelected({ enabled: event.target.checked })} /> <span>{selected.edit.enabled ? <Eye /> : <EyeOff />}<b>Include in program and export</b><small>Disabling removes this decision from playback; the preserved source remains in Masters.</small></span></label>
+            </>}
+          </div>
+        ) : <EditorEmpty text="Select a timeline edit to inspect its preserved source, timing, audio, and notes." />}
       </aside>}
     </div>
 
     <section className="editor-timeline-panel">
       <div className="editor-tool-bar">
-        <div><button aria-label="Undo timeline change" title="Undo · ⌘Z" disabled={disabled || !undo.length} onClick={undoEdit}><Undo2 /></button><button aria-label="Redo timeline change" title="Redo · ⇧⌘Z" disabled={disabled || !redo.length} onClick={redoEdit}><Redo2 /></button><i /><button className={tool === "select" ? "active" : ""} title="Select tool · A" onClick={() => setTool("select")}><MousePointer2 /><kbd>A</kbd></button><button className={tool === "trim" ? "active" : ""} title="Trim tool · T" onClick={() => setTool("trim")}><ScanLine /><kbd>T</kbd></button><button className={tool === "blade" ? "active" : ""} title="Blade tool · B" onClick={() => setTool("blade")}><Scissors /><kbd>B</kbd></button><i /><button aria-label="Split at playhead" title="Split at playhead" disabled={!selected} onClick={split}><Scissors /></button><button aria-label="Duplicate timeline item" title="Duplicate" disabled={!selected || items.length >= 512} onClick={duplicate}><Copy /></button><button aria-label="Remove timeline item" title="Remove decision" disabled={!selected} onClick={remove}><Trash2 /></button></div>
+        <div>
+          <button aria-label="Undo timeline change" title="Undo · ⌘Z" disabled={disabled || !undo.length} onClick={undoEdit}><Undo2 /></button>
+          <button aria-label="Redo timeline change" title="Redo · ⇧⌘Z" disabled={disabled || !redo.length} onClick={redoEdit}><Redo2 /></button>
+          <i />
+          <button className={tool === "select" ? "active" : ""} title="Select tool · A" onClick={() => setTool("select")}><MousePointer2 /><kbd>A</kbd></button>
+          <button className={tool === "trim" ? "active" : ""} title="Trim tool · T" onClick={() => setTool("trim")}><ScanLine /><kbd>T</kbd></button>
+          <button className={tool === "blade" ? "active" : ""} title="Blade tool · B" onClick={() => setTool("blade")}><Scissors /><kbd>B</kbd></button>
+          <i />
+          <button aria-label="Split at playhead" title="Split at playhead" disabled={!selected} onClick={split}><Scissors /></button>
+          <button aria-label="Duplicate timeline item" title="Duplicate" disabled={!selected || items.length >= 512} onClick={duplicate}><Copy /></button>
+          <button aria-label="Remove timeline item" title="Remove decision" disabled={!selected} onClick={remove}><Trash2 /></button>
+        </div>
         <div><button className={snapping ? "active" : ""} title="Snapping · N" onClick={() => setSnapping((active) => !active)}><Magnet /><kbd>N</kbd></button><button className={skimming ? "active" : ""} title="Skimming · S" onClick={() => setSkimming((active) => !active)}><Eye /><kbd>S</kbd></button><button title="Keyboard shortcuts · ?" onClick={() => setShowShortcuts((visible) => !visible)}><CircleHelp /></button><span>{items.length} edits · {formatTimecode(totalDuration)}</span><ZoomIn /><input aria-label="Timeline zoom" type="range" min={28} max={180} value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><button className="zoom-fit" onClick={() => setZoom(Math.max(28, Math.min(180, 900 / Math.max(1, totalDuration))))}>Fit</button></div>
       </div>
       {markerComposer && <div className="editor-marker-composer"><Flag /><select aria-label="Marker type" value={markerKind} onChange={(event) => setMarkerKind(event.target.value as TimelineMarker["kind"])}><option value="marker">Marker</option><option value="todo">To-do</option><option value="chapter">Chapter</option></select><input autoFocus maxLength={120} value={markerLabel} onChange={(event) => setMarkerLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addMarker(markerLabel, markerKind); if (event.key === "Escape") setMarkerComposer(false); }} placeholder={`Note at ${formatTimecode(elapsed)}`} /><button onClick={() => addMarker(markerLabel, markerKind)}>Add at playhead</button><button aria-label="Close marker composer" onClick={() => setMarkerComposer(false)}><X /></button></div>}

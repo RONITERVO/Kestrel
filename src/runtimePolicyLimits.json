@@ -1,0 +1,12 @@
+{
+  "minimumContextWindow": 4096,
+  "minimumMaxOutputTokens": 1024,
+  "standard": {
+    "maximumContextWindow": 98304,
+    "maximumMaxOutputTokens": 32768
+  },
+  "advanced": {
+    "maximumContextWindow": 1048576,
+    "maximumMaxOutputTokens": 262144
+  }
+}

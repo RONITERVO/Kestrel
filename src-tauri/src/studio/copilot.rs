@@ -149,7 +149,9 @@ impl MovieCopilotJob {
             .get(&request.project_id)
             .map_err(|error| error.to_string())?;
         validate_request(&request, &models, &project)?;
-        let mut settings = settings.for_model(&request.model_id);
+        let mut settings = project
+            .settings
+            .runtime_settings_for(&settings, &request.model_id);
         let thinking_level = request.thinking_level.unwrap_or(settings.thinking_level);
         settings.thinking_level = thinking_level;
         let model = models

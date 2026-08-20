@@ -13,6 +13,8 @@ import {
   transcribeMusicMidi,
 } from "./api";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
+import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "./ModelRuntimePolicy";
+import type { RuntimePolicyValue } from "./ModelRuntimePolicy";
 import { MusicMidiEditor } from "./MusicMidiEditor";
 import type {
   ControlSettings, ModelInfo, MusicGenerationEvent, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
@@ -64,6 +66,7 @@ export function MusicStudio({
   const [saving, setSaving] = useState(false);
   const [modelId, setModelId] = useState(selectedModelId ?? models[0]?.id ?? "");
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
+  const [runtimePolicyOverride, setRuntimePolicyOverride] = useState<RuntimePolicyValue>();
   const [creating, setCreating] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -134,6 +137,8 @@ export function MusicStudio({
     if (!modelId && (selectedModelId || models[0]?.id)) setModelId(selectedModelId ?? models[0]?.id ?? "");
   }, [modelId, models, selectedModelId]);
 
+  const inheritedRuntimePolicy = effectiveModelRuntimePolicy(controlSettings, modelId);
+  const runtimePolicy = runtimePolicyOverride ?? inheritedRuntimePolicy;
   const selectedSection = project?.sections.find((section) => section.id === selectedSectionId) ?? project?.sections[0];
   const activeTake = project?.takes.find((take) => take.id === project.activeTakeId && take.status === "complete")
     ?? [...(project?.takes ?? [])].reverse().find((take) => take.status === "complete");
@@ -298,6 +303,8 @@ export function MusicStudio({
         assetName: "",
         assetKind: "",
         thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : undefined,
+        contextWindow: runtimePolicy.contextWindow,
+        maxOutputTokens: runtimePolicy.maxOutputTokens,
       });
     } catch (error) {
       setCollaboration(undefined);
@@ -487,6 +494,7 @@ export function MusicStudio({
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicCaption")}><Sparkles /> Develop description</button>
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicLyrics")}><ListMusic /> Write full lyrics</button>
           </div>
+          <details className="workspace-runtime-policy"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} disabled={assistantBusy || busy} expert={advancedEnabled} scope="Music collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
         </section>
       </main>
 
@@ -529,7 +537,7 @@ export function MusicStudio({
 
       {collaboration && <section className="music-collaboration-sheet">
         <header><span><Sparkles /><strong>{collaboration.target === "musicCaption" ? "Description proposal" : "Lyrics proposal"}</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header>
-        <div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} active={assistantBusy} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>{collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}</strong><pre>{collaboration.text || (assistantBusy ? "The proposal will stream here when the model begins its answer…" : "No proposal was returned.")}</pre></section></div>
+        <div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} outputText={collaboration.text} active={assistantBusy} inferenceActive={assistantBusy && collaboration.status !== "queued"} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>{collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}</strong><pre>{collaboration.text || (assistantBusy ? "The proposal will stream here when the model begins its answer…" : "No proposal was returned.")}</pre></section></div>
         <footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt.exactRequest, null, 2)}</pre></details>}</footer>
       </section>}
 

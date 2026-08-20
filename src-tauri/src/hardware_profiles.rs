@@ -105,7 +105,10 @@ pub fn all_proven_profiles() -> Vec<ProvenHardwareProfile> {
 
 /// Matches a model name and optional detected GPU VRAM against the proven hardware profiles.
 #[allow(dead_code)]
-pub fn find_proven_profile(model_name: &str, vram_mib: Option<u32>) -> Option<ProvenHardwareProfile> {
+pub fn find_proven_profile(
+    model_name: &str,
+    vram_mib: Option<u32>,
+) -> Option<ProvenHardwareProfile> {
     let lower_name = model_name.to_lowercase();
     all_proven_profiles().into_iter().find(|profile| {
         if !lower_name.contains(&profile.model_pattern) {

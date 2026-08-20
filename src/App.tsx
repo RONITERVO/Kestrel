@@ -71,6 +71,7 @@ import { ImageStudio } from "./ImageStudio";
 import { PromptPackVisualEditor } from "./PromptPackVisualEditor";
 import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { SetupConsole } from "./Setup";
+import { useInferenceTelemetry } from "./InferenceTelemetry";
 import {
   STANDARD_CONTEXT_OPTIONS,
   STANDARD_OUTPUT_OPTIONS,
@@ -115,6 +116,11 @@ const stageNames: Record<ProgressStage, string> = {
 
 type AppView = "setup" | "control" | "research" | "studio" | "image" | "music" | "developer" | "system";
 
+export function retainAppView(views: ReadonlySet<AppView>, view: AppView): Set<AppView> {
+  if (views.has(view)) return new Set(views);
+  return new Set([...views, view]);
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [report, setReport] = useState<ResearchReport | null>(null);
@@ -126,18 +132,25 @@ function App() {
   const [activity, setActivity] = useState<ResearchProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<AppView>("research");
+  const [mountedViews, setMountedViews] = useState<Set<AppView>>(() => new Set(["research"]));
+  const handleError = useCallback((message: string) => setError(message), []);
+
+  const showView = useCallback((next: AppView) => {
+    setMountedViews((current) => retainAppView(current, next));
+    setView(next);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
       const next = await bootstrap();
       setSnapshot(next);
-      if (!next.setup.ready) setView("setup");
+      if (!next.setup.ready) showView("setup");
       setError(null);
       if (!selectedId && next.reports[0]) setSelectedId(next.reports[0].id);
     } catch (cause) {
       setError(String(cause));
     }
-  }, [selectedId]);
+  }, [selectedId, showView]);
 
   useEffect(() => {
     void refresh();
@@ -206,7 +219,7 @@ function App() {
       <AppHeader
         status={snapshot.status}
         view={view}
-        onView={setView}
+        onView={showView}
         onMenu={() => setSidebarOpen((value) => !value)}
         onNew={() => setNewResearchOpen(true)}
         onPrepare={async () => {
@@ -234,42 +247,53 @@ function App() {
         />}
         <main className={`main-stage main-stage-${view}`}>
           {error && <ErrorBanner message={error} onClose={() => setError(null)} />}
-          {view === "setup" ? (
-            <SetupConsole snapshot={snapshot} onChanged={setSnapshot} onError={(message) => setError(message)} />
-          ) : view === "control" ? (
+          {mountedViews.has("setup") && <section className="retained-app-view" hidden={view !== "setup"} aria-hidden={view !== "setup"}>
+            <SetupConsole snapshot={snapshot} onChanged={setSnapshot} onError={handleError} />
+          </section>}
+          {mountedViews.has("control") && <section className="retained-app-view" hidden={view !== "control"} aria-hidden={view !== "control"}>
             <ControlPlane
               control={snapshot.control}
+              visible={view === "control"}
               onChanged={(control) => setSnapshot((current) => current ? { ...current, control } : current)}
-              onError={(message) => setError(message)}
+              onError={handleError}
             />
-          ) : view === "studio" ? (
-            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={(message) => setError(message)} />
-          ) : view === "music" ? (
-            <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} installRoot={snapshot.settings.installRoot} muscriptorSetupReady={snapshot.setup.components.find((component) => component.id === "muscriptor")?.status === "ready"} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={(message) => setError(message)} />
-          ) : view === "image" ? (
-            <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={(message) => setError(message)} />
-          ) : view === "developer" ? (
+          </section>}
+          {mountedViews.has("studio") && <section className="retained-app-view" hidden={view !== "studio"} aria-hidden={view !== "studio"}>
+            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={handleError} />
+          </section>}
+          {mountedViews.has("music") && <section className="retained-app-view" hidden={view !== "music"} aria-hidden={view !== "music"}>
+            <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} installRoot={snapshot.settings.installRoot} muscriptorSetupReady={snapshot.setup.components.find((component) => component.id === "muscriptor")?.status === "ready"} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={handleError} />
+          </section>}
+          {mountedViews.has("image") && <section className="retained-app-view" hidden={view !== "image"} aria-hidden={view !== "image"}>
+            <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={handleError} />
+          </section>}
+          {mountedViews.has("developer") && <section className="retained-app-view" hidden={view !== "developer"} aria-hidden={view !== "developer"}>
             <DeveloperConsole
               control={snapshot.control}
               onChanged={(control) => setSnapshot((current) => current ? { ...current, control } : current)}
-              onError={(message) => setError(message)}
+              onError={handleError}
             />
-          ) : view === "system" ? (
+          </section>}
+          {mountedViews.has("system") && <section className="retained-app-view" hidden={view !== "system"} aria-hidden={view !== "system"}>
             <SystemConsole
+              visible={view === "system"}
               initialSettings={snapshot.settings}
               initialControl={snapshot.control.settings}
               onSaved={(settings) => setSnapshot((current) => current ? { ...current, settings } : current)}
               onControlSaved={(control) => setSnapshot((current) => current ? { ...current, control } : current)}
               onImported={(next) => setSnapshot(next)}
-              onError={(message) => setError(message)}
+              onError={handleError}
             />
-          ) : !selectedId && snapshot.reports.length === 0 ? (
-            <EmptyLibrary onNew={() => setNewResearchOpen(true)} />
-          ) : !report ? (
-            <ReaderSkeleton />
-          ) : (
-            <ResearchReader report={report} onStandalone={() => void openStandalone(report.id)} />
-          )}
+          </section>}
+          {mountedViews.has("research") && <section className="retained-app-view" hidden={view !== "research"} aria-hidden={view !== "research"}>
+            {!selectedId && snapshot.reports.length === 0 ? (
+              <EmptyLibrary onNew={() => setNewResearchOpen(true)} />
+            ) : !report ? (
+              <ReaderSkeleton />
+            ) : (
+              <ResearchReader report={report} onStandalone={() => void openStandalone(report.id)} />
+            )}
+          </section>}
         </main>
       </div>
       {newResearchOpen && <NewResearchDialog advancedEnabled={snapshot.settings.advancedMode} onClose={() => setNewResearchOpen(false)} onSubmit={handleResearch} />}
@@ -339,11 +363,31 @@ function AppHeader({
         <div className="privacy-pill" aria-label="Offline only" title="Offline only"><ShieldCheck size={14} /> Offline only</div>
       </div>
       <div className="header-actions">
+        <InferenceSpeedIndicator />
         {!allReady && <button className="quiet-button" onClick={onPrepare}>Prepare services</button>}
         {view === "research" && <button className="primary-button compact" onClick={onNew}><Plus size={16} /> New research</button>}
       </div>
     </header>
   );
+}
+
+function InferenceSpeedIndicator() {
+  const telemetry = useInferenceTelemetry();
+  const speed = telemetry.tokensPerSecond === undefined ? "—" : telemetry.tokensPerSecond.toFixed(1);
+  const state = telemetry.active ? "Live" : telemetry.observedAt ? "Last" : "Idle";
+  const model = telemetry.modelName ? ` · ${telemetry.modelName}` : "";
+  const accuracy = telemetry.tokensPerSecond === undefined ? "" : telemetry.exact ? " · measured" : " · estimated";
+  const title = telemetry.active
+    ? `Live local-model generation speed${model}${accuracy}`
+    : telemetry.observedAt
+      ? `Last local-model generation speed${model}${accuracy}`
+      : "Local-model generation speed will appear here";
+  return <div className={`header-inference-speed ${telemetry.active ? "live" : "idle"}`} aria-label={`${state} inference speed: ${speed} tokens per second`} title={title}>
+    <Zap size={13} />
+    <strong>{speed}</strong>
+    <small>tok/s</small>
+    <span>{state}</span>
+  </div>;
 }
 
 function StatusPill({ state, label }: { state: ServiceState; label: string }) {
@@ -531,7 +575,7 @@ function CitationRow({ ids, onFocus, labels }: { ids: string[]; onFocus: (id: st
   return <div className="citation-row" aria-label="Citations">{ids.map((id) => <button key={id} onClick={() => onFocus(id)} title={labels?.get(id)?.title ?? `Source ${id}`}>{id}</button>)}</div>;
 }
 
-function SystemConsole({ initialSettings, initialControl, onSaved, onControlSaved, onImported, onError }: { initialSettings: ResearchSettings; initialControl: ControlSettings; onSaved: (settings: ResearchSettings) => void; onControlSaved: (control: ControlSnapshot) => void; onImported: (snapshot: AppSnapshot) => void; onError: (message: string) => void }) {
+function SystemConsole({ visible, initialSettings, initialControl, onSaved, onControlSaved, onImported, onError }: { visible: boolean; initialSettings: ResearchSettings; initialControl: ControlSettings; onSaved: (settings: ResearchSettings) => void; onControlSaved: (control: ControlSnapshot) => void; onImported: (snapshot: AppSnapshot) => void; onError: (message: string) => void }) {
   const [system, setSystem] = useState<SystemSnapshot | null>(null);
   const [researchDraft, setResearchDraft] = useState(initialSettings);
   const [controlDraft, setControlDraft] = useState(initialControl);
@@ -572,13 +616,17 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
   }, [onError]);
 
   useEffect(() => {
-    void refreshSystem();
     void getSetupProfileText().then(setProfileText).catch((cause) => onError(String(cause)));
     void refreshPromptText();
     void getDefaultPromptPackText().then(setDefaultPromptText).catch(() => { /* per-prompt "reset to default" stays disabled if this fails */ });
+  }, [refreshSystem, onError, refreshPromptText]);
+
+  useEffect(() => {
+    if (!visible) return;
+    void refreshSystem();
     const timer = window.setInterval(() => void refreshSystem(), 2_500);
     return () => window.clearInterval(timer);
-  }, [refreshSystem, onError, refreshPromptText]);
+  }, [refreshSystem, visible]);
 
   const updateResearchNumber = (key: keyof ResearchSettings, value: string) => {
     const parsed = Number.parseInt(value, 10);

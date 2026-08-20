@@ -34,11 +34,39 @@ pub(super) fn producer_direction(text: &str) -> String {
     prompt_catalog::render(PromptId::MovieProducerDirection, &[("direction", text)])
 }
 
-pub(super) fn clip_assistant_system() -> String {
-    prompt_catalog::text(PromptId::MovieClipAssistantSystem)
-}
 pub(super) fn independent_reviewer_system() -> String {
     prompt_catalog::text(PromptId::MovieReviewerSystem)
+}
+
+pub(super) fn generation_agent_system() -> String {
+    prompt_catalog::text(PromptId::MovieGenerationAgentSystem)
+}
+
+pub(super) fn generation_frame_analyst_system() -> String {
+    prompt_catalog::text(PromptId::MovieGenerationFrameAnalystSystem)
+}
+
+pub(super) fn generation_reviewer_system() -> String {
+    prompt_catalog::text(PromptId::MovieGenerationReviewerSystem)
+}
+
+pub(super) fn generation_initial() -> String {
+    prompt_catalog::text(PromptId::MovieGenerationInitial)
+}
+
+pub(super) fn generation_resume() -> String {
+    prompt_catalog::text(PromptId::MovieGenerationResume)
+}
+
+pub(super) fn generation_continue() -> String {
+    prompt_catalog::text(PromptId::MovieGenerationContinue)
+}
+
+pub(super) fn generation_review_rejected(review: &str) -> String {
+    prompt_catalog::render(
+        PromptId::MovieGenerationReviewRejected,
+        &[("review", review)],
+    )
 }
 
 pub(super) fn prompt_catalog(settings: &MovieSettings) -> Vec<super::planning::PromptDocument> {
@@ -107,16 +135,52 @@ pub(super) fn prompt_catalog(settings: &MovieSettings) -> Vec<super::planning::P
             ),
         ),
         super::planning::PromptDocument::new(
-            "scene-assistant-system",
-            "Scene assistant system prompt",
-            "system",
-            clip_assistant_system(),
-        ),
-        super::planning::PromptDocument::new(
             "independent-reviewer-system",
             "Independent whole-film reviewer prompt",
             "system",
             independent_reviewer_system(),
+        ),
+        super::planning::PromptDocument::new(
+            "generation-frame-analyst-system",
+            "Exact endpoint frame analyst prompt",
+            "system",
+            generation_frame_analyst_system(),
+        ),
+        super::planning::PromptDocument::new(
+            "generation-agent-system",
+            "Generative Director system prompt",
+            "system",
+            generation_agent_system(),
+        ),
+        super::planning::PromptDocument::new(
+            "generation-reviewer-system",
+            "Fresh-context generative reviewer prompt",
+            "system",
+            generation_reviewer_system(),
+        ),
+        super::planning::PromptDocument::new(
+            "generation-initial",
+            "Generative edit initial instruction",
+            "instruction",
+            generation_initial(),
+        ),
+        super::planning::PromptDocument::new(
+            "generation-resume",
+            "Generative edit resume instruction",
+            "instruction",
+            generation_resume(),
+        ),
+        super::planning::PromptDocument::new(
+            "generation-continue",
+            "Generative edit tool-use recovery",
+            "instruction",
+            generation_continue(),
+        ),
+        super::planning::PromptDocument::new(
+            "generation-review-rejected",
+            "Generative edit review-repair wrapper",
+            "instruction",
+            generation_review_rejected("{review JSON}"),
         ),
     ]
 }

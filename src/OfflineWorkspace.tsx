@@ -29,6 +29,7 @@ import {
   ZapOff,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useInferenceTelemetryReporter } from "./InferenceTelemetry";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
 import {
   cancelChatStream,
@@ -72,11 +73,12 @@ type Props = {
   control: ControlSnapshot;
   onChanged: (control: ControlSnapshot) => void;
   onError: (message: string) => void;
+  visible?: boolean;
 };
 
 type WorkKind = "chat" | "task";
 
-export function OfflineWorkspace({ control, onChanged, onError }: Props) {
+export function OfflineWorkspace({ control, onChanged, onError, visible = true }: Props) {
   const [kind, setKind] = useState<WorkKind>("chat");
   const [selectedId, setSelectedId] = useState(
     control.settings.selectedModelId ?? control.models[0]?.id ?? "",
@@ -136,6 +138,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   const taskStartingRef = useRef(false);
   const earlyTaskEventsRef = useRef<ComputerTaskEvent[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const onChangedRef = useRef(onChanged);
   const enginePathHasValidName = /(?:^|[\\/])llama-server\.exe$/i.test(
     settings.enginePath.trim(),
   );
@@ -162,6 +165,9 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
     setSettings(control.settings);
   }, [control.settings]);
   useEffect(() => {
+    onChangedRef.current = onChanged;
+  }, [onChanged]);
+  useEffect(() => {
     latestChatRef.current = { selected, settings, session };
   }, [selected, settings, session]);
   useEffect(() => {
@@ -187,23 +193,25 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
         else runtimeDispose = dispose;
       },
     );
-    const timer = window.setInterval(
-      () =>
-        void getControlSnapshot(false)
-          .then(onChanged)
-          .catch(() => undefined),
-      2_500,
-    );
     return () => {
       unmounted = true;
       chatDispose?.();
       taskDispose?.();
       runtimeDispose?.();
-      window.clearInterval(timer);
     };
     // Event handlers use refs and functional state updates, so they remain stable for this subscription.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    const refreshControl = () => void getControlSnapshot(false)
+      .then((next) => onChangedRef.current(next))
+      .catch(() => undefined);
+    refreshControl();
+    const timer = window.setInterval(refreshControl, 2_500);
+    return () => window.clearInterval(timer);
+  }, [visible]);
 
   useEffect(() => {
     if (typeof chatEndRef.current?.scrollIntoView === "function")
@@ -1142,6 +1150,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                     reasoning={stream.reasoning}
                     startedAt={stream.startedAt}
                     active={stream.phase === "generating"}
+                    modelName={selected?.name}
                   />
                 </article>
               )}
@@ -1361,8 +1370,8 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             <small>Stop Kestrel-managed model and media runtimes</small>
           </span>
         </button>
-        {kind === "chat" && <section className="inspector-section inspector-mode-settings">
-          <h2>Chat generation</h2>
+        <section className="inspector-section inspector-mode-settings">
+          <h2>{kind === "chat" ? "Chat generation" : "Computer model limits"}</h2>
           <div className="inline-runtime-settings inspector-setting-grid">
             <label>
               Context
@@ -1412,7 +1421,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
               Override selected model
             </label>
           </div>
-        </section>}
+        </section>
         {kind === "task" && <section className="inspector-section inspector-mode-settings">
           <h2>Computer Tasks policy</h2>
           <div className="inline-runtime-settings inspector-setting-grid">
@@ -1498,7 +1507,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             </div>
           </div>
         </section>}
-        {kind === "chat" && selectedOverride && settings.advancedMode && (
+        {selectedOverride && settings.advancedMode && (
           <div className="control-warning">
             Invalid or oversized values can stop startup or exhaust VRAM.
           </div>
@@ -1975,12 +1984,14 @@ function Metrics({
   reasoning = "",
   startedAt,
   active = false,
+  modelName,
 }: {
   data?: Record<string, unknown>;
   content?: string;
   reasoning?: string;
   startedAt?: number;
   active?: boolean;
+  modelName?: string;
 }) {
   const usage = data?.usage as Record<string, number> | undefined;
   const timings = data?.timings as Record<string, number> | undefined;
@@ -2003,16 +2014,13 @@ function Metrics({
   const estContentTokens = content ? Math.round(content.length / 3.8) : 0;
 
   const actualTokens = usage?.completion_tokens ?? estTotalTokens;
-  const speedTokPerSec = timings?.predicted_per_second
-    ? Number(timings.predicted_per_second.toFixed(1))
-    : liveElapsed > 0
-    ? Number((actualTokens / liveElapsed).toFixed(1))
-    : 0;
-
-  const promptSpeed = timings?.prompt_per_second
-    ? Number(timings.prompt_per_second.toFixed(1))
-    : undefined;
-  const promptTokens = (data?.usage as Record<string, number> | undefined)?.prompt_tokens ?? timings?.prompt_n;
+  useInferenceTelemetryReporter({
+    active,
+    text: reasoning + content,
+    exactTokenCount: usage?.completion_tokens,
+    exactTokensPerSecond: timings?.predicted_per_second,
+    modelName,
+  });
 
   if (!active && !data && !totalChars) return null;
 
@@ -2021,22 +2029,12 @@ function Metrics({
       <span className={active ? "live-metric" : ""}>
         {actualTokens.toLocaleString()} tokens
       </span>
-      {speedTokPerSec > 0 && (
-        <span className={active ? "live-metric" : ""}>
-          ⚡ {speedTokPerSec} tok/s
-        </span>
-      )}
       {liveElapsed > 0 && (
         <span>{liveElapsed.toFixed(1)}s</span>
       )}
       {reasoning.length > 0 && (
         <span title={`Thinking: ~${estReasoningTokens} tok | Output: ~${estContentTokens} tok`}>
           💭 {estReasoningTokens} think + {estContentTokens} ans
-        </span>
-      )}
-      {promptSpeed && promptTokens && (
-        <span title="Prompt evaluation speed">
-          📖 {promptSpeed} tok/s prompt ({promptTokens.toLocaleString()})
         </span>
       )}
     </div>

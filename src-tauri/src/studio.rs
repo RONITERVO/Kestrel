@@ -3,13 +3,13 @@
 //! Maintainers should read `studio/README.md` before changing model-assisted flows or persistence
 //! boundaries. Child modules own protocol, lifecycle, workspace, preview, and copilot concerns.
 
+use crate::prompt_catalog::{render, text, PromptId};
 use crate::{
     model::ModelInfo,
     model_roles::STUDIO_PROTOCOL_REVISION,
     models::{ControlSettings, ResearchSettings, ThinkingLevel},
     runtime::{ModelConnection, RuntimeManager},
 };
-use crate::prompt_catalog::{PromptId, render, text};
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex as StdMutex,
+        Arc, Mutex as StdMutex, OnceLock,
     },
     time::Duration,
 };
@@ -36,6 +36,7 @@ mod agent_flow;
 mod agent_lifecycle;
 mod agent_protocol;
 mod copilot;
+mod generation_agent;
 mod image_assets;
 mod image_studio;
 mod live_preview;
@@ -56,13 +57,16 @@ pub use copilot::{
     validate_request as validate_copilot_request, MovieCopilotJob, MovieCopilotReceipt,
     MovieCopilotRequest,
 };
+pub use generation_agent::{MovieGenerationAgentRequest, MovieGenerationProposal};
 pub use image_assets::{
     emit_image_asset_error, GeneratedImageProvenance, MovieImageAssetGeneration,
     MovieImageAssetRequest,
 };
 pub use image_studio::{CreateImageProjectRequest, ImageProject, ImageStudio, ImageSummary};
+pub use live_preview::MovieRenderState;
 use live_preview::{
-    emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget, PREVIEW_NODE_ID,
+    emit_preview_unavailable, preview_node, LivePreviewRegistry, LivePreviewSession, PreviewTarget,
+    PREVIEW_NODE_ID,
 };
 use movie_agent::MovieAgentWorkspace;
 pub use music::{
@@ -95,6 +99,50 @@ const MOVIE_AGENT_SESSION_STEPS: u32 = 96;
 const MAX_MOVIE_AGENT_SESSIONS: u32 = 8;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+const MIN_TIMELINE_SOURCE_SECONDS: f32 = 0.1;
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePolicyTier {
+    maximum_context_window: u32,
+    maximum_max_output_tokens: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePolicyLimitsFile {
+    minimum_context_window: u32,
+    minimum_max_output_tokens: u32,
+    standard: RuntimePolicyTier,
+    advanced: RuntimePolicyTier,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RuntimePolicyLimits {
+    pub minimum_context_window: u32,
+    pub minimum_max_output_tokens: u32,
+    pub maximum_context_window: u32,
+    pub maximum_max_output_tokens: u32,
+}
+
+pub(crate) fn runtime_policy_limits(advanced: bool) -> RuntimePolicyLimits {
+    static LIMITS: OnceLock<RuntimePolicyLimitsFile> = OnceLock::new();
+    let limits = LIMITS.get_or_init(|| {
+        serde_json::from_str(include_str!("../../src/runtimePolicyLimits.json"))
+            .expect("the shared runtime policy limits must be valid JSON")
+    });
+    let tier = if advanced {
+        limits.advanced
+    } else {
+        limits.standard
+    };
+    RuntimePolicyLimits {
+        minimum_context_window: limits.minimum_context_window,
+        minimum_max_output_tokens: limits.minimum_max_output_tokens,
+        maximum_context_window: tier.maximum_context_window,
+        maximum_max_output_tokens: tier.maximum_max_output_tokens,
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum ComfyWorkload {
@@ -341,6 +389,13 @@ pub struct MovieModelRoleRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieRuntimePolicyRequest {
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MovieModelBinding {
     pub model_id: String,
@@ -385,28 +440,6 @@ pub(crate) struct MovieModelRuntime<'a> {
 pub struct MoviePlanFeedbackRequest {
     pub id: String,
     pub feedback: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieClipAssistRequest {
-    pub request_id: String,
-    pub id: String,
-    pub clip_id: String,
-    pub feedback: String,
-    #[serde(default)]
-    pub thinking_level: Option<ThinkingLevel>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieClipAssistEvent {
-    pub request_id: String,
-    pub project_id: String,
-    pub clip_id: String,
-    pub kind: String,
-    pub content: String,
-    pub at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,6 +563,9 @@ pub struct MovieSettings {
     pub thinking_budget: u32,
     #[serde(default = "default_output")]
     pub max_output_tokens: u32,
+    /// Zero in a legacy project means inherit the selected model's System/per-model context.
+    #[serde(default)]
+    pub context_window: u32,
     #[serde(default = "default_comfy_root")]
     pub comfy_root: String,
     #[serde(default = "default_ref_image_size")]
@@ -550,6 +586,7 @@ impl Default for MovieSettings {
             top_k: default_top_k(),
             thinking_budget: default_thinking(),
             max_output_tokens: default_output(),
+            context_window: 0,
             comfy_root: default_comfy_root(),
             ref_image_size: default_ref_image_size(),
         }
@@ -595,6 +632,7 @@ fn default_ref_image_size() -> String {
 
 impl MovieSettings {
     pub fn validate(mut self, advanced: bool) -> Result<Self, StudioError> {
+        let runtime_limits = runtime_policy_limits(advanced);
         if !self.width.is_multiple_of(32) || !self.height.is_multiple_of(32) {
             return Err(StudioError::Invalid(
                 "H3 width and height must be multiples of 32".into(),
@@ -617,7 +655,16 @@ impl MovieSettings {
         self.top_p = self.top_p.clamp(0.05, 1.0);
         self.top_k = self.top_k.clamp(1, 200);
         self.thinking_budget = self.thinking_budget.min(MOVIE_THINKING_BUDGET);
-        self.max_output_tokens = self.max_output_tokens.clamp(1_024, 32_768);
+        self.max_output_tokens = self.max_output_tokens.clamp(
+            runtime_limits.minimum_max_output_tokens,
+            runtime_limits.maximum_max_output_tokens,
+        );
+        if self.context_window > 0 {
+            self.context_window = self.context_window.clamp(
+                runtime_limits.minimum_context_window,
+                runtime_limits.maximum_context_window,
+            );
+        }
         let root = PathBuf::from(&self.comfy_root);
         if !root.is_absolute() {
             return Err(StudioError::Invalid(
@@ -630,6 +677,21 @@ impl MovieSettings {
             ));
         }
         Ok(self)
+    }
+
+    /// Apply the project layer after System defaults and per-model policy.
+    pub(crate) fn runtime_settings_for(
+        &self,
+        base: &ControlSettings,
+        model_id: &str,
+    ) -> ControlSettings {
+        let mut effective = base.for_model(model_id);
+        if self.context_window > 0 {
+            effective.context_window = self.context_window;
+        }
+        effective.max_output_tokens = self.max_output_tokens;
+        effective.model_overrides.clear();
+        effective
     }
 }
 
@@ -752,6 +814,60 @@ fn default_gain() -> f32 {
 
 fn default_speed() -> f32 {
     1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieFrameAnchor {
+    pub edit_id: String,
+    pub time_seconds: f64,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieCapturedFrame {
+    pub anchor: MovieFrameAnchor,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MovieTransitionPosition {
+    Before,
+    Between,
+    After,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MovieTransitionPlacement {
+    AddToMasters,
+    InsertBeforeRight,
+    InsertAfterLeft,
+    ReplaceRange,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieFl2vTransitionRequest {
+    pub id: String,
+    pub position: MovieTransitionPosition,
+    #[serde(default)]
+    pub first_anchor: Option<MovieFrameAnchor>,
+    #[serde(default)]
+    pub last_anchor: Option<MovieFrameAnchor>,
+    pub prompt: String,
+    pub duration_seconds: f32,
+    #[serde(default)]
+    pub seed: Option<u64>,
+    #[serde(default = "default_transition_placement")]
+    pub placement: MovieTransitionPlacement,
+}
+
+fn default_transition_placement() -> MovieTransitionPlacement {
+    MovieTransitionPlacement::AddToMasters
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -902,12 +1018,157 @@ pub struct MovieStudio {
     comfy_child: Arc<AsyncMutex<Option<Child>>>,
     music_comfy_child: Arc<AsyncMutex<Option<Child>>>,
     comfy_preview_available: Arc<AsyncMutex<Option<bool>>>,
+    live_previews: LivePreviewRegistry,
     project_locks: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     planning_control: Arc<StdMutex<()>>,
     planning_sequence: Arc<AtomicU64>,
 }
 
 impl MovieStudio {
+    pub(crate) fn prepare_generation_agent(
+        &self,
+        request: &MovieGenerationAgentRequest,
+        app: Option<&AppHandle>,
+    ) -> Result<(), StudioError> {
+        generation_agent::prepare_run(self, request, app)
+    }
+
+    pub(crate) fn record_generation_agent_failure(
+        &self,
+        request: &MovieGenerationAgentRequest,
+        error: &str,
+        app: Option<&AppHandle>,
+    ) -> Result<(), StudioError> {
+        generation_agent::record_request_failure(self, request, error, app)
+    }
+
+    pub(crate) async fn run_generation_agent(
+        &self,
+        request: &MovieGenerationAgentRequest,
+        model_runtime: MovieModelRuntime<'_>,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieGenerationProposal, StudioError> {
+        generation_agent::run(self, request, model_runtime, cancel, app).await
+    }
+
+    pub fn generation_agent_snapshot(
+        &self,
+        project_id: &str,
+        request_id: &str,
+    ) -> Result<Value, StudioError> {
+        validate_id(project_id)?;
+        validate_id(request_id)?;
+        let root = self
+            .project_dir(project_id)
+            .join("agent-workspace")
+            .join("generative-edits")
+            .join(request_id);
+        let read = |name: &str| -> Result<Option<Value>, StudioError> {
+            let path = root.join(name);
+            if !path.is_file() {
+                return Ok(None);
+            }
+            let metadata = fs::metadata(&path)?;
+            if metadata.len() > 2 * 1024 * 1024 {
+                return Err(StudioError::Invalid(format!(
+                    "generative agent {name} exceeds the 2 MiB inspection limit"
+                )));
+            }
+            Ok(Some(serde_json::from_slice(&fs::read(path)?)?))
+        };
+        let read_events = || -> Result<Vec<Value>, StudioError> {
+            let path = root.join("events.jsonl");
+            if !path.is_file() {
+                return Ok(Vec::new());
+            }
+            let metadata = fs::metadata(&path)?;
+            if metadata.len() > 16 * 1024 * 1024 {
+                return Err(StudioError::Invalid(
+                    "generative agent events exceed the 16 MiB inspection limit".into(),
+                ));
+            }
+            let bytes = fs::read(path)?;
+            let complete = bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map(|index| &bytes[..=index])
+                .unwrap_or_default();
+            let text = std::str::from_utf8(complete).map_err(|error| {
+                StudioError::Invalid(format!(
+                    "the generative agent event journal is not valid UTF-8: {error}"
+                ))
+            })?;
+            text.lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| serde_json::from_str(line).map_err(StudioError::from))
+                .collect()
+        };
+        Ok(json!({
+            "requestId": request_id,
+            "events": read_events()?,
+            "context": read("context.json")?,
+            "task": read("task.json")?,
+            "candidate": read("candidate.json")?,
+            "state": read("state.json")?,
+            "frameAnalysis": read("frame-analysis.json")?,
+            "frameAnalysisRequest": read("frame-analysis-request.json")?,
+            "frameAnalysisError": read("frame-analysis-error.json")?,
+            "review": read("review.json")?,
+            "result": read("result.json")?,
+            "transcript": read("transcript.json")?,
+            "lastRequest": read("last-request.json")?,
+            "reviewLastRequest": read("review-last-request.json")?,
+        }))
+    }
+
+    pub fn latest_generation_agent_request_id(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<String>, StudioError> {
+        validate_id(project_id)?;
+        let root = self
+            .project_dir(project_id)
+            .join("agent-workspace")
+            .join("generative-edits");
+        if !root.is_dir() {
+            return Ok(None);
+        }
+        let mut latest: Option<(std::time::SystemTime, String)> = None;
+        for entry in fs::read_dir(root)?.take(4_096) {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let request_id = entry.file_name().to_string_lossy().into_owned();
+            if validate_id(&request_id).is_err() {
+                continue;
+            }
+            let directory = entry.path();
+            let modified = [
+                "events.jsonl",
+                "result.json",
+                "review.json",
+                "transcript.json",
+                "state.json",
+                "task.json",
+            ]
+            .iter()
+            .filter_map(|name| fs::metadata(directory.join(name)).ok())
+            .filter_map(|metadata| metadata.modified().ok())
+            .max()
+            .or_else(|| entry.metadata().ok()?.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if latest
+                .as_ref()
+                .is_none_or(|(current, _)| modified > *current)
+            {
+                latest = Some((modified, request_id));
+            }
+        }
+        Ok(latest.map(|(_, request_id)| request_id))
+    }
+
     pub fn new(library_root: &Path) -> Result<Self, StudioError> {
         let root = library_root.join("movies");
         fs::create_dir_all(&root)?;
@@ -922,6 +1183,7 @@ impl MovieStudio {
             comfy_child: Arc::new(AsyncMutex::new(None)),
             music_comfy_child: Arc::new(AsyncMutex::new(None)),
             comfy_preview_available: Arc::new(AsyncMutex::new(None)),
+            live_previews: LivePreviewRegistry::default(),
             project_locks: Arc::new(StdMutex::new(HashMap::new())),
             planning_control: Arc::new(StdMutex::new(())),
             planning_sequence: Arc::new(AtomicU64::new(1)),
@@ -929,6 +1191,25 @@ impl MovieStudio {
         studio.recover_interrupted()?;
         studio.recover_image_asset_generations()?;
         Ok(studio)
+    }
+
+    pub fn movie_render_state(
+        &self,
+        project_id: &str,
+        active: bool,
+    ) -> Result<MovieRenderState, StudioError> {
+        validate_id(project_id)?;
+        if !active {
+            self.live_previews.clear_movie(project_id);
+        }
+        Ok(MovieRenderState {
+            active,
+            preview: if active {
+                self.live_previews.movie(project_id)
+            } else {
+                None
+            },
+        })
     }
 
     pub fn import_reference_path(&self, source: &Path) -> Result<MovieReferenceAsset, StudioError> {
@@ -1846,6 +2127,50 @@ impl MovieStudio {
         Ok(project)
     }
 
+    pub fn settle_audition_failure(
+        &self,
+        id: &str,
+        error: &str,
+        cancelled: bool,
+        app: Option<&AppHandle>,
+    ) {
+        let Ok(mut project) = self.get(id) else {
+            return;
+        };
+        if project.status != "running"
+            || !matches!(
+                project.phase.as_str(),
+                "starting-renderer" | "rendering-scene-version" | "rendering-transition"
+            )
+        {
+            return;
+        }
+        for clip in &mut project.clips {
+            if clip.status == "rendering-version" && !clip.path.is_empty() {
+                clip.status = "complete".into();
+            }
+        }
+        project.status = if project.clips.iter().any(|clip| !clip.path.is_empty()) {
+            "complete".into()
+        } else {
+            "failed".into()
+        };
+        project.phase = if cancelled {
+            "audition-cancelled".into()
+        } else {
+            "audition-failed".into()
+        };
+        project.detail = if cancelled {
+            "The H3 audition was stopped safely. Preserved masters and the storyline are unchanged."
+                .into()
+        } else {
+            "The H3 audition did not finish. Preserved masters and the storyline are unchanged."
+                .into()
+        };
+        project.error = error.into();
+        let _ = self.persist_emit(&mut project, app);
+    }
+
     pub fn begin_resume(
         &self,
         id: &str,
@@ -2233,94 +2558,42 @@ impl MovieStudio {
         Ok(project)
     }
 
-    pub async fn assist_clip(
+    pub async fn set_runtime_policy(
         &self,
-        request: &MovieClipAssistRequest,
-        connection: &ModelConnection,
-        runtime_max_output_tokens: u32,
+        id: &str,
+        policy: MovieRuntimePolicyRequest,
         app: Option<&AppHandle>,
-    ) -> Result<MovieClipSuggestion, StudioError> {
-        validate_id(&request.request_id)?;
-        let feedback = request.feedback.trim();
-        if feedback.chars().count() < 3 || feedback.chars().count() > 8_000 {
+    ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
+        let mut project = self.get(id)?;
+        if project.status == "running" {
             return Err(StudioError::Invalid(
-                "scene feedback must contain 3 to 8,000 characters".into(),
+                "Local model limits cannot change during an active Studio operation; stop with a checkpoint first"
+                    .into(),
             ));
         }
-        let project = self.get(&request.id)?;
-        let plan = project
-            .plan
-            .as_ref()
-            .ok_or_else(|| StudioError::Invalid("project has no saved movie plan".into()))?;
-        let index = plan
-            .clips
-            .iter()
-            .position(|clip| clip.id == request.clip_id)
-            .ok_or_else(|| StudioError::Invalid("unknown movie scene".into()))?;
-        let start = index.saturating_sub(1);
-        let end = (index + 2).min(plan.clips.len());
-        let payload = json!({
-            "producerRequest": project.prompt,
-            "producerFeedback": feedback,
-            "referenceManifest": reference_manifest(&project.references),
-            "creativeDirection": plan.creative_direction,
-            "continuityBible": plan.continuity_bible,
-            "neighboringScenes": &plan.clips[start..end],
-            "sceneToRepair": &plan.clips[index],
+        if project.settings.context_window == policy.context_window
+            && project.settings.max_output_tokens == policy.max_output_tokens
+        {
+            return Ok(project);
+        }
+        let prior_context = project.settings.context_window;
+        let prior_output = project.settings.max_output_tokens;
+        project.settings.context_window = policy.context_window;
+        project.settings.max_output_tokens = policy.max_output_tokens;
+        project.producer_feedback.push(ProducerFeedbackRecord {
+            created_at: Utc::now().to_rfc3339(),
+            scope: "runtime-policy-change".into(),
+            clip_id: String::new(),
+            feedback: format!(
+                "Project local-model limits changed from {prior_context} context / {prior_output} output to {} context / {} output. Existing plans, masters, and edits were preserved.",
+                policy.context_window, policy.max_output_tokens,
+            ),
         });
-        let messages = vec![
-            json!({"role":"system","content":clip_assistant_prompt()}),
-            json!({"role":"user","content":payload.to_string()}),
-        ];
-        let mut on_event = |event| {
-            if let (Some(app), agent_protocol::StreamEvent::Reasoning(token)) = (app, event) {
-                let _ = app.emit(
-                    "movie-clip-assist",
-                    MovieClipAssistEvent {
-                        request_id: request.request_id.clone(),
-                        project_id: request.id.clone(),
-                        clip_id: request.clip_id.clone(),
-                        kind: "reasoning".into(),
-                        content: token,
-                        at: Utc::now().to_rfc3339(),
-                    },
-                );
-            }
-        };
-        let mut movie_settings = project.settings.clone();
-        if let Some(level) = request.thinking_level {
-            movie_settings.thinking_budget = level.budget_tokens(32_768);
-        }
-        let mut suggestion: MovieClipSuggestion = agent_protocol::complete_tool_submission(
-            &self.http,
-            ToolSubmissionRequest {
-                connection,
-                initial_messages: &messages,
-                tool_name: "submit_scene_suggestion",
-                tool_description: "Submit the organized replacement scene only after checking the producer feedback and neighboring continuity.",
-                response_format: clip_suggestion_schema(),
-                settings: &movie_settings,
-                runtime_max_output_tokens,
-                label: "movie scene suggestion",
-                audit_path: None,
-                cancel: None,
-                on_event: Some(&mut on_event),
-            },
-        )
-        .await?;
-        suggestion.clip_id = request.clip_id.clone();
-        suggestion.clip.id = request.clip_id.clone();
-        let mut candidate = plan.clone();
-        candidate.clips[index] = suggestion.clip.clone();
-        prepare_producer_plan(&project, &mut candidate)?;
-        let issues = prompt_quality_issues(&candidate, &project.references);
-        if !issues.is_empty() {
-            return Err(StudioError::Planning(format!(
-                "The Director's scene suggestion was not render-ready: {}",
-                issues.join(" ")
-            )));
-        }
-        Ok(suggestion)
+        project.detail = "Project local-model limits were saved for the next Director, reviewer, Frame Analyst, or Copilot turn. Existing production work is unchanged.".into();
+        self.persist_emit(&mut project, app)?;
+        Ok(project)
     }
 
     async fn independently_review_movie_plan(
@@ -2395,6 +2668,40 @@ impl MovieStudio {
                 request.position,
                 request.app,
             ),
+            agent_protocol::StreamEvent::AttemptStarted { attempt, maximum } => self
+                .emit_reviewer_planning(
+                    request.project_id,
+                    PlanningEventKind::Activity,
+                    PlanningStage::Planning,
+                    format!("Reviewer submission attempt {attempt} of {maximum}"),
+                    request.position,
+                    request.app,
+                ),
+            agent_protocol::StreamEvent::SubmissionInvalid(detail) => self.emit_reviewer_planning(
+                request.project_id,
+                PlanningEventKind::Activity,
+                PlanningStage::Planning,
+                detail,
+                request.position,
+                request.app,
+            ),
+            agent_protocol::StreamEvent::Terminal {
+                detail,
+                completion_marker_seen,
+                finish_reason,
+                ..
+            } => self.emit_reviewer_planning(
+                request.project_id,
+                PlanningEventKind::Activity,
+                PlanningStage::Planning,
+                agent_protocol::terminal_detail(
+                    &detail,
+                    completion_marker_seen,
+                    finish_reason.as_deref(),
+                ),
+                request.position,
+                request.app,
+            ),
         };
         let review: MovieCodeReview = agent_protocol::complete_tool_submission(
             &self.http,
@@ -2439,6 +2746,7 @@ impl MovieStudio {
     ) -> Result<MovieProject, StudioError> {
         let mut project = self.get(id)?;
         ensure_producer_render_approval(&project)?;
+        self.live_previews.clear_movie(id);
         let comfy_root = project.settings.comfy_root.clone();
         self.ensure_comfy(&comfy_root, &mut project, app).await?;
         let plan = project
@@ -2559,6 +2867,7 @@ impl MovieStudio {
                 "render a scene version only after its original H3 master is complete".into(),
             ));
         }
+        self.live_previews.clear_movie(&id);
         plan.clips[index] = suggestion.clip.clone();
         prepare_producer_plan(&project, &mut plan)?;
         let issues = prompt_quality_issues(&plan, &project.references);
@@ -2579,7 +2888,17 @@ impl MovieStudio {
         project.clips[index].status = "rendering-version".into();
         self.persist_emit(&mut project, app)?;
         let comfy_root = project.settings.comfy_root.clone();
-        self.ensure_comfy(&comfy_root, &mut project, app).await?;
+        if let Err(error) = self.ensure_comfy(&comfy_root, &mut project, app).await {
+            project.status = previous_status;
+            project.phase = "scene-version-failed".into();
+            project.detail =
+                "The H3 renderer could not start; the active master and storyline are unchanged."
+                    .into();
+            project.clips[index].status = "complete".into();
+            project.clips[index].error = error.to_string();
+            self.persist_emit(&mut project, app)?;
+            return Err(error);
+        }
         let result = self
             .render_clip(
                 &project,
@@ -2607,21 +2926,6 @@ impl MovieStudio {
             }
         };
         let clip = &mut project.clips[index];
-        if clip
-            .versions
-            .iter()
-            .all(|version| version.path != clip.path)
-        {
-            clip.versions.push(ClipVersion {
-                id: "original".into(),
-                created_at: project.created_at.clone(),
-                title: clip.title.clone(),
-                prompt: clip.prompt.clone(),
-                duration_seconds: clip.duration_seconds,
-                seed: clip.seed,
-                path: clip.path.clone(),
-            });
-        }
         clip.versions.push(ClipVersion {
             id: version_id,
             created_at: Utc::now().to_rfc3339(),
@@ -2629,28 +2933,455 @@ impl MovieStudio {
             prompt: suggestion.clip.prompt.clone(),
             duration_seconds: suggestion.clip.duration_seconds,
             seed,
-            path: path.clone(),
+            path,
         });
-        clip.title.clone_from(&suggestion.clip.title);
-        clip.prompt.clone_from(&suggestion.clip.prompt);
-        clip.duration_seconds = suggestion.clip.duration_seconds;
-        clip.seed = seed;
-        clip.path = path;
         clip.status = "complete".into();
         clip.error.clear();
-        project.plan = Some(plan.clone());
         project.producer_feedback.push(ProducerFeedbackRecord {
             created_at: Utc::now().to_rfc3339(),
             scope: "scene-version".into(),
             clip_id: suggestion.clip_id,
             feedback: suggestion.summary,
         });
-        self.extract_last_frame(&project, index).await?;
         project.status = previous_status;
         project.phase = "complete".into();
-        project.detail = "The producer's new scene version is active. The existing review cut is unchanged until Export new cut is chosen.".into();
+        project.detail = "A new scene audition is preserved. The active master and storyline are unchanged until the producer chooses Use in storyline.".into();
         self.persist_emit(&mut project, app)?;
-        write_json_atomic(&self.project_dir(&project.id).join("plan.json"), &plan)?;
+        Ok(project)
+    }
+
+    pub async fn capture_frame(
+        &self,
+        project_id: &str,
+        anchor: MovieFrameAnchor,
+    ) -> Result<MovieCapturedFrame, StudioError> {
+        let project = self.get(project_id)?;
+        let source = resolve_frame_anchor(&self.project_dir(project_id), &project, &anchor)?;
+        let stills_dir = self.project_dir(project_id).join("stills");
+        fs::create_dir_all(&stills_dir)?;
+        let frame_id = captured_frame_id(&source.path, &anchor);
+        let target_png = stills_dir.join(format!("frame-{frame_id}.png"));
+        extract_exact_frame(&source.path, anchor.time_seconds, &target_png).await?;
+        Ok(MovieCapturedFrame {
+            anchor,
+            path: target_png.to_string_lossy().into_owned(),
+        })
+    }
+
+    pub async fn render_fl2v_transition(
+        &self,
+        request: MovieFl2vTransitionRequest,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let MovieFl2vTransitionRequest {
+            id,
+            position,
+            first_anchor,
+            last_anchor,
+            prompt,
+            duration_seconds,
+            seed,
+            placement,
+        } = request;
+        let lock = self.project_lock(&id)?;
+        let _guard = lock.lock().await;
+        let mut project = self.get(&id)?;
+        ensure_producer_render_approval(&project)?;
+        let prompt_words = prompt.split_whitespace().count();
+        if !(MIN_H3_PROMPT_WORDS..=MAX_H3_PROMPT_WORDS).contains(&prompt_words) {
+            return Err(StudioError::Invalid(
+                "transition direction must contain 120 to 450 words of clear renderer prose".into(),
+            ));
+        }
+        if !duration_seconds.is_finite() || !(1.0..=15.0).contains(&duration_seconds) {
+            return Err(StudioError::Invalid(
+                "transition duration must be between 1 and 15 seconds".into(),
+            ));
+        }
+        self.live_previews.clear_movie(&id);
+        let project_dir = self.project_dir(&project.id);
+        validate_transition_placement(
+            &project,
+            position,
+            first_anchor.as_ref(),
+            last_anchor.as_ref(),
+            placement,
+        )?;
+        let first_source = first_anchor
+            .as_ref()
+            .map(|anchor| resolve_frame_anchor(&project_dir, &project, anchor))
+            .transpose()?;
+        let last_source = last_anchor
+            .as_ref()
+            .map(|anchor| resolve_frame_anchor(&project_dir, &project, anchor))
+            .transpose()?;
+        let previous_status = project.status.clone();
+        project.status = "running".into();
+        project.phase = "rendering-transition".into();
+        project.detail = match position {
+            MovieTransitionPosition::Before => {
+                "Preparing an H3 audition before the story. The current storyline is unchanged."
+            }
+            MovieTransitionPosition::Between => {
+                "Preparing an H3 audition at the selected story cut. The current storyline is unchanged."
+            }
+            MovieTransitionPosition::After => {
+                "Preparing an H3 audition after the story. The current storyline is unchanged."
+            }
+        }
+        .into();
+        self.persist_emit(&mut project, app)?;
+        let comfy_root = project.settings.comfy_root.clone();
+        if let Err(error) = self.ensure_comfy(&comfy_root, &mut project, app).await {
+            project.status = previous_status;
+            project.phase = "transition-failed".into();
+            project.detail =
+                "The H3 renderer could not start; the current storyline remains unchanged.".into();
+            project.error = error.to_string();
+            self.persist_emit(&mut project, app)?;
+            return Err(error);
+        }
+
+        let transition_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+        let default_gen_seed = project
+            .clips
+            .iter()
+            .find(|clip| {
+                first_source
+                    .as_ref()
+                    .or(last_source.as_ref())
+                    .is_some_and(|source| clip.id == source.clip_id)
+            })
+            .map(|c| c.seed)
+            .or_else(|| {
+                if project.settings.seed != 0 {
+                    Some(project.settings.seed)
+                } else {
+                    project.clips.first().map(|c| c.seed)
+                }
+            })
+            .unwrap_or_else(|| (uuid::Uuid::new_v4().as_u128() as u64) % 1_000_000_000);
+        let chosen_seed = seed.unwrap_or(default_gen_seed);
+
+        let stills_dir = self.project_dir(&project.id).join("stills");
+        fs::create_dir_all(&stills_dir)?;
+        let first_target =
+            if let (Some(source), Some(anchor)) = (first_source.as_ref(), first_anchor.as_ref()) {
+                let relative = format!(
+                    "kestrel/{}/transition-first-{transition_id}.png",
+                    project.id
+                );
+                let path = PathBuf::from(&project.settings.comfy_root)
+                    .join("input")
+                    .join(&relative);
+                extract_exact_frame(&source.path, anchor.time_seconds, &path).await?;
+                tokio::fs::copy(
+                    &path,
+                    stills_dir.join(format!("transition-first-{transition_id}.png")),
+                )
+                .await?;
+                Some((relative, path))
+            } else {
+                None
+            };
+        let last_target = if let (Some(source), Some(anchor)) =
+            (last_source.as_ref(), last_anchor.as_ref())
+        {
+            let relative = format!("kestrel/{}/transition-last-{transition_id}.png", project.id);
+            let path = PathBuf::from(&project.settings.comfy_root)
+                .join("input")
+                .join(&relative);
+            extract_exact_frame(&source.path, anchor.time_seconds, &path).await?;
+            tokio::fs::copy(
+                &path,
+                stills_dir.join(format!("transition-last-{transition_id}.png")),
+            )
+            .await?;
+            Some((relative, path))
+        } else {
+            None
+        };
+
+        let prefix = format!("kestrel_movies/{}/transition_{transition_id}", project.id);
+        let preview_available = self.comfy_preview_available().await;
+
+        let bounded_duration = duration_seconds;
+        let graph = h3_graph(H3GraphRequest {
+            prompt: &prompt,
+            width: project.settings.width,
+            height: project.settings.height,
+            seconds: bounded_duration,
+            steps: project.settings.steps,
+            seed: chosen_seed,
+            prefix: &prefix,
+            first_frame: first_target.as_ref().map(|(relative, _)| relative.as_str()),
+            last_frame: last_target.as_ref().map(|(relative, _)| relative.as_str()),
+            references: &[],
+            ref_image_size: &project.settings.ref_image_size,
+            preview_available,
+        });
+        let generation_dir = self
+            .project_dir(&project.id)
+            .join("generations")
+            .join(format!("transition-{transition_id}"));
+        fs::create_dir_all(&generation_dir)?;
+        let first_sha256 = first_target
+            .as_ref()
+            .map(|(_, path)| hash_file(path).map(|(_, hash)| hash))
+            .transpose()?;
+        let last_sha256 = last_target
+            .as_ref()
+            .map(|(_, path)| hash_file(path).map(|(_, hash)| hash))
+            .transpose()?;
+        write_json_atomic(&generation_dir.join("graph.json"), &graph)?;
+        let mut generation_receipt = json!({
+            "format":"kestrel.movie-generation",
+            "version":1,
+            "id":format!("transition-{transition_id}"),
+            "kind":"story-transition-video",
+            "status":"submitted",
+            "createdAt":Utc::now().to_rfc3339(),
+            "position":position,
+            "firstAnchor":first_anchor.clone(),
+            "lastAnchor":last_anchor.clone(),
+            "firstFrameSha256":first_sha256,
+            "lastFrameSha256":last_sha256,
+            "prompt":prompt.clone(),
+            "durationSeconds":bounded_duration,
+            "seed":chosen_seed,
+            "placement":placement,
+            "exactGraph":graph.clone(),
+        });
+        write_json_atomic(&generation_dir.join("receipt.json"), &generation_receipt)?;
+
+        let render_result: Result<String, StudioError> = async {
+            let client_id = format!("kestrel-preview-{}", uuid::Uuid::new_v4().simple());
+            let job_id = format!("transition-{transition_id}");
+            let preview_target = PreviewTarget::movie_clip(
+                job_id.clone(),
+                &project.id,
+                &job_id,
+                project.clips.len(),
+            );
+            let preview = if preview_available {
+                LivePreviewSession::connect(app, &client_id, preview_target, &self.live_previews)
+                    .await
+            } else {
+                emit_preview_unavailable(app, &self.live_previews, preview_target);
+                None
+            };
+
+            let response = self
+                .http
+                .post(format!("{COMFY_BASE}/prompt"))
+                .json(&json!({"prompt":graph,"client_id":client_id}))
+                .send()
+                .await?;
+            let status = response.status();
+            let value: Value = response.json().await?;
+            if !status.is_success() {
+                return Err(StudioError::Render(format!(
+                    "ComfyUI rejected the H3 transition: {}",
+                    truncate(&value.to_string(), 700)
+                )));
+            }
+            let prompt_id = value
+                .get("prompt_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    StudioError::Render(format!("ComfyUI returned no prompt id: {value}"))
+                })?;
+            let deadline = tokio::time::Instant::now() + COMFY_RENDER_TIMEOUT;
+            loop {
+                if cancel.is_cancelled() {
+                    let _ = self
+                        .http
+                        .post(format!("{COMFY_BASE}/interrupt"))
+                        .send()
+                        .await;
+                    return Err(StudioError::Cancelled);
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(StudioError::Render(
+                        "ComfyUI did not finish the H3 transition within 24 hours.".to_string(),
+                    ));
+                }
+                let history: Value = self
+                    .http
+                    .get(format!("{COMFY_BASE}/history/{prompt_id}"))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                if let Some(entry) = history.get(prompt_id) {
+                    if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error")
+                    {
+                        let detail = comfy_execution_error(entry).unwrap_or_else(|| {
+                            format!("execution failed: {}", truncate(&entry.to_string(), 1_000))
+                        });
+                        return Err(StudioError::Render(format!("ComfyUI {detail}")));
+                    }
+                    if entry.pointer("/status/completed").and_then(Value::as_bool) == Some(true) {
+                        if let Some(preview) = &preview {
+                            preview.finish();
+                        }
+                        let media = find_output_media(entry, "videos").ok_or_else(|| {
+                            StudioError::Render(
+                                "completed H3 transition exposed no saved video".into(),
+                            )
+                        })?;
+                        let source = PathBuf::from(&project.settings.comfy_root)
+                            .join("output")
+                            .join(&media.1)
+                            .join(&media.0);
+                        let target = self
+                            .project_dir(&project.id)
+                            .join("raw")
+                            .join(format!("clip-transition-{transition_id}.mp4"));
+                        tokio::fs::copy(&source, &target).await.map_err(|error| {
+                            StudioError::Render(format!(
+                                "could not preserve {}: {error}",
+                                source.display()
+                            ))
+                        })?;
+                        break Ok(target.to_string_lossy().into_owned());
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+        .await;
+        let target_mp4 = match render_result {
+            Ok(path) => path,
+            Err(error) => {
+                generation_receipt["status"] = json!(if matches!(&error, StudioError::Cancelled) {
+                    "cancelled"
+                } else {
+                    "failed"
+                });
+                generation_receipt["finishedAt"] = json!(Utc::now().to_rfc3339());
+                generation_receipt["error"] = json!(truncate(&error.to_string(), 4_000));
+                let _ =
+                    write_json_atomic(&generation_dir.join("receipt.json"), &generation_receipt);
+                project.status = previous_status;
+                project.phase = if matches!(&error, StudioError::Cancelled) {
+                    "transition-cancelled".into()
+                } else {
+                    "transition-failed".into()
+                };
+                project.detail = if matches!(&error, StudioError::Cancelled) {
+                    "The H3 audition was stopped. Completed masters and the storyline are unchanged."
+                        .into()
+                } else {
+                    "The H3 audition failed. Completed masters and the storyline are unchanged."
+                        .into()
+                };
+                project.error = error.to_string();
+                self.persist_emit(&mut project, app)?;
+                return Err(error);
+            }
+        };
+
+        let first_label = first_anchor
+            .as_ref()
+            .map(|anchor| {
+                anchor
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| format!("{:.1}s", anchor.time_seconds))
+            })
+            .unwrap_or_else(|| "new opening".into());
+        let last_label = last_anchor
+            .as_ref()
+            .map(|anchor| {
+                anchor
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| format!("{:.1}s", anchor.time_seconds))
+            })
+            .unwrap_or_else(|| "new ending".into());
+        let new_clip_id = format!("transition-{transition_id}");
+        let (_, output_sha256) = hash_file(Path::new(&target_mp4))?;
+        generation_receipt["status"] = json!("complete");
+        generation_receipt["completedAt"] = json!(Utc::now().to_rfc3339());
+        generation_receipt["outputPath"] = json!(target_mp4.clone());
+        generation_receipt["outputSha256"] = json!(output_sha256);
+        write_json_atomic(&generation_dir.join("receipt.json"), &generation_receipt)?;
+        let new_clip = RenderedClip {
+            id: new_clip_id.clone(),
+            index: project.clips.len() as u32,
+            title: match position {
+                MovieTransitionPosition::Before => format!("Before: {last_label}"),
+                MovieTransitionPosition::Between => {
+                    format!("Between: {first_label} → {last_label}")
+                }
+                MovieTransitionPosition::After => format!("After: {first_label}"),
+            },
+            prompt: prompt.clone(),
+            duration_seconds: bounded_duration,
+            seed: chosen_seed,
+            status: "complete".into(),
+            path: target_mp4,
+            error: String::new(),
+            versions: Vec::new(),
+        };
+        project.clips.push(new_clip);
+        let previous_edit = project.edit.clone();
+
+        let transition_edit = ClipEdit {
+            id: format!("edit-{transition_id}"),
+            clip_id: new_clip_id,
+            enabled: true,
+            order: 0,
+            trim_start: 0.0,
+            trim_end: 0.0,
+            audio_gain: 1.0,
+            source_version_id: String::new(),
+            speed: 1.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            audio_fade_in: 0.0,
+            audio_fade_out: 0.0,
+            label: "Generated transition".into(),
+            notes: format!(
+                "H3 {:?} transition; first endpoint: {}; last endpoint: {}",
+                position, first_label, last_label
+            ),
+        };
+        let placement_result = place_transition_edit(
+            &mut project,
+            first_anchor.as_ref(),
+            last_anchor.as_ref(),
+            placement,
+            transition_edit,
+        )
+        .and_then(|()| {
+            for (index, edit) in project.edit.clips.iter_mut().enumerate() {
+                edit.order = index as u32;
+            }
+            validate_movie_edit(&project.clone(), &mut project.edit)
+        });
+        if let Err(error) = placement_result {
+            project.edit = previous_edit;
+            project.status = previous_status.clone();
+            project.phase = "complete".into();
+            project.detail = "The new H3 transition audition is preserved in Masters, but Kestrel could not place it in the storyline. Review the existing cut and place the audition manually.".into();
+            project.error = error.to_string();
+            self.persist_emit(&mut project, app)?;
+            return Err(error);
+        }
+
+        project.status = previous_status;
+        project.phase = "complete".into();
+        project.detail = if placement == MovieTransitionPlacement::AddToMasters {
+            "A new H3 transition audition is preserved in Masters. The storyline is unchanged until the producer places it."
+        } else {
+            "A new H3 transition audition is preserved and placed at the producer-selected story position."
+        }
+        .into();
+        project.error.clear();
+        self.persist_emit(&mut project, app)?;
         Ok(project)
     }
 
@@ -2874,6 +3605,7 @@ impl MovieStudio {
             seed,
             prefix: &prefix,
             first_frame: continuity_input.as_deref(),
+            last_frame: None,
             references: &graph_references,
             ref_image_size: &project.settings.ref_image_size,
             preview_available,
@@ -2884,9 +3616,9 @@ impl MovieStudio {
             .unwrap_or_else(|| planned.id.clone());
         let preview_target = PreviewTarget::movie_clip(job_id, &project.id, &planned.id, index);
         let preview = if preview_available {
-            LivePreviewSession::connect(app, &client_id, preview_target).await
+            LivePreviewSession::connect(app, &client_id, preview_target, &self.live_previews).await
         } else {
-            emit_preview_unavailable(app, preview_target);
+            emit_preview_unavailable(app, &self.live_previews, preview_target);
             None
         };
         let response = self
@@ -3274,9 +4006,344 @@ impl MovieStudio {
     }
 }
 
+fn captured_frame_id(source_path: &Path, anchor: &MovieFrameAnchor) -> String {
+    let frame_key = format!(
+        "{}:{}:{:.6}",
+        anchor.edit_id,
+        source_path.to_string_lossy(),
+        anchor.time_seconds
+    );
+    Sha256::digest(frame_key.as_bytes())
+        .iter()
+        .take(10)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 struct SelectedClipSource<'a> {
     path: &'a str,
     duration_seconds: f32,
+}
+
+struct ResolvedFrameAnchor {
+    clip_id: String,
+    path: PathBuf,
+}
+
+fn resolve_frame_anchor(
+    project_dir: &Path,
+    project: &MovieProject,
+    anchor: &MovieFrameAnchor,
+) -> Result<ResolvedFrameAnchor, StudioError> {
+    if anchor.edit_id.trim().is_empty()
+        || !anchor.time_seconds.is_finite()
+        || anchor.time_seconds < 0.0
+    {
+        return Err(StudioError::Invalid(
+            "a frame anchor needs a storyline item and a non-negative source time".into(),
+        ));
+    }
+    let edit = project
+        .edit
+        .clips
+        .iter()
+        .find(|edit| edit.id == anchor.edit_id)
+        .ok_or_else(|| {
+            StudioError::Invalid("the selected storyline item no longer exists".into())
+        })?;
+    let source = selected_clip_source(project, edit)?;
+    let visible_end = source.duration_seconds - edit.trim_end;
+    let time = anchor.time_seconds as f32;
+    if time + 0.001 < edit.trim_start || time > visible_end + 0.001 {
+        return Err(StudioError::Invalid(format!(
+            "the selected frame at {:.2}s is outside the visible {:.2}s–{:.2}s source range",
+            anchor.time_seconds, edit.trim_start, visible_end
+        )));
+    }
+    let project_root = fs::canonicalize(project_dir).map_err(|error| {
+        StudioError::Invalid(format!("the movie project folder is unavailable: {error}"))
+    })?;
+    let source_path = fs::canonicalize(source.path).map_err(|error| {
+        StudioError::Invalid(format!(
+            "the selected preserved source is unavailable: {error}"
+        ))
+    })?;
+    if !source_path.starts_with(&project_root) || !source_path.is_file() {
+        return Err(StudioError::Invalid(
+            "frame anchors may use only preserved media inside this movie project".into(),
+        ));
+    }
+    Ok(ResolvedFrameAnchor {
+        clip_id: edit.clip_id.clone(),
+        path: source_path,
+    })
+}
+
+fn validate_transition_placement(
+    project: &MovieProject,
+    position: MovieTransitionPosition,
+    first: Option<&MovieFrameAnchor>,
+    last: Option<&MovieFrameAnchor>,
+    placement: MovieTransitionPlacement,
+) -> Result<(), StudioError> {
+    let endpoint_shape_is_valid = match position {
+        MovieTransitionPosition::Before => first.is_none() && last.is_some(),
+        MovieTransitionPosition::Between => first.is_some() && last.is_some(),
+        MovieTransitionPosition::After => first.is_some() && last.is_none(),
+    };
+    if !endpoint_shape_is_valid {
+        return Err(StudioError::Invalid(
+            "before needs only a story end frame, between needs both frames, and after needs only a story start frame"
+                .into(),
+        ));
+    }
+    let placement_is_valid = match position {
+        MovieTransitionPosition::Before => matches!(
+            placement,
+            MovieTransitionPlacement::AddToMasters | MovieTransitionPlacement::InsertBeforeRight
+        ),
+        MovieTransitionPosition::Between => matches!(
+            placement,
+            MovieTransitionPlacement::AddToMasters
+                | MovieTransitionPlacement::InsertAfterLeft
+                | MovieTransitionPlacement::ReplaceRange
+        ),
+        MovieTransitionPosition::After => matches!(
+            placement,
+            MovieTransitionPlacement::AddToMasters | MovieTransitionPlacement::InsertAfterLeft
+        ),
+    };
+    if !placement_is_valid {
+        return Err(StudioError::Invalid(
+            "the requested placement does not match the selected before, between, or after story position"
+                .into(),
+        ));
+    }
+    let find_index = |anchor: &MovieFrameAnchor| {
+        project
+            .edit
+            .clips
+            .iter()
+            .position(|edit| edit.id == anchor.edit_id)
+            .ok_or_else(|| {
+                StudioError::Invalid("a transition endpoint is absent from the storyline".into())
+            })
+    };
+    let first_index = first.map(find_index).transpose()?;
+    let last_index = last.map(find_index).transpose()?;
+    if placement != MovieTransitionPlacement::AddToMasters && project.edit.clips.len() >= 512 {
+        return Err(StudioError::Invalid(
+            "the storyline already contains the maximum 512 items; keep this generation as a Masters audition or remove an edit first"
+                .into(),
+        ));
+    }
+    if position == MovieTransitionPosition::Between
+        && placement == MovieTransitionPlacement::InsertAfterLeft
+        && first_index
+            .zip(last_index)
+            .is_some_and(|(first, last)| first >= last)
+    {
+        return Err(StudioError::Invalid(
+            "an inserted between-shot transition must run forward between distinct storyline shots; use range replacement for endpoints inside one shot"
+                .into(),
+        ));
+    }
+    if placement == MovieTransitionPlacement::ReplaceRange {
+        let first = first.expect("replacement endpoint shape was validated");
+        let last = last.expect("replacement endpoint shape was validated");
+        let first_index = first_index.expect("replacement endpoint shape was validated");
+        let last_index = last_index.expect("replacement endpoint shape was validated");
+        if first_index > last_index
+            || (first_index == last_index && first.time_seconds >= last.time_seconds)
+        {
+            return Err(StudioError::Invalid(
+                "a replacement transition must run forward from the first anchor to the last"
+                    .into(),
+            ));
+        }
+        validate_replacement_endpoint_trim(project, first, true)?;
+        validate_replacement_endpoint_trim(project, last, false)?;
+    }
+    match placement {
+        MovieTransitionPlacement::InsertBeforeRight => {
+            validate_endpoint_trim(project, last.expect("endpoint shape was validated"), false)?;
+        }
+        MovieTransitionPlacement::InsertAfterLeft => {
+            validate_endpoint_trim(project, first.expect("endpoint shape was validated"), true)?;
+            if let Some(last) = last {
+                validate_endpoint_trim(project, last, false)?;
+            }
+        }
+        MovieTransitionPlacement::AddToMasters | MovieTransitionPlacement::ReplaceRange => {}
+    }
+    Ok(())
+}
+
+fn validate_endpoint_trim(
+    project: &MovieProject,
+    anchor: &MovieFrameAnchor,
+    keep_before: bool,
+) -> Result<(), StudioError> {
+    let edit = project
+        .edit
+        .clips
+        .iter()
+        .find(|edit| edit.id == anchor.edit_id)
+        .expect("transition endpoint existence was validated");
+    let source = selected_clip_source(project, edit)?;
+    let preserved = if keep_before {
+        anchor.time_seconds as f32 - edit.trim_start
+    } else {
+        source.duration_seconds - edit.trim_end - anchor.time_seconds as f32
+    };
+    if preserved < MIN_TIMELINE_SOURCE_SECONDS {
+        return Err(StudioError::Invalid(
+            "move the transition endpoint farther inside the shot so placement preserves at least 0.1 seconds of the existing story"
+                .into(),
+        ));
+    }
+    let output_duration = preserved / edit.speed;
+    if edit.fade_in + edit.fade_out > output_duration + 0.001
+        || edit.audio_fade_in + edit.audio_fade_out > output_duration + 0.001
+    {
+        return Err(StudioError::Invalid(
+            "the adjusted cut would overlap the existing picture or audio fades; shorten those fades in Edit or choose a nearby frame"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_replacement_endpoint_trim(
+    project: &MovieProject,
+    anchor: &MovieFrameAnchor,
+    keep_before: bool,
+) -> Result<(), StudioError> {
+    let edit = project
+        .edit
+        .clips
+        .iter()
+        .find(|edit| edit.id == anchor.edit_id)
+        .expect("replacement endpoint existence was validated");
+    let source = selected_clip_source(project, edit)?;
+    let preserved = if keep_before {
+        anchor.time_seconds as f32 - edit.trim_start
+    } else {
+        source.duration_seconds - edit.trim_end - anchor.time_seconds as f32
+    };
+    if preserved > MIN_TIMELINE_SOURCE_SECONDS {
+        validate_endpoint_trim(project, anchor, keep_before)?;
+    }
+    Ok(())
+}
+
+fn place_transition_edit(
+    project: &mut MovieProject,
+    first: Option<&MovieFrameAnchor>,
+    last: Option<&MovieFrameAnchor>,
+    placement: MovieTransitionPlacement,
+    transition: ClipEdit,
+) -> Result<(), StudioError> {
+    match placement {
+        MovieTransitionPlacement::AddToMasters => {}
+        MovieTransitionPlacement::InsertBeforeRight => {
+            let anchor = last.expect("transition placement was validated before rendering");
+            let index = project
+                .edit
+                .clips
+                .iter()
+                .position(|edit| edit.id == anchor.edit_id)
+                .expect("transition placement was validated before rendering");
+            project.edit.clips[index].trim_start = anchor.time_seconds as f32;
+            project.edit.clips.insert(index, transition);
+        }
+        MovieTransitionPlacement::InsertAfterLeft => {
+            let anchor = first.expect("transition placement was validated before rendering");
+            let index = project
+                .edit
+                .clips
+                .iter()
+                .position(|edit| edit.id == anchor.edit_id)
+                .expect("transition placement was validated before rendering");
+            let source_duration =
+                selected_clip_source(project, &project.edit.clips[index])?.duration_seconds;
+            project.edit.clips[index].trim_end =
+                (source_duration - anchor.time_seconds as f32).max(0.0);
+            if let Some(last) = last {
+                let last_index = project
+                    .edit
+                    .clips
+                    .iter()
+                    .position(|edit| edit.id == last.edit_id)
+                    .expect("transition placement was validated before rendering");
+                project.edit.clips[last_index].trim_start = last.time_seconds as f32;
+            }
+            project.edit.clips.insert(index + 1, transition);
+        }
+        MovieTransitionPlacement::ReplaceRange => {
+            replace_storyline_range_with_transition(
+                project,
+                first.expect("transition placement was validated before rendering"),
+                last.expect("transition placement was validated before rendering"),
+                transition,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn replace_storyline_range_with_transition(
+    project: &mut MovieProject,
+    first: &MovieFrameAnchor,
+    last: &MovieFrameAnchor,
+    transition: ClipEdit,
+) -> Result<(), StudioError> {
+    let first_index = project
+        .edit
+        .clips
+        .iter()
+        .position(|edit| edit.id == first.edit_id)
+        .ok_or_else(|| {
+            StudioError::Invalid("the transition start is absent from the storyline".into())
+        })?;
+    let last_index = project
+        .edit
+        .clips
+        .iter()
+        .position(|edit| edit.id == last.edit_id)
+        .ok_or_else(|| {
+            StudioError::Invalid("the transition end is absent from the storyline".into())
+        })?;
+    let first_edit = project.edit.clips[first_index].clone();
+    let last_edit = project.edit.clips[last_index].clone();
+    let first_source = selected_clip_source(project, &first_edit)?;
+    let last_source = selected_clip_source(project, &last_edit)?;
+    let mut replacement = Vec::with_capacity(3);
+    if first.time_seconds as f32 - first_edit.trim_start > MIN_TIMELINE_SOURCE_SECONDS {
+        let mut leading = first_edit.clone();
+        leading.trim_end = first_source.duration_seconds - first.time_seconds as f32;
+        leading.fade_out = 0.0;
+        leading.audio_fade_out = 0.0;
+        replacement.push(leading);
+    }
+    replacement.push(transition);
+    if last_source.duration_seconds - last_edit.trim_end - last.time_seconds as f32
+        > MIN_TIMELINE_SOURCE_SECONDS
+    {
+        let mut trailing = last_edit;
+        if first_index == last_index {
+            trailing.id = format!("edit-{}", uuid::Uuid::new_v4().simple());
+        }
+        trailing.trim_start = last.time_seconds as f32;
+        trailing.fade_in = 0.0;
+        trailing.audio_fade_in = 0.0;
+        replacement.push(trailing);
+    }
+    project
+        .edit
+        .clips
+        .splice(first_index..=last_index, replacement);
+    Ok(())
 }
 
 fn selected_clip_source<'a>(
@@ -3428,7 +4495,7 @@ fn validate_movie_edit(project: &MovieProject, edit: &mut MovieEdit) -> Result<(
             )));
         }
         let source_duration = source.duration_seconds;
-        if item.trim_start + item.trim_end > source_duration - 0.1 {
+        if item.trim_start + item.trim_end > source_duration - MIN_TIMELINE_SOURCE_SECONDS {
             return Err(StudioError::Invalid(format!(
                 "timeline item {} trims away the entire preserved source",
                 item.id
@@ -3784,10 +4851,6 @@ struct MovieAssessment {
     blocking_issues: Vec<ReviewIssue>,
 }
 
-fn clip_assistant_prompt() -> String {
-    prompts::clip_assistant_system()
-}
-
 fn studio_qualification_schema() -> Value {
     json!({"type":"json_schema","json_schema":{"name":"kestrel_studio_model_qualification","strict":true,"schema":{
         "type":"object","additionalProperties":false,"properties":{
@@ -3795,29 +4858,6 @@ fn studio_qualification_schema() -> Value {
             "acknowledgedRole":{"type":"string","enum":["Kestrel Studio Director"]},
             "checks":{"type":"array","minItems":2,"maxItems":2,"uniqueItems":true,"items":{"type":"string","enum":["structured-tool-call","exact-nonce"]}}
         },"required":["nonce","acknowledgedRole","checks"]
-    }}})
-}
-
-fn clip_suggestion_schema() -> Value {
-    json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_scene_suggestion","strict":true,"schema":{
-        "type":"object","additionalProperties":false,"properties":{
-            "clipId":{"type":"string","maxLength":80},
-            "summary":{"type":"string","minLength":10,"maxLength":1200},
-            "checklist":{"type":"array","maxItems":12,"items":{"type":"string","minLength":3,"maxLength":400}},
-            "clip":{"type":"object","additionalProperties":false,"properties":{
-                "id":{"type":"string","maxLength":80},
-                "title":{"type":"string","minLength":1,"maxLength":160},
-                "purpose":{"type":"string","minLength":1,"maxLength":600},
-                "durationSeconds":{"type":"number","minimum":5,"maximum":15},
-                "prompt":{"type":"string"},
-                "continuityIn":{"type":"string","maxLength":800},
-                "continuityOut":{"type":"string","maxLength":800},
-                "transition":{"type":"string","maxLength":300},
-                "usePreviousFrame":{"type":"boolean"},
-                "sourceRefs":{"type":"array","description":text(PromptId::StudioSourceRefs),"maxItems":24,"items":{"type":"string","maxLength":800}},
-                "referenceIds":{"type":"array","description":text(PromptId::StudioReferenceIds),"maxItems":12,"items":{"type":"string","maxLength":128}}
-            },"required":["id","title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}
-        },"required":["clipId","summary","checklist","clip"]
     }}})
 }
 
@@ -5092,6 +6132,44 @@ fn movie_schema(max_clips: u32) -> Value {
     }}})
 }
 
+pub async fn extract_exact_frame(
+    video_path: &Path,
+    time_seconds: f64,
+    output_png: &Path,
+) -> Result<(), StudioError> {
+    if let Some(parent) = output_png.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let output = tokio::process::Command::new(media_program("ffmpeg"))
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            &format!("{:.3}", time_seconds.max(0.0)),
+            "-i",
+        ])
+        .arg(video_path)
+        .args(["-frames:v", "1", "-q:v", "2"])
+        .arg(output_png)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        return Err(StudioError::Render(format!(
+            "frame extraction failed: {}",
+            truncate(&String::from_utf8_lossy(&output.stderr), 500)
+        )));
+    }
+    if !output_png.is_file() {
+        return Err(StudioError::Render(
+            "frame extraction finished without producing the requested PNG".into(),
+        ));
+    }
+    Ok(())
+}
+
 struct H3GraphRequest<'a> {
     prompt: &'a str,
     width: u32,
@@ -5101,6 +6179,7 @@ struct H3GraphRequest<'a> {
     seed: u64,
     prefix: &'a str,
     first_frame: Option<&'a str>,
+    last_frame: Option<&'a str>,
     references: &'a [H3ReferenceInput<'a>],
     ref_image_size: &'a str,
     preview_available: bool,
@@ -5160,6 +6239,7 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
         seed,
         prefix,
         first_frame,
+        last_frame,
         references,
         ref_image_size,
         preview_available,
@@ -5202,6 +6282,10 @@ fn h3_graph(request: H3GraphRequest<'_>) -> Value {
         if let Some(image) = first_frame {
             graph["15"] = json!({"class_type":"LoadImage","inputs":{"image":image}});
             graph["5"]["inputs"]["first_frame"] = json!(["15", 0]);
+        }
+        if let Some(image) = last_frame {
+            graph["16"] = json!({"class_type":"LoadImage","inputs":{"image":image}});
+            graph["5"]["inputs"]["last_frame"] = json!(["16", 0]);
         }
         return graph;
     }
@@ -5293,7 +6377,9 @@ pub(crate) fn find_output_media(entry: &Value, category: &str) -> Option<(String
                 for media in media_list {
                     if let Some(filename) = media.get("filename").and_then(Value::as_str) {
                         let matches_cat = match category {
-                            "videos" => is_video_file(filename) || *cat == "videos" || *cat == "gifs",
+                            "videos" => {
+                                is_video_file(filename) || *cat == "videos" || *cat == "gifs"
+                            }
                             "images" => is_image_file(filename) || *cat == "images",
                             "audio" => is_audio_file(filename) || *cat == "audio",
                             _ => true,
@@ -5601,6 +6687,39 @@ mod tests {
     }
 
     #[test]
+    fn generative_event_snapshot_replays_complete_records_during_a_concurrent_append() {
+        let temporary = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(temporary.path()).unwrap();
+        let project_id = "12345678-1234-4234-8234-123456789abc";
+        let request_id = "abcdefab-1234-4234-8234-abcdefabcdef";
+        let request_root = studio
+            .project_dir(project_id)
+            .join("agent-workspace")
+            .join("generative-edits")
+            .join(request_id);
+        fs::create_dir_all(&request_root).unwrap();
+        fs::write(request_root.join("task.json"), br#"{"kind":"shotVersion"}"#).unwrap();
+        fs::write(
+            request_root.join("events.jsonl"),
+            b"{\"sequence\":1,\"kind\":\"token\",\"content\":\"kept\"}\n{\"sequence\":2",
+        )
+        .unwrap();
+
+        let snapshot = studio
+            .generation_agent_snapshot(project_id, request_id)
+            .unwrap();
+        assert_eq!(snapshot["events"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["events"][0]["content"], "kept");
+        assert_eq!(
+            studio
+                .latest_generation_agent_request_id(project_id)
+                .unwrap()
+                .as_deref(),
+            Some(request_id)
+        );
+    }
+
+    #[test]
     fn independent_review_is_formatted_for_producers() {
         let output = producer_reviewer_output(&MovieCodeReview {
             summary: "The ending drops a required identity detail.".into(),
@@ -5709,6 +6828,7 @@ mod tests {
             seed: 7,
             prefix: "test",
             first_frame: None,
+            last_frame: None,
             references: &[],
             ref_image_size: "match",
             preview_available: true,
@@ -5731,6 +6851,7 @@ mod tests {
             seed: 7,
             prefix: "test",
             first_frame: None,
+            last_frame: None,
             references: &[],
             ref_image_size: "match",
             preview_available: false,
@@ -5751,12 +6872,64 @@ mod tests {
             seed: 7,
             prefix: "test",
             first_frame: Some("kestrel/frame.png"),
+            last_frame: None,
             references: &[],
             ref_image_size: "match",
             preview_available: true,
         });
         assert_eq!(graph["15"]["class_type"], "LoadImage");
         assert_eq!(graph["5"]["inputs"]["first_frame"], json!(["15", 0]));
+    }
+
+    #[test]
+    fn h3_graph_can_arrive_at_a_preserved_story_opening() {
+        let graph = h3_graph(H3GraphRequest {
+            prompt: "test",
+            width: 864,
+            height: 480,
+            seconds: 5.0,
+            steps: 20,
+            seed: 7,
+            prefix: "test",
+            first_frame: None,
+            last_frame: Some("kestrel/story-opening.png"),
+            references: &[],
+            ref_image_size: "match",
+            preview_available: true,
+        });
+        assert!(graph.get("15").is_none());
+        assert_eq!(graph["16"]["class_type"], "LoadImage");
+        assert_eq!(graph["16"]["inputs"]["image"], "kestrel/story-opening.png");
+        assert_eq!(graph["5"]["inputs"]["last_frame"], json!(["16", 0]));
+    }
+
+    #[test]
+    fn h3_graph_supports_first_and_last_frame_fl2v() {
+        let graph = h3_graph(H3GraphRequest {
+            prompt: "camera pans between two keyframes",
+            width: 864,
+            height: 480,
+            seconds: 5.0,
+            steps: 20,
+            seed: 42,
+            prefix: "test_fl2v",
+            first_frame: Some("kestrel/first.png"),
+            last_frame: Some("kestrel/last.png"),
+            references: &[],
+            ref_image_size: "match",
+            preview_available: false,
+        });
+        assert_eq!(
+            graph["1"]["inputs"]["unet_name"],
+            "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+        );
+        assert_eq!(graph["5"]["class_type"], "MiniMaxH3ImageToVideo");
+        assert_eq!(graph["15"]["class_type"], "LoadImage");
+        assert_eq!(graph["15"]["inputs"]["image"], "kestrel/first.png");
+        assert_eq!(graph["16"]["class_type"], "LoadImage");
+        assert_eq!(graph["16"]["inputs"]["image"], "kestrel/last.png");
+        assert_eq!(graph["5"]["inputs"]["first_frame"], json!(["15", 0]));
+        assert_eq!(graph["5"]["inputs"]["last_frame"], json!(["16", 0]));
     }
 
     #[test]
@@ -5795,6 +6968,7 @@ mod tests {
             seed: 7,
             prefix: "test",
             first_frame: Some("must-not-be-used.png"),
+            last_frame: None,
             references: &references,
             ref_image_size: "max",
             preview_available: true,
@@ -5857,6 +7031,65 @@ mod tests {
         assert_eq!(
             MovieSettings::default().thinking_budget,
             MOVIE_THINKING_BUDGET
+        );
+    }
+
+    #[test]
+    fn movie_runtime_policy_layers_over_the_selected_model_policy() {
+        let mut control = ControlSettings {
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            ..ControlSettings::default()
+        };
+        control
+            .model_overrides
+            .push(crate::models::ModelRuntimeOverride {
+                model_id: "director".into(),
+                context_window: Some(27_648),
+                max_output_tokens: Some(24_576),
+                ..crate::models::ModelRuntimeOverride::default()
+            });
+
+        let inherited = MovieSettings {
+            context_window: 0,
+            max_output_tokens: 24_576,
+            ..MovieSettings::default()
+        }
+        .runtime_settings_for(&control, "director");
+        assert_eq!(inherited.context_window, 27_648);
+        assert_eq!(inherited.max_output_tokens, 24_576);
+        assert!(inherited.model_overrides.is_empty());
+
+        let overridden = MovieSettings {
+            context_window: 65_536,
+            max_output_tokens: 32_768,
+            ..MovieSettings::default()
+        }
+        .runtime_settings_for(&control, "director");
+        assert_eq!(overridden.context_window, 65_536);
+        assert_eq!(overridden.max_output_tokens, 32_768);
+    }
+
+    #[test]
+    fn shared_runtime_policy_limits_bound_movie_settings() {
+        let standard = runtime_policy_limits(false);
+        let advanced = runtime_policy_limits(true);
+        assert_eq!(standard.maximum_context_window, 98_304);
+        assert_eq!(standard.maximum_max_output_tokens, 32_768);
+        assert_eq!(advanced.maximum_context_window, 1_048_576);
+        assert_eq!(advanced.maximum_max_output_tokens, 262_144);
+
+        let bounded = MovieSettings {
+            context_window: u32::MAX,
+            max_output_tokens: u32::MAX,
+            ..MovieSettings::default()
+        }
+        .validate(false)
+        .unwrap();
+        assert_eq!(bounded.context_window, standard.maximum_context_window);
+        assert_eq!(
+            bounded.max_output_tokens,
+            standard.maximum_max_output_tokens
         );
     }
 
@@ -5960,6 +7193,147 @@ mod tests {
             "my-offline-cut-01"
         );
         assert_eq!(safe_export_stem("🎬"), "kestrel-movie");
+    }
+
+    #[test]
+    fn replacing_part_of_one_shot_preserves_clean_edge_fragments() {
+        let mut project: MovieProject = serde_json::from_value(json!({
+            "schemaVersion": 5,
+            "id": "e3e9e619-7e6a-4eed-a433-53c9e01ad99f",
+            "prompt": "test", "title": "Range replacement", "status": "complete",
+            "phase": "complete", "detail": "ready",
+            "createdAt": "2026-08-12T00:00:00Z", "updatedAt": "2026-08-12T00:00:00Z",
+            "model": "test", "renderer": "test", "settings": {},
+            "clips": [{
+                "id": "clip-001", "index": 0, "title": "One", "prompt": "prompt",
+                "durationSeconds": 8.0, "seed": 1, "status": "complete", "path": "one.mp4"
+            }, {
+                "id": "transition-001", "index": 1, "title": "Generated middle", "prompt": "prompt",
+                "durationSeconds": 4.0, "seed": 2, "status": "complete", "path": "middle.mp4"
+            }],
+            "edit": { "clips": [], "exportTitle": "Range replacement" },
+            "finalPath": "", "error": "", "producerReviewRequired": false,
+            "producerApprovedAt": ""
+        }))
+        .unwrap();
+        normalize_movie_project(&mut project);
+        project.edit.clips = vec![ClipEdit {
+            id: "edit-original".into(),
+            clip_id: "clip-001".into(),
+            enabled: true,
+            order: 0,
+            trim_start: 1.0,
+            trim_end: 1.0,
+            audio_gain: 1.0,
+            source_version_id: String::new(),
+            speed: 1.0,
+            fade_in: 0.5,
+            fade_out: 0.6,
+            audio_fade_in: 0.7,
+            audio_fade_out: 0.8,
+            label: "Original".into(),
+            notes: String::new(),
+        }];
+        let mut backward = project.clone();
+        let mut later_edit = backward.edit.clips[0].clone();
+        later_edit.id = "edit-later".into();
+        later_edit.order = 1;
+        backward.edit.clips.push(later_edit);
+        let error = validate_transition_placement(
+            &backward,
+            MovieTransitionPosition::Between,
+            Some(&MovieFrameAnchor {
+                edit_id: "edit-later".into(),
+                time_seconds: 2.0,
+                label: None,
+            }),
+            Some(&MovieFrameAnchor {
+                edit_id: "edit-original".into(),
+                time_seconds: 5.0,
+                label: None,
+            }),
+            MovieTransitionPlacement::InsertAfterLeft,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must run forward"));
+
+        let transition = ClipEdit {
+            id: "edit-generated".into(),
+            clip_id: "transition-001".into(),
+            enabled: true,
+            order: 0,
+            trim_start: 0.0,
+            trim_end: 0.0,
+            audio_gain: 1.0,
+            source_version_id: String::new(),
+            speed: 1.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            audio_fade_in: 0.0,
+            audio_fade_out: 0.0,
+            label: "Generated".into(),
+            notes: String::new(),
+        };
+        replace_storyline_range_with_transition(
+            &mut project,
+            &MovieFrameAnchor {
+                edit_id: "edit-original".into(),
+                time_seconds: 2.0,
+                label: None,
+            },
+            &MovieFrameAnchor {
+                edit_id: "edit-original".into(),
+                time_seconds: 5.0,
+                label: None,
+            },
+            transition,
+        )
+        .unwrap();
+
+        assert_eq!(project.edit.clips.len(), 3);
+        let leading = &project.edit.clips[0];
+        let generated = &project.edit.clips[1];
+        let trailing = &project.edit.clips[2];
+        assert_eq!(leading.id, "edit-original");
+        assert_eq!(leading.trim_end, 6.0);
+        assert_eq!((leading.fade_in, leading.fade_out), (0.5, 0.0));
+        assert_eq!((leading.audio_fade_in, leading.audio_fade_out), (0.7, 0.0));
+        assert_eq!(generated.id, "edit-generated");
+        assert_ne!(trailing.id, leading.id);
+        assert_eq!(trailing.trim_start, 5.0);
+        assert_eq!((trailing.fade_in, trailing.fade_out), (0.0, 0.6));
+        assert_eq!(
+            (trailing.audio_fade_in, trailing.audio_fade_out),
+            (0.0, 0.8)
+        );
+    }
+
+    #[test]
+    fn repeated_frame_captures_reuse_only_the_same_source_frame() {
+        let anchor = MovieFrameAnchor {
+            edit_id: "edit-original".into(),
+            time_seconds: 2.0,
+            label: Some("In".into()),
+        };
+        let first = captured_frame_id(Path::new("source-v1.mp4"), &anchor);
+        assert_eq!(
+            first,
+            captured_frame_id(Path::new("source-v1.mp4"), &anchor)
+        );
+        assert_ne!(
+            first,
+            captured_frame_id(Path::new("source-v2.mp4"), &anchor)
+        );
+        assert_ne!(
+            first,
+            captured_frame_id(
+                Path::new("source-v1.mp4"),
+                &MovieFrameAnchor {
+                    time_seconds: 2.5,
+                    ..anchor
+                }
+            )
+        );
     }
 
     #[tokio::test]
@@ -6157,6 +7531,52 @@ mod tests {
             "model-role-change"
         );
         assert_eq!(studio.get(&project.id).unwrap().model_roles, roles);
+    }
+
+    #[tokio::test]
+    async fn project_runtime_policy_is_a_durable_checkpoint_without_touching_the_cut() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let project = studio
+            .create_manual(
+                StartMovieRequest {
+                    prompt: "A producer-owned runtime checkpoint".into(),
+                    settings: MovieSettings::default(),
+                    references: vec![],
+                    pause_after_plan: true,
+                    model_roles: MovieModelRoleRequest::default(),
+                },
+                false,
+                MovieModelRoles::default(),
+            )
+            .unwrap();
+
+        let updated = studio
+            .set_runtime_policy(
+                &project.id,
+                MovieRuntimePolicyRequest {
+                    context_window: 27_648,
+                    max_output_tokens: 27_648,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.settings.context_window, 27_648);
+        assert_eq!(updated.settings.max_output_tokens, 27_648);
+        assert_eq!(
+            serde_json::to_value(&updated.plan).unwrap(),
+            serde_json::to_value(&project.plan).unwrap()
+        );
+        assert_eq!(updated.edit, project.edit);
+        assert_eq!(
+            updated.producer_feedback.last().unwrap().scope,
+            "runtime-policy-change"
+        );
+        let reopened = studio.get(&project.id).unwrap();
+        assert_eq!(reopened.settings.context_window, 27_648);
+        assert_eq!(reopened.settings.max_output_tokens, 27_648);
     }
 
     #[test]
@@ -8439,4 +9859,3 @@ mod tests {
         assert!(Path::new(&export.path).with_extension("json").is_file());
     }
 }
-

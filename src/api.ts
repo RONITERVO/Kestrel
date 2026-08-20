@@ -35,23 +35,30 @@ import type {
   SetupLocations,
   SetupProgress,
   SetupSnapshot,
-  MovieClipAssistEvent,
   MovieClipRenderRequest,
   MovieClipSuggestion,
   MovieCopilotEvent,
   MovieCopilotReceipt,
   MovieCopilotRequest,
   MovieEdit,
+  MovieFl2vTransitionRequest,
+  MovieFrameAnchor,
+  MovieCapturedFrame,
+  MovieGenerationAgentEvent,
+  MovieGenerationAgentRequest,
+  MovieGenerationProposal,
   MovieImageAssetEvent,
   MovieImageAssetGeneration,
   MovieImageAssetRequest,
   ModelCompatibility,
   MoviePlan,
   MovieModelRoleRequest,
+  MovieRuntimePolicyRequest,
   MoviePlanningEvent,
   MoviePlanningSnapshot,
   MovieProject,
   MovieRenderPreviewEvent,
+  MovieRenderState,
   MovieReferenceImport,
   ModelDownloadRecord,
   ModelDownloadRequest,
@@ -443,11 +450,6 @@ export async function approveMoviePlan(id: string): Promise<MovieProject> {
   return invoke<MovieProject>("approve_movie_plan", { id });
 }
 
-export async function askMovieDirectorClip(requestId: string, id: string, clipId: string, feedback: string, thinkingLevel?: ThinkingLevel): Promise<MovieClipSuggestion> {
-  if (!isTauri()) throw new Error("Studio scene assistance requires the desktop application.");
-  return invoke<MovieClipSuggestion>("ask_movie_director_clip", { request: { requestId, id, clipId, feedback, thinkingLevel } });
-}
-
 export async function getMusicMidiDocument(projectId: string, takeId: string): Promise<MusicMidiSaveResult> {
   if (!isTauri()) throw new Error("The MIDI editor requires the desktop application.");
   return invoke<MusicMidiSaveResult>("get_music_midi_document", { request: { projectId, takeId } });
@@ -467,11 +469,6 @@ export async function revealMusicMidi(projectId: string, takeId: string): Promis
   if (isTauri()) await invoke("reveal_music_midi", { request: { projectId, takeId } });
 }
 
-export async function onMovieClipAssist(callback: (event: MovieClipAssistEvent) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<MovieClipAssistEvent>("movie-clip-assist", (event) => callback(event.payload));
-  return () => undefined;
-}
-
 export async function setMovieModelRoles(id: string, modelRoles: MovieModelRoleRequest): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Studio model-role changes require the desktop application.");
   return invoke<MovieProject>("set_movie_model_roles", { id, modelRoles });
@@ -480,6 +477,59 @@ export async function setMovieModelRoles(id: string, modelRoles: MovieModelRoleR
 export async function renderMovieClipVersion(request: MovieClipRenderRequest): Promise<MovieProject> {
   if (!isTauri()) throw new Error("Scene version rendering requires the desktop application.");
   return invoke<MovieProject>("render_movie_clip_version", { request });
+}
+
+export async function captureMovieFrame(projectId: string, anchor: MovieFrameAnchor): Promise<MovieCapturedFrame> {
+  if (!isTauri()) throw new Error("Frame capture requires the desktop application.");
+  return invoke<MovieCapturedFrame>("capture_movie_frame", { projectId, anchor });
+}
+
+export async function getMovieRenderState(id: string): Promise<MovieRenderState> {
+  if (!isTauri()) return { active: false };
+  return invoke<MovieRenderState>("get_movie_render_state", { id });
+}
+
+export async function setMovieRuntimePolicy(id: string, policy: MovieRuntimePolicyRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Studio local-model limits require the desktop application.");
+  return invoke<MovieProject>("set_movie_runtime_policy", { id, policy });
+}
+
+export async function runMovieGenerationAgent(request: MovieGenerationAgentRequest): Promise<MovieGenerationProposal> {
+  if (!isTauri()) throw new Error("Generative Director assistance requires the desktop application.");
+  return invoke<MovieGenerationProposal>("run_movie_generation_agent", { request });
+}
+
+export async function cancelMovieGenerationAgent(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_generation_agent", { requestId });
+}
+
+export async function getMovieGenerationAgentSnapshot(projectId: string, requestId: string): Promise<unknown> {
+  if (!isTauri()) throw new Error("Generative Director inspection requires the desktop application.");
+  return invoke("get_movie_generation_agent_snapshot", { projectId, requestId });
+}
+
+export async function getLatestMovieGenerationAgentSnapshot(projectId: string): Promise<unknown | null> {
+  if (!isTauri()) return null;
+  return invoke("get_latest_movie_generation_agent_snapshot", { projectId });
+}
+
+export async function isMovieGenerationAgentActive(requestId: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  return invoke<boolean>("is_movie_generation_agent_active", { requestId });
+}
+
+export async function onMovieGenerationAgent(callback: (event: MovieGenerationAgentEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieGenerationAgentEvent>("movie-generation-agent", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function generateMovieFl2vTransition(request: MovieFl2vTransitionRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("H3 transition generation requires the desktop application.");
+  return invoke<MovieProject>("generate_movie_fl2v_transition", { request });
+}
+
+export async function cancelMovieRender(id: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_render", { id });
 }
 
 export async function saveMovieEdits(id: string, edit: MovieEdit): Promise<MovieProject> {

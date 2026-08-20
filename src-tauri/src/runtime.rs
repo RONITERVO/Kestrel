@@ -557,8 +557,7 @@ fn process_matches(
     catalog_id: &str,
     context_window: u32,
 ) -> bool {
-    snapshot.model_id.as_deref() == Some(catalog_id)
-        && snapshot.context_window == context_window
+    snapshot.model_id.as_deref() == Some(catalog_id) && snapshot.context_window == context_window
 }
 
 pub fn authorized(
@@ -756,5 +755,4 @@ mod tests {
         );
         assert_eq!(manager.logs().await.len(), 5);
     }
-
 }

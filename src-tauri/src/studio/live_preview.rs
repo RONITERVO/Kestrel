@@ -3,21 +3,29 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::Value;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+};
 use tauri::{AppHandle, Emitter};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub(super) const PREVIEW_NODE_ID: &str = "90";
-pub(super) const PREVIEW_NODE_REVISION: &str = "5219cd171cb44e2edce9e4daad6cc42c41eded5c";
+pub(super) const PREVIEW_NODE_REVISION: &str = "3f20054214fec9f9234fd3841ae6f1e4287948f6";
 pub(super) const PREVIEW_DECODER_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
 pub(super) const PREVIEW_DECODER_SHA256: &str =
     "4fd022bfcab08772fe0536b17ea1a3bbb5625be11e397868d1c5d891863d4c13";
 const MAX_ENCODED_PREVIEW_BYTES: usize = 12 * 1024 * 1024;
 const MAX_DECODED_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RETAINED_MOVIE_PREVIEWS: usize = 4;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct MovieRenderPreviewEvent {
+pub struct MovieRenderPreviewEvent {
     pub kind: String,
     pub target: String,
     pub job_id: String,
@@ -50,6 +58,69 @@ pub(super) struct MovieRenderPreviewEvent {
     pub preview_decoder_revision: &'static str,
     pub preview_decoder_sha256: &'static str,
     pub at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieRenderState {
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<MovieRenderPreviewEvent>,
+}
+
+/// Process-local handoff for approximate preview frames. The full-VAE master remains the only
+/// durable picture truth; this bounded registry lets a remounted Studio window reconnect to the
+/// currently running H3 job without writing transient base64 frames into project manifests.
+#[derive(Clone, Default)]
+pub(super) struct LivePreviewRegistry {
+    movie_projects: Arc<Mutex<HashMap<String, MovieRenderPreviewEvent>>>,
+}
+
+impl LivePreviewRegistry {
+    pub(super) fn clear_movie(&self, project_id: &str) {
+        if let Ok(mut previews) = self.movie_projects.lock() {
+            previews.remove(project_id);
+        }
+    }
+
+    pub(super) fn movie(&self, project_id: &str) -> Option<MovieRenderPreviewEvent> {
+        self.movie_projects.lock().ok()?.get(project_id).cloned()
+    }
+
+    fn record(&self, event: &MovieRenderPreviewEvent) {
+        let Some(project_id) = event.project_id.as_ref() else {
+            return;
+        };
+        if let Ok(mut previews) = self.movie_projects.lock() {
+            if !previews.contains_key(project_id) && previews.len() >= MAX_RETAINED_MOVIE_PREVIEWS {
+                if let Some(oldest) = previews
+                    .iter()
+                    .min_by_key(|(_, preview)| &preview.at)
+                    .map(|(id, _)| id.clone())
+                {
+                    previews.remove(&oldest);
+                }
+            }
+            let mut retained = event.clone();
+            if retained.data_url.is_none() {
+                if let Some(current) = previews
+                    .get(project_id)
+                    .filter(|current| current.job_id == retained.job_id)
+                {
+                    retained.data_url.clone_from(&current.data_url);
+                    retained.mime_type.clone_from(&current.mime_type);
+                    retained.width = current.width;
+                    retained.height = current.height;
+                    retained.step = current.step;
+                    retained.total = current.total;
+                    retained.fps = current.fps;
+                    retained.step_ms = current.step_ms;
+                    retained.average_step_ms = current.average_step_ms;
+                }
+            }
+            previews.insert(project_id.clone(), retained);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -116,20 +187,36 @@ impl PreviewTarget {
 pub(super) struct LivePreviewSession {
     app: AppHandle,
     target: PreviewTarget,
+    registry: LivePreviewRegistry,
+    terminal: AtomicBool,
     cancel: CancellationToken,
     task: JoinHandle<()>,
 }
 
-pub(super) fn emit_preview_unavailable(app: Option<&AppHandle>, target: PreviewTarget) {
+fn emit_preview_event(
+    app: Option<&AppHandle>,
+    registry: &LivePreviewRegistry,
+    event: MovieRenderPreviewEvent,
+) {
+    registry.record(&event);
     if let Some(app) = app {
-        let _ = app.emit(
-            "movie-render-preview",
-            target.event(
-                "unavailable",
-                "Approximate live preview is unavailable; full-quality local rendering continues.",
-            ),
-        );
+        let _ = app.emit("movie-render-preview", event);
     }
+}
+
+pub(super) fn emit_preview_unavailable(
+    app: Option<&AppHandle>,
+    registry: &LivePreviewRegistry,
+    target: PreviewTarget,
+) {
+    emit_preview_event(
+        app,
+        registry,
+        target.event(
+            "unavailable",
+            "Approximate live preview is unavailable; full-quality local rendering continues.",
+        ),
+    );
 }
 
 impl LivePreviewSession {
@@ -137,14 +224,16 @@ impl LivePreviewSession {
         app: Option<&AppHandle>,
         client_id: &str,
         target: PreviewTarget,
+        registry: &LivePreviewRegistry,
     ) -> Option<Self> {
         let app = app?.clone();
         let url = format!("ws://127.0.0.1:8188/ws?clientId={client_id}");
         let (stream, _) = match tokio_tungstenite::connect_async(&url).await {
             Ok(value) => value,
             Err(error) => {
-                let _ = app.emit(
-                    "movie-render-preview",
+                emit_preview_event(
+                    Some(&app),
+                    registry,
                     target.event(
                         "unavailable",
                         format!("Live preview could not connect to the local renderer: {error}"),
@@ -157,10 +246,12 @@ impl LivePreviewSession {
         let task_cancel = cancel.clone();
         let task_app = app.clone();
         let task_target = target.clone();
+        let task_registry = registry.clone();
         let task = tokio::spawn(async move {
             let (_, mut reader) = stream.split();
-            let _ = task_app.emit(
-                "movie-render-preview",
+            emit_preview_event(
+                Some(&task_app),
+                &task_registry,
                 task_target.event(
                     "connected",
                     "Live H3 preview is connected and waiting for the first sample.",
@@ -175,14 +266,15 @@ impl LivePreviewSession {
                             Ok(message) if message.is_text() => {
                                 if let Ok(text) = message.into_text() {
                                     if let Some(event) = parse_preview_message(&text, &task_target) {
-                                        let _ = task_app.emit("movie-render-preview", event);
+                                        emit_preview_event(Some(&task_app), &task_registry, event);
                                     }
                                 }
                             }
                             Ok(message) if message.is_close() => break,
                             Err(error) => {
-                                let _ = task_app.emit(
-                                    "movie-render-preview",
+                                emit_preview_event(
+                                    Some(&task_app),
+                                    &task_registry,
                                     task_target.event("unavailable", format!("The local live preview stream closed: {error}")),
                                 );
                                 break;
@@ -196,14 +288,18 @@ impl LivePreviewSession {
         Some(Self {
             app,
             target,
+            registry: registry.clone(),
+            terminal: AtomicBool::new(false),
             cancel,
             task,
         })
     }
 
     pub(super) fn finish(&self) {
-        let _ = self.app.emit(
-            "movie-render-preview",
+        self.terminal.store(true, Ordering::Release);
+        emit_preview_event(
+            Some(&self.app),
+            &self.registry,
             self.target.event(
                 "finished",
                 "Sampling finished. Kestrel is preserving the full-VAE master.",
@@ -215,6 +311,16 @@ impl LivePreviewSession {
 
 impl Drop for LivePreviewSession {
     fn drop(&mut self) {
+        if !self.terminal.swap(true, Ordering::AcqRel) {
+            emit_preview_event(
+                Some(&self.app),
+                &self.registry,
+                self.target.event(
+                    "stopped",
+                    "The H3 live estimate stopped before a full master was preserved.",
+                ),
+            );
+        }
         self.cancel.cancel();
         self.task.abort();
     }
@@ -325,5 +431,30 @@ mod tests {
 
         let wrong_node = payload.to_string().replace("\"90\"", "\"91\"");
         assert!(parse_preview_message(&wrong_node, &target).is_none());
+    }
+
+    #[test]
+    fn keeps_the_latest_movie_preview_available_across_ui_remounts() {
+        let registry = LivePreviewRegistry::default();
+        let target = PreviewTarget::movie_clip("job-1".into(), "movie-1", "clip-1", 0);
+        let mut event = target.event("frame", "Approximate live estimate");
+        event.data_url = Some("data:image/jpeg;base64,AQID".into());
+        event.step = Some(4);
+        event.total = Some(20);
+        emit_preview_event(None, &registry, event);
+        emit_preview_event(
+            None,
+            &registry,
+            target.event("finished", "Preserving the full-quality master"),
+        );
+
+        let restored = registry.movie("movie-1").expect("preview is retained");
+        assert_eq!(restored.job_id, "job-1");
+        assert_eq!(restored.kind, "finished");
+        assert!(restored.data_url.is_some());
+        assert_eq!(restored.step, Some(4));
+
+        registry.clear_movie("movie-1");
+        assert!(registry.movie("movie-1").is_none());
     }
 }

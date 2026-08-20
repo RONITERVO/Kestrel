@@ -91,6 +91,10 @@ pub struct PromptDraftRequest {
     pub asset_kind: String,
     #[serde(default)]
     pub thinking_level: Option<ThinkingLevel>,
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,6 +144,33 @@ impl PromptDraftJob {
         } = self;
         validate_request(&request, &models)?;
         let mut settings = settings.for_model(&request.model_id);
+        let maximum_context = if settings.advanced_mode {
+            1_048_576
+        } else {
+            98_304
+        };
+        let maximum_output = if settings.advanced_mode {
+            262_144
+        } else {
+            32_768
+        };
+        if let Some(value) = request.context_window {
+            if !(4_096..=maximum_context).contains(&value) {
+                return Err(format!(
+                    "Collaborator context must be between 4,096 and {maximum_context} tokens."
+                ));
+            }
+            settings.context_window = value;
+        }
+        if let Some(value) = request.max_output_tokens {
+            if !(1_024..=maximum_output).contains(&value) {
+                return Err(format!(
+                    "Collaborator output must be between 1,024 and {maximum_output} tokens."
+                ));
+            }
+            settings.max_output_tokens = value;
+        }
+        settings.model_overrides.clear();
         if let Some(level) = request.thinking_level {
             settings.thinking_level = level;
         }
@@ -668,6 +699,8 @@ mod tests {
             asset_name: "compass.png".into(),
             asset_kind: "image".into(),
             thinking_level: None,
+            context_window: None,
+            max_output_tokens: None,
         }
     }
 

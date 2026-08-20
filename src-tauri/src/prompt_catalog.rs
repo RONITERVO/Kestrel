@@ -45,8 +45,14 @@ pub enum PromptId {
     MovieSubmitBlocked,
     MovieResponseCheckpoint,
     MovieProducerDirection,
-    MovieClipAssistantSystem,
     MovieReviewerSystem,
+    MovieGenerationFrameAnalystSystem,
+    MovieGenerationAgentSystem,
+    MovieGenerationReviewerSystem,
+    MovieGenerationInitial,
+    MovieGenerationResume,
+    MovieGenerationContinue,
+    MovieGenerationReviewRejected,
     MovieCopilotSystem,
     MovieCopilotTool,
     MovieWorkspaceTool,
@@ -115,7 +121,7 @@ pub enum PromptId {
 }
 
 impl PromptId {
-    pub const ALL: [Self; 90] = [
+    pub const ALL: [Self; 96] = [
         Self::ChatSystem,
         Self::ComputerSystem,
         Self::ComputerAttachmentNotice,
@@ -139,8 +145,14 @@ impl PromptId {
         Self::MovieSubmitBlocked,
         Self::MovieResponseCheckpoint,
         Self::MovieProducerDirection,
-        Self::MovieClipAssistantSystem,
         Self::MovieReviewerSystem,
+        Self::MovieGenerationFrameAnalystSystem,
+        Self::MovieGenerationAgentSystem,
+        Self::MovieGenerationReviewerSystem,
+        Self::MovieGenerationInitial,
+        Self::MovieGenerationResume,
+        Self::MovieGenerationContinue,
+        Self::MovieGenerationReviewRejected,
         Self::MovieCopilotSystem,
         Self::MovieCopilotTool,
         Self::MovieWorkspaceTool,
@@ -233,8 +245,14 @@ impl PromptId {
             Self::MovieSubmitBlocked => "movie.agent.submit_blocked",
             Self::MovieResponseCheckpoint => "movie.agent.response_checkpoint",
             Self::MovieProducerDirection => "movie.agent.producer_direction",
-            Self::MovieClipAssistantSystem => "movie.clip_assistant.system",
             Self::MovieReviewerSystem => "movie.reviewer.system",
+            Self::MovieGenerationFrameAnalystSystem => "movie.generation.frame_analyst.system",
+            Self::MovieGenerationAgentSystem => "movie.generation.agent.system",
+            Self::MovieGenerationReviewerSystem => "movie.generation.reviewer.system",
+            Self::MovieGenerationInitial => "movie.generation.initial",
+            Self::MovieGenerationResume => "movie.generation.resume",
+            Self::MovieGenerationContinue => "movie.generation.continue",
+            Self::MovieGenerationReviewRejected => "movie.generation.review_rejected",
             Self::MovieCopilotSystem => "movie.copilot.system",
             Self::MovieCopilotTool => "movie.copilot.tool",
             Self::MovieWorkspaceTool => "movie.workspace.tool",
@@ -321,30 +339,30 @@ pub fn initialize(root: &Path) -> Result<(), String> {
     let backup = path.with_extension("json.bak");
     let pack = match read_pack(&path) {
         Ok(Some(pack)) => pack,
-        Ok(None) | Err(_) if backup.is_file() => {
-            match read_pack(&backup) {
-                Ok(Some(recovered)) => {
-                    write_recoverable(
-                        &path,
-                        serde_json::to_string_pretty(&recovered)
-                            .map_err(|error| error.to_string())?
-                            .as_bytes(),
-                    )?;
-                    recovered
-                }
-                Ok(None) => {
-                    eprintln!("Prompt-pack recovery copy is unavailable.");
-                    default_pack()
-                }
-                Err(error) => {
-                    eprintln!("The active prompt pack is invalid and the recovery copy is unavailable: {error}");
-                    default_pack()
-                }
+        Ok(None) | Err(_) if backup.is_file() => match read_pack(&backup) {
+            Ok(Some(recovered)) => {
+                write_recoverable(
+                    &path,
+                    serde_json::to_string_pretty(&recovered)
+                        .map_err(|error| error.to_string())?
+                        .as_bytes(),
+                )?;
+                recovered
             }
-        }
+            Ok(None) => {
+                eprintln!("Prompt-pack recovery copy is unavailable.");
+                default_pack()
+            }
+            Err(error) => {
+                eprintln!("The active prompt pack is invalid and the recovery copy is unavailable: {error}");
+                default_pack()
+            }
+        },
         Ok(None) => default_pack(),
         Err(error) => {
-            eprintln!("The active prompt pack is invalid and no recovery copy is available: {error}");
+            eprintln!(
+                "The active prompt pack is invalid and no recovery copy is available: {error}"
+            );
             default_pack()
         }
     };
