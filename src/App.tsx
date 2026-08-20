@@ -253,6 +253,7 @@ function App() {
           {mountedViews.has("control") && <section className="retained-app-view" hidden={view !== "control"} aria-hidden={view !== "control"}>
             <ControlPlane
               control={snapshot.control}
+              visible={view === "control"}
               onChanged={(control) => setSnapshot((current) => current ? { ...current, control } : current)}
               onError={handleError}
             />
@@ -275,6 +276,7 @@ function App() {
           </section>}
           {mountedViews.has("system") && <section className="retained-app-view" hidden={view !== "system"} aria-hidden={view !== "system"}>
             <SystemConsole
+              visible={view === "system"}
               initialSettings={snapshot.settings}
               initialControl={snapshot.control.settings}
               onSaved={(settings) => setSnapshot((current) => current ? { ...current, settings } : current)}
@@ -573,7 +575,7 @@ function CitationRow({ ids, onFocus, labels }: { ids: string[]; onFocus: (id: st
   return <div className="citation-row" aria-label="Citations">{ids.map((id) => <button key={id} onClick={() => onFocus(id)} title={labels?.get(id)?.title ?? `Source ${id}`}>{id}</button>)}</div>;
 }
 
-function SystemConsole({ initialSettings, initialControl, onSaved, onControlSaved, onImported, onError }: { initialSettings: ResearchSettings; initialControl: ControlSettings; onSaved: (settings: ResearchSettings) => void; onControlSaved: (control: ControlSnapshot) => void; onImported: (snapshot: AppSnapshot) => void; onError: (message: string) => void }) {
+function SystemConsole({ visible, initialSettings, initialControl, onSaved, onControlSaved, onImported, onError }: { visible: boolean; initialSettings: ResearchSettings; initialControl: ControlSettings; onSaved: (settings: ResearchSettings) => void; onControlSaved: (control: ControlSnapshot) => void; onImported: (snapshot: AppSnapshot) => void; onError: (message: string) => void }) {
   const [system, setSystem] = useState<SystemSnapshot | null>(null);
   const [researchDraft, setResearchDraft] = useState(initialSettings);
   const [controlDraft, setControlDraft] = useState(initialControl);
@@ -614,13 +616,17 @@ function SystemConsole({ initialSettings, initialControl, onSaved, onControlSave
   }, [onError]);
 
   useEffect(() => {
-    void refreshSystem();
     void getSetupProfileText().then(setProfileText).catch((cause) => onError(String(cause)));
     void refreshPromptText();
     void getDefaultPromptPackText().then(setDefaultPromptText).catch(() => { /* per-prompt "reset to default" stays disabled if this fails */ });
+  }, [refreshSystem, onError, refreshPromptText]);
+
+  useEffect(() => {
+    if (!visible) return;
+    void refreshSystem();
     const timer = window.setInterval(() => void refreshSystem(), 2_500);
     return () => window.clearInterval(timer);
-  }, [refreshSystem, onError, refreshPromptText]);
+  }, [refreshSystem, visible]);
 
   const updateResearchNumber = (key: keyof ResearchSettings, value: string) => {
     const parsed = Number.parseInt(value, 10);

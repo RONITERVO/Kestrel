@@ -23,7 +23,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex as StdMutex,
+        Arc, Mutex as StdMutex, OnceLock,
     },
     time::Duration,
 };
@@ -99,6 +99,50 @@ const MOVIE_AGENT_SESSION_STEPS: u32 = 96;
 const MAX_MOVIE_AGENT_SESSIONS: u32 = 8;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+const MIN_TIMELINE_SOURCE_SECONDS: f32 = 0.1;
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePolicyTier {
+    maximum_context_window: u32,
+    maximum_max_output_tokens: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePolicyLimitsFile {
+    minimum_context_window: u32,
+    minimum_max_output_tokens: u32,
+    standard: RuntimePolicyTier,
+    advanced: RuntimePolicyTier,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RuntimePolicyLimits {
+    pub minimum_context_window: u32,
+    pub minimum_max_output_tokens: u32,
+    pub maximum_context_window: u32,
+    pub maximum_max_output_tokens: u32,
+}
+
+pub(crate) fn runtime_policy_limits(advanced: bool) -> RuntimePolicyLimits {
+    static LIMITS: OnceLock<RuntimePolicyLimitsFile> = OnceLock::new();
+    let limits = LIMITS.get_or_init(|| {
+        serde_json::from_str(include_str!("../../src/runtimePolicyLimits.json"))
+            .expect("the shared runtime policy limits must be valid JSON")
+    });
+    let tier = if advanced {
+        limits.advanced
+    } else {
+        limits.standard
+    };
+    RuntimePolicyLimits {
+        minimum_context_window: limits.minimum_context_window,
+        minimum_max_output_tokens: limits.minimum_max_output_tokens,
+        maximum_context_window: tier.maximum_context_window,
+        maximum_max_output_tokens: tier.maximum_max_output_tokens,
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum ComfyWorkload {
@@ -588,6 +632,7 @@ fn default_ref_image_size() -> String {
 
 impl MovieSettings {
     pub fn validate(mut self, advanced: bool) -> Result<Self, StudioError> {
+        let runtime_limits = runtime_policy_limits(advanced);
         if !self.width.is_multiple_of(32) || !self.height.is_multiple_of(32) {
             return Err(StudioError::Invalid(
                 "H3 width and height must be multiples of 32".into(),
@@ -610,13 +655,15 @@ impl MovieSettings {
         self.top_p = self.top_p.clamp(0.05, 1.0);
         self.top_k = self.top_k.clamp(1, 200);
         self.thinking_budget = self.thinking_budget.min(MOVIE_THINKING_BUDGET);
-        self.max_output_tokens = self
-            .max_output_tokens
-            .clamp(1_024, if advanced { 262_144 } else { 32_768 });
+        self.max_output_tokens = self.max_output_tokens.clamp(
+            runtime_limits.minimum_max_output_tokens,
+            runtime_limits.maximum_max_output_tokens,
+        );
         if self.context_window > 0 {
-            self.context_window = self
-                .context_window
-                .clamp(4_096, if advanced { 1_048_576 } else { 98_304 });
+            self.context_window = self.context_window.clamp(
+                runtime_limits.minimum_context_window,
+                runtime_limits.maximum_context_window,
+            );
         }
         let root = PathBuf::from(&self.comfy_root);
         if !root.is_absolute() {
@@ -2647,14 +2694,10 @@ impl MovieStudio {
                 request.project_id,
                 PlanningEventKind::Activity,
                 PlanningStage::Planning,
-                format!(
-                    "{detail} (completion marker {}; finish reason {})",
-                    if completion_marker_seen {
-                        "received"
-                    } else {
-                        "missing"
-                    },
-                    finish_reason.as_deref().unwrap_or("not reported")
+                agent_protocol::terminal_detail(
+                    &detail,
+                    completion_marker_seen,
+                    finish_reason.as_deref(),
                 ),
                 request.position,
                 request.app,
@@ -2916,7 +2959,7 @@ impl MovieStudio {
         let source = resolve_frame_anchor(&self.project_dir(project_id), &project, &anchor)?;
         let stills_dir = self.project_dir(project_id).join("stills");
         fs::create_dir_all(&stills_dir)?;
-        let frame_id = uuid::Uuid::new_v4().simple().to_string()[..10].to_string();
+        let frame_id = captured_frame_id(&source.path, &anchor);
         let target_png = stills_dir.join(format!("frame-{frame_id}.png"));
         extract_exact_frame(&source.path, anchor.time_seconds, &target_png).await?;
         Ok(MovieCapturedFrame {
@@ -3284,6 +3327,7 @@ impl MovieStudio {
             versions: Vec::new(),
         };
         project.clips.push(new_clip);
+        let previous_edit = project.edit.clone();
 
         let transition_edit = ClipEdit {
             id: format!("edit-{transition_id}"),
@@ -3305,17 +3349,28 @@ impl MovieStudio {
                 position, first_label, last_label
             ),
         };
-        place_transition_edit(
+        let placement_result = place_transition_edit(
             &mut project,
             first_anchor.as_ref(),
             last_anchor.as_ref(),
             placement,
             transition_edit,
-        )?;
-        for (index, edit) in project.edit.clips.iter_mut().enumerate() {
-            edit.order = index as u32;
+        )
+        .and_then(|()| {
+            for (index, edit) in project.edit.clips.iter_mut().enumerate() {
+                edit.order = index as u32;
+            }
+            validate_movie_edit(&project.clone(), &mut project.edit)
+        });
+        if let Err(error) = placement_result {
+            project.edit = previous_edit;
+            project.status = previous_status.clone();
+            project.phase = "complete".into();
+            project.detail = "The new H3 transition audition is preserved in Masters, but Kestrel could not place it in the storyline. Review the existing cut and place the audition manually.".into();
+            project.error = error.to_string();
+            self.persist_emit(&mut project, app)?;
+            return Err(error);
         }
-        validate_movie_edit(&project.clone(), &mut project.edit)?;
 
         project.status = previous_status;
         project.phase = "complete".into();
@@ -3951,6 +4006,20 @@ impl MovieStudio {
     }
 }
 
+fn captured_frame_id(source_path: &Path, anchor: &MovieFrameAnchor) -> String {
+    let frame_key = format!(
+        "{}:{}:{:.6}",
+        anchor.edit_id,
+        source_path.to_string_lossy(),
+        anchor.time_seconds
+    );
+    Sha256::digest(frame_key.as_bytes())
+        .iter()
+        .take(10)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 struct SelectedClipSource<'a> {
     path: &'a str,
     duration_seconds: f32,
@@ -4070,10 +4139,12 @@ fn validate_transition_placement(
     }
     if position == MovieTransitionPosition::Between
         && placement == MovieTransitionPlacement::InsertAfterLeft
-        && first_index == last_index
+        && first_index
+            .zip(last_index)
+            .is_some_and(|(first, last)| first >= last)
     {
         return Err(StudioError::Invalid(
-            "a transition inside one storyline shot must replace the selected range so both preserved edge fragments remain explicit"
+            "an inserted between-shot transition must run forward between distinct storyline shots; use range replacement for endpoints inside one shot"
                 .into(),
         ));
     }
@@ -4090,6 +4161,8 @@ fn validate_transition_placement(
                     .into(),
             ));
         }
+        validate_replacement_endpoint_trim(project, first, true)?;
+        validate_replacement_endpoint_trim(project, last, false)?;
     }
     match placement {
         MovieTransitionPlacement::InsertBeforeRight => {
@@ -4123,7 +4196,7 @@ fn validate_endpoint_trim(
     } else {
         source.duration_seconds - edit.trim_end - anchor.time_seconds as f32
     };
-    if preserved < 0.1 {
+    if preserved < MIN_TIMELINE_SOURCE_SECONDS {
         return Err(StudioError::Invalid(
             "move the transition endpoint farther inside the shot so placement preserves at least 0.1 seconds of the existing story"
                 .into(),
@@ -4137,6 +4210,29 @@ fn validate_endpoint_trim(
             "the adjusted cut would overlap the existing picture or audio fades; shorten those fades in Edit or choose a nearby frame"
                 .into(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_replacement_endpoint_trim(
+    project: &MovieProject,
+    anchor: &MovieFrameAnchor,
+    keep_before: bool,
+) -> Result<(), StudioError> {
+    let edit = project
+        .edit
+        .clips
+        .iter()
+        .find(|edit| edit.id == anchor.edit_id)
+        .expect("replacement endpoint existence was validated");
+    let source = selected_clip_source(project, edit)?;
+    let preserved = if keep_before {
+        anchor.time_seconds as f32 - edit.trim_start
+    } else {
+        source.duration_seconds - edit.trim_end - anchor.time_seconds as f32
+    };
+    if preserved > MIN_TIMELINE_SOURCE_SECONDS {
+        validate_endpoint_trim(project, anchor, keep_before)?;
     }
     Ok(())
 }
@@ -4223,7 +4319,7 @@ fn replace_storyline_range_with_transition(
     let first_source = selected_clip_source(project, &first_edit)?;
     let last_source = selected_clip_source(project, &last_edit)?;
     let mut replacement = Vec::with_capacity(3);
-    if first.time_seconds as f32 - first_edit.trim_start > 0.04 {
+    if first.time_seconds as f32 - first_edit.trim_start > MIN_TIMELINE_SOURCE_SECONDS {
         let mut leading = first_edit.clone();
         leading.trim_end = first_source.duration_seconds - first.time_seconds as f32;
         leading.fade_out = 0.0;
@@ -4231,7 +4327,9 @@ fn replace_storyline_range_with_transition(
         replacement.push(leading);
     }
     replacement.push(transition);
-    if last_source.duration_seconds - last_edit.trim_end - last.time_seconds as f32 > 0.04 {
+    if last_source.duration_seconds - last_edit.trim_end - last.time_seconds as f32
+        > MIN_TIMELINE_SOURCE_SECONDS
+    {
         let mut trailing = last_edit;
         if first_index == last_index {
             trailing.id = format!("edit-{}", uuid::Uuid::new_v4().simple());
@@ -4397,7 +4495,7 @@ fn validate_movie_edit(project: &MovieProject, edit: &mut MovieEdit) -> Result<(
             )));
         }
         let source_duration = source.duration_seconds;
-        if item.trim_start + item.trim_end > source_duration - 0.1 {
+        if item.trim_start + item.trim_end > source_duration - MIN_TIMELINE_SOURCE_SECONDS {
             return Err(StudioError::Invalid(format!(
                 "timeline item {} trims away the entire preserved source",
                 item.id
@@ -6064,6 +6162,11 @@ pub async fn extract_exact_frame(
             truncate(&String::from_utf8_lossy(&output.stderr), 500)
         )));
     }
+    if !output_png.is_file() {
+        return Err(StudioError::Render(
+            "frame extraction finished without producing the requested PNG".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -6968,6 +7071,29 @@ mod tests {
     }
 
     #[test]
+    fn shared_runtime_policy_limits_bound_movie_settings() {
+        let standard = runtime_policy_limits(false);
+        let advanced = runtime_policy_limits(true);
+        assert_eq!(standard.maximum_context_window, 98_304);
+        assert_eq!(standard.maximum_max_output_tokens, 32_768);
+        assert_eq!(advanced.maximum_context_window, 1_048_576);
+        assert_eq!(advanced.maximum_max_output_tokens, 262_144);
+
+        let bounded = MovieSettings {
+            context_window: u32::MAX,
+            max_output_tokens: u32::MAX,
+            ..MovieSettings::default()
+        }
+        .validate(false)
+        .unwrap();
+        assert_eq!(bounded.context_window, standard.maximum_context_window);
+        assert_eq!(
+            bounded.max_output_tokens,
+            standard.maximum_max_output_tokens
+        );
+    }
+
+    #[test]
     fn legacy_edit_decisions_gain_safe_timeline_defaults() {
         let mut project: MovieProject = serde_json::from_value(json!({
             "schemaVersion": 4,
@@ -7108,6 +7234,29 @@ mod tests {
             label: "Original".into(),
             notes: String::new(),
         }];
+        let mut backward = project.clone();
+        let mut later_edit = backward.edit.clips[0].clone();
+        later_edit.id = "edit-later".into();
+        later_edit.order = 1;
+        backward.edit.clips.push(later_edit);
+        let error = validate_transition_placement(
+            &backward,
+            MovieTransitionPosition::Between,
+            Some(&MovieFrameAnchor {
+                edit_id: "edit-later".into(),
+                time_seconds: 2.0,
+                label: None,
+            }),
+            Some(&MovieFrameAnchor {
+                edit_id: "edit-original".into(),
+                time_seconds: 5.0,
+                label: None,
+            }),
+            MovieTransitionPlacement::InsertAfterLeft,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must run forward"));
+
         let transition = ClipEdit {
             id: "edit-generated".into(),
             clip_id: "transition-001".into(),
@@ -7156,6 +7305,34 @@ mod tests {
         assert_eq!(
             (trailing.audio_fade_in, trailing.audio_fade_out),
             (0.0, 0.8)
+        );
+    }
+
+    #[test]
+    fn repeated_frame_captures_reuse_only_the_same_source_frame() {
+        let anchor = MovieFrameAnchor {
+            edit_id: "edit-original".into(),
+            time_seconds: 2.0,
+            label: Some("In".into()),
+        };
+        let first = captured_frame_id(Path::new("source-v1.mp4"), &anchor);
+        assert_eq!(
+            first,
+            captured_frame_id(Path::new("source-v1.mp4"), &anchor)
+        );
+        assert_ne!(
+            first,
+            captured_frame_id(Path::new("source-v2.mp4"), &anchor)
+        );
+        assert_ne!(
+            first,
+            captured_frame_id(
+                Path::new("source-v1.mp4"),
+                &MovieFrameAnchor {
+                    time_seconds: 2.5,
+                    ..anchor
+                }
+            )
         );
     }
 

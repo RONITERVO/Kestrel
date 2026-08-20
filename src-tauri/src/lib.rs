@@ -1559,28 +1559,29 @@ async fn set_movie_runtime_policy(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<MovieProject, String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
     let control = state
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let maximum_context = if control.advanced_mode {
-        1_048_576
-    } else {
-        98_304
-    };
-    let maximum_output = if control.advanced_mode {
-        262_144
-    } else {
-        32_768
-    };
-    if !(4_096..=maximum_context).contains(&policy.context_window) {
+    let limits = studio::runtime_policy_limits(research.advanced_mode || control.advanced_mode);
+    if !(limits.minimum_context_window..=limits.maximum_context_window)
+        .contains(&policy.context_window)
+    {
         return Err(format!(
-            "Project context must be between 4,096 and {maximum_context} tokens."
+            "Project context must be between {} and {} tokens.",
+            limits.minimum_context_window, limits.maximum_context_window
         ));
     }
-    if !(1_024..=maximum_output).contains(&policy.max_output_tokens) {
+    if !(limits.minimum_max_output_tokens..=limits.maximum_max_output_tokens)
+        .contains(&policy.max_output_tokens)
+    {
         return Err(format!(
-            "Project output must be between 1,024 and {maximum_output} tokens."
+            "Project output must be between {} and {} tokens.",
+            limits.minimum_max_output_tokens, limits.maximum_max_output_tokens
         ));
     }
     let _guard = claim_workspace(&state)?;

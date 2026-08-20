@@ -135,7 +135,7 @@ The project directory is the source of truth. Important planning files include:
 | `agent-workspace/agent-transcript*.json` | Lossless accepted conversation by context session |
 | `agent-workspace/agent-last-request.json` | Exact last planning request envelope for audit |
 | `agent-workspace/generative-edits/<request>/` | Exact task/context, candidate revisions, native-check state, transcript, fresh review, and accepted result |
-| `generations/fl2v-*/graph.json` and `receipt.json` | Exact endpoint hashes, H3 graph, seed, placement decision, and immutable output hash |
+| `generations/transition-*/graph.json` and `receipt.json` | Exact endpoint hashes, H3 graph, seed, placement decision, and immutable output hash |
 | `agent-workspace/generative-edits/<request>/endpoint-frames/*.png` | Exact bounded endpoint pixels shown to the selected local Frame Analyst |
 | `agent-workspace/generative-edits/<request>/frame-analysis*.json` | Vision-model request manifest, per-frame observations, uncertainties, model identity, hashes, and recoverable failure |
 | `../../model-qualifications.json` | Recoverable protocol receipts bound to model, engine, runtime profile, and protocol revision |

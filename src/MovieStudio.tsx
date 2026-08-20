@@ -220,7 +220,9 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
         setImagePreview((current) => mergePreviewEvent(current, event));
       } else if (event.target === "movieClip" && event.projectId === activeProjectId.current) {
         setMoviePreview((current) => mergePreviewEvent(current, event));
-        setMovieRenderActive(true);
+        if (!["finished", "stopped", "unavailable"].includes(event.kind)) {
+          setMovieRenderActive(true);
+        }
       }
     }).then((unlisten) => { dispose = unlisten; });
     return () => dispose?.();
@@ -869,7 +871,7 @@ function PromptAssistBar({ label, existing, mode, models, modelId, active, disab
     {active
       ? <button className="prompt-stop" onClick={onStop}><CircleStop /> Stop & keep text</button>
       : <button disabled={disabled || !modelId} onClick={onGenerate}><Sparkles /> {action}</button>}
-    {thinking !== undefined && <ModelThinkingStream text={thinking} active={active} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={effectiveLevel} className="prompt-thinking-stream" />}
+    {thinking !== undefined && <ModelThinkingStream text={thinking} active={active} inferenceActive={active && (status.startsWith("Writing locally") || status.startsWith("The local model is thinking"))} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={effectiveLevel} className="prompt-thinking-stream" />}
   </div>;
 }
 
@@ -1003,7 +1005,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
   const [runtimePolicy, setRuntimePolicy] = useState<RuntimePolicyValue>(persistedRuntimePolicy);
   useEffect(() => setDraftPlan(project.plan), [project.id, project.plan]);
   const showWorkspace = useCallback((next: ProjectWorkspace) => {
-    setMountedWorkspaces((current) => current.has(next) ? new Set(current) : new Set([...current, next]));
+    setMountedWorkspaces((current) => current.has(next) ? current : new Set([...current, next]));
     setWorkspace(next);
   }, []);
 
@@ -1073,7 +1075,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
             onReset={() => setRuntimePolicy(inheritedRuntimePolicy)}
           /><button type="button" disabled={runtimePolicyLocked || !runtimePolicyChanged} onClick={() => void runProjectAction(() => setMovieRuntimePolicy(project.id, runtimePolicy))}><Save /> Apply at checkpoint</button></div>
         </details>
-        <button className={copilotOpen ? "active" : ""} disabled={workspace === "plan" || workspace === "generate"} title={workspace === "generate" ? "Generate has its own checked Generative Director" : undefined} onClick={() => setCopilotOpen((value) => !value)}><Sparkles /> Copilot</button><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={renderActive ? () => void cancelMovieRender(project.id) : onCancel}><CircleStop /> {renderActive ? "Stop H3 safely" : "Stop"}</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> {resumeLabel}</button>}
+        <button className={copilotOpen ? "active" : ""} disabled={workspace === "plan" || workspace === "generate"} title={workspace === "generate" ? "Generate has its own checked Generative Director" : undefined} onClick={() => setCopilotOpen((value) => !value)}><Sparkles /> Copilot</button><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={renderActive ? () => void cancelMovieRender(project.id).catch((error) => onError(String(error))) : onCancel}><CircleStop /> {renderActive ? "Stop H3 safely" : "Stop"}</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> {resumeLabel}</button>}
       </div>
     </header>
     <div className={`studio-production-strip ${project.status}`}>
@@ -1150,6 +1152,7 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
   const [instruction, setInstruction] = useState("");
   const [dictating, setDictating] = useState(false);
   const [requestId, setRequestId] = useState<string>();
+  const [inferenceActive, setInferenceActive] = useState(false);
   const [response, setResponse] = useState("");
   const [reasoning, setReasoning] = useState("");
   const [status, setStatus] = useState("Ready for direction");
@@ -1171,8 +1174,12 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
     let dispose: (() => void) | undefined;
     void onMovieCopilot((event: MovieCopilotEvent) => {
       if (event.projectId !== project.id || event.requestId !== requestIdRef.current) return;
-      if (event.kind === "queued") setStatus(`Loading ${event.modelName ?? "local model"}…`);
+      if (event.kind === "queued") {
+        setInferenceActive(false);
+        setStatus(`Loading ${event.modelName ?? "local model"}…`);
+      }
       if (event.kind === "started") {
+        setInferenceActive(true);
         setStatus("Thinking with the current production…");
         if (event.receipt) {
           setReceipt(event.receipt);
@@ -1180,28 +1187,40 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
         }
       }
       if (event.kind === "reasoning") {
+        setInferenceActive(true);
         setReasoning((value) => appendModelThinking(value, event.content ?? ""));
         setStatus("Reasoning locally before answering…");
       }
       if (event.kind === "token" && event.content) {
+        setInferenceActive(true);
         setResponse((value) => value + event.content);
         setStatus("Collaborating live…");
       }
-      if (event.kind === "advanced-token" && event.content) setAdvancedTokens((value) => value + event.content);
+      if (event.kind === "advanced-token" && event.content) {
+        setInferenceActive(true);
+        setAdvancedTokens((value) => value + event.content);
+      }
       if (event.kind === "complete") {
+        setInferenceActive(false);
         setProposal(event.proposal);
         setStatus((current) => event.proposal ? "Suggestion ready — review before applying" : current.includes("withheld") ? current : "Advice complete");
       }
       if (event.kind === "proposal-rejected") {
+        setInferenceActive(false);
         setProposalLint(event.content ?? "The suggested action did not pass native linting.");
         setStatus("Advice complete — unsafe or malformed changes were withheld");
       }
-      if (event.kind === "cancelled") setStatus("Stopped at a producer checkpoint — partial advice is preserved");
+      if (event.kind === "cancelled") {
+        setInferenceActive(false);
+        setStatus("Stopped at a producer checkpoint — partial advice is preserved");
+      }
       if (event.kind === "error") {
+        setInferenceActive(false);
         setStatus("Copilot could not finish");
         if (event.content) onError(event.content);
       }
       if (["settled", "cancelled", "error"].includes(event.kind)) {
+        setInferenceActive(false);
         requestIdRef.current = undefined;
         setRequestId(undefined);
       }
@@ -1219,6 +1238,7 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
     const id = crypto.randomUUID();
     requestIdRef.current = id;
     setRequestId(id);
+    setInferenceActive(false);
     setResponse("");
     setReasoning("");
     setReceipt(undefined);
@@ -1240,6 +1260,7 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
         thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : undefined,
       });
     } catch (error) {
+      setInferenceActive(false);
       requestIdRef.current = undefined;
       setRequestId(undefined);
       setStatus("Copilot could not start");
@@ -1283,7 +1304,7 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
     <div className="producer-copilot-scroll">
       <section className="copilot-context"><strong>Shared context</strong><span>{contextLabel}</span><small>The model cannot watch media or change the project. Native linting checks every proposed cut.</small></section>
       {history.length > 0 && !response && <details className="copilot-history"><summary>Recent durable conversations ({history.length})</summary>{history.map((turn) => <article key={turn.id}><small>{turn.workspace} · {new Date(turn.createdAt).toLocaleString()}</small><b>{turn.producerRequest}</b><ProducerText text={turn.response || `Stopped: ${turn.status}`} />{turn.response && <SpeechPlaybackButton sourceKind="copilot" sourceId={project.id} passageId={turn.id} text={turn.response} label="Listen" />}{advancedEnabled && <button disabled={active} onClick={() => inspectTurn(turn.id, `${turn.workspace} · ${new Date(turn.createdAt).toLocaleString()}`)}>Inspect exact model receipt</button>}</article>)}</details>}
-      {(response || active || reasoning) && <ModelThinkingStream text={reasoning} outputText={response} active={active} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={effectiveLevel} className="copilot-thinking-stream" />}
+      {(response || active || reasoning) && <ModelThinkingStream text={reasoning} outputText={response} active={active} inferenceActive={inferenceActive} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={effectiveLevel} className="copilot-thinking-stream" />}
       {(response || active) && <section className="copilot-response"><span><i className={active ? "live" : ""} />{status}</span>{response ? <><ProducerText text={response} />{!active && <SpeechPlaybackButton sourceKind="copilot" sourceId={project.id} passageId={requestId ?? "latest"} text={response} label="Listen" />}</> : <div className="copilot-wait"><LoaderCircle className="spin" /> Waiting for the first streamed words…</div>}</section>}
       {proposal && <section className="copilot-proposal"><span className="eyebrow">Producer approval required</span><h3>{proposal.summary}</h3><ul>{proposal.changes.map((change, index) => <li key={`${change}-${index}`}><Check />{change}</li>)}</ul><div>{applied && beforeApply ? <button onClick={revert}><RotateCcw /> Revert copilot edit</button> : <button onClick={() => setProposal(undefined)}>Dismiss</button>}<button className="accent" disabled={applied} onClick={apply}>{applied ? <Check /> : <Film />}{applied ? "Applied to cut" : "Apply as one edit"}</button></div></section>}
       {proposalLint && <section className="copilot-lint"><ShieldCheck /><span><strong>Native safety check withheld the action</strong><small>{proposalLint}</small></span></section>}

@@ -1,4 +1,5 @@
 import type { ControlSettings } from "./types";
+import limits from "./runtimePolicyLimits.json";
 
 export interface RuntimePolicyValue {
   contextWindow: number;
@@ -40,8 +41,9 @@ export function ModelRuntimePolicyControls({
 }) {
   const change = (key: keyof RuntimePolicyValue, raw: string) => {
     const parsed = Number.parseInt(raw, 10);
-    const minimum = key === "contextWindow" ? 4_096 : 1_024;
-    const maximum = key === "contextWindow" ? (expert ? 1_048_576 : 98_304) : (expert ? 262_144 : 32_768);
+    const tier = expert ? limits.advanced : limits.standard;
+    const minimum = key === "contextWindow" ? limits.minimumContextWindow : limits.minimumMaxOutputTokens;
+    const maximum = key === "contextWindow" ? tier.maximumContextWindow : tier.maximumMaxOutputTokens;
     if (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum) return;
     onChange({ ...value, [key]: parsed });
   };
@@ -50,8 +52,8 @@ export function ModelRuntimePolicyControls({
     && value.maxOutputTokens === inherited?.maxOutputTokens;
   return <fieldset className="model-runtime-policy" disabled={disabled}>
     <legend>Local model limits</legend>
-    <label><span>Context window<small>{scope}</small></span><input aria-label={`${scope} context window`} type="number" min={4_096} max={expert ? 1_048_576 : 98_304} step={1_024} value={value.contextWindow} onChange={(event) => change("contextWindow", event.target.value)} /></label>
-    <label><span>Maximum output<small>{scope}</small></span><input aria-label={`${scope} maximum output`} type="number" min={1_024} max={expert ? 262_144 : 32_768} step={1_024} value={value.maxOutputTokens} onChange={(event) => change("maxOutputTokens", event.target.value)} /></label>
+    <label><span>Context window<small>{scope}</small></span><input aria-label={`${scope} context window`} type="number" min={limits.minimumContextWindow} max={expert ? limits.advanced.maximumContextWindow : limits.standard.maximumContextWindow} step={1_024} value={value.contextWindow} onChange={(event) => change("contextWindow", event.target.value)} /></label>
+    <label><span>Maximum output<small>{scope}</small></span><input aria-label={`${scope} maximum output`} type="number" min={limits.minimumMaxOutputTokens} max={expert ? limits.advanced.maximumMaxOutputTokens : limits.standard.maximumMaxOutputTokens} step={1_024} value={value.maxOutputTokens} onChange={(event) => change("maxOutputTokens", event.target.value)} /></label>
     <div className="model-runtime-policy-state"><strong>{inheritedNow ? "Matches current model policy" : "Workspace override"}</strong><small>Changes apply to the next model turn. A context change safely reloads the selected model when required.</small></div>
     {onReset && <button type="button" disabled={disabled || inheritedNow} onClick={onReset}>Restore current model values</button>}
   </fieldset>;

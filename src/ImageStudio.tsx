@@ -66,7 +66,7 @@ export function ImageStudio({
   const [saving, setSaving] = useState(false);
   const [modelId, setModelId] = useState(selectedModelId ?? models[0]?.id ?? "");
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
-  const [runtimePolicy, setRuntimePolicy] = useState<RuntimePolicyValue>(() => effectiveModelRuntimePolicy(controlSettings, selectedModelId ?? models[0]?.id));
+  const [runtimePolicyOverride, setRuntimePolicyOverride] = useState<RuntimePolicyValue>();
   const [newOpen, setNewOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newIdea, setNewIdea] = useState("");
@@ -135,10 +135,8 @@ export function ImageStudio({
     if (!modelId && (selectedModelId || models[0]?.id)) setModelId(selectedModelId ?? models[0]?.id ?? "");
   }, [modelId, models, selectedModelId]);
 
-  useEffect(() => {
-    setRuntimePolicy(effectiveModelRuntimePolicy(controlSettings, modelId));
-  }, [controlSettings, modelId]);
-
+  const inheritedRuntimePolicy = effectiveModelRuntimePolicy(controlSettings, modelId);
+  const runtimePolicy = runtimePolicyOverride ?? inheritedRuntimePolicy;
   const completedTakes = project?.takes.filter((take) => take.status === "complete") ?? [];
   const activeTake = completedTakes.find((take) => take.id === project?.activeTakeId);
   const selectedElement = project?.elements.find((element) => element.id === selectedElementId);
@@ -432,7 +430,7 @@ export function ImageStudio({
           </select>
           <button disabled={busy || !modelId} onClick={() => void startCollaboration()}><Sparkles /> Develop design</button>
         </div>
-        <details className="workspace-runtime-policy"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={effectiveModelRuntimePolicy(controlSettings, modelId)} disabled={busy} expert={advancedEnabled} scope="Image collaborator" onChange={setRuntimePolicy} onReset={() => setRuntimePolicy(effectiveModelRuntimePolicy(controlSettings, modelId))} /></details>
+        <details className="workspace-runtime-policy"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} disabled={busy} expert={advancedEnabled} scope="Image collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
         <label>High-level description<textarea disabled={busy} value={project.highLevelDescription} onChange={(event) => mutate((current) => ({ ...current, highLevelDescription: event.target.value }))} /></label>
         <div className="image-output-controls"><label>Canvas<select disabled={busy} value={`${project.settings.width}x${project.settings.height}`} onChange={(event) => { const [, width, height] = SIZE_PRESETS.find((item) => `${item[1]}x${item[2]}` === event.target.value) ?? SIZE_PRESETS[0]; mutate((current) => ({ ...current, settings: { ...current.settings, width, height } })); }}>{SIZE_PRESETS.map(([label, width, height]) => <option key={label} value={`${width}x${height}`}>{label}</option>)}</select></label><label>Variations<select disabled={busy} value={project.settings.batchSize} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, batchSize: Number(event.target.value) } }))}><option value={1}>1 image</option><option value={2}>2 images</option><option value={4}>4 images</option></select></label></div>
         <div className="image-style-mode" role="group" aria-label="Image style type"><button className={project.style.mode === "photo" ? "active" : ""} disabled={busy} onClick={() => mutate((current) => ({ ...current, style: { ...current.style, mode: "photo" } }))}>Photography</button><button className={project.style.mode === "art" ? "active" : ""} disabled={busy} onClick={() => mutate((current) => ({ ...current, style: { ...current.style, mode: "art" } }))}>Artwork</button></div>
@@ -459,7 +457,7 @@ export function ImageStudio({
       </div>}
     </aside>
 
-    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} outputText={collaboration.text} active={assistantBusy} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>Proposed production settings</strong><pre>{collaboration.text || (assistantBusy ? "The structured proposal will stream here when the model begins its answer…" : "No structured proposal was returned.")}</pre></section></div><footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt, null, 2)}</pre></details>}</footer></section>}
+    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} outputText={collaboration.text} active={assistantBusy} inferenceActive={assistantBusy && collaboration.status !== "queued"} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>Proposed production settings</strong><pre>{collaboration.text || (assistantBusy ? "The structured proposal will stream here when the model begins its answer…" : "No structured proposal was returned.")}</pre></section></div><footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt, null, 2)}</pre></details>}</footer></section>}
     {newOpen && <NewImageDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
   </div>;
 }

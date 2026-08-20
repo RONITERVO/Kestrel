@@ -63,11 +63,15 @@ export function mergeGenerationAgentEvents(
 
 export function replayGenerationAgentEvents(events: MovieGenerationAgentEvent[]): {
   roleStreams: Record<AgentRole, AgentRoleStream>;
+  roleInferenceActive: Record<AgentRole, boolean>;
   activities: string[];
   activeRole: AgentRole;
 } {
   const roleStreams: Record<AgentRole, AgentRoleStream> = {
     frameAnalyst: emptyRoleStream(), director: emptyRoleStream(), reviewer: emptyRoleStream(),
+  };
+  const roleInferenceActive: Record<AgentRole, boolean> = {
+    frameAnalyst: false, director: false, reviewer: false,
   };
   const activities: string[] = [];
   let activeRole: AgentRole = "director";
@@ -75,27 +79,40 @@ export function replayGenerationAgentEvents(events: MovieGenerationAgentEvent[])
     const role: AgentRole = event.modelRole === "reviewer" ? "reviewer" : event.modelRole === "frameAnalyst" ? "frameAnalyst" : "director";
     activeRole = role;
     const stream = roleStreams[role];
-    if (event.kind === "reasoning") stream.reasoning = appendModelThinking(stream.reasoning, event.content);
-    else if (event.kind === "token") stream.text += event.content;
-    else if (event.kind === "advanced-token") stream.toolArguments += event.content;
+    if (event.kind === "reasoning") {
+      roleInferenceActive[role] = true;
+      stream.reasoning = appendModelThinking(stream.reasoning, event.content);
+    } else if (event.kind === "token") {
+      roleInferenceActive[role] = true;
+      stream.text += event.content;
+    } else if (event.kind === "advanced-token") {
+      roleInferenceActive[role] = true;
+      stream.toolArguments += event.content;
+    }
     else if (event.kind === "turn-start" || event.kind === "attempt-start") {
+      roleInferenceActive[role] = true;
       const marker = `${stream.text || stream.reasoning || stream.toolArguments ? "\n\n" : ""}— ${event.content} —\n`;
       stream.text += marker;
       activities.push(event.content);
     } else if (event.kind === "submission-invalid" || event.kind === "request-failed") {
+      roleInferenceActive[role] = false;
       stream.status = event.content;
       stream.failed = true;
       activities.push(`${role}: ${event.content}`);
     } else if (event.kind.startsWith("stream-")) {
+      roleInferenceActive[role] = false;
       const marker = event.completionMarkerSeen === undefined
         ? "completion marker not reported"
         : event.completionMarkerSeen ? "completion marker received" : "completion marker missing";
       stream.status = `${event.content} (${marker}${event.finishReason ? `; finish reason: ${event.finishReason}` : ""})`;
       stream.failed = event.kind !== "stream-complete";
       activities.push(`${role}: ${stream.status}`);
-    } else if (event.kind === "activity" || event.kind === "complete") activities.push(event.content);
+    } else if (event.kind === "activity" || event.kind === "complete") {
+      if (event.kind === "complete") roleInferenceActive[role] = false;
+      activities.push(event.content);
+    }
   }
-  return { roleStreams, activities, activeRole };
+  return { roleStreams, roleInferenceActive, activities, activeRole };
 }
 
 export function generationRequestIsActive(snapshotActive: boolean | undefined, commandPending: boolean): boolean {
@@ -301,6 +318,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
   const [localActivities, setLocalActivities] = useState<string[]>([]);
   const replayedAgent = useMemo(() => replayGenerationAgentEvents(agentEvents), [agentEvents]);
   const roleStreams = replayedAgent.roleStreams;
+  const roleInferenceActive = replayedAgent.roleInferenceActive;
   const activeRole = replayedAgent.activeRole;
   const activities = [...localActivities, ...replayedAgent.activities].slice(-32);
   const [proposal, setProposal] = useState<MovieGenerationProposal>();
@@ -349,6 +367,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
   }, [mode, selectedEditId]);
 
   useEffect(() => {
+    let unmounted = false;
     let dispose: (() => void) | undefined;
     let flushTimer: number | undefined;
     let pendingEvents: MovieGenerationAgentEvent[] = [];
@@ -362,8 +381,12 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
       if (event.projectId !== project.id || event.requestId !== activeRequestIdRef.current) return;
       pendingEvents.push(event);
       flushTimer ??= window.setTimeout(flushEvents, 100);
-    }).then((unlisten) => { dispose = unlisten; });
+    }).then((unlisten) => {
+      if (unmounted) unlisten();
+      else dispose = unlisten;
+    });
     return () => {
+      unmounted = true;
       dispose?.();
       if (flushTimer !== undefined) window.clearTimeout(flushTimer);
     };
@@ -513,7 +536,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
     if (!anchor) return;
     const item = items.find((candidate) => candidate.edit.id === anchor.editId);
     if (!item) return;
-    const timeSeconds = Math.min(visibleEnd(item), Math.max(visibleStart(item), anchor.timeSeconds + deltaFrames / 24));
+    const timeSeconds = Math.min(visibleEnd(item), Math.max(visibleStart(item), anchor.timeSeconds + deltaFrames * FRAME_SECONDS));
     const adjusted = { ...anchor, timeSeconds };
     setCheckpointRequestId("");
     if (side === "first") {
@@ -661,9 +684,13 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
 
   const stopAgent = async () => {
     if (!activeRequestId) return;
-    setCheckpointRequestId(activeRequestId);
-    await cancelMovieGenerationAgent(activeRequestId);
-    setLocalActivities((value) => [...value.slice(-7), "Stop requested; durable candidate, transcript, and every streamed token retained"]);
+    try {
+      await cancelMovieGenerationAgent(activeRequestId);
+      setCheckpointRequestId(activeRequestId);
+      setLocalActivities((value) => [...value.slice(-7), "Stop requested; durable candidate, transcript, and every streamed token retained"]);
+    } catch (error) {
+      onError(String(error));
+    }
   };
 
   const renderCandidate = async () => {
@@ -717,8 +744,12 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
   };
 
   const stopRender = async () => {
-    await cancelMovieRender(project.id);
-    setLocalActivities((value) => [...value.slice(-7), "H3 stop requested; completed masters and the current storyline remain unchanged"]);
+    try {
+      await cancelMovieRender(project.id);
+      setLocalActivities((value) => [...value.slice(-7), "H3 stop requested; completed masters and the current storyline remain unchanged"]);
+    } catch (error) {
+      onError(String(error));
+    }
   };
 
   const placeMaster = async (clipId: string, where: "append" | "before" | "after") => {
@@ -765,7 +796,8 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
   const selectedRangeDuration = sameShotRange && firstAnchor && lastAnchor && selected
     ? Math.max(0, lastAnchor.timeSeconds - firstAnchor.timeSeconds) / Math.max(.25, selected.edit.speed)
     : 0;
-  const generatedDurationDelta = duration - selectedRangeDuration;
+  const generatedStoryDuration = duration / 1;
+  const generatedDurationDelta = generatedStoryDuration - selectedRangeDuration;
   const rangePosition = (time: number) => `${Math.max(0, Math.min(100, (time - rangeMinimum) / rangeSpan * 100))}%`;
   const frameAnalystModel = visionModels.find((model) => model.id === frameAnalystModelId);
   const visibleAgentRoles = (["frameAnalyst", "director", "reviewer"] as AgentRole[]).filter((role) =>
@@ -840,7 +872,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
             <div className="generation-range-summary">
               <span><strong>{formatTimecode(selectedRangeDuration)}</strong><small>source range replaced</small></span>
               <ArrowRight />
-              <span><strong>{formatTimecode(duration)}</strong><small>new H3 audition</small></span>
+              <span><strong>{formatTimecode(generatedStoryDuration)}</strong><small>new H3 audition · story time at 1×</small></span>
               <em className={generatedDurationDelta > .01 ? "longer" : generatedDurationDelta < -.01 ? "shorter" : "same"}>{generatedDurationDelta > .01 ? "+" : ""}{generatedDurationDelta.toFixed(2)}s in story</em>
             </div>
             <div className="generation-range-boundaries">
@@ -909,7 +941,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
             : project.modelRoles?.director.modelName || project.model;
           const roleActive = Boolean(activeRequestId) && activeRole === role;
           const roleTitle = role === "frameAnalyst" ? "Endpoint Frame Analyst" : role === "reviewer" ? "Fresh-context Reviewer" : "Generative Director";
-          return <section className="generation-agent-live" key={role}><header><strong>{roleTitle}</strong><small>{roleActive ? "Working live · output is being saved" : "Complete and incomplete output retained"}</small></header><ModelThinkingStream text={roleStreams[role].reasoning} outputText={roleStreams[role].text + roleStreams[role].toolArguments} active={roleActive} modelName={roleModelName} thinkingLevel={thinkingLevel === "default" ? effectiveThinkingLevelForModel(controlSettings, roleModelId) : thinkingLevel} /><div className="generation-agent-text">{roleStreams[role].text || (roleActive ? role === "frameAnalyst" ? "The local vision model is comparing the exact endpoint pixels…" : "The local model is preparing its next checked workspace action…" : "No separate prose was produced in this typed tool turn.")}</div>{roleStreams[role].toolArguments && <section className="generation-agent-tool-output" aria-label={`${roleTitle} exact typed output`}><strong>Exact typed workspace output</strong><pre>{roleStreams[role].toolArguments}</pre></section>}{roleStreams[role].status && <p className={`generation-agent-stream-status ${roleStreams[role].failed ? "failed" : "complete"}`}>{roleStreams[role].status}</p>}{role === activeRole && <ol>{activities.map((activity, index) => <li key={`${index}-${activity}`}>{activity}</li>)}</ol>}</section>;
+          return <section className="generation-agent-live" key={role}><header><strong>{roleTitle}</strong><small>{roleActive ? "Working live · output is being saved" : "Complete and incomplete output retained"}</small></header><ModelThinkingStream text={roleStreams[role].reasoning} outputText={roleStreams[role].text + roleStreams[role].toolArguments} active={roleActive} inferenceActive={roleActive && roleInferenceActive[role]} modelName={roleModelName} thinkingLevel={thinkingLevel === "default" ? effectiveThinkingLevelForModel(controlSettings, roleModelId) : thinkingLevel} /><div className="generation-agent-text">{roleStreams[role].text || (roleActive ? role === "frameAnalyst" ? "The local vision model is comparing the exact endpoint pixels…" : "The local model is preparing its next checked workspace action…" : "No separate prose was produced in this typed tool turn.")}</div>{roleStreams[role].toolArguments && <section className="generation-agent-tool-output" aria-label={`${roleTitle} exact typed output`}><strong>Exact typed workspace output</strong><pre>{roleStreams[role].toolArguments}</pre></section>}{roleStreams[role].status && <p className={`generation-agent-stream-status ${roleStreams[role].failed ? "failed" : "complete"}`}>{roleStreams[role].status}</p>}{role === activeRole && <ol>{activities.map((activity, index) => <li key={`${index}-${activity}`}>{activity}</li>)}</ol>}</section>;
         })}
 
         {proposal && <section className="generation-review-result"><ShieldCheck /><span><strong>Fresh reviewer passed this candidate</strong><small>{proposal.reviewSummary}</small></span></section>}

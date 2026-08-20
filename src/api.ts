@@ -509,7 +509,7 @@ export async function getMovieGenerationAgentSnapshot(projectId: string, request
 }
 
 export async function getLatestMovieGenerationAgentSnapshot(projectId: string): Promise<unknown | null> {
-  if (!isTauri()) throw new Error("Generative Director inspection requires the desktop application.");
+  if (!isTauri()) return null;
   return invoke("get_latest_movie_generation_agent_snapshot", { projectId });
 }
 

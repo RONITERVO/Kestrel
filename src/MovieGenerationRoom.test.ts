@@ -141,6 +141,7 @@ describe("Generate audition decisions", () => {
     expect(replayed.roleStreams.reviewer.toolArguments).toBe("{\"approved\":true");
     expect(replayed.roleStreams.reviewer.status).toContain("completion marker missing");
     expect(replayed.roleStreams.reviewer.failed).toBe(true);
+    expect(replayed.roleInferenceActive.reviewer).toBe(false);
   });
 
   it("does not demote a locally pending Director command during backend preparation", () => {

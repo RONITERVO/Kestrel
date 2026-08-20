@@ -638,14 +638,10 @@ async fn complete_agent_stream(
                 request.project_id,
                 PlanningEventKind::Activity,
                 PlanningStage::Planning,
-                format!(
-                    "{detail} (completion marker {}; finish reason {})",
-                    if completion_marker_seen {
-                        "received"
-                    } else {
-                        "missing"
-                    },
-                    finish_reason.as_deref().unwrap_or("not reported")
+                agent_protocol::terminal_detail(
+                    &detail,
+                    completion_marker_seen,
+                    finish_reason.as_deref(),
                 ),
                 request.position,
                 request.app,

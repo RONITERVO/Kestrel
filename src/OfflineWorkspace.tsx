@@ -73,11 +73,12 @@ type Props = {
   control: ControlSnapshot;
   onChanged: (control: ControlSnapshot) => void;
   onError: (message: string) => void;
+  visible?: boolean;
 };
 
 type WorkKind = "chat" | "task";
 
-export function OfflineWorkspace({ control, onChanged, onError }: Props) {
+export function OfflineWorkspace({ control, onChanged, onError, visible = true }: Props) {
   const [kind, setKind] = useState<WorkKind>("chat");
   const [selectedId, setSelectedId] = useState(
     control.settings.selectedModelId ?? control.models[0]?.id ?? "",
@@ -137,6 +138,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
   const taskStartingRef = useRef(false);
   const earlyTaskEventsRef = useRef<ComputerTaskEvent[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const onChangedRef = useRef(onChanged);
   const enginePathHasValidName = /(?:^|[\\/])llama-server\.exe$/i.test(
     settings.enginePath.trim(),
   );
@@ -163,6 +165,9 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
     setSettings(control.settings);
   }, [control.settings]);
   useEffect(() => {
+    onChangedRef.current = onChanged;
+  }, [onChanged]);
+  useEffect(() => {
     latestChatRef.current = { selected, settings, session };
   }, [selected, settings, session]);
   useEffect(() => {
@@ -188,23 +193,25 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
         else runtimeDispose = dispose;
       },
     );
-    const timer = window.setInterval(
-      () =>
-        void getControlSnapshot(false)
-          .then(onChanged)
-          .catch(() => undefined),
-      2_500,
-    );
     return () => {
       unmounted = true;
       chatDispose?.();
       taskDispose?.();
       runtimeDispose?.();
-      window.clearInterval(timer);
     };
     // Event handlers use refs and functional state updates, so they remain stable for this subscription.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    const refreshControl = () => void getControlSnapshot(false)
+      .then((next) => onChangedRef.current(next))
+      .catch(() => undefined);
+    refreshControl();
+    const timer = window.setInterval(refreshControl, 2_500);
+    return () => window.clearInterval(timer);
+  }, [visible]);
 
   useEffect(() => {
     if (typeof chatEndRef.current?.scrollIntoView === "function")

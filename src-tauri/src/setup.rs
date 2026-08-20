@@ -2805,18 +2805,24 @@ $missing=@($required.GetEnumerator() | Where-Object {
   (-not (Test-Path -LiteralPath $path)) -or ((Get-Item -LiteralPath $path).Length -ne $_.Value)
 } | ForEach-Object { $_.Key })
 if($missing){ throw "MiniMax H3 files are missing or incomplete: $($missing -join ', '). Open Kestrel Setup and resume Movie Studio." }
-$bundledPreview=@(
-  (Join-Path $root 'custom_nodes\ComfyUI-KJNodes\nodes\preview_override_node.py'),
-  (Join-Path $root 'custom_nodes\ComfyUI-KJNodes\nodes\tiny_vae.py')
-)
-$managedPreview=@(
-  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\__init__.py'),
-  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\preview_override_node.py'),
-  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\tiny_vae.py'),
-  (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\LICENSE')
-)
-$bundledReady=@($bundledPreview | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $bundledPreview.Count
-$managedReady=@($managedPreview | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $managedPreview.Count
+$bundledPreview=[ordered]@{
+  'custom_nodes\ComfyUI-KJNodes\nodes\preview_override_node.py'=__KJ_PREVIEW_NODE_BYTES__
+  'custom_nodes\ComfyUI-KJNodes\nodes\tiny_vae.py'=__KJ_TINY_VAE_BYTES__
+}
+$managedPreview=[ordered]@{
+  'custom_nodes\Kestrel-H3-Live-Preview\preview_override_node.py'=__KJ_PREVIEW_NODE_BYTES__
+  'custom_nodes\Kestrel-H3-Live-Preview\tiny_vae.py'=__KJ_TINY_VAE_BYTES__
+}
+$bundledReady=@($bundledPreview.GetEnumerator() | Where-Object {
+  $path=Join-Path $root $_.Key
+  (-not (Test-Path -LiteralPath $path)) -or ((Get-Item -LiteralPath $path).Length -ne $_.Value)
+}).Count -eq 0
+$managedReady=(Test-Path -LiteralPath (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\__init__.py')) -and
+  (Test-Path -LiteralPath (Join-Path $root 'custom_nodes\Kestrel-H3-Live-Preview\LICENSE')) -and
+  @($managedPreview.GetEnumerator() | Where-Object {
+    $path=Join-Path $root $_.Key
+    (-not (Test-Path -LiteralPath $path)) -or ((Get-Item -LiteralPath $path).Length -ne $_.Value)
+  }).Count -eq 0
 if(-not ($bundledReady -or $managedReady)){
   throw "MiniMax H3 live preview is not installed. Open Kestrel Setup and resume Movie Studio."
 }
@@ -2840,7 +2846,12 @@ $env:HF_HUB_OFFLINE='1'
 $env:TRANSFORMERS_OFFLINE='1'
 & $python @arguments
 exit $LASTEXITCODE
-"#;
+"#
+    .replace(
+        "__KJ_PREVIEW_NODE_BYTES__",
+        &KJ_PREVIEW_NODE_BYTES.to_string(),
+    )
+    .replace("__KJ_TINY_VAE_BYTES__", &KJ_TINY_VAE_BYTES.to_string());
     let legacy_target = comfy.join("Start-ComfyUI-MiniMax-H3.ps1");
     let managed = fs::read_to_string(&legacy_target)
         .map(|value| value.contains("Kestrel-managed MiniMax H3 launcher"))

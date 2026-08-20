@@ -16,6 +16,7 @@ export function ModelThinkingStream({
   text,
   outputText = "",
   active,
+  inferenceActive = active,
   modelName,
   thinkingLevel,
   thinkingOff = false,
@@ -24,6 +25,7 @@ export function ModelThinkingStream({
   text: string;
   outputText?: string;
   active: boolean;
+  inferenceActive?: boolean;
   modelName?: string;
   thinkingLevel?: ThinkingLevel | string;
   thinkingOff?: boolean;
@@ -35,7 +37,7 @@ export function ModelThinkingStream({
 
   const isOff = thinkingOff || thinkingLevel === "off";
   const levelDisplay = thinkingLevel && thinkingLevel !== "off" ? String(thinkingLevel).toUpperCase() : "";
-  useInferenceTelemetryReporter({ active, text: text + outputText, modelName });
+  useInferenceTelemetryReporter({ active: inferenceActive, text: text + outputText, modelName });
 
   const message = isOff
     ? "Thinking is turned off for this turn. The model writes directly to the response without a separate reasoning pass."

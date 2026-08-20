@@ -285,6 +285,58 @@ struct StreamedToolCall {
     activity_announced: bool,
 }
 
+fn accept_stream_events(
+    events: Vec<OpenAiStreamEvent>,
+    content: &mut String,
+    tool_calls: &mut Vec<StreamedToolCall>,
+    finish_reason: &mut Option<String>,
+    on_event: &mut impl FnMut(StreamEvent),
+) {
+    for event in events {
+        let OpenAiStreamEvent::Message(value) = event else {
+            continue;
+        };
+        if let Some(reason) = value
+            .pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str)
+        {
+            *finish_reason = Some(reason.to_string());
+        }
+        if let Some(token) = value
+            .pointer("/choices/0/delta/content")
+            .and_then(Value::as_str)
+        {
+            content.push_str(token);
+            on_event(StreamEvent::Content(token.to_string()));
+        }
+        if let Some(token) = reasoning_delta(&value) {
+            on_event(StreamEvent::Reasoning(token.to_string()));
+        }
+        if let Some(deltas) = value
+            .pointer("/choices/0/delta/tool_calls")
+            .and_then(Value::as_array)
+        {
+            collect_tool_deltas(tool_calls, deltas, on_event);
+        }
+    }
+}
+
+pub(super) fn terminal_detail(
+    detail: &str,
+    completion_marker_seen: bool,
+    finish_reason: Option<&str>,
+) -> String {
+    format!(
+        "{detail} (completion marker {}; finish reason {})",
+        if completion_marker_seen {
+            "received"
+        } else {
+            "missing"
+        },
+        finish_reason.unwrap_or("not reported")
+    )
+}
+
 /// Streams one tool-only model turn while assembling an OpenAI-compatible response object.
 pub(super) async fn complete_stream(
     client: &Client,
@@ -344,35 +396,6 @@ pub(super) async fn complete_stream(
     let mut content = String::new();
     let mut tool_calls = Vec::<StreamedToolCall>::new();
     let mut finish_reason = None::<String>;
-    let mut accept_events = |events: Vec<OpenAiStreamEvent>| {
-        for event in events {
-            let OpenAiStreamEvent::Message(value) = event else {
-                continue;
-            };
-            if let Some(reason) = value
-                .pointer("/choices/0/finish_reason")
-                .and_then(Value::as_str)
-            {
-                finish_reason = Some(reason.to_string());
-            }
-            if let Some(token) = value
-                .pointer("/choices/0/delta/content")
-                .and_then(Value::as_str)
-            {
-                content.push_str(token);
-                on_event(StreamEvent::Content(token.to_string()));
-            }
-            if let Some(token) = reasoning_delta(&value) {
-                on_event(StreamEvent::Reasoning(token.to_string()));
-            }
-            if let Some(deltas) = value
-                .pointer("/choices/0/delta/tool_calls")
-                .and_then(Value::as_array)
-            {
-                collect_tool_deltas(&mut tool_calls, deltas, &mut on_event);
-            }
-        }
-    };
     loop {
         let next = tokio::select! {
             value = stream.next() => value,
@@ -412,7 +435,13 @@ pub(super) async fn complete_stream(
                 return Err(StudioError::Planning(detail));
             }
         };
-        accept_events(events);
+        accept_stream_events(
+            events,
+            &mut content,
+            &mut tool_calls,
+            &mut finish_reason,
+            &mut on_event,
+        );
     }
     let final_events = match decoder.finish() {
         Ok(events) => events,
@@ -427,7 +456,13 @@ pub(super) async fn complete_stream(
             return Err(StudioError::Planning(detail));
         }
     };
-    accept_events(final_events);
+    accept_stream_events(
+        final_events,
+        &mut content,
+        &mut tool_calls,
+        &mut finish_reason,
+        &mut on_event,
+    );
     if finish_reason_indicates_truncation(finish_reason.as_deref()) {
         on_event(StreamEvent::Terminal {
             status: "truncated",
@@ -874,6 +909,18 @@ mod tests {
         assert!(stream_error_saw_completion_marker(
             "the model stream sent more than one completion marker"
         ));
+    }
+
+    #[test]
+    fn terminal_details_use_one_producer_visible_format() {
+        assert_eq!(
+            terminal_detail("The turn ended", true, Some("tool_calls")),
+            "The turn ended (completion marker received; finish reason tool_calls)"
+        );
+        assert_eq!(
+            terminal_detail("The turn ended", false, None),
+            "The turn ended (completion marker missing; finish reason not reported)"
+        );
     }
 
     #[tokio::test]

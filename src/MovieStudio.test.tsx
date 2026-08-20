@@ -183,8 +183,15 @@ describe("Kestrel Movie Studio", () => {
     const direction = await screen.findByLabelText("Producer direction");
     fireEvent.change(direction, { target: { value: "Preserve this unfinished producer direction." } });
 
+    const generateWorkspace = direction.closest("section.retained-studio-workspace");
+    expect(generateWorkspace).not.toHaveAttribute("hidden");
     fireEvent.click(screen.getByRole("button", { name: /EditStoryline and native mix/i }));
+    expect(generateWorkspace).toHaveAttribute("hidden");
+    const editWorkspace = document.querySelector("section.project-edit-room.retained-studio-workspace");
+    expect(editWorkspace).not.toHaveAttribute("hidden");
     fireEvent.click(screen.getByRole("button", { name: /GenerateH3 picture and sound/i }));
+    expect(generateWorkspace).not.toHaveAttribute("hidden");
+    expect(editWorkspace).toHaveAttribute("hidden");
 
     expect(screen.getByLabelText("Producer direction")).toBe(direction);
     expect(direction).toHaveValue("Preserve this unfinished producer direction.");
