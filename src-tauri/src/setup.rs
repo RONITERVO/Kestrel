@@ -24,7 +24,9 @@ const IDEOGRAM_REVISION: &str = "9d0e686d42c1b1e575f0de15104d68e9157f59a0";
 const QWEN3_VL_REVISION: &str = "d3f437bd7bd2df08e77c8fe5c51ca4239f753aa3";
 const FLUX2_REVISION: &str = "06029c966dd5b73929c909f046cbd29303b98879";
 const IDEOGRAM_LICENSE_REVISION: &str = "990fe1c4e950bb9e9dc90e01c0ad98ba434f83c2";
-const KJ_PREVIEW_REVISION: &str = "5219cd171cb44e2edce9e4daad6cc42c41eded5c";
+const KJ_PREVIEW_REVISION: &str = "3f20054214fec9f9234fd3841ae6f1e4287948f6";
+const KJ_PREVIEW_NODE_BYTES: u64 = 37_233;
+const KJ_TINY_VAE_BYTES: u64 = 8_999;
 const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
 const CHATTERBOX_NODE_REVISION: &str = "f0300cf84ee1b8fc9cbd38cb68cb3bace1895063";
 const CHATTERBOX_MODEL_REVISION: &str = "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd";
@@ -1993,9 +1995,8 @@ fn h3_preview_decoder() -> Asset {
 fn bundled_preview_node_ready(comfy: &Path) -> bool {
     let source = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes/preview_override_node.py");
     let tiny_vae = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes/tiny_vae.py");
-    source.is_file()
-        && tiny_vae.is_file()
-        && fs::metadata(&source).is_ok_and(|metadata| metadata.len() <= 128 * 1024)
+    file_has_size(&source, KJ_PREVIEW_NODE_BYTES)
+        && file_has_size(&tiny_vae, KJ_TINY_VAE_BYTES)
         && fs::read_to_string(source)
             .map(|value| {
                 value.contains("class ModelPreviewOverrideKJ")
@@ -2008,8 +2009,11 @@ fn bundled_preview_node_ready(comfy: &Path) -> bool {
 fn managed_preview_node_ready(comfy: &Path) -> bool {
     let root = comfy.join("custom_nodes/Kestrel-H3-Live-Preview");
     root.join("__init__.py").is_file()
-        && root.join("preview_override_node.py").is_file()
-        && root.join("tiny_vae.py").is_file()
+        && file_has_size(
+            &root.join("preview_override_node.py"),
+            KJ_PREVIEW_NODE_BYTES,
+        )
+        && file_has_size(&root.join("tiny_vae.py"), KJ_TINY_VAE_BYTES)
         && root.join("LICENSE").is_file()
 }
 
@@ -2037,15 +2041,15 @@ async fn ensure_h3_preview_node(
                 "MiniMax live-preview node",
                 "nodes/preview_override_node.py",
                 "preview_override_node.py",
-                37_220,
-                "327804957a278d72f86ae45b35e8573d0d310d84b6f2469b1384d8922436bcc8",
+                KJ_PREVIEW_NODE_BYTES,
+                "6060c2382e61c041104a61c1fe06f2a163fcddc6e715d20fbf7a03f0af46715c",
             ),
             (
                 "MiniMax tiny-VAE loader",
                 "nodes/tiny_vae.py",
                 "tiny_vae.py",
-                4_434,
-                "27b39e555d876775f179137d86dc1cbf317967ecd471d59197f1a179b6356ee3",
+                KJ_TINY_VAE_BYTES,
+                "f09d1e3ab1cb0f2ee4949f4192b7ea1bb47390c47b80f8517532301283a3472d",
             ),
         ] {
             let asset = Asset::new(
@@ -2068,15 +2072,15 @@ async fn ensure_h3_preview_node(
             "MiniMax live-preview node",
             "nodes/preview_override_node.py",
             "preview_override_node.py",
-            37_220,
-            "327804957a278d72f86ae45b35e8573d0d310d84b6f2469b1384d8922436bcc8",
+            KJ_PREVIEW_NODE_BYTES,
+            "6060c2382e61c041104a61c1fe06f2a163fcddc6e715d20fbf7a03f0af46715c",
         ),
         (
             "MiniMax tiny-VAE loader",
             "nodes/tiny_vae.py",
             "tiny_vae.py",
-            4_434,
-            "27b39e555d876775f179137d86dc1cbf317967ecd471d59197f1a179b6356ee3",
+            KJ_TINY_VAE_BYTES,
+            "f09d1e3ab1cb0f2ee4949f4192b7ea1bb47390c47b80f8517532301283a3472d",
         ),
         (
             "KJNodes GPL-3 license",
@@ -3053,12 +3057,22 @@ mod tests {
             .unwrap();
         let preview = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes");
         fs::create_dir_all(&preview).unwrap();
+        let preview_node = preview.join("preview_override_node.py");
         fs::write(
-            preview.join("preview_override_node.py"),
+            &preview_node,
             b"class ModelPreviewOverrideKJ: pass\nkj_preview_override = True\ntiny_vae = True",
         )
         .unwrap();
-        fs::write(preview.join("tiny_vae.py"), b"x").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(preview_node)
+            .unwrap()
+            .set_len(KJ_PREVIEW_NODE_BYTES)
+            .unwrap();
+        fs::File::create(preview.join("tiny_vae.py"))
+            .unwrap()
+            .set_len(KJ_TINY_VAE_BYTES)
+            .unwrap();
         let research = ResearchSettings {
             bonsai_root: bonsai.to_string_lossy().into_owned(),
             wikipedia_zim_path: wikipedia.join("archive.zim").to_string_lossy().into_owned(),
@@ -3137,6 +3151,44 @@ mod tests {
                 .status,
             "partial"
         );
+    }
+
+    #[test]
+    fn h3_preview_readiness_rejects_the_legacy_decoder_loader() {
+        let root = tempfile::tempdir().unwrap();
+        let nodes = root.path().join("custom_nodes/ComfyUI-KJNodes/nodes");
+        fs::create_dir_all(&nodes).unwrap();
+        let preview = nodes.join("preview_override_node.py");
+        fs::write(
+            &preview,
+            b"class ModelPreviewOverrideKJ: pass\nkj_preview_override = True\ntiny_vae = True",
+        )
+        .unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&preview)
+            .unwrap()
+            .set_len(37_220)
+            .unwrap();
+        fs::File::create(nodes.join("tiny_vae.py"))
+            .unwrap()
+            .set_len(4_434)
+            .unwrap();
+        assert!(!bundled_preview_node_ready(root.path()));
+
+        fs::OpenOptions::new()
+            .write(true)
+            .open(preview)
+            .unwrap()
+            .set_len(KJ_PREVIEW_NODE_BYTES)
+            .unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(nodes.join("tiny_vae.py"))
+            .unwrap()
+            .set_len(KJ_TINY_VAE_BYTES)
+            .unwrap();
+        assert!(bundled_preview_node_ready(root.path()));
     }
 
     #[test]

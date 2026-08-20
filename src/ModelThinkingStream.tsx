@@ -1,5 +1,6 @@
-import { LoaderCircle, Sparkles, Zap, ZapOff } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { LoaderCircle, Sparkles, ZapOff } from "lucide-react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { useInferenceTelemetryReporter } from "./InferenceTelemetry";
 import type { ThinkingLevel } from "./types";
 
 const MAX_VISIBLE_THINKING_CHARS = 160_000;
@@ -11,14 +12,9 @@ export function appendModelThinking(current: string, token: string): string {
   return OMITTED_PREFIX + combined.slice(-(MAX_VISIBLE_THINKING_CHARS - OMITTED_PREFIX.length));
 }
 
-export interface StreamMetricsState {
-  tokens: number;
-  tokPerSec: number;
-  elapsedSec: number;
-}
-
 export function ModelThinkingStream({
   text,
+  outputText = "",
   active,
   modelName,
   thinkingLevel,
@@ -26,6 +22,7 @@ export function ModelThinkingStream({
   className = "",
 }: {
   text: string;
+  outputText?: string;
   active: boolean;
   modelName?: string;
   thinkingLevel?: ThinkingLevel | string;
@@ -38,34 +35,7 @@ export function ModelThinkingStream({
 
   const isOff = thinkingOff || thinkingLevel === "off";
   const levelDisplay = thinkingLevel && thinkingLevel !== "off" ? String(thinkingLevel).toUpperCase() : "";
-
-  const startRef = useRef<number | null>(null);
-  const [metrics, setMetrics] = useState<StreamMetricsState | null>(null);
-
-  // Track start time and live speed metrics
-  useEffect(() => {
-    if (isOff) return;
-    if (active) {
-      if (text.length > 0 && !startRef.current) {
-        startRef.current = performance.now();
-      }
-      const interval = window.setInterval(() => {
-        if (!startRef.current || text.length === 0) return;
-        const elapsed = Math.max(0.1, (performance.now() - startRef.current) / 1000);
-        const tokens = Math.max(1, Math.round(text.length / 3.8));
-        const tokPerSec = Number((tokens / elapsed).toFixed(1));
-        setMetrics({ tokens, tokPerSec, elapsedSec: Number(elapsed.toFixed(1)) });
-      }, 250);
-      return () => window.clearInterval(interval);
-    } else {
-      if (startRef.current && text.length > 0) {
-        const elapsed = Math.max(0.1, (performance.now() - startRef.current) / 1000);
-        const tokens = Math.max(1, Math.round(text.length / 3.8));
-        const tokPerSec = Number((tokens / elapsed).toFixed(1));
-        setMetrics({ tokens, tokPerSec, elapsedSec: Number(elapsed.toFixed(1)) });
-      }
-    }
-  }, [active, text, isOff]);
+  useInferenceTelemetryReporter({ active, text: text + outputText, modelName });
 
   const message = isOff
     ? "Thinking is turned off for this turn. The model writes directly to the response without a separate reasoning pass."
@@ -96,11 +66,6 @@ export function ModelThinkingStream({
         ) : levelDisplay ? (
           <span className="thinking-level-badge">{levelDisplay}</span>
         ) : null}
-        {!isOff && metrics && text.length > 0 && (
-          <span className={`thinking-speed-badge ${active ? "live" : "settled"}`} title={`${metrics.tokens} estimated tokens in ${metrics.elapsedSec}s`}>
-            <Zap size={9} /> {metrics.tokPerSec} tok/s · {metrics.tokens} tok
-          </span>
-        )}
       </span>
       <span className="model-thinking-meta">
         <small>{modelName ? `${modelName} · ` : ""}{isOff ? "thinking off" : active ? "live" : "turn ended"}</small>

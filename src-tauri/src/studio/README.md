@@ -48,7 +48,7 @@ and must not acquire authority implicitly.
 | `copilot.rs` | Timeline advice and validated, unapplied edit proposals | Applying edits or rendering |
 | `image_assets.rs` | Durable H3 pseudo-image generations, graph/receipt provenance, imported candidates | Planning authority |
 | `image_studio.rs` | Recoverable image projects, structured compositions, native Ideogram 4 graphs, immutable PNG takes, and progress | LLM process ownership, arbitrary imported workflows, bundled license rights, or public-network fallback |
-| `live_preview.rs` | TAE preview graph nodes and producer-visible preview events | Final-render truth |
+| `live_preview.rs` | TAE preview graph nodes, bounded project-level reconnect state, and producer-visible preview events | Final-render truth or durable base64 preview storage |
 | `music.rs` | Recoverable song projects, producer arrangement, native Music 3 graphs, immutable takes, progress, and optional MuScriptor adapter | LLM process ownership, fake stem separation, bundled gated weights, or public-network fallback |
 | `music_midi.rs` | Bounded Standard MIDI parsing/writing, typed piano-roll documents, and recoverable binary replacement | MuScriptor execution, project path selection, source mutation, or UI state |
 
@@ -83,6 +83,13 @@ threshold there, update its deterministic tests, and then verify that producer c
 Producer directions enter only between complete model/tool turns. This is the safe boundary that
 allows redirection without corrupting an accepted assistant/tool-call pair. A checkpoint is graceful;
 immediate cancellation remains a separate explicit producer action.
+
+H3 preview frames are approximate process-local state. `LivePreviewRegistry` retains at most one
+latest estimate for four movie projects, merges terminal status into the last picture, and lets a
+remounted Studio query `get_movie_render_state`. Starting a new render clears the prior estimate;
+once the registered render job is no longer active the estimate is discarded and the preserved
+full-VAE master becomes the only picture shown. Project status and receipts remain the durable
+restart boundary—never put large preview data URLs in `project.json`.
 
 ## Model transport
 

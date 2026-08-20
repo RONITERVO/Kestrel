@@ -61,10 +61,10 @@ use studio::{
     MovieCopilotRequest, MovieEdit, MovieFl2vTransitionRequest, MovieGenerationAgentRequest,
     MovieGenerationProposal, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
     MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
-    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieRuntimePolicyRequest,
-    MovieStudio, MovieSummary, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
-    MusicSummary, PromptDraftJob, PromptDraftRequest, SaveMusicMidiDocumentRequest,
-    StartMovieRequest,
+    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieRenderState,
+    MovieRuntimePolicyRequest, MovieStudio, MovieSummary, MusicMidiRequest, MusicMidiSaveResult,
+    MusicProject, MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest,
+    SaveMusicMidiDocumentRequest, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -545,6 +545,31 @@ fn list_movies(state: State<'_, AppState>) -> Result<Vec<MovieSummary>, String> 
 #[tauri::command]
 fn get_movie(id: String, state: State<'_, AppState>) -> Result<MovieProject, String> {
     state.studio.get(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_movie_render_state(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<MovieRenderState, String> {
+    let project = state.studio.get(&id).map_err(|error| error.to_string())?;
+    let registered = state
+        .movie_jobs
+        .lock()
+        .map_err(|_| "movie job registry is unavailable".to_string())?
+        .contains_key(&id);
+    let render_phase = matches!(
+        project.phase.as_str(),
+        "starting-renderer"
+            | "rendering"
+            | "rendering-scene-version"
+            | "rendering-transition"
+            | "assembling"
+    );
+    state
+        .studio
+        .movie_render_state(&id, registered && render_phase)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1707,6 +1732,11 @@ async fn render_movie_clip_version(
         .render_clip_version(request, &cancel, Some(&app))
         .await
         .map_err(|error| error.to_string());
+    if let Err(error) = &result {
+        state
+            .studio
+            .settle_audition_failure(&id, error, cancel.is_cancelled(), Some(&app));
+    }
     if let Ok(mut jobs) = state.movie_jobs.lock() {
         jobs.remove(&id);
     }
@@ -1746,6 +1776,11 @@ async fn generate_movie_fl2v_transition(
         .render_fl2v_transition(request, &cancel, Some(&app))
         .await
         .map_err(|error| error.to_string());
+    if let Err(error) = &result {
+        state
+            .studio
+            .settle_audition_failure(&id, error, cancel.is_cancelled(), Some(&app));
+    }
     if let Ok(mut jobs) = state.movie_jobs.lock() {
         jobs.remove(&id);
     }
@@ -3763,6 +3798,7 @@ pub fn run() {
             cancel_research,
             list_movies,
             get_movie,
+            get_movie_render_state,
             pick_movie_reference_files,
             list_movie_image_assets,
             start_movie_image_asset,

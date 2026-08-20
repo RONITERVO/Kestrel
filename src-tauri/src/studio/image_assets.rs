@@ -409,9 +409,9 @@ impl MovieStudio {
         let client_id = format!("kestrel-image-{}", generation.id);
         let preview_target = PreviewTarget::image_asset(&generation.id);
         let preview = if preview_available {
-            LivePreviewSession::connect(app, &client_id, preview_target).await
+            LivePreviewSession::connect(app, &client_id, preview_target, &self.live_previews).await
         } else {
-            emit_preview_unavailable(app, preview_target);
+            emit_preview_unavailable(app, &self.live_previews, preview_target);
             None
         };
         generation.exact_graph = pseudo_image_graph(

@@ -58,6 +58,7 @@ import type {
   MoviePlanningSnapshot,
   MovieProject,
   MovieRenderPreviewEvent,
+  MovieRenderState,
   MovieReferenceImport,
   ModelDownloadRecord,
   ModelDownloadRequest,
@@ -481,6 +482,11 @@ export async function renderMovieClipVersion(request: MovieClipRenderRequest): P
 export async function captureMovieFrame(projectId: string, anchor: MovieFrameAnchor): Promise<MovieCapturedFrame> {
   if (!isTauri()) throw new Error("Frame capture requires the desktop application.");
   return invoke<MovieCapturedFrame>("capture_movie_frame", { projectId, anchor });
+}
+
+export async function getMovieRenderState(id: string): Promise<MovieRenderState> {
+  if (!isTauri()) return { active: false };
+  return invoke<MovieRenderState>("get_movie_render_state", { id });
 }
 
 export async function setMovieRuntimePolicy(id: string, policy: MovieRuntimePolicyRequest): Promise<MovieProject> {

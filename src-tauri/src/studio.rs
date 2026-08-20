@@ -63,8 +63,10 @@ pub use image_assets::{
     MovieImageAssetRequest,
 };
 pub use image_studio::{CreateImageProjectRequest, ImageProject, ImageStudio, ImageSummary};
+pub use live_preview::MovieRenderState;
 use live_preview::{
-    emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget, PREVIEW_NODE_ID,
+    emit_preview_unavailable, preview_node, LivePreviewRegistry, LivePreviewSession, PreviewTarget,
+    PREVIEW_NODE_ID,
 };
 use movie_agent::MovieAgentWorkspace;
 pub use music::{
@@ -969,6 +971,7 @@ pub struct MovieStudio {
     comfy_child: Arc<AsyncMutex<Option<Child>>>,
     music_comfy_child: Arc<AsyncMutex<Option<Child>>>,
     comfy_preview_available: Arc<AsyncMutex<Option<bool>>>,
+    live_previews: LivePreviewRegistry,
     project_locks: Arc<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     planning_control: Arc<StdMutex<()>>,
     planning_sequence: Arc<AtomicU64>,
@@ -1133,6 +1136,7 @@ impl MovieStudio {
             comfy_child: Arc::new(AsyncMutex::new(None)),
             music_comfy_child: Arc::new(AsyncMutex::new(None)),
             comfy_preview_available: Arc::new(AsyncMutex::new(None)),
+            live_previews: LivePreviewRegistry::default(),
             project_locks: Arc::new(StdMutex::new(HashMap::new())),
             planning_control: Arc::new(StdMutex::new(())),
             planning_sequence: Arc::new(AtomicU64::new(1)),
@@ -1140,6 +1144,25 @@ impl MovieStudio {
         studio.recover_interrupted()?;
         studio.recover_image_asset_generations()?;
         Ok(studio)
+    }
+
+    pub fn movie_render_state(
+        &self,
+        project_id: &str,
+        active: bool,
+    ) -> Result<MovieRenderState, StudioError> {
+        validate_id(project_id)?;
+        if !active {
+            self.live_previews.clear_movie(project_id);
+        }
+        Ok(MovieRenderState {
+            active,
+            preview: if active {
+                self.live_previews.movie(project_id)
+            } else {
+                None
+            },
+        })
     }
 
     pub fn import_reference_path(&self, source: &Path) -> Result<MovieReferenceAsset, StudioError> {
@@ -2057,6 +2080,50 @@ impl MovieStudio {
         Ok(project)
     }
 
+    pub fn settle_audition_failure(
+        &self,
+        id: &str,
+        error: &str,
+        cancelled: bool,
+        app: Option<&AppHandle>,
+    ) {
+        let Ok(mut project) = self.get(id) else {
+            return;
+        };
+        if project.status != "running"
+            || !matches!(
+                project.phase.as_str(),
+                "starting-renderer" | "rendering-scene-version" | "rendering-transition"
+            )
+        {
+            return;
+        }
+        for clip in &mut project.clips {
+            if clip.status == "rendering-version" && !clip.path.is_empty() {
+                clip.status = "complete".into();
+            }
+        }
+        project.status = if project.clips.iter().any(|clip| !clip.path.is_empty()) {
+            "complete".into()
+        } else {
+            "failed".into()
+        };
+        project.phase = if cancelled {
+            "audition-cancelled".into()
+        } else {
+            "audition-failed".into()
+        };
+        project.detail = if cancelled {
+            "The H3 audition was stopped safely. Preserved masters and the storyline are unchanged."
+                .into()
+        } else {
+            "The H3 audition did not finish. Preserved masters and the storyline are unchanged."
+                .into()
+        };
+        project.error = error.into();
+        let _ = self.persist_emit(&mut project, app);
+    }
+
     pub fn begin_resume(
         &self,
         id: &str,
@@ -2636,6 +2703,7 @@ impl MovieStudio {
     ) -> Result<MovieProject, StudioError> {
         let mut project = self.get(id)?;
         ensure_producer_render_approval(&project)?;
+        self.live_previews.clear_movie(id);
         let comfy_root = project.settings.comfy_root.clone();
         self.ensure_comfy(&comfy_root, &mut project, app).await?;
         let plan = project
@@ -2756,6 +2824,7 @@ impl MovieStudio {
                 "render a scene version only after its original H3 master is complete".into(),
             ));
         }
+        self.live_previews.clear_movie(&id);
         plan.clips[index] = suggestion.clip.clone();
         prepare_producer_plan(&project, &mut plan)?;
         let issues = prompt_quality_issues(&plan, &project.references);
@@ -2776,7 +2845,17 @@ impl MovieStudio {
         project.clips[index].status = "rendering-version".into();
         self.persist_emit(&mut project, app)?;
         let comfy_root = project.settings.comfy_root.clone();
-        self.ensure_comfy(&comfy_root, &mut project, app).await?;
+        if let Err(error) = self.ensure_comfy(&comfy_root, &mut project, app).await {
+            project.status = previous_status;
+            project.phase = "scene-version-failed".into();
+            project.detail =
+                "The H3 renderer could not start; the active master and storyline are unchanged."
+                    .into();
+            project.clips[index].status = "complete".into();
+            project.clips[index].error = error.to_string();
+            self.persist_emit(&mut project, app)?;
+            return Err(error);
+        }
         let result = self
             .render_clip(
                 &project,
@@ -2877,6 +2956,7 @@ impl MovieStudio {
                 "transition duration must be between 1 and 15 seconds".into(),
             ));
         }
+        self.live_previews.clear_movie(&id);
         let project_dir = self.project_dir(&project.id);
         validate_transition_placement(
             &project,
@@ -2893,8 +2973,32 @@ impl MovieStudio {
             .as_ref()
             .map(|anchor| resolve_frame_anchor(&project_dir, &project, anchor))
             .transpose()?;
+        let previous_status = project.status.clone();
+        project.status = "running".into();
+        project.phase = "rendering-transition".into();
+        project.detail = match position {
+            MovieTransitionPosition::Before => {
+                "Preparing an H3 audition before the story. The current storyline is unchanged."
+            }
+            MovieTransitionPosition::Between => {
+                "Preparing an H3 audition at the selected story cut. The current storyline is unchanged."
+            }
+            MovieTransitionPosition::After => {
+                "Preparing an H3 audition after the story. The current storyline is unchanged."
+            }
+        }
+        .into();
+        self.persist_emit(&mut project, app)?;
         let comfy_root = project.settings.comfy_root.clone();
-        self.ensure_comfy(&comfy_root, &mut project, app).await?;
+        if let Err(error) = self.ensure_comfy(&comfy_root, &mut project, app).await {
+            project.status = previous_status;
+            project.phase = "transition-failed".into();
+            project.detail =
+                "The H3 renderer could not start; the current storyline remains unchanged.".into();
+            project.error = error.to_string();
+            self.persist_emit(&mut project, app)?;
+            return Err(error);
+        }
 
         let transition_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let default_gen_seed = project
@@ -3018,9 +3122,10 @@ impl MovieStudio {
                 project.clips.len(),
             );
             let preview = if preview_available {
-                LivePreviewSession::connect(app, &client_id, preview_target).await
+                LivePreviewSession::connect(app, &client_id, preview_target, &self.live_previews)
+                    .await
             } else {
-                emit_preview_unavailable(app, preview_target);
+                emit_preview_unavailable(app, &self.live_previews, preview_target);
                 None
             };
 
@@ -3116,6 +3221,21 @@ impl MovieStudio {
                 generation_receipt["error"] = json!(truncate(&error.to_string(), 4_000));
                 let _ =
                     write_json_atomic(&generation_dir.join("receipt.json"), &generation_receipt);
+                project.status = previous_status;
+                project.phase = if matches!(&error, StudioError::Cancelled) {
+                    "transition-cancelled".into()
+                } else {
+                    "transition-failed".into()
+                };
+                project.detail = if matches!(&error, StudioError::Cancelled) {
+                    "The H3 audition was stopped. Completed masters and the storyline are unchanged."
+                        .into()
+                } else {
+                    "The H3 audition failed. Completed masters and the storyline are unchanged."
+                        .into()
+                };
+                project.error = error.to_string();
+                self.persist_emit(&mut project, app)?;
                 return Err(error);
             }
         };
@@ -3197,6 +3317,15 @@ impl MovieStudio {
         }
         validate_movie_edit(&project.clone(), &mut project.edit)?;
 
+        project.status = previous_status;
+        project.phase = "complete".into();
+        project.detail = if placement == MovieTransitionPlacement::AddToMasters {
+            "A new H3 transition audition is preserved in Masters. The storyline is unchanged until the producer places it."
+        } else {
+            "A new H3 transition audition is preserved and placed at the producer-selected story position."
+        }
+        .into();
+        project.error.clear();
         self.persist_emit(&mut project, app)?;
         Ok(project)
     }
@@ -3432,9 +3561,9 @@ impl MovieStudio {
             .unwrap_or_else(|| planned.id.clone());
         let preview_target = PreviewTarget::movie_clip(job_id, &project.id, &planned.id, index);
         let preview = if preview_available {
-            LivePreviewSession::connect(app, &client_id, preview_target).await
+            LivePreviewSession::connect(app, &client_id, preview_target, &self.live_previews).await
         } else {
-            emit_preview_unavailable(app, preview_target);
+            emit_preview_unavailable(app, &self.live_previews, preview_target);
             None
         };
         let response = self

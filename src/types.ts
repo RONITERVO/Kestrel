@@ -302,7 +302,7 @@ export interface MovieImageAssetEvent {
 }
 
 export interface MovieRenderPreviewEvent {
-  kind: "connected" | "frame" | "finished" | "unavailable" | string;
+  kind: "connected" | "frame" | "finished" | "unavailable" | "stopped" | string;
   target: "imageAsset" | "movieClip" | string;
   jobId: string;
   projectId?: string;
@@ -437,6 +437,11 @@ export interface MovieFrameAnchor {
   editId: string;
   timeSeconds: number;
   label?: string;
+}
+
+export interface MovieRenderState {
+  active: boolean;
+  preview?: MovieRenderPreviewEvent;
 }
 
 export interface MovieCapturedFrame {

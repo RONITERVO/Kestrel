@@ -71,6 +71,7 @@ import { ImageStudio } from "./ImageStudio";
 import { PromptPackVisualEditor } from "./PromptPackVisualEditor";
 import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { SetupConsole } from "./Setup";
+import { useInferenceTelemetry } from "./InferenceTelemetry";
 import {
   STANDARD_CONTEXT_OPTIONS,
   STANDARD_OUTPUT_OPTIONS,
@@ -360,11 +361,31 @@ function AppHeader({
         <div className="privacy-pill" aria-label="Offline only" title="Offline only"><ShieldCheck size={14} /> Offline only</div>
       </div>
       <div className="header-actions">
+        <InferenceSpeedIndicator />
         {!allReady && <button className="quiet-button" onClick={onPrepare}>Prepare services</button>}
         {view === "research" && <button className="primary-button compact" onClick={onNew}><Plus size={16} /> New research</button>}
       </div>
     </header>
   );
+}
+
+function InferenceSpeedIndicator() {
+  const telemetry = useInferenceTelemetry();
+  const speed = telemetry.tokensPerSecond === undefined ? "—" : telemetry.tokensPerSecond.toFixed(1);
+  const state = telemetry.active ? "Live" : telemetry.observedAt ? "Last" : "Idle";
+  const model = telemetry.modelName ? ` · ${telemetry.modelName}` : "";
+  const accuracy = telemetry.tokensPerSecond === undefined ? "" : telemetry.exact ? " · measured" : " · estimated";
+  const title = telemetry.active
+    ? `Live local-model generation speed${model}${accuracy}`
+    : telemetry.observedAt
+      ? `Last local-model generation speed${model}${accuracy}`
+      : "Local-model generation speed will appear here";
+  return <div className={`header-inference-speed ${telemetry.active ? "live" : "idle"}`} aria-label={`${state} inference speed: ${speed} tokens per second`} title={title}>
+    <Zap size={13} />
+    <strong>{speed}</strong>
+    <small>tok/s</small>
+    <span>{state}</span>
+  </div>;
 }
 
 function StatusPill({ state, label }: { state: ServiceState; label: string }) {

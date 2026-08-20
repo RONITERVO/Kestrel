@@ -29,6 +29,7 @@ import {
   ZapOff,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useInferenceTelemetryReporter } from "./InferenceTelemetry";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
 import {
   cancelChatStream,
@@ -1142,6 +1143,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
                     reasoning={stream.reasoning}
                     startedAt={stream.startedAt}
                     active={stream.phase === "generating"}
+                    modelName={selected?.name}
                   />
                 </article>
               )}
@@ -1975,12 +1977,14 @@ function Metrics({
   reasoning = "",
   startedAt,
   active = false,
+  modelName,
 }: {
   data?: Record<string, unknown>;
   content?: string;
   reasoning?: string;
   startedAt?: number;
   active?: boolean;
+  modelName?: string;
 }) {
   const usage = data?.usage as Record<string, number> | undefined;
   const timings = data?.timings as Record<string, number> | undefined;
@@ -2003,16 +2007,13 @@ function Metrics({
   const estContentTokens = content ? Math.round(content.length / 3.8) : 0;
 
   const actualTokens = usage?.completion_tokens ?? estTotalTokens;
-  const speedTokPerSec = timings?.predicted_per_second
-    ? Number(timings.predicted_per_second.toFixed(1))
-    : liveElapsed > 0
-    ? Number((actualTokens / liveElapsed).toFixed(1))
-    : 0;
-
-  const promptSpeed = timings?.prompt_per_second
-    ? Number(timings.prompt_per_second.toFixed(1))
-    : undefined;
-  const promptTokens = (data?.usage as Record<string, number> | undefined)?.prompt_tokens ?? timings?.prompt_n;
+  useInferenceTelemetryReporter({
+    active,
+    text: reasoning + content,
+    exactTokenCount: usage?.completion_tokens,
+    exactTokensPerSecond: timings?.predicted_per_second,
+    modelName,
+  });
 
   if (!active && !data && !totalChars) return null;
 
@@ -2021,22 +2022,12 @@ function Metrics({
       <span className={active ? "live-metric" : ""}>
         {actualTokens.toLocaleString()} tokens
       </span>
-      {speedTokPerSec > 0 && (
-        <span className={active ? "live-metric" : ""}>
-          ⚡ {speedTokPerSec} tok/s
-        </span>
-      )}
       {liveElapsed > 0 && (
         <span>{liveElapsed.toFixed(1)}s</span>
       )}
       {reasoning.length > 0 && (
         <span title={`Thinking: ~${estReasoningTokens} tok | Output: ~${estContentTokens} tok`}>
           💭 {estReasoningTokens} think + {estContentTokens} ans
-        </span>
-      )}
-      {promptSpeed && promptTokens && (
-        <span title="Prompt evaluation speed">
-          📖 {promptSpeed} tok/s prompt ({promptTokens.toLocaleString()})
         </span>
       )}
     </div>

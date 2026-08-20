@@ -343,7 +343,7 @@ describe("Kestrel Movie Studio", () => {
       at: new Date().toISOString(),
     };
     render(<LiveH3Preview event={event} advanced />);
-    expect(screen.getByText("Live H3 preview")).toBeInTheDocument();
+    expect(screen.getByText("Live H3 estimate")).toBeInTheDocument();
     expect(screen.getByText("Sample 7 of 20")).toBeInTheDocument();
     expect(screen.getByAltText(/Approximate live MiniMax H3/i)).toHaveAttribute("src", event.dataUrl);
     fireEvent.click(screen.getByText("Preview pipeline details"));
@@ -352,6 +352,16 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByText(/taehv-revision/)).toBeInTheDocument();
     expect(screen.getByText(/decoder-sha256/)).toBeInTheDocument();
     expect(screen.getByText(/Ephemeral preview bytes are not stored/i)).toBeInTheDocument();
+  });
+
+  it("shows an explicit safe terminal state when an H3 estimate stops before its first frame", () => {
+    render(<LiveH3Preview event={{
+      kind: "stopped", target: "movieClip", jobId: "job-1", projectId: "movie-1",
+      detail: "The H3 live estimate stopped before a full master was preserved.",
+      previewNodeRevision: "kj", previewDecoderRevision: "taehv", previewDecoderSha256: "sha", at: new Date().toISOString(),
+    }} advanced={false} />);
+    expect(screen.getByText("Stopped safely")).toBeInTheDocument();
+    expect(screen.getByText(/source master and storyline remain unchanged/i)).toBeInTheDocument();
   });
 
   it("numbers native H3 labels by type and puts embedded video audio first", () => {
