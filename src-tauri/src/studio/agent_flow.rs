@@ -66,8 +66,8 @@ pub(super) async fn run(
 ) -> Result<MovieAgentOutcome, StudioError> {
     let MovieAgentProgress { project, app } = progress;
     let director_runtime = request
-        .runtime_settings
-        .for_model(request.director_model_id);
+        .settings
+        .runtime_settings_for(request.runtime_settings, request.director_model_id);
     let workspace_root = studio.project_dir(&project.id).join("agent-workspace");
     let resuming_existing_workspace = workspace_root.join("movie.json").is_file();
     let transcript_path = workspace_root.join("agent-transcript.json");
@@ -133,7 +133,7 @@ pub(super) async fn run(
                 result = request.runtime.lease_model(
                     request.director_model_id,
                     request.models,
-                    request.runtime_settings,
+                    &director_runtime,
                     app,
                 ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
                 _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
@@ -444,18 +444,18 @@ async fn review_submission(
             request.app,
         );
     }
+    let reviewer_runtime = request
+        .settings
+        .runtime_settings_for(request.runtime_settings, request.reviewer_model_id);
     let lease = tokio::select! {
         result = request.runtime.lease_model(
             request.reviewer_model_id,
             request.models,
-            request.runtime_settings,
+            &reviewer_runtime,
             request.app,
         ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
         _ = request.cancel.cancelled() => return Err(StudioError::Cancelled),
     };
-    let reviewer_runtime = request
-        .runtime_settings
-        .for_model(request.reviewer_model_id);
     studio.emit_reviewer_planning(
         &project.id,
         PlanningEventKind::TurnStart,

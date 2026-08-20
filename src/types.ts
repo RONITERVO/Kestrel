@@ -200,6 +200,7 @@ export interface MovieSettings {
   thinkingBudget: number;
   thinkingLevel?: ThinkingLevel;
   maxOutputTokens: number;
+  contextWindow?: number;
   comfyRoot: string;
   refImageSize: "match" | "max";
 }
@@ -589,6 +590,11 @@ export interface MovieModelRoleRequest {
   reviewerModelId: string;
   directorThinkingLevel?: ThinkingLevel;
   reviewerThinkingLevel?: ThinkingLevel;
+}
+
+export interface MovieRuntimePolicyRequest {
+  contextWindow: number;
+  maxOutputTokens: number;
 }
 
 export interface MovieModelBinding {
@@ -1069,6 +1075,8 @@ export interface PromptDraftRequest {
   assetName: string;
   assetKind: string;
   thinkingLevel?: ThinkingLevel;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
 export interface PromptDraftReceipt {

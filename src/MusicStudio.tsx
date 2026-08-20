@@ -13,6 +13,8 @@ import {
   transcribeMusicMidi,
 } from "./api";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
+import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "./ModelRuntimePolicy";
+import type { RuntimePolicyValue } from "./ModelRuntimePolicy";
 import { MusicMidiEditor } from "./MusicMidiEditor";
 import type {
   ControlSettings, ModelInfo, MusicGenerationEvent, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
@@ -64,6 +66,7 @@ export function MusicStudio({
   const [saving, setSaving] = useState(false);
   const [modelId, setModelId] = useState(selectedModelId ?? models[0]?.id ?? "");
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
+  const [runtimePolicy, setRuntimePolicy] = useState<RuntimePolicyValue>(() => effectiveModelRuntimePolicy(controlSettings, selectedModelId ?? models[0]?.id));
   const [creating, setCreating] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -133,6 +136,10 @@ export function MusicStudio({
   useEffect(() => {
     if (!modelId && (selectedModelId || models[0]?.id)) setModelId(selectedModelId ?? models[0]?.id ?? "");
   }, [modelId, models, selectedModelId]);
+
+  useEffect(() => {
+    setRuntimePolicy(effectiveModelRuntimePolicy(controlSettings, modelId));
+  }, [controlSettings, modelId]);
 
   const selectedSection = project?.sections.find((section) => section.id === selectedSectionId) ?? project?.sections[0];
   const activeTake = project?.takes.find((take) => take.id === project.activeTakeId && take.status === "complete")
@@ -298,6 +305,8 @@ export function MusicStudio({
         assetName: "",
         assetKind: "",
         thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : undefined,
+        contextWindow: runtimePolicy.contextWindow,
+        maxOutputTokens: runtimePolicy.maxOutputTokens,
       });
     } catch (error) {
       setCollaboration(undefined);
@@ -487,6 +496,7 @@ export function MusicStudio({
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicCaption")}><Sparkles /> Develop description</button>
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicLyrics")}><ListMusic /> Write full lyrics</button>
           </div>
+          <details className="workspace-runtime-policy"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={effectiveModelRuntimePolicy(controlSettings, modelId)} disabled={assistantBusy || busy} expert={advancedEnabled} scope="Music collaborator" onChange={setRuntimePolicy} onReset={() => setRuntimePolicy(effectiveModelRuntimePolicy(controlSettings, modelId))} /></details>
         </section>
       </main>
 

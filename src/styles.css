@@ -1061,6 +1061,26 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .movie-project-actions button { min-height: 34px; padding: 0 10px; color: #9ead9f; border-color: #35423a; background: #131a16; font-size: 8px; }
 .movie-project-actions button.accent { color: #13180f; border-color: #607d42; background: #b7e866; }
 .movie-project-actions button.danger { color: #efaaa1; border-color: #71443e; background: #251815; }
+.model-runtime-policy { min-width: 0; margin: 0; padding: 10px; display: grid; grid-template-columns: repeat(2,minmax(120px,1fr)); gap: 8px; border: 1px solid #3a463f; border-radius: 7px; background: #111713; }
+.model-runtime-policy legend { padding: 0 5px; color: #cbd5ce; font: 750 8px var(--mono); text-transform: uppercase; }
+.model-runtime-policy label { min-width: 0; display: grid; gap: 4px; color: #aeb9b1; font: 750 8px var(--sans); text-transform: none; }
+.model-runtime-policy label span { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.model-runtime-policy label small { color: #6f7d74; font: 7px var(--mono); white-space: nowrap; }
+.model-runtime-policy input { width: 100%; height: 32px; padding: 0 8px; border: 1px solid #3b4940; border-radius: 5px; color: #dce5df; background: #090f0b; font: 9px var(--mono); }
+.model-runtime-policy-state { grid-column: 1/-1; min-width: 0; display: grid; gap: 2px; }
+.model-runtime-policy-state strong { color: #a9dc5a; font: 750 8px var(--sans); }
+.model-runtime-policy-state small { color: #75837a; font: 8px/1.45 var(--sans); white-space: normal; }
+.model-runtime-policy > button { grid-column: 1/-1; min-height: 30px; }
+.studio-runtime-policy-menu { position: relative; }
+.studio-runtime-policy-menu > summary { min-height: 34px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; list-style: none; border: 1px solid #35423a; border-radius: 8px; color: #9ead9f; background: #131a16; cursor: pointer; font: 750 8px var(--sans); }
+.studio-runtime-policy-menu > summary::-webkit-details-marker { display: none; }
+.studio-runtime-policy-menu > summary svg { width: 14px; }
+.studio-runtime-policy-menu[open] > summary { color: #dce5df; border-color: #6d8657; }
+.studio-runtime-policy-menu > div { position: absolute; z-index: 40; top: calc(100% + 7px); right: 0; width: min(420px,calc(100vw - 32px)); padding: 10px; display: grid; gap: 8px; border: 1px solid #4c5c52; border-radius: 9px; box-shadow: 0 16px 40px rgba(0,0,0,.42); background: #0d130f; }
+.studio-runtime-policy-menu > div > button { justify-self: end; }
+.workspace-runtime-policy { margin-top: 7px; border: 1px solid #3a463f; border-radius: 6px; background: #171b18; }
+.workspace-runtime-policy > summary { padding: 8px 10px; color: #aab5ad; cursor: pointer; font: 750 8px var(--sans); }
+.workspace-runtime-policy > .model-runtime-policy { margin: 0 7px 7px; }
 .movie-status-card { margin-top: 24px; padding: 16px; border: 1px solid #344139; border-radius: 11px; background: #111814; }
 .movie-status-card > div:first-child { display: flex; align-items: center; gap: 11px; }
 .movie-status-card > div:first-child > svg { width: 18px; color: #abd960; }

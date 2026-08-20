@@ -176,6 +176,9 @@ describe("Kestrel Movie Studio", () => {
 
     render(<MovieStudio advancedEnabled models={[baselineModel]} selectedModelId={baselineModel.id} onError={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: /Retained Director/i }));
+    fireEvent.click(await screen.findByText("Model limits"));
+    expect(screen.getByLabelText("This production context window")).toHaveValue(32_768);
+    expect(screen.getByLabelText("This production maximum output")).toHaveValue(32_768);
     fireEvent.click(await screen.findByRole("button", { name: /GenerateH3 picture and sound/i }));
     const direction = await screen.findByLabelText("Producer direction");
     fireEvent.change(direction, { target: { value: "Preserve this unfinished producer direction." } });
@@ -185,6 +188,7 @@ describe("Kestrel Movie Studio", () => {
 
     expect(screen.getByLabelText("Producer direction")).toBe(direction);
     expect(direction).toHaveValue("Preserve this unfinished producer direction.");
+    expect(screen.getByLabelText("This production context window")).toHaveValue(32_768);
   });
 
   it("presents a one-prompt offline production path", async () => {
@@ -215,6 +219,8 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByLabelText("Thinking mode")).toHaveValue("max");
     expect(screen.getByLabelText("ComfyUI root")).toHaveValue("C:\\Configured\\ComfyUI");
     expect(screen.getByLabelText("Reference image fidelity")).toHaveValue("match");
+    expect(screen.getByLabelText("This production context window")).toHaveValue(32_768);
+    expect(screen.getByLabelText("This production maximum output")).toHaveValue(32_768);
     const checkpoint = screen.getByLabelText(/Review the plan before rendering/i);
     expect(checkpoint).toBeChecked();
     fireEvent.click(checkpoint);

@@ -1361,8 +1361,8 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             <small>Stop Kestrel-managed model and media runtimes</small>
           </span>
         </button>
-        {kind === "chat" && <section className="inspector-section inspector-mode-settings">
-          <h2>Chat generation</h2>
+        <section className="inspector-section inspector-mode-settings">
+          <h2>{kind === "chat" ? "Chat generation" : "Computer model limits"}</h2>
           <div className="inline-runtime-settings inspector-setting-grid">
             <label>
               Context
@@ -1412,7 +1412,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
               Override selected model
             </label>
           </div>
-        </section>}
+        </section>
         {kind === "task" && <section className="inspector-section inspector-mode-settings">
           <h2>Computer Tasks policy</h2>
           <div className="inline-runtime-settings inspector-setting-grid">
@@ -1498,7 +1498,7 @@ export function OfflineWorkspace({ control, onChanged, onError }: Props) {
             </div>
           </div>
         </section>}
-        {kind === "chat" && selectedOverride && settings.advancedMode && (
+        {selectedOverride && settings.advancedMode && (
           <div className="control-warning">
             Invalid or oversized values can stop startup or exhaust VRAM.
           </div>

@@ -494,19 +494,20 @@ pub(super) async fn run(
                 &format!("Generative Director turn {step}"),
             );
             let messages = transcript.request_messages(workspace.authoritative_memory()?);
+            let director_settings = project.settings.runtime_settings_for(
+                model_runtime.settings,
+                model_runtime.director_model_id,
+            );
             let lease = tokio::select! {
                 result = model_runtime.runtime.lease_model(
                     model_runtime.director_model_id,
                     model_runtime.models,
-                    model_runtime.settings,
+                    &director_settings,
                     app,
                 ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
                 _ = cancel.cancelled() => return Err(StudioError::Cancelled),
             };
             let mut settings = project.settings.clone();
-            let director_settings = model_runtime
-                .settings
-                .for_model(model_runtime.director_model_id);
             settings.thinking_budget = request
                 .thinking_level
                 .unwrap_or(director_settings.thinking_level)
@@ -756,11 +757,15 @@ async fn review_candidate(
         "reviewer",
         "Fresh-context review started",
     );
+    let reviewer_settings = project.settings.runtime_settings_for(
+        model_runtime.settings,
+        model_runtime.reviewer_model_id,
+    );
     let lease = tokio::select! {
         result = model_runtime.runtime.lease_model(
             model_runtime.reviewer_model_id,
             model_runtime.models,
-            model_runtime.settings,
+            &reviewer_settings,
             app,
         ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
         _ = cancel.cancelled() => return Err(StudioError::Cancelled),
@@ -771,9 +776,6 @@ async fn review_candidate(
         candidate,
         exact_frame_analysis.as_ref(),
     )?;
-    let reviewer_settings = model_runtime
-        .settings
-        .for_model(model_runtime.reviewer_model_id);
     let mut movie_settings = project.settings.clone();
     movie_settings.temperature = 0.1;
     movie_settings.top_p = 0.9;
@@ -910,7 +912,9 @@ async fn prepare_frame_analysis(
     let frames = capture_analysis_frames(studio, project, workspace_root, &anchors).await?;
     let messages = frame_analysis_messages(&request.task, &frames)?;
     let schema = frame_analysis_schema();
-    let model_settings = model_runtime.settings.for_model(model_id);
+    let model_settings = project
+        .settings
+        .runtime_settings_for(model_runtime.settings, model_id);
     let mut movie_settings = project.settings.clone();
     movie_settings.temperature = 0.1;
     movie_settings.top_p = 0.9;
@@ -951,7 +955,7 @@ async fn prepare_frame_analysis(
         result = model_runtime.runtime.lease_model(
             model_id,
             model_runtime.models,
-            model_runtime.settings,
+            &model_settings,
             app,
         ) => result.map_err(|error| StudioError::Planning(error.to_string())),
         _ = cancel.cancelled() => Err(StudioError::Cancelled),

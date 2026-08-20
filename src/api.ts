@@ -53,6 +53,7 @@ import type {
   ModelCompatibility,
   MoviePlan,
   MovieModelRoleRequest,
+  MovieRuntimePolicyRequest,
   MoviePlanningEvent,
   MoviePlanningSnapshot,
   MovieProject,
@@ -480,6 +481,11 @@ export async function renderMovieClipVersion(request: MovieClipRenderRequest): P
 export async function captureMovieFrame(projectId: string, anchor: MovieFrameAnchor): Promise<MovieCapturedFrame> {
   if (!isTauri()) throw new Error("Frame capture requires the desktop application.");
   return invoke<MovieCapturedFrame>("capture_movie_frame", { projectId, anchor });
+}
+
+export async function setMovieRuntimePolicy(id: string, policy: MovieRuntimePolicyRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Studio local-model limits require the desktop application.");
+  return invoke<MovieProject>("set_movie_runtime_policy", { id, policy });
 }
 
 export async function runMovieGenerationAgent(request: MovieGenerationAgentRequest): Promise<MovieGenerationProposal> {

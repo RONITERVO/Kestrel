@@ -343,6 +343,13 @@ pub struct MovieModelRoleRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieRuntimePolicyRequest {
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MovieModelBinding {
     pub model_id: String,
@@ -510,6 +517,9 @@ pub struct MovieSettings {
     pub thinking_budget: u32,
     #[serde(default = "default_output")]
     pub max_output_tokens: u32,
+    /// Zero in a legacy project means inherit the selected model's System/per-model context.
+    #[serde(default)]
+    pub context_window: u32,
     #[serde(default = "default_comfy_root")]
     pub comfy_root: String,
     #[serde(default = "default_ref_image_size")]
@@ -530,6 +540,7 @@ impl Default for MovieSettings {
             top_k: default_top_k(),
             thinking_budget: default_thinking(),
             max_output_tokens: default_output(),
+            context_window: 0,
             comfy_root: default_comfy_root(),
             ref_image_size: default_ref_image_size(),
         }
@@ -597,7 +608,14 @@ impl MovieSettings {
         self.top_p = self.top_p.clamp(0.05, 1.0);
         self.top_k = self.top_k.clamp(1, 200);
         self.thinking_budget = self.thinking_budget.min(MOVIE_THINKING_BUDGET);
-        self.max_output_tokens = self.max_output_tokens.clamp(1_024, 32_768);
+        self.max_output_tokens = self
+            .max_output_tokens
+            .clamp(1_024, if advanced { 262_144 } else { 32_768 });
+        if self.context_window > 0 {
+            self.context_window = self
+                .context_window
+                .clamp(4_096, if advanced { 1_048_576 } else { 98_304 });
+        }
         let root = PathBuf::from(&self.comfy_root);
         if !root.is_absolute() {
             return Err(StudioError::Invalid(
@@ -610,6 +628,21 @@ impl MovieSettings {
             ));
         }
         Ok(self)
+    }
+
+    /// Apply the project layer after System defaults and per-model policy.
+    pub(crate) fn runtime_settings_for(
+        &self,
+        base: &ControlSettings,
+        model_id: &str,
+    ) -> ControlSettings {
+        let mut effective = base.for_model(model_id);
+        if self.context_window > 0 {
+            effective.context_window = self.context_window;
+        }
+        effective.max_output_tokens = self.max_output_tokens;
+        effective.model_overrides.clear();
+        effective
     }
 }
 
@@ -2314,6 +2347,44 @@ impl MovieStudio {
             ),
         });
         project.detail = "The project model team changed at a safe checkpoint. Existing producer work is preserved, and producer approval is required before rendering.".into();
+        self.persist_emit(&mut project, app)?;
+        Ok(project)
+    }
+
+    pub async fn set_runtime_policy(
+        &self,
+        id: &str,
+        policy: MovieRuntimePolicyRequest,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
+        let mut project = self.get(id)?;
+        if project.status == "running" {
+            return Err(StudioError::Invalid(
+                "Local model limits cannot change during an active Studio operation; stop with a checkpoint first"
+                    .into(),
+            ));
+        }
+        if project.settings.context_window == policy.context_window
+            && project.settings.max_output_tokens == policy.max_output_tokens
+        {
+            return Ok(project);
+        }
+        let prior_context = project.settings.context_window;
+        let prior_output = project.settings.max_output_tokens;
+        project.settings.context_window = policy.context_window;
+        project.settings.max_output_tokens = policy.max_output_tokens;
+        project.producer_feedback.push(ProducerFeedbackRecord {
+            created_at: Utc::now().to_rfc3339(),
+            scope: "runtime-policy-change".into(),
+            clip_id: String::new(),
+            feedback: format!(
+                "Project local-model limits changed from {prior_context} context / {prior_output} output to {} context / {} output. Existing plans, masters, and edits were preserved.",
+                policy.context_window, policy.max_output_tokens,
+            ),
+        });
+        project.detail = "Project local-model limits were saved for the next Director, reviewer, Frame Analyst, or Copilot turn. Existing production work is unchanged.".into();
         self.persist_emit(&mut project, app)?;
         Ok(project)
     }
@@ -6568,6 +6639,42 @@ mod tests {
     }
 
     #[test]
+    fn movie_runtime_policy_layers_over_the_selected_model_policy() {
+        let mut control = ControlSettings {
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            ..ControlSettings::default()
+        };
+        control
+            .model_overrides
+            .push(crate::models::ModelRuntimeOverride {
+                model_id: "director".into(),
+                context_window: Some(27_648),
+                max_output_tokens: Some(24_576),
+                ..crate::models::ModelRuntimeOverride::default()
+            });
+
+        let inherited = MovieSettings {
+            context_window: 0,
+            max_output_tokens: 24_576,
+            ..MovieSettings::default()
+        }
+        .runtime_settings_for(&control, "director");
+        assert_eq!(inherited.context_window, 27_648);
+        assert_eq!(inherited.max_output_tokens, 24_576);
+        assert!(inherited.model_overrides.is_empty());
+
+        let overridden = MovieSettings {
+            context_window: 65_536,
+            max_output_tokens: 32_768,
+            ..MovieSettings::default()
+        }
+        .runtime_settings_for(&control, "director");
+        assert_eq!(overridden.context_window, 65_536);
+        assert_eq!(overridden.max_output_tokens, 32_768);
+    }
+
+    #[test]
     fn legacy_edit_decisions_gain_safe_timeline_defaults() {
         let mut project: MovieProject = serde_json::from_value(json!({
             "schemaVersion": 4,
@@ -6954,6 +7061,52 @@ mod tests {
             "model-role-change"
         );
         assert_eq!(studio.get(&project.id).unwrap().model_roles, roles);
+    }
+
+    #[tokio::test]
+    async fn project_runtime_policy_is_a_durable_checkpoint_without_touching_the_cut() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let project = studio
+            .create_manual(
+                StartMovieRequest {
+                    prompt: "A producer-owned runtime checkpoint".into(),
+                    settings: MovieSettings::default(),
+                    references: vec![],
+                    pause_after_plan: true,
+                    model_roles: MovieModelRoleRequest::default(),
+                },
+                false,
+                MovieModelRoles::default(),
+            )
+            .unwrap();
+
+        let updated = studio
+            .set_runtime_policy(
+                &project.id,
+                MovieRuntimePolicyRequest {
+                    context_window: 27_648,
+                    max_output_tokens: 27_648,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.settings.context_window, 27_648);
+        assert_eq!(updated.settings.max_output_tokens, 27_648);
+        assert_eq!(
+            serde_json::to_value(&updated.plan).unwrap(),
+            serde_json::to_value(&project.plan).unwrap()
+        );
+        assert_eq!(updated.edit, project.edit);
+        assert_eq!(
+            updated.producer_feedback.last().unwrap().scope,
+            "runtime-policy-change"
+        );
+        let reopened = studio.get(&project.id).unwrap();
+        assert_eq!(reopened.settings.context_window, 27_648);
+        assert_eq!(reopened.settings.max_output_tokens, 27_648);
     }
 
     #[test]

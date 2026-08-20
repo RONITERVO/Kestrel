@@ -10,13 +10,15 @@ import {
   listStudioModelCompatibility,
   onMovieCopilot, onMovieImageAsset, onMoviePlanning, onMovieProject, onMoviePromptDraft, onMovieRenderPreview, pickMovieReferenceFiles, renderMovieEdit,
   parseMoviePlanExchange, qualifyStudioModel, resumeMovie, revealMovie, reviseMoviePlan, saveMovieEdits, saveMoviePlan, startManualMovie, startMovie,
-  setMovieModelRoles,
+  setMovieModelRoles, setMovieRuntimePolicy,
   startMovieCopilot, startMovieImageAsset, startMoviePromptDraft,
 } from "./api";
 import { MovieTimeline } from "./MovieTimeline";
 import { MovieGenerationRoom } from "./MovieGenerationRoom";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
+import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "./ModelRuntimePolicy";
+import type { RuntimePolicyValue } from "./ModelRuntimePolicy";
 import { effectiveThinkingLevelForModel, thinkingBudgetForLevel, thinkingLevelFromBudget } from "./types";
 import type {
   ControlSettings, MovieCopilotEvent, MovieCopilotProposal, MovieCopilotReceipt, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
@@ -382,6 +384,11 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
     setPromptDraftStatus(mode === "continue" ? "Preparing to continue the exact draft…" : existingText ? "Preparing to develop the idea and replace this field…" : "Preparing an original draft…");
     setPromptField(field, mode === "continue" && existingText ? `${existingText}\n\n` : "");
     try {
+      const runtimePolicy = {
+        ...effectiveModelRuntimePolicy(controlSettings, promptModelId),
+        ...(settings.contextWindow ? { contextWindow: settings.contextWindow } : {}),
+        maxOutputTokens: settings.maxOutputTokens,
+      };
       await startMoviePromptDraft({
         requestId,
         modelId: promptModelId,
@@ -392,6 +399,8 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
         assetName: reference ? (field.kind === "referenceDescription" && field.part === "embeddedAudioDescription" ? `embedded audio from ${reference.name}` : reference.name) : "",
         assetKind: reference ? (field.kind === "referenceDescription" && field.part === "embeddedAudioDescription" ? "audio" : reference.kind) : "",
         thinkingLevel: promptThinkingLevel !== "default" ? promptThinkingLevel : undefined,
+        contextWindow: runtimePolicy.contextWindow,
+        maxOutputTokens: runtimePolicy.maxOutputTokens,
       });
     } catch (error) {
       promptDraftActiveRef.current = undefined;
@@ -578,6 +587,11 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
   const modelRolesReady = Boolean(directorModelId)
     && rolesCompatible
     && (advancedEnabled || Boolean(directorCompatibility?.studioReady && reviewerCompatibility?.studioReady));
+  const inheritedRuntimePolicy = effectiveModelRuntimePolicy(controlSettings, directorModelId);
+  const productionRuntimePolicy: RuntimePolicyValue = {
+    contextWindow: settings.contextWindow || inheritedRuntimePolicy.contextWindow,
+    maxOutputTokens: settings.maxOutputTokens,
+  };
   return <div className="movie-launch movie-production-shell">
     <header className="studio-window-header">
       <div className="movie-launch-mark"><Clapperboard /></div>
@@ -664,7 +678,15 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
       <NumberField label="Temperature" value={settings.temperature} min={0} max={2} step={0.05} onChange={(value) => onSettings({ ...settings, temperature: value })} />
       <NumberField label="Top P" value={settings.topP} min={0.05} max={1} step={0.01} onChange={(value) => onSettings({ ...settings, topP: value })} />
       <label>Thinking mode<select value={thinkingLevelFromBudget(settings.thinkingBudget)} onChange={(event) => { const level = event.target.value as ThinkingLevel; const budget = thinkingBudgetForLevel(level, 32768); onSettings({ ...settings, thinkingBudget: budget, thinkingLevel: level }); }}><option value="off">Off (direct)</option><option value="low">Low reasoning</option><option value="medium">Medium reasoning</option><option value="high">High reasoning</option><option value="max">Max reasoning</option></select></label>
-      <NumberField label="Output budget" value={settings.maxOutputTokens} min={1024} max={32768} step={1024} onChange={(value) => onSettings({ ...settings, maxOutputTokens: value })} />
+      <div className="wide"><ModelRuntimePolicyControls
+        value={productionRuntimePolicy}
+        inherited={inheritedRuntimePolicy}
+        disabled={busy || promptBusy || imageGenerating}
+        expert={advancedEnabled}
+        scope="This production"
+        onChange={(policy) => onSettings({ ...settings, contextWindow: policy.contextWindow, maxOutputTokens: policy.maxOutputTokens })}
+        onReset={() => onSettings({ ...settings, contextWindow: undefined, maxOutputTokens: inheritedRuntimePolicy.maxOutputTokens })}
+      /></div>
       <SelectField label="Reference image fidelity" value={settings.refImageSize} onChange={(value) => onSettings({ ...settings, refImageSize: value as MovieSettings["refImageSize"] })} options={["match", "max"]} />
       <label className="wide">ComfyUI root<input value={settings.comfyRoot} onChange={(event) => onSettings({ ...settings, comfyRoot: event.target.value })} /></label>
       {promptDraftReceipt && <details className="prompt-draft-receipt wide"><summary>Last prompt collaborator request — everything the model received</summary><div><span>Target / behavior</span><code>{promptDraftReceipt.target} · {promptDraftReceipt.mode}</code><span>Exact local API request</span><pre>{JSON.stringify(promptDraftReceipt.exactRequest, null, 2)}</pre></div></details>}
@@ -939,6 +961,12 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
   const persistedReviewerModelId = project.modelRoles?.reviewer.modelId || "";
   const persistedDirectorThinkingLevel = project.modelRoles?.director.thinkingLevel ?? "default";
   const persistedReviewerThinkingLevel = project.modelRoles?.reviewer.thinkingLevel ?? "default";
+  const inheritedRuntimePolicy = effectiveModelRuntimePolicy(controlSettings, directorModelId);
+  const persistedRuntimePolicy: RuntimePolicyValue = {
+    contextWindow: project.settings.contextWindow || inheritedRuntimePolicy.contextWindow,
+    maxOutputTokens: project.settings.maxOutputTokens,
+  };
+  const [runtimePolicy, setRuntimePolicy] = useState<RuntimePolicyValue>(persistedRuntimePolicy);
   useEffect(() => setDraftPlan(project.plan), [project.id, project.plan]);
   const showWorkspace = useCallback((next: ProjectWorkspace) => {
     setMountedWorkspaces((current) => current.has(next) ? new Set(current) : new Set([...current, next]));
@@ -955,6 +983,12 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
     setDirectorThinkingLevel(persistedDirectorThinkingLevel);
     setReviewerThinkingLevel(persistedReviewerThinkingLevel);
   }, [availableModelIds, persistedDirectorModelId, persistedReviewerModelId, persistedDirectorThinkingLevel, persistedReviewerThinkingLevel, project.id, selectedModelId]);
+  useEffect(() => {
+    setRuntimePolicy({
+      contextWindow: project.settings.contextWindow || effectiveModelRuntimePolicy(controlSettings, persistedDirectorModelId || selectedModelId || models[0]?.id).contextWindow,
+      maxOutputTokens: project.settings.maxOutputTokens,
+    });
+  }, [availableModelIds, controlSettings, persistedDirectorModelId, project.id, project.settings.contextWindow, project.settings.maxOutputTokens, selectedModelId]);
   useEffect(() => {
     if (project.status === "awaiting-review" || project.status === "planning-checkpoint") showWorkspace("plan");
     else if (project.status === "running") showWorkspace(project.phase.includes("render") || project.clips.length ? "generate" : "plan");
@@ -985,10 +1019,27 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
     || reviewerThinkingLevel !== persistedReviewerThinkingLevel;
   const modelRolesLocked = busy || working || project.status === "running"
     || project.clips.some((clip) => clip.status === "rendering" || clip.status === "complete" || Boolean(clip.path));
+  const runtimePolicyLocked = busy || working || project.status === "running";
+  const runtimePolicyChanged = runtimePolicy.contextWindow !== persistedRuntimePolicy.contextWindow
+    || runtimePolicy.maxOutputTokens !== persistedRuntimePolicy.maxOutputTokens;
   return <div className="movie-project-view movie-production-shell">
     <header className="studio-project-bar">
       <div><span className={`studio-project-state ${project.status}`}>{project.status === "running" ? <LoaderCircle className="spin" /> : project.status === "complete" ? <Check /> : <Clock3 />}{project.status === "complete" ? "Review cut ready" : project.phase}</span><span><strong>{project.title}</strong><small>{project.plan?.logline ?? project.prompt}</small></span></div>
-      <div className="movie-project-actions"><button className={copilotOpen ? "active" : ""} disabled={workspace === "plan" || workspace === "generate"} title={workspace === "generate" ? "Generate has its own checked Generative Director" : undefined} onClick={() => setCopilotOpen((value) => !value)}><Sparkles /> Copilot</button><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={onCancel}><CircleStop /> Stop</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> {resumeLabel}</button>}</div>
+      <div className="movie-project-actions">
+        <details className="studio-runtime-policy-menu">
+          <summary><Settings2 /> Model limits</summary>
+          <div><ModelRuntimePolicyControls
+            value={runtimePolicy}
+            inherited={inheritedRuntimePolicy}
+            disabled={runtimePolicyLocked}
+            expert={advancedEnabled}
+            scope="This production"
+            onChange={setRuntimePolicy}
+            onReset={() => setRuntimePolicy(inheritedRuntimePolicy)}
+          /><button type="button" disabled={runtimePolicyLocked || !runtimePolicyChanged} onClick={() => void runProjectAction(() => setMovieRuntimePolicy(project.id, runtimePolicy))}><Save /> Apply at checkpoint</button></div>
+        </details>
+        <button className={copilotOpen ? "active" : ""} disabled={workspace === "plan" || workspace === "generate"} title={workspace === "generate" ? "Generate has its own checked Generative Director" : undefined} onClick={() => setCopilotOpen((value) => !value)}><Sparkles /> Copilot</button><button onClick={onNew}><Plus /> New</button><button onClick={onReveal}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={onCancel}><CircleStop /> Stop</button>}{canResume && <button className="accent" onClick={onResume}><RotateCcw /> {resumeLabel}</button>}
+      </div>
     </header>
     <div className={`studio-production-strip ${project.status}`}>
       <span>{project.status === "running" ? <LoaderCircle className="spin" /> : <ShieldCheck />}<strong>{project.detail}</strong><small>{complete} of {project.clips.length || "—"} H3 masters preserved · Director: {project.modelRoles?.director.modelName ?? project.model}{project.modelRoles?.reviewer.modelName && project.modelRoles.reviewer.modelId !== project.modelRoles.director.modelId ? ` · Reviewer: ${project.modelRoles.reviewer.modelName}` : ""} · {project.renderer}</small></span>

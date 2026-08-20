@@ -23,6 +23,11 @@ and must not acquire authority implicitly.
   runtime is unloaded from the GPU.
 - Director and Reviewer bindings are durable project data. Missing pinned models fail visibly; an
   explicit checkpointed role change records provenance and forces producer review.
+- Language-model limits resolve in one order: System defaults, selected-model exceptions, then the
+  durable movie-project policy. `MovieSettings::runtime_settings_for` is the only movie-layer
+  resolver; planning, fresh review, frame analysis, generative edits, and Copilot must use it before
+  acquiring a lease. Context changes may restart the one managed runtime; output changes are
+  per-request. Never introduce a stage-specific hidden copy of either value.
 - Every local model must pass the current local Studio protocol check before standard-mode unattended
   planning. Advanced mode may run an unverified compatible model only with forced producer review.
 

@@ -61,6 +61,7 @@ use studio::{
     MovieCopilotRequest, MovieEdit, MovieFl2vTransitionRequest, MovieGenerationAgentRequest,
     MovieGenerationProposal, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
     MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
+    MovieRuntimePolicyRequest,
     MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
     MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, PromptDraftJob,
     PromptDraftRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
@@ -1468,6 +1469,37 @@ async fn set_movie_model_roles(
     state
         .studio
         .set_model_roles(&id, roles, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_movie_runtime_policy(
+    id: String,
+    policy: MovieRuntimePolicyRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let maximum_context = if control.advanced_mode { 1_048_576 } else { 98_304 };
+    let maximum_output = if control.advanced_mode { 262_144 } else { 32_768 };
+    if !(4_096..=maximum_context).contains(&policy.context_window) {
+        return Err(format!(
+            "Project context must be between 4,096 and {maximum_context} tokens."
+        ));
+    }
+    if !(1_024..=maximum_output).contains(&policy.max_output_tokens) {
+        return Err(format!(
+            "Project output must be between 1,024 and {maximum_output} tokens."
+        ));
+    }
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .set_runtime_policy(&id, policy, Some(&app))
         .await
         .map_err(|error| error.to_string())
 }
@@ -3694,6 +3726,7 @@ pub fn run() {
             parse_movie_plan_exchange,
             save_movie_plan,
             set_movie_model_roles,
+            set_movie_runtime_policy,
             revise_movie_plan,
             approve_movie_plan,
             render_movie_clip_version,
