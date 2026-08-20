@@ -1,8 +1,8 @@
 use crate::models::{ControlSettings, ResearchSettings};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::{collections::HashSet, fs};
 use std::path::{Path, PathBuf};
+use std::{collections::HashSet, fs};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -54,14 +54,10 @@ impl ControlSettingsStore {
         if settings.model_overrides.iter().any(|model| {
             model.model_id.trim().is_empty()
                 || !model_ids.insert(model.model_id.as_str())
-                || [
-                    model.context_window,
-                    model.max_output_tokens,
-                    model.threads,
-                ]
-                .into_iter()
-                .flatten()
-                .any(|value| value == 0)
+                || [model.context_window, model.max_output_tokens, model.threads]
+                    .into_iter()
+                    .flatten()
+                    .any(|value| value == 0)
         }) {
             return Err(ConfigError::InvalidModelOverride);
         }
@@ -73,8 +69,7 @@ impl ControlSettingsStore {
             stored.agent_max_output_tokens = stored.agent_max_output_tokens.min(32_768);
             for model in &mut stored.model_overrides {
                 model.context_window = model.context_window.map(|value| value.min(98_304));
-                model.max_output_tokens =
-                    model.max_output_tokens.map(|value| value.min(32_768));
+                model.max_output_tokens = model.max_output_tokens.map(|value| value.min(32_768));
             }
         }
         atomic_json_write(&self.path, &serde_json::to_vec_pretty(&stored)?)
@@ -152,7 +147,10 @@ fn legacy_control_settings() -> Option<ControlSettings> {
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(settings.agent_max_output_tokens);
-    if let Some(level) = value.get("thinking_level").or_else(|| value.get("thinkingLevel")) {
+    if let Some(level) = value
+        .get("thinking_level")
+        .or_else(|| value.get("thinkingLevel"))
+    {
         if let Ok(parsed) = serde_json::from_value::<crate::models::ThinkingLevel>(level.clone()) {
             settings.thinking_level = parsed;
         }
@@ -403,6 +401,9 @@ mod tests {
         assert_eq!(effective.threads, 6);
         assert_eq!(effective.thinking_level, crate::models::ThinkingLevel::Off);
         assert_eq!(settings.for_model("model-b").context_window, 32_768);
-        assert_eq!(settings.for_model("model-b").thinking_level, crate::models::ThinkingLevel::High);
+        assert_eq!(
+            settings.for_model("model-b").thinking_level,
+            crate::models::ThinkingLevel::High
+        );
     }
 }

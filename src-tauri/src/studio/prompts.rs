@@ -42,6 +42,10 @@ pub(super) fn generation_agent_system() -> String {
     prompt_catalog::text(PromptId::MovieGenerationAgentSystem)
 }
 
+pub(super) fn generation_frame_analyst_system() -> String {
+    prompt_catalog::text(PromptId::MovieGenerationFrameAnalystSystem)
+}
+
 pub(super) fn generation_reviewer_system() -> String {
     prompt_catalog::text(PromptId::MovieGenerationReviewerSystem)
 }
@@ -135,6 +139,12 @@ pub(super) fn prompt_catalog(settings: &MovieSettings) -> Vec<super::planning::P
             "Independent whole-film reviewer prompt",
             "system",
             independent_reviewer_system(),
+        ),
+        super::planning::PromptDocument::new(
+            "generation-frame-analyst-system",
+            "Exact endpoint frame analyst prompt",
+            "system",
+            generation_frame_analyst_system(),
         ),
         super::planning::PromptDocument::new(
             "generation-agent-system",

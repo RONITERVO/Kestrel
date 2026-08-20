@@ -470,6 +470,7 @@ export interface MovieGenerationAgentRequest {
   projectId: string;
   task: MovieGenerationTask;
   thinkingLevel?: ThinkingLevel;
+  frameAnalystModelId?: string;
 }
 
 export interface MovieGenerationProposal {

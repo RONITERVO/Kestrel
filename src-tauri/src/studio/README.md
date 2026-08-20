@@ -117,6 +117,8 @@ The project directory is the source of truth. Important planning files include:
 | `agent-workspace/agent-last-request.json` | Exact last planning request envelope for audit |
 | `agent-workspace/generative-edits/<request>/` | Exact task/context, candidate revisions, native-check state, transcript, fresh review, and accepted result |
 | `generations/fl2v-*/graph.json` and `receipt.json` | Exact endpoint hashes, H3 graph, seed, placement decision, and immutable output hash |
+| `agent-workspace/generative-edits/<request>/endpoint-frames/*.png` | Exact bounded endpoint pixels shown to the selected local Frame Analyst |
+| `agent-workspace/generative-edits/<request>/frame-analysis*.json` | Vision-model request manifest, per-frame observations, uncertainties, model identity, hashes, and recoverable failure |
 | `../../model-qualifications.json` | Recoverable protocol receipts bound to model, engine, runtime profile, and protocol revision |
 
 Atomic replacement and recovery copies are deliberate. Do not trade them for in-memory convenience.
@@ -127,9 +129,12 @@ The advanced UI reads bounded redacted views; the unmodified files remain availa
 ```text
 select one storyline shot or two exact frame anchors in Generate
   -> producer writes renderer direction directly or opens a durable Generative Director session
+  -> when a checked vision model is selected, native code extracts and hashes each exact endpoint PNG
+  -> local Frame Analyst streams its reasoning and producer-readable observations, then records separate visible facts and uncertainties per endpoint
   -> append complete current story, plan, references, storyline, and selected source facts every turn
-  -> typed generation_workspace writes one candidate
+  -> typed generation_write_candidate writes one durable candidate
   -> two clean native checks on the unchanged candidate
+  -> empty-object generation_submit references that durable candidate instead of streaming it again
   -> independent fresh-context Reviewer accepts or returns blocking repairs
   -> producer edits or discards the accepted candidate
   -> H3 writes a preserved audition plus exact graph/endpoint/output receipt
@@ -137,7 +142,11 @@ select one storyline shot or two exact frame anchors in Generate
 ```
 
 The React surface sends storyline edit IDs and source times, never absolute input paths. Native code
-resolves the selected preserved version inside the project boundary before extracting a frame. A shot
+resolves the selected preserved version inside the project boundary before extracting a frame. Only
+these bounded endpoint PNGs may enter the authenticated local vision-model request; the Director and
+Reviewer receive the durable observations rather than a claim that they inspected pixels. The request
+manifest records the exact image paths and hashes without duplicating base64, and resume reuses an
+integrity-checked observation only for the unchanged anchor task. A shot
 audition never rewrites the active master or approved plan. A transition defaults to the Masters bin and
 changes the storyline only when the producer selected insert or replace before generation. An internal
 shot replacement uses frame-aligned In and Out points: native placement splits the existing edit into

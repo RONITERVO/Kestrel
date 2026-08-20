@@ -2685,10 +2685,15 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .generation-inspector textarea { resize: vertical; }
 .generation-inspector label > span { justify-self: end; margin-top: -15px; color: #858f89; font: 7px var(--mono); }
 .generation-inspector label > span.valid { color: #a9d75c; }
-.generation-agent-controls, .generation-render-settings { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 7px; }
+.generation-agent-controls, .generation-render-settings { display: grid; align-items: end; gap: 7px; }
+.generation-agent-controls { grid-template-columns: minmax(0,1.2fr) minmax(0,.8fr) auto; }
+.generation-render-settings { grid-template-columns: minmax(0,1fr) auto; }
 .generation-agent-controls button, .generation-render-button, .generation-use-button { min-height: 34px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #5b4b20; border-radius: 5px; color: #18130b; background: var(--generate-accent); font: 800 8px var(--sans); }
 .generation-agent-controls button.danger { color: #ffd7d0; border-color: #86443a; background: #3b201c; }
 .generation-agent-controls svg, .generation-render-button svg, .generation-use-button svg { width: 13px; }
+.generation-frame-analysis-note { margin: 0; padding: 6px 7px; border: 1px solid #46554a; border-radius: 5px; color: #aeb9b1; background: #111814; font: 7px/1.45 var(--sans); }
+.generation-frame-analysis-note.ready { border-color: #48683e; color: #bdd5a9; }
+.generation-frame-analysis-note.warning { border-color: #735d31; color: #d9c38f; }
 .generation-agent-live { display: grid; gap: 6px; }
 .generation-agent-live > header { display: flex; justify-content: space-between; color: #aeb9b1; }
 .generation-agent-live > header strong { font: 750 8px var(--sans); }

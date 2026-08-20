@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   boundedGenerationFrame, editWithSourceVersion, insertTimelineSourceAfter, insertTimelineSourceBefore,
-  parseGenerationTimecode, replacementRangeAnchors, transitionAnchorsForPosition,
+  parseGenerationTimecode, preferredFrameAnalystModelId, replacementRangeAnchors, transitionAnchorsForPosition,
 } from "./MovieGenerationRoom";
 import { timelineItems } from "./MovieTimeline";
 import type { ClipEdit, MovieEdit, MovieProject } from "./types";
@@ -103,5 +103,17 @@ describe("Generate audition decisions", () => {
     expect(updated.clips.map((clip) => [clip.id, clip.order])).toEqual([
       ["edit-opening", 0], ["edit-a", 1], ["edit-b", 2],
     ]);
+  });
+
+  it("prefers a pinned vision model and never treats an unverified projector as visual", () => {
+    const models = [
+      { id: "text", supportsVision: false, mmprojPath: undefined },
+      { id: "vision-a", supportsVision: true, mmprojPath: "a-mmproj.gguf" },
+      { id: "vision-b", supportsVision: true, mmprojPath: "b-mmproj.gguf" },
+      { id: "metadata-only", supportsVision: true, mmprojPath: undefined },
+    ];
+    expect(preferredFrameAnalystModelId(models, ["text", "vision-b"])).toBe("vision-b");
+    expect(preferredFrameAnalystModelId(models, ["missing"])).toBe("vision-a");
+    expect(preferredFrameAnalystModelId(models.slice(0, 1), ["text"])).toBe("");
   });
 });

@@ -1013,6 +1013,8 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
           edit={edit}
           disabled={busy || working || project.status === "running"}
           advanced={advancedEnabled}
+          models={models}
+          modelCompatibility={modelCompatibility}
           controlSettings={controlSettings}
           preview={preview && project.status === "running" ? <LiveH3Preview event={preview} advanced={advancedEnabled} /> : undefined}
           onProject={onProject}

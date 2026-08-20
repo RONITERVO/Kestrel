@@ -75,7 +75,12 @@ impl AgentTranscript {
     }
 
     pub(super) fn request_messages(&self, authoritative_memory: String) -> Vec<Value> {
-        let mut messages = self.messages.clone();
+        let mut messages = self
+            .messages
+            .iter()
+            .cloned()
+            .map(compact_superseded_context_for_request)
+            .collect::<Vec<_>>();
         messages.push(json!({"role":"user","content":authoritative_memory}));
         messages
     }
@@ -105,6 +110,18 @@ impl AgentTranscript {
             }),
         )
     }
+}
+
+fn compact_superseded_context_for_request(mut message: Value) -> Value {
+    let is_tool = message.get("role").and_then(Value::as_str) == Some("tool");
+    let is_legacy_context = message
+        .get("content")
+        .and_then(Value::as_str)
+        .is_some_and(|content| content.starts_with("CONTEXT: "));
+    if is_tool && is_legacy_context {
+        message["content"] = json!("The complete current authoritative context is supplied as the final user message of this turn. This older duplicate is omitted from model input but remains unchanged in the durable transcript.");
+    }
+    message
 }
 
 #[derive(Debug)]
@@ -283,11 +300,18 @@ pub(super) async fn complete_stream(
     let mut decoder = OpenAiSseDecoder::default();
     let mut content = String::new();
     let mut tool_calls = Vec::<StreamedToolCall>::new();
+    let mut finish_reason = None::<String>;
     let mut accept_events = |events: Vec<OpenAiStreamEvent>| {
         for event in events {
             let OpenAiStreamEvent::Message(value) = event else {
                 continue;
             };
+            if let Some(reason) = value
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str)
+            {
+                finish_reason = Some(reason.to_string());
+            }
             if let Some(token) = value
                 .pointer("/choices/0/delta/content")
                 .and_then(Value::as_str)
@@ -321,6 +345,12 @@ pub(super) async fn complete_stream(
         .finish()
         .map_err(|error| StudioError::Planning(format!("movie agent stream error: {error}")))?;
     accept_events(final_events);
+    if finish_reason_indicates_truncation(finish_reason.as_deref()) {
+        return Err(StudioError::Planning(
+            "the local model reached its generation or context limit while streaming a Studio tool call; the incomplete call was discarded and the durable workspace can resume in a clean context"
+                .into(),
+        ));
+    }
     let tool_calls = tool_calls
         .into_iter()
         .enumerate()
@@ -342,6 +372,10 @@ pub(super) async fn complete_stream(
         "content":if content.is_empty() { Value::Null } else { Value::String(content) },
         "tool_calls":tool_calls,
     }}]}))
+}
+
+fn finish_reason_indicates_truncation(reason: Option<&str>) -> bool {
+    matches!(reason, Some("length" | "max_tokens"))
 }
 
 fn collect_tool_deltas(
@@ -446,7 +480,16 @@ pub(super) async fn complete_tool_submission<T: DeserializeOwned>(
                 }
             },
         )
-        .await?;
+        .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(StudioError::Cancelled) => return Err(StudioError::Cancelled),
+            Err(error) => {
+                last_error = error.to_string();
+                messages.push(json!({"role":"user","content":render(PromptId::StudioSubmissionCorrection, &[("label", label), ("error", &last_error), ("tool_name", tool_name)])}));
+                continue;
+            }
+        };
         let message = response_message(&response)?;
         let tool_call = message
             .get("tool_calls")
@@ -523,6 +566,36 @@ mod tests {
         let serialized = value.to_string();
         assert!(serialized.contains("```"));
         assert!(serialized.contains("<think>hidden</think>"));
+    }
+
+    #[test]
+    fn legacy_context_tool_output_is_compacted_only_in_the_model_request() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("transcript.json");
+        let mut transcript = AgentTranscript::begin(
+            path.clone(),
+            0,
+            "system",
+            "instruction",
+        )
+        .unwrap();
+        let durable_context = format!("CONTEXT: {}", "x".repeat(20_000));
+        transcript
+            .push(
+                json!({"role":"tool","tool_call_id":"call-1","content":durable_context}),
+                1,
+            )
+            .unwrap();
+
+        let request = transcript.request_messages("CURRENT AUTHORITATIVE MEMORY".into());
+        assert!(request[2]["content"].as_str().unwrap().len() < 512);
+        assert_eq!(request.last().unwrap()["content"], "CURRENT AUTHORITATIVE MEMORY");
+
+        let durable: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            durable["messages"][2]["content"].as_str().unwrap().len(),
+            20_009
+        );
     }
 
     #[test]
@@ -612,5 +685,14 @@ mod tests {
                 StreamEvent::ToolArguments("\"list\"}".into()),
             ]
         );
+    }
+
+    #[test]
+    fn output_limit_finish_reasons_discard_partial_tool_calls() {
+        assert!(finish_reason_indicates_truncation(Some("length")));
+        assert!(finish_reason_indicates_truncation(Some("max_tokens")));
+        assert!(!finish_reason_indicates_truncation(Some("tool_calls")));
+        assert!(!finish_reason_indicates_truncation(Some("stop")));
+        assert!(!finish_reason_indicates_truncation(None));
     }
 }

@@ -2,7 +2,7 @@ use super::{
     producer_intent_issues, prompt_quality_issues, prompts, MoviePlan, MovieQualityReview,
     MovieReference, MovieSettings, PlannedClip, PlanningStage, StudioError,
 };
-use crate::prompt_catalog::{PromptId, render, text};
+use crate::prompt_catalog::{render, text, PromptId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -1703,4 +1703,3 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
-

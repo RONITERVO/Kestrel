@@ -13,12 +13,12 @@ import { appendTimelineSource, formatTimecode, orderedMovieEdit, timelineItems, 
 import { effectiveThinkingLevelForModel } from "./types";
 import type {
   ControlSettings, MovieCapturedFrame, MovieEdit, MovieFrameAnchor,
-  MovieGenerationProposal, MovieProject, MovieTransitionPlacement, MovieTransitionPosition,
+  ModelCompatibility, ModelInfo, MovieGenerationProposal, MovieProject, MovieTransitionPlacement, MovieTransitionPosition,
   ThinkingLevel,
 } from "./types";
 
 type GenerationMode = "shot" | "transition";
-type AgentRole = "director" | "reviewer";
+type AgentRole = "frameAnalyst" | "director" | "reviewer";
 type AgentRoleStream = { reasoning: string; text: string };
 const FPS = 24;
 const FRAME_SECONDS = 1 / FPS;
@@ -57,6 +57,14 @@ export function parseGenerationTimecode(value: string, fps = FPS): number | unde
 export function boundedGenerationFrame(value: number, minimum: number, maximum: number, fps = FPS): number {
   const bounded = Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? value : minimum));
   return Math.max(minimum, Math.min(maximum, Math.round(bounded * fps) / fps));
+}
+
+export function preferredFrameAnalystModelId(
+  models: Pick<ModelInfo, "id" | "supportsVision" | "mmprojPath">[],
+  preferredIds: Array<string | undefined>,
+): string {
+  const available = models.filter((model) => model.supportsVision && Boolean(model.mmprojPath));
+  return preferredIds.find((id) => available.some((model) => model.id === id)) ?? available[0]?.id ?? "";
 }
 
 export function replacementRangeAnchors(item: TimelineItem, inSeconds: number, outSeconds: number): {
@@ -164,11 +172,13 @@ export function insertTimelineSourceBefore(edit: MovieEdit, clipId: string, befo
   return orderedMovieEdit({ ...edit, clips });
 }
 
-export function MovieGenerationRoom({ project, edit, disabled, advanced, controlSettings, preview, onProject, onEdit, onError }: {
+export function MovieGenerationRoom({ project, edit, disabled, advanced, models, modelCompatibility, controlSettings, preview, onProject, onEdit, onError }: {
   project: MovieProject;
   edit: MovieEdit;
   disabled: boolean;
   advanced: boolean;
+  models: ModelInfo[];
+  modelCompatibility: ModelCompatibility[];
   controlSettings?: ControlSettings;
   preview?: React.ReactNode;
   onProject: (project: MovieProject) => void;
@@ -194,11 +204,19 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
   const [seed, setSeed] = useState(project.settings.seed || project.clips[0]?.seed || 0);
   const [placement, setPlacement] = useState<MovieTransitionPlacement>("add_to_masters");
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
+  const visionModels = useMemo(() => models.filter((model) => model.supportsVision
+    && Boolean(model.mmprojPath)
+    && (advanced || modelCompatibility.some((entry) => entry.modelId === model.id && entry.studioReady))), [advanced, modelCompatibility, models]);
+  const preferredFrameAnalystId = useMemo(() => preferredFrameAnalystModelId(
+    visionModels,
+    [project.modelRoles?.director.modelId, project.modelRoles?.reviewer.modelId],
+  ), [project.modelRoles, visionModels]);
+  const [frameAnalystModelId, setFrameAnalystModelId] = useState(preferredFrameAnalystId);
   const [activeRequestId, setActiveRequestId] = useState("");
   const [checkpointRequestId, setCheckpointRequestId] = useState("");
   const activeRequestIdRef = useRef("");
   const [roleStreams, setRoleStreams] = useState<Record<AgentRole, AgentRoleStream>>({
-    director: { reasoning: "", text: "" }, reviewer: { reasoning: "", text: "" },
+    frameAnalyst: { reasoning: "", text: "" }, director: { reasoning: "", text: "" }, reviewer: { reasoning: "", text: "" },
   });
   const [activities, setActivities] = useState<string[]>([]);
   const [activeRole, setActiveRole] = useState("director");
@@ -226,6 +244,11 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
   }, [items, selectedEditId]);
 
   useEffect(() => {
+    if (frameAnalystModelId && visionModels.some((model) => model.id === frameAnalystModelId)) return;
+    setFrameAnalystModelId(preferredFrameAnalystId);
+  }, [frameAnalystModelId, preferredFrameAnalystId, visionModels]);
+
+  useEffect(() => {
     setProposal(undefined);
     setRenderPrompt("");
     setGeneratedVersionId("");
@@ -241,7 +264,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     let dispose: (() => void) | undefined;
     void onMovieGenerationAgent((event) => {
       if (event.projectId !== project.id || event.requestId !== activeRequestIdRef.current) return;
-      const role: AgentRole = event.modelRole === "reviewer" ? "reviewer" : "director";
+      const role: AgentRole = event.modelRole === "reviewer" ? "reviewer" : event.modelRole === "frameAnalyst" ? "frameAnalyst" : "director";
       setActiveRole(role);
       if (event.kind === "reasoning") setRoleStreams((value) => ({ ...value, [role]: { ...value[role], reasoning: appendModelThinking(value[role].reasoning, event.content) } }));
       else if (event.kind === "token") setRoleStreams((value) => ({ ...value, [role]: { ...value[role], text: value[role].text + event.content } }));
@@ -427,7 +450,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     const id = checkpointRequestId || requestId();
     activeRequestIdRef.current = id;
     setActiveRequestId(id);
-    setRoleStreams({ director: { reasoning: "", text: "" }, reviewer: { reasoning: "", text: "" } });
+    setRoleStreams({ frameAnalyst: { reasoning: "", text: "" }, director: { reasoning: "", text: "" }, reviewer: { reasoning: "", text: "" } });
     setActivities(["Opening the durable generative-edit workspace"]);
     setProposal(undefined);
     setSnapshot(undefined);
@@ -440,6 +463,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
           ? { kind: "shotVersion", clipId: selected.clip.id, direction }
           : { kind: "transition", position: transitionPosition, firstAnchor, lastAnchor, direction, durationSeconds: duration },
         thinkingLevel: thinkingLevel === "default" ? undefined : thinkingLevel,
+        frameAnalystModelId: mode === "transition" && frameAnalystModelId ? frameAnalystModelId : undefined,
       });
       setProposal(result);
       setRenderPrompt(result.candidate.kind === "shotVersion" ? result.candidate.clip.prompt : result.candidate.motionPrompt);
@@ -565,7 +589,8 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     : 0;
   const generatedDurationDelta = duration - selectedRangeDuration;
   const rangePosition = (time: number) => `${Math.max(0, Math.min(100, (time - rangeMinimum) / rangeSpan * 100))}%`;
-  const visibleAgentRoles = (["director", "reviewer"] as AgentRole[]).filter((role) =>
+  const frameAnalystModel = visionModels.find((model) => model.id === frameAnalystModelId);
+  const visibleAgentRoles = (["frameAnalyst", "director", "reviewer"] as AgentRole[]).filter((role) =>
     roleStreams[role].reasoning || roleStreams[role].text || (Boolean(activeRequestId) && activeRole === role));
 
   return <section className="generation-workspace" aria-label="Generate and auditions workspace">
@@ -686,17 +711,27 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
       <aside className="generation-inspector">
         <header><span className="eyebrow">{mode === "shot" ? "Shot version" : `${transitionPosition} story transition`}</span><strong>{selected?.clip.title ?? "Select a storyline shot"}</strong></header>
         <label>Producer direction<textarea rows={4} maxLength={8000} disabled={Boolean(activeRequestId)} value={direction} onChange={(event) => { setDirection(event.target.value); setCheckpointRequestId(""); }} placeholder={mode === "shot" ? "What should change, and what must remain identical?" : transitionPosition === "before" ? "What happens before the story, and how should it arrive at the shown first frame?" : transitionPosition === "after" ? "What happens after the shown final frame?" : "Describe the movement and continuity needed between the shown cut frames."} /></label>
-        <div className="generation-agent-controls"><label>Thinking<select value={thinkingLevel} disabled={Boolean(activeRequestId)} onChange={(event) => setThinkingLevel(event.target.value as ThinkingLevel | "default")}><option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, project.modelRoles?.director.modelId || project.model)})</option><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>{activeRequestId ? <button className="danger" onClick={() => void stopAgent()}><CircleStop /> Stop + checkpoint</button> : <button className="accent" disabled={disabled || direction.trim().length < 3 || (mode === "transition" && !transitionReady)} onClick={() => void askDirector()}><Sparkles /> {checkpointRequestId ? "Resume Director" : "Ask Director"}</button>}</div>
+        <div className="generation-agent-controls">
+          {mode === "transition" && <label>Frame understanding<select aria-label="Endpoint frame analyst model" value={frameAnalystModelId} disabled={Boolean(activeRequestId)} onChange={(event) => { setFrameAnalystModelId(event.target.value); setCheckpointRequestId(""); }}><option value="">Timeline text only</option>{visionModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>}
+          <label>Thinking<select value={thinkingLevel} disabled={Boolean(activeRequestId)} onChange={(event) => setThinkingLevel(event.target.value as ThinkingLevel | "default")}><option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, project.modelRoles?.director.modelId || project.model)})</option><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>
+          {activeRequestId ? <button className="danger" onClick={() => void stopAgent()}><CircleStop /> Stop + checkpoint</button> : <button className="accent" disabled={disabled || direction.trim().length < 3 || (mode === "transition" && !transitionReady)} onClick={() => void askDirector()}><Sparkles /> {checkpointRequestId ? "Resume Director" : "Ask Director"}</button>}
+        </div>
+        {mode === "transition" && <p className={frameAnalystModel ? "generation-frame-analysis-note ready" : "generation-frame-analysis-note warning"}>{frameAnalystModel ? `${frameAnalystModel.name} sees each exact endpoint PNG first. Its separate observations and uncertainties are preserved for both Director and reviewer.` : "No local vision model is selected. The Director can still use the storyline and exact timecodes, but cannot verify what is visible in either endpoint frame."}</p>}
 
         {visibleAgentRoles.map((role) => {
-          const roleModelId = role === "reviewer"
+          const roleModelId = role === "frameAnalyst"
+            ? frameAnalystModelId
+            : role === "reviewer"
             ? project.modelRoles?.reviewer.modelId || project.modelRoles?.director.modelId || project.model
             : project.modelRoles?.director.modelId || project.model;
-          const roleModelName = role === "reviewer"
+          const roleModelName = role === "frameAnalyst"
+            ? frameAnalystModel?.name ?? "Local vision model"
+            : role === "reviewer"
             ? project.modelRoles?.reviewer.modelName || project.modelRoles?.director.modelName || project.model
             : project.modelRoles?.director.modelName || project.model;
           const roleActive = Boolean(activeRequestId) && activeRole === role;
-          return <section className="generation-agent-live" key={role}><header><strong>{role === "reviewer" ? "Fresh-context Reviewer" : "Generative Director"}</strong><small>{roleActive ? "Working live" : "Turn retained"}</small></header><ModelThinkingStream text={roleStreams[role].reasoning} active={roleActive} modelName={roleModelName} thinkingLevel={thinkingLevel === "default" ? effectiveThinkingLevelForModel(controlSettings, roleModelId) : thinkingLevel} /><div className="generation-agent-text">{roleStreams[role].text || (roleActive ? "The local model is preparing its next checked workspace action…" : "No visible prose in this typed tool turn.")}</div>{role === activeRole && <ol>{activities.map((activity, index) => <li key={`${index}-${activity}`}>{activity}</li>)}</ol>}</section>;
+          const roleTitle = role === "frameAnalyst" ? "Endpoint Frame Analyst" : role === "reviewer" ? "Fresh-context Reviewer" : "Generative Director";
+          return <section className="generation-agent-live" key={role}><header><strong>{roleTitle}</strong><small>{roleActive ? "Working live" : "Turn retained"}</small></header><ModelThinkingStream text={roleStreams[role].reasoning} active={roleActive} modelName={roleModelName} thinkingLevel={thinkingLevel === "default" ? effectiveThinkingLevelForModel(controlSettings, roleModelId) : thinkingLevel} /><div className="generation-agent-text">{roleStreams[role].text || (roleActive ? role === "frameAnalyst" ? "The local vision model is comparing the exact endpoint pixels…" : "The local model is preparing its next checked workspace action…" : "No visible prose in this typed tool turn.")}</div>{role === activeRole && <ol>{activities.map((activity, index) => <li key={`${index}-${activity}`}>{activity}</li>)}</ol>}</section>;
         })}
 
         {proposal && <section className="generation-review-result"><ShieldCheck /><span><strong>Fresh reviewer passed this candidate</strong><small>{proposal.reviewSummary}</small></span></section>}

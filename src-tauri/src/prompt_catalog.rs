@@ -46,6 +46,7 @@ pub enum PromptId {
     MovieResponseCheckpoint,
     MovieProducerDirection,
     MovieReviewerSystem,
+    MovieGenerationFrameAnalystSystem,
     MovieGenerationAgentSystem,
     MovieGenerationReviewerSystem,
     MovieGenerationInitial,
@@ -120,7 +121,7 @@ pub enum PromptId {
 }
 
 impl PromptId {
-    pub const ALL: [Self; 95] = [
+    pub const ALL: [Self; 96] = [
         Self::ChatSystem,
         Self::ComputerSystem,
         Self::ComputerAttachmentNotice,
@@ -145,6 +146,7 @@ impl PromptId {
         Self::MovieResponseCheckpoint,
         Self::MovieProducerDirection,
         Self::MovieReviewerSystem,
+        Self::MovieGenerationFrameAnalystSystem,
         Self::MovieGenerationAgentSystem,
         Self::MovieGenerationReviewerSystem,
         Self::MovieGenerationInitial,
@@ -244,6 +246,7 @@ impl PromptId {
             Self::MovieResponseCheckpoint => "movie.agent.response_checkpoint",
             Self::MovieProducerDirection => "movie.agent.producer_direction",
             Self::MovieReviewerSystem => "movie.reviewer.system",
+            Self::MovieGenerationFrameAnalystSystem => "movie.generation.frame_analyst.system",
             Self::MovieGenerationAgentSystem => "movie.generation.agent.system",
             Self::MovieGenerationReviewerSystem => "movie.generation.reviewer.system",
             Self::MovieGenerationInitial => "movie.generation.initial",

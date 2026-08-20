@@ -1291,6 +1291,46 @@ async fn run_movie_generation_agent(
         &state.model_qualifications,
         research.advanced_mode || runtime_settings.advanced_mode,
     )?;
+    if let Some(frame_analyst_model_id) = request
+        .frame_analyst_model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let model = models
+            .iter()
+            .find(|model| model.id == frame_analyst_model_id)
+            .ok_or_else(|| {
+                "The selected endpoint Frame Analyst is no longer in the local model catalog. Scan models again or choose another vision model.".to_string()
+            })?;
+        if !model.supports_vision || model.mmproj_path.is_none() {
+            return Err(format!(
+                "{} cannot inspect endpoint frames because it has no verified local vision projector.",
+                model.name
+            ));
+        }
+        let compatibility = state
+            .model_qualifications
+            .assess(model, &runtime_settings)?;
+        if matches!(
+            compatibility.tier.as_str(),
+            "incompatible" | "limited-context"
+        ) {
+            return Err(format!(
+                "The selected endpoint Frame Analyst cannot be used: {}",
+                compatibility.detail
+            ));
+        }
+        if !(research.advanced_mode
+            || runtime_settings.advanced_mode
+            || compatibility.studio_ready)
+        {
+            return Err(format!(
+                "{} has not passed Kestrel's local Studio protocol check. Run Check for Studio before using it for endpoint frame understanding.",
+                model.name
+            ));
+        }
+    }
     release_all_comfy_memory(&state).await;
     state
         .runtime

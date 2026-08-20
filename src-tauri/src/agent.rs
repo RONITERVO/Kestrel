@@ -244,7 +244,8 @@ pub async fn run(
         });
         if thinking_level.is_off() {
             request_body["thinking_budget_tokens"] = json!(0);
-            request_body["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
+            request_body["chat_template_kwargs"] =
+                json!({"enable_thinking": false, "reasoning": false});
             request_body["reasoning_effort"] = json!("off");
         } else {
             request_body["reasoning_effort"] = json!(thinking_level.as_str());

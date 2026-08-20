@@ -172,7 +172,9 @@ pub fn export_text(library_root: &Path, text: &str) -> Result<ProfileTransfer, P
     write_new(&path, serde_json::to_string_pretty(&profile)?.as_bytes())?;
     Ok(ProfileTransfer {
         path: path.to_string_lossy().into_owned(),
-        message: "Validated portable setup JSON exported. No model weights or user work were included.".into(),
+        message:
+            "Validated portable setup JSON exported. No model weights or user work were included."
+                .into(),
     })
 }
 
@@ -318,8 +320,7 @@ fn apply_profile(
 
 fn valid_bonsai_root(value: &str) -> bool {
     let root = Path::new(value);
-    root.join("runtime").join("llama-server.exe").is_file()
-        || root.join("models").is_dir()
+    root.join("runtime").join("llama-server.exe").is_file() || root.join("models").is_dir()
 }
 
 fn existing_directory(value: &str) -> Option<String> {
@@ -696,12 +697,24 @@ mod tests {
 
         let imported = import_text(&text, &research_store, &control_store).unwrap();
 
-        assert_eq!(imported.research.install_root, desired_research.install_root);
-        assert_eq!(imported.research.wikipedia_zim_path, desired_research.wikipedia_zim_path);
+        assert_eq!(
+            imported.research.install_root,
+            desired_research.install_root
+        );
+        assert_eq!(
+            imported.research.wikipedia_zim_path,
+            desired_research.wikipedia_zim_path
+        );
         assert_eq!(imported.research.comfy_root, desired_research.comfy_root);
         assert_eq!(imported.research.ffmpeg_path, desired_research.ffmpeg_path);
-        assert_eq!(imported.control.selected_model_id.as_deref(), Some("portable-model"));
-        assert_eq!(imported.control.for_model("portable-model").context_window, 65_536);
+        assert_eq!(
+            imported.control.selected_model_id.as_deref(),
+            Some("portable-model")
+        );
+        assert_eq!(
+            imported.control.for_model("portable-model").context_window,
+            65_536
+        );
         assert!(text.contains("modelOverrides"));
         assert!(!text.contains("allowFullAccessAgent"));
     }
