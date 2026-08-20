@@ -3,13 +3,13 @@
 //! Maintainers should read `studio/README.md` before changing model-assisted flows or persistence
 //! boundaries. Child modules own protocol, lifecycle, workspace, preview, and copilot concerns.
 
+use crate::prompt_catalog::{render, text, PromptId};
 use crate::{
     model::ModelInfo,
     model_roles::STUDIO_PROTOCOL_REVISION,
     models::{ControlSettings, ResearchSettings, ThinkingLevel},
     runtime::{ModelConnection, RuntimeManager},
 };
-use crate::prompt_catalog::{PromptId, render, text};
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,7 @@ mod agent_flow;
 mod agent_lifecycle;
 mod agent_protocol;
 mod copilot;
+mod generation_agent;
 mod image_assets;
 mod image_studio;
 mod live_preview;
@@ -56,6 +57,7 @@ pub use copilot::{
     validate_request as validate_copilot_request, MovieCopilotJob, MovieCopilotReceipt,
     MovieCopilotRequest,
 };
+pub use generation_agent::{MovieGenerationAgentRequest, MovieGenerationProposal};
 pub use image_assets::{
     emit_image_asset_error, GeneratedImageProvenance, MovieImageAssetGeneration,
     MovieImageAssetRequest,
@@ -389,77 +391,11 @@ pub struct MoviePlanFeedbackRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MovieClipAssistRequest {
-    pub request_id: String,
-    pub id: String,
-    pub clip_id: String,
-    pub feedback: String,
-    #[serde(default)]
-    pub thinking_level: Option<ThinkingLevel>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieClipAssistEvent {
-    pub request_id: String,
-    pub project_id: String,
-    pub clip_id: String,
-    pub kind: String,
-    pub content: String,
-    pub at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MovieClipSuggestion {
     pub clip_id: String,
     pub summary: String,
     pub checklist: Vec<String>,
     pub clip: PlannedClip,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieBridgeAssistRequest {
-    pub request_id: String,
-    pub id: String,
-    pub first_frame: MovieBridgeFrameInfo,
-    pub last_frame: MovieBridgeFrameInfo,
-    pub measured_duration: f64,
-    pub feedback: String,
-    #[serde(default)]
-    pub thinking_level: Option<ThinkingLevel>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieBridgeFrameInfo {
-    pub clip_id: String,
-    pub source_path: String,
-    pub time_seconds: f64,
-    pub label: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieBridgeAssistEvent {
-    pub request_id: String,
-    pub project_id: String,
-    pub kind: String,
-    pub content: String,
-    pub at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieBridgeSuggestion {
-    pub summary: String,
-    pub motion_prompt: String,
-    pub suggested_duration: f64,
-    pub camera_motion: String,
-    pub subject_motion: String,
-    pub transition_notes: String,
-    pub checklist: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -800,30 +736,44 @@ fn default_speed() -> f32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct FrameCaptureSpec {
-    pub clip_id: String,
-    pub source_path: String,
+pub struct MovieFrameAnchor {
+    pub edit_id: String,
     pub time_seconds: f64,
     #[serde(default)]
     pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieCapturedFrame {
+    pub anchor: MovieFrameAnchor,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MovieBridgePlacement {
+    AddToMasters,
+    InsertAfterLeft,
+    ReplaceRange,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MovieFl2vBridgeRequest {
     pub id: String,
-    pub first_frame: FrameCaptureSpec,
-    pub last_frame: FrameCaptureSpec,
+    pub first_anchor: MovieFrameAnchor,
+    pub last_anchor: MovieFrameAnchor,
     pub prompt: String,
     pub duration_seconds: f32,
     #[serde(default)]
     pub seed: Option<u64>,
-    #[serde(default = "default_fl2v_insert_mode")]
-    pub insert_mode: String,
+    #[serde(default = "default_bridge_placement")]
+    pub placement: MovieBridgePlacement,
 }
 
-fn default_fl2v_insert_mode() -> String {
-    "insert_at_cut".into()
+fn default_bridge_placement() -> MovieBridgePlacement {
+    MovieBridgePlacement::AddToMasters
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -980,6 +930,54 @@ pub struct MovieStudio {
 }
 
 impl MovieStudio {
+    pub(crate) async fn run_generation_agent(
+        &self,
+        request: &MovieGenerationAgentRequest,
+        model_runtime: MovieModelRuntime<'_>,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieGenerationProposal, StudioError> {
+        generation_agent::run(self, request, model_runtime, cancel, app).await
+    }
+
+    pub fn generation_agent_snapshot(
+        &self,
+        project_id: &str,
+        request_id: &str,
+    ) -> Result<Value, StudioError> {
+        validate_id(project_id)?;
+        validate_id(request_id)?;
+        let root = self
+            .project_dir(project_id)
+            .join("agent-workspace")
+            .join("generative-edits")
+            .join(request_id);
+        let read = |name: &str| -> Result<Option<Value>, StudioError> {
+            let path = root.join(name);
+            if !path.is_file() {
+                return Ok(None);
+            }
+            let metadata = fs::metadata(&path)?;
+            if metadata.len() > 2 * 1024 * 1024 {
+                return Err(StudioError::Invalid(format!(
+                    "generative agent {name} exceeds the 2 MiB inspection limit"
+                )));
+            }
+            Ok(Some(serde_json::from_slice(&fs::read(path)?)?))
+        };
+        Ok(json!({
+            "context": read("context.json")?,
+            "task": read("task.json")?,
+            "candidate": read("candidate.json")?,
+            "state": read("state.json")?,
+            "review": read("review.json")?,
+            "result": read("result.json")?,
+            "transcript": read("transcript.json")?,
+            "lastRequest": read("last-request.json")?,
+            "reviewLastRequest": read("review-last-request.json")?,
+        }))
+    }
+
     pub fn new(library_root: &Path) -> Result<Self, StudioError> {
         let root = library_root.join("movies");
         fs::create_dir_all(&root)?;
@@ -2305,210 +2303,6 @@ impl MovieStudio {
         Ok(project)
     }
 
-    pub async fn assist_clip(
-        &self,
-        request: &MovieClipAssistRequest,
-        connection: &ModelConnection,
-        runtime_max_output_tokens: u32,
-        app: Option<&AppHandle>,
-    ) -> Result<MovieClipSuggestion, StudioError> {
-        validate_id(&request.request_id)?;
-        let feedback = request.feedback.trim();
-        if feedback.chars().count() < 3 || feedback.chars().count() > 8_000 {
-            return Err(StudioError::Invalid(
-                "scene feedback must contain 3 to 8,000 characters".into(),
-            ));
-        }
-        let project = self.get(&request.id)?;
-        let plan = project
-            .plan
-            .as_ref()
-            .ok_or_else(|| StudioError::Invalid("project has no saved movie plan".into()))?;
-        let index = plan
-            .clips
-            .iter()
-            .position(|clip| clip.id == request.clip_id)
-            .ok_or_else(|| StudioError::Invalid("unknown movie scene".into()))?;
-        let start = index.saturating_sub(1);
-        let end = (index + 2).min(plan.clips.len());
-        let payload = json!({
-            "producerRequest": project.prompt,
-            "producerFeedback": feedback,
-            "referenceManifest": reference_manifest(&project.references),
-            "creativeDirection": plan.creative_direction,
-            "continuityBible": plan.continuity_bible,
-            "neighboringScenes": &plan.clips[start..end],
-            "sceneToRepair": &plan.clips[index],
-        });
-        let messages = vec![
-            json!({"role":"system","content":clip_assistant_prompt()}),
-            json!({"role":"user","content":payload.to_string()}),
-        ];
-        let mut on_event = |event| {
-            if let (Some(app), agent_protocol::StreamEvent::Reasoning(token)) = (app, event) {
-                let _ = app.emit(
-                    "movie-clip-assist",
-                    MovieClipAssistEvent {
-                        request_id: request.request_id.clone(),
-                        project_id: request.id.clone(),
-                        clip_id: request.clip_id.clone(),
-                        kind: "reasoning".into(),
-                        content: token,
-                        at: Utc::now().to_rfc3339(),
-                    },
-                );
-            }
-        };
-        let mut movie_settings = project.settings.clone();
-        if let Some(level) = request.thinking_level {
-            movie_settings.thinking_budget = level.budget_tokens(32_768);
-        }
-        let mut suggestion: MovieClipSuggestion = agent_protocol::complete_tool_submission(
-            &self.http,
-            ToolSubmissionRequest {
-                connection,
-                initial_messages: &messages,
-                tool_name: "submit_scene_suggestion",
-                tool_description: "Submit the organized replacement scene only after checking the producer feedback and neighboring continuity.",
-                response_format: clip_suggestion_schema(),
-                settings: &movie_settings,
-                runtime_max_output_tokens,
-                label: "movie scene suggestion",
-                audit_path: None,
-                cancel: None,
-                on_event: Some(&mut on_event),
-            },
-        )
-        .await?;
-        suggestion.clip_id = request.clip_id.clone();
-        suggestion.clip.id = request.clip_id.clone();
-        let mut candidate = plan.clone();
-        candidate.clips[index] = suggestion.clip.clone();
-        prepare_producer_plan(&project, &mut candidate)?;
-        let issues = prompt_quality_issues(&candidate, &project.references);
-        if !issues.is_empty() {
-            return Err(StudioError::Planning(format!(
-                "The Director's scene suggestion was not render-ready: {}",
-                issues.join(" ")
-            )));
-        }
-        Ok(suggestion)
-    }
-
-    pub async fn assist_bridge(
-        &self,
-        request: &MovieBridgeAssistRequest,
-        connection: &ModelConnection,
-        runtime_max_output_tokens: u32,
-        app: Option<&AppHandle>,
-    ) -> Result<MovieBridgeSuggestion, StudioError> {
-        validate_id(&request.request_id)?;
-        let feedback = request.feedback.trim();
-        let project = self.get(&request.id)?;
-
-        let clip_first = project
-            .clips
-            .iter()
-            .find(|c| c.id == request.first_frame.clip_id);
-        let clip_last = project
-            .clips
-            .iter()
-            .find(|c| c.id == request.last_frame.clip_id);
-
-        let plan_clip_first = project.plan.as_ref().and_then(|p| {
-            p.clips
-                .iter()
-                .find(|c| c.id == request.first_frame.clip_id)
-        });
-        let plan_clip_last = project.plan.as_ref().and_then(|p| {
-            p.clips
-                .iter()
-                .find(|c| c.id == request.last_frame.clip_id)
-        });
-
-        let payload = json!({
-            "producerMovieBrief": project.prompt,
-            "producerBridgeDirection": if feedback.is_empty() { "Create a smooth, cinematic transition connecting the two frames." } else { feedback },
-            "firstFrame": {
-                "clipId": request.first_frame.clip_id,
-                "label": request.first_frame.label.as_deref().unwrap_or("Frame A"),
-                "timeSeconds": request.first_frame.time_seconds,
-                "clipTitle": clip_first.map(|c| c.title.as_str()).or_else(|| plan_clip_first.map(|c| c.title.as_str())).unwrap_or("Source A"),
-                "clipPrompt": clip_first.map(|c| c.prompt.as_str()).or_else(|| plan_clip_first.map(|c| c.prompt.as_str())).unwrap_or(""),
-                "continuityOut": plan_clip_first.map(|c| c.continuity_out.as_str()).unwrap_or(""),
-            },
-            "lastFrame": {
-                "clipId": request.last_frame.clip_id,
-                "label": request.last_frame.label.as_deref().unwrap_or("Frame B"),
-                "timeSeconds": request.last_frame.time_seconds,
-                "clipTitle": clip_last.map(|c| c.title.as_str()).or_else(|| plan_clip_last.map(|c| c.title.as_str())).unwrap_or("Source B"),
-                "clipPrompt": clip_last.map(|c| c.prompt.as_str()).or_else(|| plan_clip_last.map(|c| c.prompt.as_str())).unwrap_or(""),
-                "continuityIn": plan_clip_last.map(|c| c.continuity_in.as_str()).unwrap_or(""),
-            },
-            "measuredRangeSeconds": request.measured_duration,
-            "creativeDirection": project.plan.as_ref().map(|p| p.creative_direction.as_str()).unwrap_or(""),
-            "continuityBible": project.plan.as_ref().map(|p| p.continuity_bible.as_slice()).unwrap_or(&[]),
-            "referenceManifest": reference_manifest(&project.references),
-        });
-
-        let system_prompt = "You are the Kestrel Studio Director at the professional editor's in-between bridge desk. \
-Your task is to synthesize an exact, high-continuity motion description for MiniMax H3 First-Frame-to-Last-Frame (FL2V) video generation. \
-An FL2V prompt must provide a detailed 60-250 word physical motion instruction: \
-1. Starting camera framing, perspective, and subject posture matching Frame A. \
-2. The physical action, movement velocity, trajectory, camera pan/tilt/dolly, and environmental dynamics connecting the two frames. \
-3. Seamless arrival at the framing, posture, and composition of Frame B. \
-4. Lighting, atmospheric, and spatial sound/audio transition cues matching the scene mood. \
-Do not invent unrelated characters or contradictory locations; bridge the physical reality of Frame A to Frame B smoothly. \
-Suggest a duration in seconds between 1.0 and 15.0 that best fits the natural pacing of the motion. \
-Return strict JSON adhering to the schema.";
-
-        let messages = vec![
-            json!({"role":"system","content":system_prompt}),
-            json!({"role":"user","content":payload.to_string()}),
-        ];
-
-        let mut on_event = |event| {
-            if let (Some(app), agent_protocol::StreamEvent::Reasoning(token)) = (app, event) {
-                let _ = app.emit(
-                    "movie-bridge-assist",
-                    MovieBridgeAssistEvent {
-                        request_id: request.request_id.clone(),
-                        project_id: request.id.clone(),
-                        kind: "reasoning".into(),
-                        content: token,
-                        at: Utc::now().to_rfc3339(),
-                    },
-                );
-            }
-        };
-
-        let mut movie_settings = project.settings.clone();
-        if let Some(level) = request.thinking_level {
-            movie_settings.thinking_budget = level.budget_tokens(32_768);
-        }
-
-        let mut suggestion: MovieBridgeSuggestion = agent_protocol::complete_tool_submission(
-            &self.http,
-            ToolSubmissionRequest {
-                connection,
-                initial_messages: &messages,
-                tool_name: "submit_bridge_suggestion",
-                tool_description: "Submit the organized bridge motion description and timing for FL2V in-between generation.",
-                response_format: bridge_suggestion_schema(),
-                settings: &movie_settings,
-                runtime_max_output_tokens,
-                label: "movie bridge suggestion",
-                audit_path: None,
-                cancel: None,
-                on_event: Some(&mut on_event),
-            },
-        )
-        .await?;
-
-        suggestion.suggested_duration = suggestion.suggested_duration.clamp(1.0, 15.0);
-        Ok(suggestion)
-    }
-
     async fn independently_review_movie_plan(
         &self,
         request: IndependentReviewRequest<'_>,
@@ -2793,21 +2587,6 @@ Return strict JSON adhering to the schema.";
             }
         };
         let clip = &mut project.clips[index];
-        if clip
-            .versions
-            .iter()
-            .all(|version| version.path != clip.path)
-        {
-            clip.versions.push(ClipVersion {
-                id: "original".into(),
-                created_at: project.created_at.clone(),
-                title: clip.title.clone(),
-                prompt: clip.prompt.clone(),
-                duration_seconds: clip.duration_seconds,
-                seed: clip.seed,
-                path: clip.path.clone(),
-            });
-        }
         clip.versions.push(ClipVersion {
             id: version_id,
             created_at: Utc::now().to_rfc3339(),
@@ -2815,43 +2594,39 @@ Return strict JSON adhering to the schema.";
             prompt: suggestion.clip.prompt.clone(),
             duration_seconds: suggestion.clip.duration_seconds,
             seed,
-            path: path.clone(),
+            path,
         });
-        clip.title.clone_from(&suggestion.clip.title);
-        clip.prompt.clone_from(&suggestion.clip.prompt);
-        clip.duration_seconds = suggestion.clip.duration_seconds;
-        clip.seed = seed;
-        clip.path = path;
         clip.status = "complete".into();
         clip.error.clear();
-        project.plan = Some(plan.clone());
         project.producer_feedback.push(ProducerFeedbackRecord {
             created_at: Utc::now().to_rfc3339(),
             scope: "scene-version".into(),
             clip_id: suggestion.clip_id,
             feedback: suggestion.summary,
         });
-        self.extract_last_frame(&project, index).await?;
         project.status = previous_status;
         project.phase = "complete".into();
-        project.detail = "The producer's new scene version is active. The existing review cut is unchanged until Export new cut is chosen.".into();
+        project.detail = "A new scene audition is preserved. The active master and storyline are unchanged until the producer chooses Use in storyline.".into();
         self.persist_emit(&mut project, app)?;
-        write_json_atomic(&self.project_dir(&project.id).join("plan.json"), &plan)?;
         Ok(project)
     }
 
     pub async fn capture_frame(
         &self,
         project_id: &str,
-        source_path: &str,
-        time_seconds: f64,
-    ) -> Result<String, StudioError> {
+        anchor: MovieFrameAnchor,
+    ) -> Result<MovieCapturedFrame, StudioError> {
+        let project = self.get(project_id)?;
+        let source = resolve_frame_anchor(&self.project_dir(project_id), &project, &anchor)?;
         let stills_dir = self.project_dir(project_id).join("stills");
         fs::create_dir_all(&stills_dir)?;
         let frame_id = uuid::Uuid::new_v4().simple().to_string()[..10].to_string();
         let target_png = stills_dir.join(format!("frame-{frame_id}.png"));
-        extract_exact_frame(Path::new(source_path), time_seconds, &target_png).await?;
-        Ok(target_png.to_string_lossy().into_owned())
+        extract_exact_frame(&source.path, anchor.time_seconds, &target_png).await?;
+        Ok(MovieCapturedFrame {
+            anchor,
+            path: target_png.to_string_lossy().into_owned(),
+        })
     }
 
     pub async fn render_fl2v_bridge(
@@ -2862,17 +2637,32 @@ Return strict JSON adhering to the schema.";
     ) -> Result<MovieProject, StudioError> {
         let MovieFl2vBridgeRequest {
             id,
-            first_frame,
-            last_frame,
+            first_anchor,
+            last_anchor,
             prompt,
             duration_seconds,
             seed,
-            insert_mode,
+            placement,
         } = request;
         let lock = self.project_lock(&id)?;
         let _guard = lock.lock().await;
         let mut project = self.get(&id)?;
         ensure_producer_render_approval(&project)?;
+        let prompt_words = prompt.split_whitespace().count();
+        if !(MIN_H3_PROMPT_WORDS..=MAX_H3_PROMPT_WORDS).contains(&prompt_words) {
+            return Err(StudioError::Invalid(
+                "bridge direction must contain 120 to 450 words of clear renderer prose".into(),
+            ));
+        }
+        if !duration_seconds.is_finite() || !(1.0..=15.0).contains(&duration_seconds) {
+            return Err(StudioError::Invalid(
+                "bridge duration must be between 1 and 15 seconds".into(),
+            ));
+        }
+        let project_dir = self.project_dir(&project.id);
+        let first_source = resolve_frame_anchor(&project_dir, &project, &first_anchor)?;
+        let last_source = resolve_frame_anchor(&project_dir, &project, &last_anchor)?;
+        validate_bridge_placement(&project, &first_anchor, &last_anchor, placement)?;
         let comfy_root = project.settings.comfy_root.clone();
         self.ensure_comfy(&comfy_root, &mut project, app).await?;
 
@@ -2880,7 +2670,7 @@ Return strict JSON adhering to the schema.";
         let default_gen_seed = project
             .clips
             .iter()
-            .find(|c| c.id == first_frame.clip_id)
+            .find(|clip| clip.id == first_source.clip_id)
             .map(|c| c.seed)
             .or_else(|| {
                 if project.settings.seed != 0 {
@@ -2892,40 +2682,45 @@ Return strict JSON adhering to the schema.";
             .unwrap_or_else(|| (uuid::Uuid::new_v4().as_u128() as u64) % 1_000_000_000);
         let chosen_seed = seed.unwrap_or(default_gen_seed);
 
-        // 1. Extract first_frame PNG
         let first_target_rel = format!("kestrel/{}/fl2v-first-{bridge_id}.png", project.id);
         let first_target_path = PathBuf::from(&project.settings.comfy_root)
             .join("input")
             .join(&first_target_rel);
         extract_exact_frame(
-            Path::new(&first_frame.source_path),
-            first_frame.time_seconds,
+            &first_source.path,
+            first_anchor.time_seconds,
             &first_target_path,
         )
         .await?;
 
-        // 2. Extract last_frame PNG
         let last_target_rel = format!("kestrel/{}/fl2v-last-{bridge_id}.png", project.id);
         let last_target_path = PathBuf::from(&project.settings.comfy_root)
             .join("input")
             .join(&last_target_rel);
         extract_exact_frame(
-            Path::new(&last_frame.source_path),
-            last_frame.time_seconds,
+            &last_source.path,
+            last_anchor.time_seconds,
             &last_target_path,
         )
         .await?;
 
-        // Also save thumbnails into project stills/
         let stills_dir = self.project_dir(&project.id).join("stills");
-        let _ = fs::create_dir_all(&stills_dir);
-        let _ = tokio::fs::copy(&first_target_path, stills_dir.join(format!("fl2v-first-{bridge_id}.png"))).await;
-        let _ = tokio::fs::copy(&last_target_path, stills_dir.join(format!("fl2v-last-{bridge_id}.png"))).await;
+        fs::create_dir_all(&stills_dir)?;
+        tokio::fs::copy(
+            &first_target_path,
+            stills_dir.join(format!("fl2v-first-{bridge_id}.png")),
+        )
+        .await?;
+        tokio::fs::copy(
+            &last_target_path,
+            stills_dir.join(format!("fl2v-last-{bridge_id}.png")),
+        )
+        .await?;
 
         let prefix = format!("kestrel_movies/{}/fl2v_{bridge_id}", project.id);
         let preview_available = self.comfy_preview_available().await;
 
-        let bounded_duration = duration_seconds.clamp(1.0, 15.0);
+        let bounded_duration = duration_seconds;
         let graph = h3_graph(H3GraphRequest {
             prompt: &prompt,
             width: project.settings.width,
@@ -2940,96 +2735,158 @@ Return strict JSON adhering to the schema.";
             ref_image_size: &project.settings.ref_image_size,
             preview_available,
         });
+        let generation_dir = self
+            .project_dir(&project.id)
+            .join("generations")
+            .join(format!("fl2v-{bridge_id}"));
+        fs::create_dir_all(&generation_dir)?;
+        let (_, first_sha256) = hash_file(&first_target_path)?;
+        let (_, last_sha256) = hash_file(&last_target_path)?;
+        write_json_atomic(&generation_dir.join("graph.json"), &graph)?;
+        let mut generation_receipt = json!({
+            "format":"kestrel.movie-generation",
+            "version":1,
+            "id":format!("fl2v-{bridge_id}"),
+            "kind":"first-last-frame-video",
+            "status":"submitted",
+            "createdAt":Utc::now().to_rfc3339(),
+            "firstAnchor":first_anchor.clone(),
+            "lastAnchor":last_anchor.clone(),
+            "firstFrameSha256":first_sha256,
+            "lastFrameSha256":last_sha256,
+            "prompt":prompt.clone(),
+            "durationSeconds":bounded_duration,
+            "seed":chosen_seed,
+            "placement":placement,
+            "exactGraph":graph.clone(),
+        });
+        write_json_atomic(&generation_dir.join("receipt.json"), &generation_receipt)?;
 
-        let client_id = format!("kestrel-preview-{}", uuid::Uuid::new_v4().simple());
-        let job_id = format!("fl2v-{bridge_id}");
-        let preview_target = PreviewTarget::movie_clip(job_id.clone(), &project.id, &job_id, project.clips.len());
-        let preview = if preview_available {
-            LivePreviewSession::connect(app, &client_id, preview_target).await
-        } else {
-            emit_preview_unavailable(app, preview_target);
-            None
-        };
+        let render_result: Result<String, StudioError> = async {
+            let client_id = format!("kestrel-preview-{}", uuid::Uuid::new_v4().simple());
+            let job_id = format!("fl2v-{bridge_id}");
+            let preview_target = PreviewTarget::movie_clip(
+                job_id.clone(),
+                &project.id,
+                &job_id,
+                project.clips.len(),
+            );
+            let preview = if preview_available {
+                LivePreviewSession::connect(app, &client_id, preview_target).await
+            } else {
+                emit_preview_unavailable(app, preview_target);
+                None
+            };
 
-        let response = self
-            .http
-            .post(format!("{COMFY_BASE}/prompt"))
-            .json(&json!({"prompt":graph,"client_id":client_id}))
-            .send()
-            .await?;
-        let status = response.status();
-        let value: Value = response.json().await?;
-        if !status.is_success() {
-            return Err(StudioError::Render(format!(
-                "ComfyUI rejected FL2V bridge: {}",
-                truncate(&value.to_string(), 700)
-            )));
-        }
-        let prompt_id = value
-            .get("prompt_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                StudioError::Render(format!("ComfyUI returned no prompt id: {value}"))
-            })?;
-        let deadline = tokio::time::Instant::now() + COMFY_RENDER_TIMEOUT;
-        let target_mp4 = loop {
-            if cancel.is_cancelled() {
-                let _ = self
-                    .http
-                    .post(format!("{COMFY_BASE}/interrupt"))
-                    .send()
-                    .await;
-                return Err(StudioError::Cancelled);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(StudioError::Render(
-                    "ComfyUI did not finish FL2V bridge within 24 hours.".to_string(),
-                ));
-            }
-            let history: Value = self
+            let response = self
                 .http
-                .get(format!("{COMFY_BASE}/history/{prompt_id}"))
+                .post(format!("{COMFY_BASE}/prompt"))
+                .json(&json!({"prompt":graph,"client_id":client_id}))
                 .send()
-                .await?
-                .json()
                 .await?;
-            if let Some(entry) = history.get(prompt_id) {
-                if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
-                    let detail = comfy_execution_error(entry).unwrap_or_else(|| {
-                        format!("execution failed: {}", truncate(&entry.to_string(), 1_000))
-                    });
-                    return Err(StudioError::Render(format!("ComfyUI {detail}")));
-                }
-                if entry.pointer("/status/completed").and_then(Value::as_bool) == Some(true) {
-                    if let Some(preview) = &preview {
-                        preview.finish();
-                    }
-                    let media = find_output_media(entry, "videos").ok_or_else(|| {
-                        StudioError::Render("completed FL2V job exposed no saved video".into())
-                    })?;
-                    let source = PathBuf::from(&project.settings.comfy_root)
-                        .join("output")
-                        .join(&media.1)
-                        .join(&media.0);
-                    let target = self
-                        .project_dir(&project.id)
-                        .join("raw")
-                        .join(format!("clip-fl2v-{bridge_id}.mp4"));
-                    tokio::fs::copy(&source, &target).await.map_err(|error| {
-                        StudioError::Render(format!(
-                            "could not preserve {}: {error}",
-                            source.display()
-                        ))
-                    })?;
-                    break target.to_string_lossy().into_owned();
-                }
+            let status = response.status();
+            let value: Value = response.json().await?;
+            if !status.is_success() {
+                return Err(StudioError::Render(format!(
+                    "ComfyUI rejected FL2V bridge: {}",
+                    truncate(&value.to_string(), 700)
+                )));
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            let prompt_id = value
+                .get("prompt_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    StudioError::Render(format!("ComfyUI returned no prompt id: {value}"))
+                })?;
+            let deadline = tokio::time::Instant::now() + COMFY_RENDER_TIMEOUT;
+            loop {
+                if cancel.is_cancelled() {
+                    let _ = self
+                        .http
+                        .post(format!("{COMFY_BASE}/interrupt"))
+                        .send()
+                        .await;
+                    return Err(StudioError::Cancelled);
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(StudioError::Render(
+                        "ComfyUI did not finish FL2V bridge within 24 hours.".to_string(),
+                    ));
+                }
+                let history: Value = self
+                    .http
+                    .get(format!("{COMFY_BASE}/history/{prompt_id}"))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                if let Some(entry) = history.get(prompt_id) {
+                    if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
+                        let detail = comfy_execution_error(entry).unwrap_or_else(|| {
+                            format!(
+                                "execution failed: {}",
+                                truncate(&entry.to_string(), 1_000)
+                            )
+                        });
+                        return Err(StudioError::Render(format!("ComfyUI {detail}")));
+                    }
+                    if entry.pointer("/status/completed").and_then(Value::as_bool) == Some(true) {
+                        if let Some(preview) = &preview {
+                            preview.finish();
+                        }
+                        let media = find_output_media(entry, "videos").ok_or_else(|| {
+                            StudioError::Render(
+                                "completed FL2V job exposed no saved video".into(),
+                            )
+                        })?;
+                        let source = PathBuf::from(&project.settings.comfy_root)
+                            .join("output")
+                            .join(&media.1)
+                            .join(&media.0);
+                        let target = self
+                            .project_dir(&project.id)
+                            .join("raw")
+                            .join(format!("clip-fl2v-{bridge_id}.mp4"));
+                        tokio::fs::copy(&source, &target).await.map_err(|error| {
+                            StudioError::Render(format!(
+                                "could not preserve {}: {error}",
+                                source.display()
+                            ))
+                        })?;
+                        break Ok(target.to_string_lossy().into_owned());
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+        .await;
+        let target_mp4 = match render_result {
+            Ok(path) => path,
+            Err(error) => {
+                generation_receipt["status"] =
+                    json!(if matches!(&error, StudioError::Cancelled) { "cancelled" } else { "failed" });
+                generation_receipt["finishedAt"] = json!(Utc::now().to_rfc3339());
+                generation_receipt["error"] = json!(truncate(&error.to_string(), 4_000));
+                let _ = write_json_atomic(&generation_dir.join("receipt.json"), &generation_receipt);
+                return Err(error);
+            }
         };
 
-        let first_label = first_frame.label.unwrap_or_else(|| format!("{:.1}s", first_frame.time_seconds));
-        let last_label = last_frame.label.unwrap_or_else(|| format!("{:.1}s", last_frame.time_seconds));
+        let first_label = first_anchor
+            .label
+            .clone()
+            .unwrap_or_else(|| format!("{:.1}s", first_anchor.time_seconds));
+        let last_label = last_anchor
+            .label
+            .clone()
+            .unwrap_or_else(|| format!("{:.1}s", last_anchor.time_seconds));
         let new_clip_id = format!("fl2v-{bridge_id}");
+        let (_, output_sha256) = hash_file(Path::new(&target_mp4))?;
+        generation_receipt["status"] = json!("complete");
+        generation_receipt["completedAt"] = json!(Utc::now().to_rfc3339());
+        generation_receipt["outputPath"] = json!(target_mp4.clone());
+        generation_receipt["outputSha256"] = json!(output_sha256);
+        write_json_atomic(&generation_dir.join("receipt.json"), &generation_receipt)?;
         let new_clip = RenderedClip {
             id: new_clip_id.clone(),
             index: project.clips.len() as u32,
@@ -3044,96 +2901,53 @@ Return strict JSON adhering to the schema.";
         };
         project.clips.push(new_clip);
 
-        if insert_mode == "insert_at_cut" {
-            let pos = project.edit.clips.iter().position(|c| c.clip_id == first_frame.clip_id).unwrap_or(project.edit.clips.len());
-            let insert_idx = if pos < project.edit.clips.len() { pos + 1 } else { project.edit.clips.len() };
-            let new_edit = ClipEdit {
-                id: format!("edit-{bridge_id}"),
-                clip_id: new_clip_id,
-                enabled: true,
-                order: insert_idx as u32,
-                trim_start: 0.0,
-                trim_end: 0.0,
-                audio_gain: 1.0,
-                source_version_id: String::new(),
-                speed: 1.0,
-                fade_in: 0.0,
-                fade_out: 0.0,
-                audio_fade_in: 0.0,
-                audio_fade_out: 0.0,
-                label: "Bridge (FL2V)".into(),
-                notes: format!("First frame at {:.2}s, Last frame at {:.2}s", first_frame.time_seconds, last_frame.time_seconds),
-            };
-            project.edit.clips.insert(insert_idx, new_edit);
-            for (idx, clip) in project.edit.clips.iter_mut().enumerate() {
-                clip.order = idx as u32;
+        let bridge_edit = ClipEdit {
+            id: format!("edit-{bridge_id}"),
+            clip_id: new_clip_id,
+            enabled: true,
+            order: 0,
+            trim_start: 0.0,
+            trim_end: 0.0,
+            audio_gain: 1.0,
+            source_version_id: String::new(),
+            speed: 1.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            audio_fade_in: 0.0,
+            audio_fade_out: 0.0,
+            label: "Generated bridge".into(),
+            notes: format!(
+                "FL2V anchors: {} at {:.2}s to {} at {:.2}s",
+                first_anchor.edit_id,
+                first_anchor.time_seconds,
+                last_anchor.edit_id,
+                last_anchor.time_seconds
+            ),
+        };
+        match placement {
+            MovieBridgePlacement::AddToMasters => {}
+            MovieBridgePlacement::InsertAfterLeft => {
+                let position = project
+                    .edit
+                    .clips
+                    .iter()
+                    .position(|edit| edit.id == first_anchor.edit_id)
+                    .expect("bridge placement was validated before rendering");
+                project.edit.clips.insert(position + 1, bridge_edit);
             }
-        } else if insert_mode == "replace_range" {
-            if first_frame.clip_id == last_frame.clip_id {
-                if let Some(pos) = project.edit.clips.iter().position(|c| c.clip_id == first_frame.clip_id) {
-                    let orig = project.edit.clips[pos].clone();
-                    let mut part1 = orig.clone();
-                    part1.trim_end = (orig.trim_start + first_frame.time_seconds as f32).max(0.0);
-
-                    let mut part2 = orig.clone();
-                    part2.id = format!("edit-{}-b", uuid::Uuid::new_v4().simple());
-                    part2.trim_start = (last_frame.time_seconds as f32).max(0.0);
-
-                    let bridge_edit = ClipEdit {
-                        id: format!("edit-{bridge_id}"),
-                        clip_id: new_clip_id,
-                        enabled: true,
-                        order: (pos + 1) as u32,
-                        trim_start: 0.0,
-                        trim_end: 0.0,
-                        audio_gain: 1.0,
-                        source_version_id: String::new(),
-                        speed: 1.0,
-                        fade_in: 0.0,
-                        fade_out: 0.0,
-                        audio_fade_in: 0.0,
-                        audio_fade_out: 0.0,
-                        label: "Bridge (FL2V)".into(),
-                        notes: String::new(),
-                    };
-
-                    project.edit.clips.remove(pos);
-                    project.edit.clips.insert(pos, part1);
-                    project.edit.clips.insert(pos + 1, bridge_edit);
-                    project.edit.clips.insert(pos + 2, part2);
-                    for (idx, clip) in project.edit.clips.iter_mut().enumerate() {
-                        clip.order = idx as u32;
-                    }
-                }
-            } else if let Some(pos1) = project.edit.clips.iter().position(|c| c.clip_id == first_frame.clip_id) {
-                project.edit.clips[pos1].trim_end = (first_frame.time_seconds as f32).max(0.0);
-                let insert_pos = pos1 + 1;
-                if let Some(pos2) = project.edit.clips.iter().position(|c| c.clip_id == last_frame.clip_id) {
-                    project.edit.clips[pos2].trim_start = (last_frame.time_seconds as f32).max(0.0);
-                }
-                let bridge_edit = ClipEdit {
-                    id: format!("edit-{bridge_id}"),
-                    clip_id: new_clip_id,
-                    enabled: true,
-                    order: insert_pos as u32,
-                    trim_start: 0.0,
-                    trim_end: 0.0,
-                    audio_gain: 1.0,
-                    source_version_id: String::new(),
-                    speed: 1.0,
-                    fade_in: 0.0,
-                    fade_out: 0.0,
-                    audio_fade_in: 0.0,
-                    audio_fade_out: 0.0,
-                    label: "Bridge (FL2V)".into(),
-                    notes: String::new(),
-                };
-                project.edit.clips.insert(insert_pos, bridge_edit);
-                for (idx, clip) in project.edit.clips.iter_mut().enumerate() {
-                    clip.order = idx as u32;
-                }
+            MovieBridgePlacement::ReplaceRange => {
+                replace_storyline_range_with_bridge(
+                    &mut project,
+                    &first_anchor,
+                    &last_anchor,
+                    bridge_edit,
+                )?;
             }
         }
+        for (index, edit) in project.edit.clips.iter_mut().enumerate() {
+            edit.order = index as u32;
+        }
+        validate_movie_edit(&project.clone(), &mut project.edit)?;
 
         self.persist_emit(&mut project, app)?;
         Ok(project)
@@ -3765,6 +3579,141 @@ struct SelectedClipSource<'a> {
     duration_seconds: f32,
 }
 
+struct ResolvedFrameAnchor {
+    clip_id: String,
+    path: PathBuf,
+}
+
+fn resolve_frame_anchor(
+    project_dir: &Path,
+    project: &MovieProject,
+    anchor: &MovieFrameAnchor,
+) -> Result<ResolvedFrameAnchor, StudioError> {
+    if anchor.edit_id.trim().is_empty()
+        || !anchor.time_seconds.is_finite()
+        || anchor.time_seconds < 0.0
+    {
+        return Err(StudioError::Invalid(
+            "a frame anchor needs a storyline item and a non-negative source time".into(),
+        ));
+    }
+    let edit = project
+        .edit
+        .clips
+        .iter()
+        .find(|edit| edit.id == anchor.edit_id)
+        .ok_or_else(|| {
+            StudioError::Invalid("the selected storyline item no longer exists".into())
+        })?;
+    let source = selected_clip_source(project, edit)?;
+    let visible_end = source.duration_seconds - edit.trim_end;
+    let time = anchor.time_seconds as f32;
+    if time + 0.001 < edit.trim_start || time > visible_end + 0.001 {
+        return Err(StudioError::Invalid(format!(
+            "the selected frame at {:.2}s is outside the visible {:.2}s–{:.2}s source range",
+            anchor.time_seconds, edit.trim_start, visible_end
+        )));
+    }
+    let project_root = fs::canonicalize(project_dir).map_err(|error| {
+        StudioError::Invalid(format!("the movie project folder is unavailable: {error}"))
+    })?;
+    let source_path = fs::canonicalize(source.path).map_err(|error| {
+        StudioError::Invalid(format!(
+            "the selected preserved source is unavailable: {error}"
+        ))
+    })?;
+    if !source_path.starts_with(&project_root) || !source_path.is_file() {
+        return Err(StudioError::Invalid(
+            "frame anchors may use only preserved media inside this movie project".into(),
+        ));
+    }
+    Ok(ResolvedFrameAnchor {
+        clip_id: edit.clip_id.clone(),
+        path: source_path,
+    })
+}
+
+fn validate_bridge_placement(
+    project: &MovieProject,
+    first: &MovieFrameAnchor,
+    last: &MovieFrameAnchor,
+    placement: MovieBridgePlacement,
+) -> Result<(), StudioError> {
+    let first_index = project
+        .edit
+        .clips
+        .iter()
+        .position(|edit| edit.id == first.edit_id)
+        .ok_or_else(|| {
+            StudioError::Invalid("the bridge start is absent from the storyline".into())
+        })?;
+    let last_index = project
+        .edit
+        .clips
+        .iter()
+        .position(|edit| edit.id == last.edit_id)
+        .ok_or_else(|| {
+            StudioError::Invalid("the bridge end is absent from the storyline".into())
+        })?;
+    if placement == MovieBridgePlacement::ReplaceRange
+        && (first_index > last_index
+            || (first_index == last_index && first.time_seconds >= last.time_seconds))
+    {
+        return Err(StudioError::Invalid(
+            "a replacement bridge must run forward from the first anchor to the last".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn replace_storyline_range_with_bridge(
+    project: &mut MovieProject,
+    first: &MovieFrameAnchor,
+    last: &MovieFrameAnchor,
+    bridge: ClipEdit,
+) -> Result<(), StudioError> {
+    let first_index = project
+        .edit
+        .clips
+        .iter()
+        .position(|edit| edit.id == first.edit_id)
+        .ok_or_else(|| {
+            StudioError::Invalid("the bridge start is absent from the storyline".into())
+        })?;
+    let last_index = project
+        .edit
+        .clips
+        .iter()
+        .position(|edit| edit.id == last.edit_id)
+        .ok_or_else(|| {
+            StudioError::Invalid("the bridge end is absent from the storyline".into())
+        })?;
+    let first_edit = project.edit.clips[first_index].clone();
+    let last_edit = project.edit.clips[last_index].clone();
+    let first_source = selected_clip_source(project, &first_edit)?;
+    let last_source = selected_clip_source(project, &last_edit)?;
+    let mut replacement = Vec::with_capacity(3);
+    if first.time_seconds as f32 - first_edit.trim_start > 0.04 {
+        let mut leading = first_edit.clone();
+        leading.trim_end = first_source.duration_seconds - first.time_seconds as f32;
+        replacement.push(leading);
+    }
+    replacement.push(bridge);
+    if last_source.duration_seconds - last_edit.trim_end - last.time_seconds as f32 > 0.04 {
+        let mut trailing = last_edit;
+        if first_index == last_index {
+            trailing.id = format!("edit-{}", uuid::Uuid::new_v4().simple());
+        }
+        trailing.trim_start = last.time_seconds as f32;
+        replacement.push(trailing);
+    }
+    project
+        .edit
+        .clips
+        .splice(first_index..=last_index, replacement);
+    Ok(())
+}
+
 fn selected_clip_source<'a>(
     project: &'a MovieProject,
     edit: &ClipEdit,
@@ -4270,10 +4219,6 @@ struct MovieAssessment {
     blocking_issues: Vec<ReviewIssue>,
 }
 
-fn clip_assistant_prompt() -> String {
-    prompts::clip_assistant_system()
-}
-
 fn studio_qualification_schema() -> Value {
     json!({"type":"json_schema","json_schema":{"name":"kestrel_studio_model_qualification","strict":true,"schema":{
         "type":"object","additionalProperties":false,"properties":{
@@ -4281,43 +4226,6 @@ fn studio_qualification_schema() -> Value {
             "acknowledgedRole":{"type":"string","enum":["Kestrel Studio Director"]},
             "checks":{"type":"array","minItems":2,"maxItems":2,"uniqueItems":true,"items":{"type":"string","enum":["structured-tool-call","exact-nonce"]}}
         },"required":["nonce","acknowledgedRole","checks"]
-    }}})
-}
-
-fn clip_suggestion_schema() -> Value {
-    json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_scene_suggestion","strict":true,"schema":{
-        "type":"object","additionalProperties":false,"properties":{
-            "clipId":{"type":"string","maxLength":80},
-            "summary":{"type":"string","minLength":10,"maxLength":1200},
-            "checklist":{"type":"array","maxItems":12,"items":{"type":"string","minLength":3,"maxLength":400}},
-            "clip":{"type":"object","additionalProperties":false,"properties":{
-                "id":{"type":"string","maxLength":80},
-                "title":{"type":"string","minLength":1,"maxLength":160},
-                "purpose":{"type":"string","minLength":1,"maxLength":600},
-                "durationSeconds":{"type":"number","minimum":5,"maximum":15},
-                "prompt":{"type":"string"},
-                "continuityIn":{"type":"string","maxLength":800},
-                "continuityOut":{"type":"string","maxLength":800},
-                "transition":{"type":"string","maxLength":300},
-                "usePreviousFrame":{"type":"boolean"},
-                "sourceRefs":{"type":"array","description":text(PromptId::StudioSourceRefs),"maxItems":24,"items":{"type":"string","maxLength":800}},
-                "referenceIds":{"type":"array","description":text(PromptId::StudioReferenceIds),"maxItems":12,"items":{"type":"string","maxLength":128}}
-            },"required":["id","title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]}
-        },"required":["clipId","summary","checklist","clip"]
-    }}})
-}
-
-fn bridge_suggestion_schema() -> Value {
-    json!({"type":"json_schema","json_schema":{"name":"kestrel_movie_bridge_suggestion","strict":true,"schema":{
-        "type":"object","additionalProperties":false,"properties":{
-            "summary":{"type":"string","minLength":5,"maxLength":1200},
-            "motionPrompt":{"type":"string","minLength":10,"maxLength":2500},
-            "suggestedDuration":{"type":"number","minimum":1.0,"maximum":15.0},
-            "cameraMotion":{"type":"string","maxLength":400},
-            "subjectMotion":{"type":"string","maxLength":400},
-            "transitionNotes":{"type":"string","maxLength":600},
-            "checklist":{"type":"array","maxItems":12,"items":{"type":"string","minLength":3,"maxLength":400}}
-        },"required":["summary","motionPrompt","suggestedDuration","cameraMotion","subjectMotion","transitionNotes","checklist"]
     }}})
 }
 
@@ -5832,7 +5740,9 @@ pub(crate) fn find_output_media(entry: &Value, category: &str) -> Option<(String
                 for media in media_list {
                     if let Some(filename) = media.get("filename").and_then(Value::as_str) {
                         let matches_cat = match category {
-                            "videos" => is_video_file(filename) || *cat == "videos" || *cat == "gifs",
+                            "videos" => {
+                                is_video_file(filename) || *cat == "videos" || *cat == "gifs"
+                            }
                             "images" => is_image_file(filename) || *cat == "images",
                             "audio" => is_audio_file(filename) || *cat == "audio",
                             _ => true,
@@ -9011,4 +8921,3 @@ mod tests {
         assert!(Path::new(&export.path).with_extension("json").is_file());
     }
 }
-

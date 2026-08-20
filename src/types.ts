@@ -426,64 +426,61 @@ export interface MovieClipSuggestion {
   clip: PlannedClip;
 }
 
-export interface MovieClipAssistEvent {
-  requestId: string;
-  projectId: string;
-  clipId: string;
-  kind: "reasoning" | string;
-  content: string;
-  at: string;
-}
-
 export interface MovieClipRenderRequest {
   id: string;
   suggestion: MovieClipSuggestion;
   seed: number;
 }
 
-export interface FrameCaptureSpec {
-  clipId: string;
-  sourcePath: string;
+export interface MovieFrameAnchor {
+  editId: string;
   timeSeconds: number;
   label?: string;
 }
 
+export interface MovieCapturedFrame {
+  anchor: MovieFrameAnchor;
+  path: string;
+}
+
 export interface MovieFl2vBridgeRequest {
   id: string;
-  firstFrame: FrameCaptureSpec;
-  lastFrame: FrameCaptureSpec;
+  firstAnchor: MovieFrameAnchor;
+  lastAnchor: MovieFrameAnchor;
   prompt: string;
   durationSeconds: number;
   seed?: number;
-  insertMode: "insert_at_cut" | "replace_range" | "add_to_masters";
+  placement: "add_to_masters" | "insert_after_left" | "replace_range";
 }
 
-export interface MovieBridgeAssistRequest {
+export type MovieGenerationTask =
+  | { kind: "shotVersion"; clipId: string; direction: string }
+  | { kind: "bridge"; firstAnchor: MovieFrameAnchor; lastAnchor: MovieFrameAnchor; direction: string; durationSeconds: number };
+
+export type MovieGenerationCandidate =
+  | { kind: "shotVersion"; clipId: string; clip: PlannedClip; checklist: string[] }
+  | { kind: "bridge"; motionPrompt: string; durationSeconds: number; cameraMotion: string; subjectMotion: string; transitionNotes: string; checklist: string[] };
+
+export interface MovieGenerationAgentRequest {
   requestId: string;
-  id: string;
-  firstFrame: FrameCaptureSpec;
-  lastFrame: FrameCaptureSpec;
-  measuredDuration: number;
-  feedback: string;
+  projectId: string;
+  task: MovieGenerationTask;
   thinkingLevel?: ThinkingLevel;
 }
 
-export interface MovieBridgeAssistEvent {
-  requestId: string;
-  projectId: string;
-  kind: "reasoning" | string;
-  content: string;
-  at: string;
+export interface MovieGenerationProposal {
+  summary: string;
+  reviewSummary: string;
+  candidate: MovieGenerationCandidate;
 }
 
-export interface MovieBridgeSuggestion {
-  summary: string;
-  motionPrompt: string;
-  suggestedDuration: number;
-  cameraMotion: string;
-  subjectMotion: string;
-  transitionNotes: string;
-  checklist: string[];
+export interface MovieGenerationAgentEvent {
+  requestId: string;
+  projectId: string;
+  kind: "turn-start" | "reasoning" | "token" | "activity" | "advanced-token" | "complete" | string;
+  modelRole: "director" | "reviewer" | string;
+  content: string;
+  at: string;
 }
 
 export interface ClipEdit {

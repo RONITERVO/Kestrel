@@ -46,6 +46,7 @@ use models::{
     SystemSnapshot,
 };
 use runtime::RuntimeManager;
+use serde_json::Value;
 use std::{
     collections::HashMap,
     sync::{
@@ -56,14 +57,13 @@ use std::{
 use store::ResearchStore;
 use studio::{
     ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
-    ImageSummary, MovieBridgeAssistRequest, MovieBridgeSuggestion, MovieClipAssistRequest,
-    MovieClipRenderRequest, MovieClipSuggestion, MovieCopilotJob, MovieCopilotReceipt,
-    MovieCopilotRequest, MovieEdit, MovieFl2vBridgeRequest, MovieImageAssetGeneration,
-    MovieImageAssetRequest, MovieModelBinding, MovieModelRoleRequest, MovieModelRoles,
-    MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest, MoviePlanningSnapshot, MovieProject,
-    MovieReferenceImport, MovieStudio, MovieSummary, MusicMidiRequest, MusicMidiSaveResult,
-    MusicProject, MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest,
-    SaveMusicMidiDocumentRequest, StartMovieRequest,
+    ImageSummary, MovieClipRenderRequest, MovieCopilotJob, MovieCopilotReceipt,
+    MovieCopilotRequest, MovieEdit, MovieFl2vBridgeRequest, MovieGenerationAgentRequest,
+    MovieGenerationProposal, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
+    MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
+    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
+    MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, PromptDraftJob,
+    PromptDraftRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -170,9 +170,7 @@ async fn remember_runtime_for_speech(state: &AppState) {
     };
     if let Ok(mut restore) = state.speech_restore_model.lock() {
         if restore.is_none() {
-            *restore = Some(SpeechRuntimeRestore {
-                model_id,
-            });
+            *restore = Some(SpeechRuntimeRestore { model_id });
         }
     }
 }
@@ -1271,6 +1269,93 @@ fn cancel_movie_copilot(request_id: String, state: State<'_, AppState>) -> Resul
 }
 
 #[tauri::command]
+async fn run_movie_generation_agent(
+    request: MovieGenerationAgentRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieGenerationProposal, String> {
+    let _guard = claim_workspace(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let (_, runtime_settings, models) = studio_model_context(&state).await?;
+    let project = state
+        .studio
+        .get(&request.project_id)
+        .map_err(|error| error.to_string())?;
+    let (director_model_id, reviewer_model_id) = project_model_ids(
+        &project,
+        &models,
+        &runtime_settings,
+        &state.model_qualifications,
+        research.advanced_mode || runtime_settings.advanced_mode,
+    )?;
+    release_all_comfy_memory(&state).await;
+    state
+        .runtime
+        .stop_managed()
+        .await
+        .map_err(|error| error.to_string())?;
+    let cancel = CancellationToken::new();
+    state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable".to_string())?
+        .insert(request.request_id.clone(), cancel.clone());
+    let request_id = request.request_id.clone();
+    let result = state
+        .studio
+        .run_generation_agent(
+            &request,
+            MovieModelRuntime {
+                runtime: &state.runtime,
+                models: &models,
+                settings: &runtime_settings,
+                director_model_id: &director_model_id,
+                reviewer_model_id: &reviewer_model_id,
+            },
+            &cancel,
+            Some(&app),
+        )
+        .await
+        .map_err(|error| error.to_string());
+    if let Ok(mut jobs) = state.interactive_jobs.lock() {
+        jobs.remove(&request_id);
+    }
+    let _ = state.runtime.stop_managed().await;
+    result
+}
+
+#[tauri::command]
+fn cancel_movie_generation_agent(
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(cancel) = state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable".to_string())?
+        .get(&request_id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_movie_generation_agent_snapshot(
+    project_id: String,
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    state
+        .studio
+        .generation_agent_snapshot(&project_id, &request_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn get_movie_copilot_receipt(
     project_id: String,
     request_id: String,
@@ -1469,110 +1554,6 @@ async fn approve_movie_plan(
 }
 
 #[tauri::command]
-async fn ask_movie_director_clip(
-    request: MovieClipAssistRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieClipSuggestion, String> {
-    let _guard = claim_workspace(&state)?;
-    let research = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let (_, runtime_settings, models) = studio_model_context(&state).await?;
-    let project = state
-        .studio
-        .get(&request.id)
-        .map_err(|error| error.to_string())?;
-    let (director_model_id, _) = project_model_ids(
-        &project,
-        &models,
-        &runtime_settings,
-        &state.model_qualifications,
-        research.advanced_mode || runtime_settings.advanced_mode,
-    )?;
-    release_all_comfy_memory(&state).await;
-    state
-        .runtime
-        .stop_managed()
-        .await
-        .map_err(|error| error.to_string())?;
-    let director_runtime = runtime_settings.for_model(&director_model_id);
-    let result: Result<MovieClipSuggestion, String> = async {
-        let lease = state
-            .runtime
-            .lease_model(&director_model_id, &models, &runtime_settings, None)
-            .await
-            .map_err(|error| error.to_string())?;
-        state
-            .studio
-            .assist_clip(
-                &request,
-                &lease.connection,
-                director_runtime.max_output_tokens,
-                Some(&app),
-            )
-            .await
-            .map_err(|error| error.to_string())
-    }
-    .await;
-    let _ = state.runtime.stop_managed().await;
-    result
-}
-
-#[tauri::command]
-async fn ask_movie_director_bridge(
-    request: MovieBridgeAssistRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieBridgeSuggestion, String> {
-    let _guard = claim_workspace(&state)?;
-    let research = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let (_, runtime_settings, models) = studio_model_context(&state).await?;
-    let project = state
-        .studio
-        .get(&request.id)
-        .map_err(|error| error.to_string())?;
-    let (director_model_id, _) = project_model_ids(
-        &project,
-        &models,
-        &runtime_settings,
-        &state.model_qualifications,
-        research.advanced_mode || runtime_settings.advanced_mode,
-    )?;
-    release_all_comfy_memory(&state).await;
-    state
-        .runtime
-        .stop_managed()
-        .await
-        .map_err(|error| error.to_string())?;
-    let director_runtime = runtime_settings.for_model(&director_model_id);
-    let result: Result<MovieBridgeSuggestion, String> = async {
-        let lease = state
-            .runtime
-            .lease_model(&director_model_id, &models, &runtime_settings, None)
-            .await
-            .map_err(|error| error.to_string())?;
-        state
-            .studio
-            .assist_bridge(
-                &request,
-                &lease.connection,
-                director_runtime.max_output_tokens,
-                Some(&app),
-            )
-            .await
-            .map_err(|error| error.to_string())
-    }
-    .await;
-    let _ = state.runtime.stop_managed().await;
-    result
-}
-
-#[tauri::command]
 async fn render_movie_clip_version(
     request: MovieClipRenderRequest,
     app: AppHandle,
@@ -1601,13 +1582,12 @@ async fn render_movie_clip_version(
 #[tauri::command]
 async fn capture_movie_frame(
     project_id: String,
-    source_path: String,
-    time_seconds: f64,
+    anchor: studio::MovieFrameAnchor,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<studio::MovieCapturedFrame, String> {
     state
         .studio
-        .capture_frame(&project_id, &source_path, time_seconds)
+        .capture_frame(&project_id, anchor)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1636,6 +1616,19 @@ async fn generate_movie_fl2v_bridge(
         jobs.remove(&id);
     }
     result
+}
+
+#[tauri::command]
+fn cancel_movie_render(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .movie_jobs
+        .lock()
+        .map_err(|_| "movie job registry is unavailable".to_string())?
+        .get(&id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2462,12 +2455,8 @@ async fn import_setup_profile_text(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let _guard = claim_workspace(&state)?;
-    let imported = profile::import_text(
-        &text,
-        &state.research_settings,
-        &state.control_settings,
-    )
-    .map_err(|error| error.to_string())?;
+    let imported = profile::import_text(&text, &state.research_settings, &state.control_settings)
+        .map_err(|error| error.to_string())?;
     finish_profile_import(&state, imported).await
 }
 
@@ -3269,7 +3258,12 @@ async fn snapshot(state: &AppState) -> Result<AppSnapshot, String> {
         .map_err(|error| error.to_string())?;
     let control = control_snapshot(state, false).await?;
     let mut status = services::status(&settings).await;
-    apply_model_status(&mut status, &control.runtime, &control.settings, &control.models);
+    apply_model_status(
+        &mut status,
+        &control.runtime,
+        &control.settings,
+        &control.models,
+    );
     let setup = setup::snapshot(&settings, &control.settings, control.gpu.as_ref());
     Ok(AppSnapshot {
         status,
@@ -3293,12 +3287,7 @@ async fn system_console_snapshot(state: &AppState) -> Result<SystemSnapshot, Str
     let models = state.models.read().await.clone();
     let managed_runtime = state.runtime.snapshot().await;
     let mut value = services::system_snapshot(settings).await;
-    apply_model_status(
-        &mut value.status,
-        &managed_runtime,
-        &control,
-        &models,
-    );
+    apply_model_status(&mut value.status, &managed_runtime, &control, &models);
     let selected = managed_runtime
         .model_id
         .as_deref()
@@ -3658,17 +3647,19 @@ pub fn run() {
             start_movie_copilot,
             cancel_movie_copilot,
             get_movie_copilot_receipt,
+            run_movie_generation_agent,
+            cancel_movie_generation_agent,
+            get_movie_generation_agent_snapshot,
             get_movie_plan_exchange_prompt,
             parse_movie_plan_exchange,
             save_movie_plan,
             set_movie_model_roles,
             revise_movie_plan,
             approve_movie_plan,
-            ask_movie_director_clip,
-            ask_movie_director_bridge,
             render_movie_clip_version,
             capture_movie_frame,
             generate_movie_fl2v_bridge,
+            cancel_movie_render,
             save_movie_edits,
             render_movie_edit,
             reveal_movie,

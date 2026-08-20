@@ -15,7 +15,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::{fs, path::{Path, PathBuf}};
 use tokio_util::sync::CancellationToken;
 
 /// Durable conversation state for one Studio Director context session.
@@ -43,6 +43,33 @@ impl AgentTranscript {
             ],
             step,
         };
+        transcript.persist()?;
+        Ok(transcript)
+    }
+
+    /// Continue a producer-visible session without discarding any completed turns.
+    pub(super) fn resume(path: PathBuf, instruction: &str) -> Result<Self, StudioError> {
+        const MAX_TRANSCRIPT_BYTES: u64 = 2 * 1024 * 1024;
+        let metadata = fs::metadata(&path)?;
+        if metadata.len() > MAX_TRANSCRIPT_BYTES {
+            return Err(StudioError::Invalid(
+                "the saved agent transcript exceeds the 2 MiB resume limit".into(),
+            ));
+        }
+        let value: Value = serde_json::from_slice(&fs::read(&path)?)?;
+        let step = value.get("step").and_then(Value::as_u64).unwrap_or_default() as u32;
+        let mut messages = value
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| StudioError::Invalid("the saved agent transcript has no messages".into()))?;
+        if messages.is_empty() || messages.len() > 2_048 {
+            return Err(StudioError::Invalid(
+                "the saved agent transcript has an invalid message count".into(),
+            ));
+        }
+        messages.push(json!({"role":"user","content":instruction}));
+        let transcript = Self { path, messages, step };
         transcript.persist()?;
         Ok(transcript)
     }
@@ -496,6 +523,22 @@ mod tests {
         let serialized = value.to_string();
         assert!(serialized.contains("```"));
         assert!(serialized.contains("<think>hidden</think>"));
+    }
+
+    #[test]
+    fn transcript_resume_keeps_prior_turns_and_adds_a_visible_resume_instruction() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent-transcript.json");
+        let mut transcript = AgentTranscript::begin(path.clone(), 0, "system", "start").unwrap();
+        transcript.push(json!({"role":"assistant","content":"saved candidate"}), 4).unwrap();
+
+        AgentTranscript::resume(path.clone(), "resume from checkpoint").unwrap();
+
+        let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(value["step"], 4);
+        assert_eq!(value["messages"].as_array().unwrap().len(), 4);
+        assert_eq!(value["messages"][2]["content"], "saved candidate");
+        assert_eq!(value["messages"][3]["content"], "resume from checkpoint");
     }
 
     #[test]

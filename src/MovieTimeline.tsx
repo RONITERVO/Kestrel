@@ -1,47 +1,17 @@
 import {
-  Archive, ArrowRight, AudioLines, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy,
-  Dices, Eye, EyeOff, Film, Flag, Gauge, Images, Info, List, LoaderCircle, Magnet, Maximize2,
-  Minimize2, MousePointer2, PanelLeft, PanelRight, Pause, Play, Plus, Redo2, RefreshCw,
-  RotateCcw, Save, ScanLine, Scissors, Search, SkipBack, SkipForward, Sparkles,
+  Archive, AudioLines, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy,
+  Eye, EyeOff, Film, Flag, Gauge, Images, Info, List, LoaderCircle, Magnet, Maximize2,
+  Minimize2, MousePointer2, PanelLeft, PanelRight, Pause, Play, Plus, Redo2,
+  RotateCcw, Save, ScanLine, Scissors, Search, SkipBack, SkipForward,
   Trash2, Undo2, Video, Volume2, X, ZoomIn,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { movieMediaUrl } from "./api";
 import {
-  askMovieDirectorBridge, captureMovieFrame, generateMovieFl2vBridge, movieMediaUrl, onMovieBridgeAssist,
-} from "./api";
-import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
-import {
-  effectiveThinkingLevelForModel,
-  type ClipEdit, type ControlSettings, type MovieBridgeSuggestion, type MovieEdit, type MovieProject, type MovieReference, type RenderedClip, type ThinkingLevel, type TimelineMarker,
+  type ClipEdit, type MovieEdit, type MovieProject, type MovieReference, type RenderedClip, type TimelineMarker,
 } from "./types";
 
 const FPS = 24;
-
-const QUICK_BRIDGE_PROMPTS = [
-  { label: "Match Cut & Push-In", prompt: "Match the subject framing smoothly and perform a gradual cinematic push-in towards the focal point." },
-  { label: "Smooth Dolly & Pan", prompt: "Perform a steady dolly motion with subtle horizontal pan, keeping subject momentum seamless." },
-  { label: "Dynamic Action Continuity", prompt: "Carry the kinetic momentum and velocity of the character action directly into the next composition." },
-  { label: "Atmospheric Dissolve", prompt: "Transition lighting and environmental weather elements gradually to set up the ambiance of the landing frame." },
-  { label: "Whip Pan Transition", prompt: "Execute a rapid whip-pan camera move that blurs mid-transition and lands crisply on the target frame." },
-];
-
-const STANDARD_H3_DURATIONS = [
-  { value: 1.0, label: "1.0s · 25 frames (H3 Min)" },
-  { value: 2.0, label: "2.0s · 49 frames" },
-  { value: 3.0, label: "3.0s · 73 frames" },
-  { value: 4.0, label: "4.0s · 97 frames" },
-  { value: 5.0, label: "5.0s · 121 frames (Standard)" },
-  { value: 6.0, label: "6.0s · 145 frames" },
-  { value: 7.0, label: "7.0s · 169 frames" },
-  { value: 8.0, label: "8.0s · 193 frames" },
-  { value: 9.0, label: "9.0s · 217 frames" },
-  { value: 10.0, label: "10.0s · 241 frames" },
-  { value: 11.0, label: "11.0s · 265 frames" },
-  { value: 12.0, label: "12.0s · 289 frames" },
-  { value: 13.0, label: "13.0s · 313 frames" },
-  { value: 14.0, label: "14.0s · 337 frames" },
-  { value: 15.0, label: "15.0s · 361 frames (H3 Max)" },
-];
 
 export interface TimelineItem {
   edit: ClipEdit;
@@ -52,17 +22,9 @@ export interface TimelineItem {
   versionLabel: string;
 }
 
-export interface CapturedFrame {
-  clipId: string;
-  sourcePath: string;
-  timeSeconds: number;
-  label?: string;
-  thumbPath?: string;
-}
-
 type EditorTool = "select" | "trim" | "blade";
 type BrowserTab = "masters" | "references" | "index";
-type InspectorTab = "video" | "audio" | "inbetween" | "info";
+type InspectorTab = "video" | "audio" | "info";
 type ViewerMode = "program" | "source";
 
 export function timelineItems(project: MovieProject, edit: MovieEdit): TimelineItem[] {
@@ -154,11 +116,10 @@ function editId(prefix = "edit"): string {
     : `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function MovieTimeline({ project, value, disabled, controlSettings, onChange, onRequestSave }: {
+export function MovieTimeline({ project, value, disabled, onChange, onRequestSave }: {
   project: MovieProject;
   value: MovieEdit;
   disabled: boolean;
-  controlSettings?: ControlSettings;
   onChange: (edit: MovieEdit) => void;
   onRequestSave?: () => void;
 }) {
@@ -194,23 +155,6 @@ export function MovieTimeline({ project, value, disabled, controlSettings, onCha
   const [markerComposer, setMarkerComposer] = useState(false);
   const [markerLabel, setMarkerLabel] = useState("");
   const [markerKind, setMarkerKind] = useState<TimelineMarker["kind"]>("marker");
-  const [fl2vFirstFrame, setFl2vFirstFrame] = useState<CapturedFrame | null>(null);
-  const [fl2vLastFrame, setFl2vLastFrame] = useState<CapturedFrame | null>(null);
-  const [fl2vPrompt, setFl2vPrompt] = useState("");
-  const [fl2vDuration, setFl2vDuration] = useState(5.0);
-  const [fl2vInsertMode, setFl2vInsertMode] = useState<"insert_at_cut" | "replace_range" | "add_to_masters">("insert_at_cut");
-  const [fl2vRendering, setFl2vRendering] = useState(false);
-  const [fl2vError, setFl2vError] = useState<string | null>(null);
-  const [bridgeAssistantOpen, setBridgeAssistantOpen] = useState(true);
-  const [bridgeFeedback, setBridgeFeedback] = useState("");
-  const [bridgeThinkingLevel, setBridgeThinkingLevel] = useState<ThinkingLevel | "default">("default");
-  const [bridgeBusy, setBridgeBusy] = useState(false);
-  const [bridgeModelBusy, setBridgeModelBusy] = useState(false);
-  const [bridgeReasoning, setBridgeReasoning] = useState("");
-  const [bridgeModelAttempted, setBridgeModelAttempted] = useState(false);
-  const [bridgeSuggestion, setBridgeSuggestion] = useState<MovieBridgeSuggestion | null>(null);
-  const [bridgeError, setBridgeError] = useState<string | null>(null);
-  const bridgeRequestIdRef = useRef("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const sourceVideoRef = useRef<HTMLVideoElement>(null);
   const skimThrottle = useRef(0);
@@ -220,17 +164,6 @@ export function MovieTimeline({ project, value, disabled, controlSettings, onCha
   const sourceVersion = sourceVersionId ? sourceClip?.versions.find((version) => version.id === sourceVersionId) : undefined;
   const sourceReference = project.references.find((reference) => reference.assetId === sourceReferenceId);
   const sourcePath = sourceReference?.path ?? sourceVersion?.path ?? sourceClip?.path ?? "";
-  const defaultSeed = useMemo(() => {
-    if (fl2vFirstFrame?.clipId) {
-      const clip = project.clips.find((c) => c.id === fl2vFirstFrame.clipId);
-      if (clip?.seed) return clip.seed;
-    }
-    if (selected?.clip.seed) return selected.clip.seed;
-    if (project.clips[0]?.seed) return project.clips[0].seed;
-    if (project.settings.seed) return project.settings.seed;
-    return undefined;
-  }, [fl2vFirstFrame, selected, project]);
-  const [fl2vSeed, setFl2vSeed] = useState<number | undefined>(() => project.clips[0]?.seed ?? (project.settings.seed || undefined));
   const programMediaUrl = preview ? movieMediaUrl(preview.sourcePath) : "";
   const sourceDuration = sourceReference?.durationSeconds ?? sourceVersion?.durationSeconds ?? sourceClip?.durationSeconds ?? 0;
   const totalDuration = enabledItems.reduce((sum, item) => sum + item.outputDuration, 0);
@@ -247,15 +180,6 @@ export function MovieTimeline({ project, value, disabled, controlSettings, onCha
     if (selectedId && items.some((item) => item.edit.id === selectedId)) return;
     setSelectedId(items[0]?.edit.id ?? "");
   }, [items, selectedId]);
-
-  useEffect(() => {
-    let dispose: (() => void) | undefined;
-    void onMovieBridgeAssist((event) => {
-      if (event.requestId !== bridgeRequestIdRef.current || event.projectId !== project.id) return;
-      if (event.kind === "reasoning") setBridgeReasoning((value) => appendModelThinking(value, event.content));
-    }).then((unlisten) => { dispose = unlisten; });
-    return () => dispose?.();
-  }, [project.id]);
 
   const commit = (next: MovieEdit) => {
     if (disabled) return;
@@ -293,278 +217,6 @@ export function MovieTimeline({ project, value, disabled, controlSettings, onCha
     [next.fadeIn, next.fadeOut] = fitFades(next.fadeIn, next.fadeOut);
     [next.audioFadeIn, next.audioFadeOut] = fitFades(next.audioFadeIn, next.audioFadeOut);
     commit({ ...normalizedValue, clips: normalizedValue.clips.map((item) => item.id === selected.edit.id ? next : item) });
-  };
-
-  const computeFrameDistance = (frame1: CapturedFrame, frame2: CapturedFrame): number => {
-    if (frame1.sourcePath === frame2.sourcePath) {
-      return Math.abs(frame2.timeSeconds - frame1.timeSeconds);
-    }
-    const idx1 = enabledItems.findIndex((item) => item.clip.id === frame1.clipId || item.sourcePath === frame1.sourcePath);
-    const idx2 = enabledItems.findIndex((item) => item.clip.id === frame2.clipId || item.sourcePath === frame2.sourcePath);
-    if (idx1 !== -1 && idx2 !== -1) {
-      if (idx1 === idx2) {
-        return Math.abs(frame2.timeSeconds - frame1.timeSeconds);
-      }
-      const [startIdx, endIdx, startFrame, endFrame] = idx1 < idx2
-        ? [idx1, idx2, frame1, frame2]
-        : [idx2, idx1, frame2, frame1];
-      const startItem = enabledItems[startIdx];
-      const endItem = enabledItems[endIdx];
-      const startRemaining = Math.max(0, (startItem.sourceDuration - startItem.edit.trimEnd) - startFrame.timeSeconds);
-      const intermediateSum = enabledItems
-        .slice(startIdx + 1, endIdx)
-        .reduce((sum, item) => sum + item.outputDuration, 0);
-      const endElapsed = Math.max(0, endFrame.timeSeconds - endItem.edit.trimStart);
-      return startRemaining + intermediateSum + endElapsed;
-    }
-    return 0;
-  };
-
-  const captureFrameSlot = async (slot: "first" | "last") => {
-    let clipId = "";
-    let sPath = "";
-    let time = 0;
-    let label = "";
-
-    if (viewerMode === "program" && preview) {
-      clipId = preview.clip.id;
-      sPath = preview.sourcePath;
-      time = previewTime;
-      label = `${preview.clip.title} @ ${formatTimecode(previewTime)}`;
-    } else if (viewerMode === "source" && sourceClip) {
-      clipId = sourceClip.id;
-      sPath = sourcePath;
-      time = sourceTime;
-      label = `${sourceClip.title} @ ${formatTimecode(sourceTime)}`;
-    } else if (selected) {
-      clipId = selected.clip.id;
-      sPath = selected.sourcePath;
-      time = selected.edit.trimStart;
-      label = `${selected.clip.title} @ ${formatTimecode(time)}`;
-    }
-
-    if (!sPath) {
-      setFl2vError("No active video source to capture from. Select a clip or master first.");
-      return;
-    }
-
-    try {
-      const thumbPath = await captureMovieFrame(project.id, sPath, time);
-      const frame: CapturedFrame = { clipId, sourcePath: sPath, timeSeconds: time, label, thumbPath };
-      if (slot === "first") {
-        setFl2vFirstFrame(frame);
-        const clipSeed = project.clips.find((c) => c.id === clipId)?.seed;
-        if (clipSeed) setFl2vSeed(clipSeed);
-        if (fl2vLastFrame) {
-          const dist = computeFrameDistance(frame, fl2vLastFrame);
-          if (dist > 0) {
-            const matched = Math.min(15.0, Math.max(1.0, Math.round(dist * 10) / 10));
-            setFl2vDuration(matched);
-          }
-        }
-      } else {
-        setFl2vLastFrame(frame);
-        if (fl2vFirstFrame) {
-          const dist = computeFrameDistance(fl2vFirstFrame, frame);
-          if (dist > 0) {
-            const matched = Math.min(15.0, Math.max(1.0, Math.round(dist * 10) / 10));
-            setFl2vDuration(matched);
-          }
-        }
-      }
-      setFl2vError(null);
-    } catch (err: unknown) {
-      setFl2vError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const autoSetAcrossCut = async () => {
-    if (!selected) return;
-    const idx = enabledItems.findIndex((item) => item.edit.id === selected.edit.id);
-    const nextItem = enabledItems[idx + 1];
-    if (!nextItem) {
-      setFl2vError("Select a clip that has a following clip to bridge across a cut.");
-      return;
-    }
-    try {
-      const t1 = Math.max(0, selected.sourceDuration - selected.edit.trimEnd - 0.04);
-      const t2 = nextItem.edit.trimStart;
-      const thumb1 = await captureMovieFrame(project.id, selected.sourcePath, t1);
-      const thumb2 = await captureMovieFrame(project.id, nextItem.sourcePath, t2);
-      const f1: CapturedFrame = {
-        clipId: selected.clip.id,
-        sourcePath: selected.sourcePath,
-        timeSeconds: t1,
-        label: `${selected.clip.title} (Cut Out)`,
-        thumbPath: thumb1,
-      };
-      const f2: CapturedFrame = {
-        clipId: nextItem.clip.id,
-        sourcePath: nextItem.sourcePath,
-        timeSeconds: t2,
-        label: `${nextItem.clip.title} (Cut In)`,
-        thumbPath: thumb2,
-      };
-      setFl2vFirstFrame(f1);
-      setFl2vLastFrame(f2);
-      setFl2vInsertMode("insert_at_cut");
-      setFl2vSeed(selected.clip.seed || project.settings.seed || undefined);
-      const dist = computeFrameDistance(f1, f2);
-      if (dist > 0) {
-        const matched = Math.min(15.0, Math.max(1.0, Math.round(dist * 10) / 10));
-        setFl2vDuration(matched);
-      } else {
-        setFl2vDuration(5.0);
-      }
-      setFl2vError(null);
-    } catch (err: unknown) {
-      setFl2vError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const autoSetFromSelectedRange = async () => {
-    if (!selected) return;
-    try {
-      const t1 = selected.edit.trimStart;
-      const t2 = Math.max(0, selected.sourceDuration - selected.edit.trimEnd - 0.04);
-      const thumb1 = await captureMovieFrame(project.id, selected.sourcePath, t1);
-      const thumb2 = await captureMovieFrame(project.id, selected.sourcePath, t2);
-      const f1: CapturedFrame = {
-        clipId: selected.clip.id,
-        sourcePath: selected.sourcePath,
-        timeSeconds: t1,
-        label: `${selected.clip.title} (In)`,
-        thumbPath: thumb1,
-      };
-      const f2: CapturedFrame = {
-        clipId: selected.clip.id,
-        sourcePath: selected.sourcePath,
-        timeSeconds: t2,
-        label: `${selected.clip.title} (Out)`,
-        thumbPath: thumb2,
-      };
-      setFl2vFirstFrame(f1);
-      setFl2vLastFrame(f2);
-      setFl2vInsertMode("replace_range");
-      setFl2vSeed(selected.clip.seed || project.settings.seed || undefined);
-      const rawDiff = Math.max(0, t2 - t1);
-      if (rawDiff > 0) {
-        const matched = Math.min(15.0, Math.max(1.0, Math.round(rawDiff * 10) / 10));
-        setFl2vDuration(matched);
-      }
-      setFl2vError(null);
-    } catch (err: unknown) {
-      setFl2vError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const handleGenerateFl2v = async () => {
-    if (!fl2vFirstFrame || !fl2vLastFrame) {
-      setFl2vError("Please capture both a First Frame and a Last Frame.");
-      return;
-    }
-    setFl2vRendering(true);
-    setFl2vError(null);
-    try {
-      const updatedProject = await generateMovieFl2vBridge({
-        id: project.id,
-        firstFrame: {
-          clipId: fl2vFirstFrame.clipId,
-          sourcePath: fl2vFirstFrame.sourcePath,
-          timeSeconds: fl2vFirstFrame.timeSeconds,
-          label: fl2vFirstFrame.label,
-        },
-        lastFrame: {
-          clipId: fl2vLastFrame.clipId,
-          sourcePath: fl2vLastFrame.sourcePath,
-          timeSeconds: fl2vLastFrame.timeSeconds,
-          label: fl2vLastFrame.label,
-        },
-        prompt: fl2vPrompt,
-        durationSeconds: fl2vDuration,
-        seed: fl2vSeed,
-        insertMode: fl2vInsertMode,
-      });
-
-      const newClip = updatedProject.clips.at(-1);
-      if (newClip && fl2vInsertMode === "insert_at_cut" && selected) {
-        const nextClips = [...normalizedValue.clips];
-        const selIdx = nextClips.findIndex((c) => c.id === selected.edit.id);
-        const newEditId = editId("fl2v");
-        const newDecision: ClipEdit = {
-          id: newEditId,
-          clipId: newClip.id,
-          enabled: true,
-          order: selIdx + 1,
-          trimStart: 0,
-          trimEnd: 0,
-          audioGain: 1,
-          sourceVersionId: "",
-          speed: 1,
-          fadeIn: 0,
-          fadeOut: 0,
-          audioFadeIn: 0,
-          audioFadeOut: 0,
-          label: `FL2V Bridge (${fl2vDuration}s)`,
-          notes: fl2vPrompt,
-        };
-        nextClips.splice(selIdx + 1, 0, newDecision);
-        commit({ ...normalizedValue, clips: nextClips.map((c, i) => ({ ...c, order: i })) });
-        setSelectedId(newEditId);
-      }
-    } catch (err: unknown) {
-      setFl2vError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setFl2vRendering(false);
-    }
-  };
-
-  const handleAskBridgeDirector = async () => {
-    if (!fl2vFirstFrame || !fl2vLastFrame) {
-      setBridgeError("Please capture both a First Frame and a Last Frame before asking the Director.");
-      return;
-    }
-    const requestId = crypto.randomUUID();
-    bridgeRequestIdRef.current = requestId;
-    setBridgeReasoning("");
-    setBridgeModelAttempted(true);
-    setBridgeModelBusy(true);
-    setBridgeBusy(true);
-    setBridgeError(null);
-    try {
-      const suggestion = await askMovieDirectorBridge({
-        requestId,
-        id: project.id,
-        firstFrame: {
-          clipId: fl2vFirstFrame.clipId,
-          sourcePath: fl2vFirstFrame.sourcePath,
-          timeSeconds: fl2vFirstFrame.timeSeconds,
-          label: fl2vFirstFrame.label,
-        },
-        lastFrame: {
-          clipId: fl2vLastFrame.clipId,
-          sourcePath: fl2vLastFrame.sourcePath,
-          timeSeconds: fl2vLastFrame.timeSeconds,
-          label: fl2vLastFrame.label,
-        },
-        measuredDuration: fl2vDuration,
-        feedback: bridgeFeedback,
-        thinkingLevel: bridgeThinkingLevel !== "default" ? bridgeThinkingLevel : undefined,
-      });
-      setBridgeSuggestion(suggestion);
-    } catch (err: unknown) {
-      setBridgeError(err instanceof Error ? err.message : String(err));
-    } finally {
-      bridgeRequestIdRef.current = "";
-      setBridgeModelBusy(false);
-      setBridgeBusy(false);
-    }
-  };
-
-  const applyBridgeSuggestion = () => {
-    if (!bridgeSuggestion) return;
-    setFl2vPrompt(bridgeSuggestion.motionPrompt);
-    setFl2vDuration(bridgeSuggestion.suggestedDuration);
   };
 
   const setProgramPosition = (item: TimelineItem, time: number, play = false) => {
@@ -793,285 +445,14 @@ export function MovieTimeline({ project, value, disabled, controlSettings, onCha
         <div className="editor-panel-tabs">
           <button className={inspectorTab === "video" ? "active" : ""} onClick={() => setInspectorTab("video")}><Video /> Video</button>
           <button className={inspectorTab === "audio" ? "active" : ""} onClick={() => setInspectorTab("audio")}><AudioLines /> Audio</button>
-          <button className={inspectorTab === "inbetween" ? "active" : ""} onClick={() => setInspectorTab("inbetween")}><Sparkles /> Bridge</button>
           <button className={inspectorTab === "info" ? "active" : ""} onClick={() => setInspectorTab("info")}><Info /> Info</button>
         </div>
         <header>
-          <span>{inspectorTab === "inbetween" ? "FL2V Bridge Generator" : "Timeline selection"}</span>
-          <strong>{inspectorTab === "inbetween" ? "First-Frame / Last-Frame Video" : (selected?.edit.label || selected?.clip.title || "No selection")}</strong>
-          <small>{inspectorTab === "inbetween" ? "MiniMax H3 Generative In-Betweening" : (selected ? `${formatTimecode(selected.outputDuration)} · ${selected.versionLabel}` : "Select an edit in the primary storyline")}</small>
+          <span>Timeline selection</span>
+          <strong>{selected?.edit.label || selected?.clip.title || "No selection"}</strong>
+          <small>{selected ? `${formatTimecode(selected.outputDuration)} · ${selected.versionLabel}` : "Select an edit in the primary storyline"}</small>
         </header>
-        {inspectorTab === "inbetween" ? (
-          <div className="editor-inspector-body editor-fl2v-inspector">
-            <div className="fl2v-header-banner">
-              <span><Sparkles /><b>FL2V In-Between Bridge (MiniMax H3)</b></span>
-              <small>Generate AI motion connecting any two arbitrary timeline frames.</small>
-            </div>
-
-            <InspectorSection title="1. Anchor Frames" defaultOpen>
-              <div className="fl2v-quick-actions wide">
-                <button className="fl2v-quick-btn" title="Bridge between current clip and next clip" onClick={autoSetAcrossCut}><Scissors /> Bridge Selected Cut</button>
-                <button className="fl2v-quick-btn" title="Use current clip In and Out points" onClick={autoSetFromSelectedRange}><ScanLine /> In/Out Range</button>
-              </div>
-
-              <div className="fl2v-frame-cards wide">
-                <div className={`fl2v-frame-card ${fl2vFirstFrame ? "set" : ""}`}>
-                  <div className="fl2v-frame-head">
-                    <strong>First Frame (Start)</strong>
-                    {fl2vFirstFrame && <button className="fl2v-clear-btn" onClick={() => setFl2vFirstFrame(null)}><X /></button>}
-                  </div>
-                  <div className="fl2v-frame-thumb-box">
-                    {fl2vFirstFrame?.thumbPath ? (
-                      <img src={movieMediaUrl(fl2vFirstFrame.thumbPath)} alt="First Frame" />
-                    ) : (
-                      <div className="fl2v-thumb-empty"><Film /><span>No frame captured</span></div>
-                    )}
-                  </div>
-                  <div className="fl2v-frame-meta">
-                    <small>{fl2vFirstFrame ? fl2vFirstFrame.label : "Position playhead & capture"}</small>
-                  </div>
-                  <button className="fl2v-capture-btn" onClick={() => void captureFrameSlot("first")}>
-                    <Eye /> Capture from Playhead
-                  </button>
-                </div>
-
-                <div className="fl2v-frame-connector"><ArrowRight /></div>
-
-                <div className={`fl2v-frame-card ${fl2vLastFrame ? "set" : ""}`}>
-                  <div className="fl2v-frame-head">
-                    <strong>Last Frame (End)</strong>
-                    {fl2vLastFrame && <button className="fl2v-clear-btn" onClick={() => setFl2vLastFrame(null)}><X /></button>}
-                  </div>
-                  <div className="fl2v-frame-thumb-box">
-                    {fl2vLastFrame?.thumbPath ? (
-                      <img src={movieMediaUrl(fl2vLastFrame.thumbPath)} alt="Last Frame" />
-                    ) : (
-                      <div className="fl2v-thumb-empty"><Film /><span>No frame captured</span></div>
-                    )}
-                  </div>
-                  <div className="fl2v-frame-meta">
-                    <small>{fl2vLastFrame ? fl2vLastFrame.label : "Position playhead & capture"}</small>
-                  </div>
-                  <button className="fl2v-capture-btn" onClick={() => void captureFrameSlot("last")}>
-                    <Eye /> Capture from Playhead
-                  </button>
-                </div>
-              </div>
-            </InspectorSection>
-
-            <InspectorSection title="2. Motion & Prompt" defaultOpen>
-              <div className="bridge-assistant wide">
-                <button
-                  type="button"
-                  className="bridge-assistant-toggle"
-                  onClick={() => setBridgeAssistantOpen(!bridgeAssistantOpen)}
-                >
-                  <Sparkles /> Director bridge assistant <ChevronDown className={bridgeAssistantOpen ? "open" : ""} />
-                </button>
-                {bridgeAssistantOpen && (
-                  <div className="bridge-assistant-body">
-                    <p>
-                      The Director synthesizes a high-fidelity MiniMax H3 motion prompt from Frame A, Frame B, and the project continuity bible.
-                    </p>
-
-                    <div className="bridge-quick-chips">
-                      {QUICK_BRIDGE_PROMPTS.map((chip) => (
-                        <button
-                          key={chip.label}
-                          type="button"
-                          className="bridge-chip"
-                          onClick={() => setBridgeFeedback(chip.prompt)}
-                        >
-                          {chip.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    <label className="wide">
-                      Producer bridge direction
-                      <textarea
-                        rows={2}
-                        maxLength={1000}
-                        value={bridgeFeedback}
-                        onChange={(e) => setBridgeFeedback(e.target.value)}
-                        placeholder="Specify camera movement, character action, or sound transition connecting Frame A to B…"
-                      />
-                    </label>
-
-                    <div className="bridge-assistant-actions">
-                      <label>
-                        Thinking level
-                        <select
-                          aria-label="Director bridge assistant thinking level"
-                          value={bridgeThinkingLevel}
-                          disabled={bridgeBusy}
-                          onChange={(e) => setBridgeThinkingLevel(e.target.value as ThinkingLevel | "default")}
-                        >
-                          <option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, project.model)})</option>
-                          <option value="off">Off (direct)</option>
-                          <option value="low">Low reasoning</option>
-                          <option value="medium">Medium reasoning</option>
-                          <option value="high">High reasoning</option>
-                          <option value="max">Max reasoning</option>
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        className="bridge-ask-btn"
-                        disabled={bridgeBusy || !fl2vFirstFrame || !fl2vLastFrame}
-                        onClick={() => void handleAskBridgeDirector()}
-                      >
-                        {bridgeBusy ? <LoaderCircle className="spin" /> : <Sparkles />}
-                        Ask Director for bridge prompt
-                      </button>
-                    </div>
-
-                    {bridgeError && <div className="bridge-error-banner">{bridgeError}</div>}
-
-                    {bridgeModelAttempted && (
-                      <ModelThinkingStream
-                        text={bridgeReasoning}
-                        active={bridgeModelBusy}
-                        modelName={project.model}
-                        thinkingLevel={bridgeThinkingLevel !== "default" ? bridgeThinkingLevel : effectiveThinkingLevelForModel(controlSettings, project.model)}
-                        className="bridge-thinking-stream"
-                      />
-                    )}
-
-                    {bridgeSuggestion && (
-                      <div className="bridge-suggestion-card">
-                        <div className="bridge-suggestion-header">
-                          <h4>{bridgeSuggestion.summary}</h4>
-                          <span className="bridge-duration-badge">{bridgeSuggestion.suggestedDuration.toFixed(1)}s suggested</span>
-                        </div>
-
-                        <div className="bridge-motion-grid">
-                          <div className="bridge-motion-item">
-                            <strong>Camera:</strong> <span>{bridgeSuggestion.cameraMotion}</span>
-                          </div>
-                          <div className="bridge-motion-item">
-                            <strong>Subject:</strong> <span>{bridgeSuggestion.subjectMotion}</span>
-                          </div>
-                          {bridgeSuggestion.transitionNotes && (
-                            <div className="bridge-motion-item wide">
-                              <strong>Audio & Transition:</strong> <span>{bridgeSuggestion.transitionNotes}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="bridge-prompt-preview">
-                          <strong>Generated FL2V Prompt:</strong>
-                          <p>{bridgeSuggestion.motionPrompt}</p>
-                        </div>
-
-                        {bridgeSuggestion.checklist.length > 0 && (
-                          <ul className="bridge-checklist">
-                            {bridgeSuggestion.checklist.map((item) => (
-                              <li key={item}><Check /> {item}</li>
-                            ))}
-                          </ul>
-                        )}
-
-                        <button
-                          type="button"
-                          className="bridge-apply-btn primary-button"
-                          onClick={applyBridgeSuggestion}
-                        >
-                          <Check /> Apply to Bridge &amp; Duration
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <label className="wide">
-                Motion Description
-                <textarea
-                  rows={3}
-                  maxLength={1000}
-                  value={fl2vPrompt}
-                  onChange={(e) => setFl2vPrompt(e.target.value)}
-                  placeholder="Describe the action, camera movement, and visual transition connecting Frame A to Frame B…"
-                />
-              </label>
-              <label>
-                Duration
-                <select value={fl2vDuration} onChange={(e) => setFl2vDuration(Number(e.target.value))}>
-                  {!STANDARD_H3_DURATIONS.some((d) => Math.abs(d.value - fl2vDuration) < 0.05) && (
-                    <option value={fl2vDuration}>
-                      {fl2vDuration.toFixed(1)}s · {Math.round(fl2vDuration * 24)} frames (Matched Range)
-                    </option>
-                  )}
-                  {STANDARD_H3_DURATIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Seed
-                <div className="fl2v-seed-input">
-                  <input
-                    type="number"
-                    placeholder={defaultSeed ? String(defaultSeed) : "Generation seed"}
-                    value={fl2vSeed !== undefined ? fl2vSeed : (defaultSeed ?? "")}
-                    onChange={(e) => setFl2vSeed(e.target.value === "" ? undefined : Number(e.target.value))}
-                  />
-                  <button title="Reset to generation seed" onClick={() => setFl2vSeed(defaultSeed)}><RotateCcw /></button>
-                  <button title="Randomize seed" onClick={() => setFl2vSeed(Math.floor(Math.random() * 1_000_000_000))}><Dices /></button>
-                </div>
-              </label>
-            </InspectorSection>
-
-            <InspectorSection title="3. Placement" defaultOpen>
-              <div className="fl2v-insert-modes wide">
-                <label className="fl2v-radio">
-                  <input
-                    type="radio"
-                    name="fl2v_mode"
-                    checked={fl2vInsertMode === "insert_at_cut"}
-                    onChange={() => setFl2vInsertMode("insert_at_cut")}
-                  />
-                  <span><b>Insert at Cut / Playhead</b><small>Splice the new bridge clip into the primary storyline.</small></span>
-                </label>
-                <label className="fl2v-radio">
-                  <input
-                    type="radio"
-                    name="fl2v_mode"
-                    checked={fl2vInsertMode === "replace_range"}
-                    onChange={() => setFl2vInsertMode("replace_range")}
-                  />
-                  <span><b>Replace Range Between Frames</b><small>Trim out footage between Frame A &amp; B and replace with bridge.</small></span>
-                </label>
-                <label className="fl2v-radio">
-                  <input
-                    type="radio"
-                    name="fl2v_mode"
-                    checked={fl2vInsertMode === "add_to_masters"}
-                    onChange={() => setFl2vInsertMode("add_to_masters")}
-                  />
-                  <span><b>Add to Masters Pool</b><small>Save to project masters for manual dragging/placement.</small></span>
-                </label>
-              </div>
-
-              {fl2vError && <div className="fl2v-error-box wide"><X /><span>{fl2vError}</span></div>}
-
-              <button
-                className="fl2v-generate-action wide"
-                disabled={disabled || fl2vRendering || !fl2vFirstFrame || !fl2vLastFrame}
-                onClick={handleGenerateFl2v}
-              >
-                {fl2vRendering ? (
-                  <><RefreshCw className="spin" /> Generating FL2V Bridge in ComfyUI…</>
-                ) : (
-                  <><Sparkles /> 🚀 Generate In-Between Video</>
-                )}
-              </button>
-            </InspectorSection>
-          </div>
-        ) : selected ? (
+        {selected ? (
           <div className="editor-inspector-body">
             {inspectorTab === "video" && <>
               <InspectorSection title="Source" defaultOpen><label className="wide">Preserved version<select value={selected.edit.sourceVersionId} onChange={(event) => patchSelected({ sourceVersionId: event.target.value, trimStart: 0, trimEnd: 0 })}><option value="">Active master</option>{selected.clip.versions.map((version) => <option key={version.id} value={version.id}>{version.id === "original" ? "Original master" : `Version ${version.id}`} · {version.durationSeconds.toFixed(1)}s</option>)}</select></label></InspectorSection>
@@ -1106,8 +487,6 @@ export function MovieTimeline({ project, value, disabled, controlSettings, onCha
           <button aria-label="Split at playhead" title="Split at playhead" disabled={!selected} onClick={split}><Scissors /></button>
           <button aria-label="Duplicate timeline item" title="Duplicate" disabled={!selected || items.length >= 512} onClick={duplicate}><Copy /></button>
           <button aria-label="Remove timeline item" title="Remove decision" disabled={!selected} onClick={remove}><Trash2 /></button>
-          <i />
-          <button className={inspectorTab === "inbetween" && showInspector ? "active" : ""} title="FL2V In-Between Bridge" onClick={() => { setShowInspector(true); setInspectorTab("inbetween"); }}><Sparkles /> Bridge</button>
         </div>
         <div><button className={snapping ? "active" : ""} title="Snapping · N" onClick={() => setSnapping((active) => !active)}><Magnet /><kbd>N</kbd></button><button className={skimming ? "active" : ""} title="Skimming · S" onClick={() => setSkimming((active) => !active)}><Eye /><kbd>S</kbd></button><button title="Keyboard shortcuts · ?" onClick={() => setShowShortcuts((visible) => !visible)}><CircleHelp /></button><span>{items.length} edits · {formatTimecode(totalDuration)}</span><ZoomIn /><input aria-label="Timeline zoom" type="range" min={28} max={180} value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><button className="zoom-fit" onClick={() => setZoom(Math.max(28, Math.min(180, 900 / Math.max(1, totalDuration))))}>Fit</button></div>
       </div>

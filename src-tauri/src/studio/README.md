@@ -1,7 +1,7 @@
 # Studio maintainer guide
 
 This directory contains every model-assisted part of Kestrel Studio. Start here before changing
-Director/Reviewer planning, prompt generation, Producer Copilot, H3 image assets, live previews, Image Studio, or Music. The root
+Director/Reviewer planning, generative movie edits, prompt generation, Producer Copilot, H3 image assets, live previews, Image Studio, or Music. The root
 `studio.rs` file remains the domain and persistence facade; child modules own one bounded concern
 and must not acquire authority implicitly.
 
@@ -11,8 +11,10 @@ and must not acquire authority implicitly.
   is fixed to loopback.
 - `RuntimeManager` owns the only local language-model process and inference semaphore. A Studio
   feature never starts a second model server or bypasses its lease.
-- Model text is data. Only `movie_agent.rs` may mutate the planning workspace, and only through its
-  deserialized `WorkspaceAction` contract. Producer Copilot proposes edits but cannot apply them.
+- Model text is data. `movie_agent.rs` mutates only the planning workspace through its deserialized
+  `WorkspaceAction` contract. `generation_agent.rs` writes only a checked candidate workspace;
+  rendering and storyline placement remain separate, explicit producer actions. Producer Copilot
+  proposes edits but cannot apply them.
 - `project.json`, immutable reference objects, raw masters, edit decisions, receipts, transcripts,
   and planning controls are durable user data. Interrupted work is surfaced, never silently resumed.
 - The model receives the original producer request and a fresh authoritative workspace snapshot on
@@ -30,6 +32,7 @@ and must not acquire authority implicitly.
 | --- | --- | --- |
 | `studio.rs` | Public Tauri-facing domain types, project persistence, job coordination, rendering and edit facade | Model stream framing or workspace action semantics |
 | `agent_flow.rs` | Director planning orchestration, producer-control boundaries, per-turn model leases, tool dispatch, independent-review coordination | Wire parsing or file mutation rules |
+| `generation_agent.rs` | Durable shot/bridge candidate orchestration, typed workspace actions, two-check gate, fresh-context review, and visible events | Rendering, arbitrary media paths, or storyline mutation |
 | `agent_lifecycle.rs` | Pure session, tool-use, and reviewer-budget transitions | HTTP, filesystem, UI events, or project state |
 | `agent_protocol.rs` | Exact planning requests, lossless transcript history, assistant/tool-call assembly | Workspace mutation or producer copy |
 | `model_stream.rs` | Shared OpenAI-compatible SSE framing, UTF-8 fragmentation, JSON validation, completion markers, and explicit reasoning-channel extraction | Tool schemas or producer-facing UI events |
@@ -85,7 +88,7 @@ completion markers, and events after completion so token loss cannot look like s
 
 Explicit `reasoning_content` or `reasoning` deltas are streamed to the same bounded, provisional
 thinking pane in prompt collaboration, Director planning and review, Producer Copilot, and the
-per-scene Director assistant. They are never inferred from ordinary answer text, treated as a
+Generative Director and Reviewer. They are never inferred from ordinary answer text, treated as a
 production instruction, or copied into the model's durable tool transcript. A model that exposes no
 separate channel is identified honestly in the UI.
 
@@ -112,10 +115,31 @@ The project directory is the source of truth. Important planning files include:
 | `agent-workspace/state.json` | Workspace revision and clean-check gate |
 | `agent-workspace/agent-transcript*.json` | Lossless accepted conversation by context session |
 | `agent-workspace/agent-last-request.json` | Exact last planning request envelope for audit |
+| `agent-workspace/generative-edits/<request>/` | Exact task/context, candidate revisions, native-check state, transcript, fresh review, and accepted result |
+| `generations/fl2v-*/graph.json` and `receipt.json` | Exact endpoint hashes, H3 graph, seed, placement decision, and immutable output hash |
 | `../../model-qualifications.json` | Recoverable protocol receipts bound to model, engine, runtime profile, and protocol revision |
 
 Atomic replacement and recovery copies are deliberate. Do not trade them for in-memory convenience.
 The advanced UI reads bounded redacted views; the unmodified files remain available as durable truth.
+
+## Generative edit lifecycle
+
+```text
+select one storyline shot or two exact frame anchors in Generate
+  -> producer writes renderer direction directly or opens a durable Generative Director session
+  -> append complete current story, plan, references, storyline, and selected source facts every turn
+  -> typed generation_workspace writes one candidate
+  -> two clean native checks on the unchanged candidate
+  -> independent fresh-context Reviewer accepts or returns blocking repairs
+  -> producer edits or discards the accepted candidate
+  -> H3 writes a preserved audition plus exact graph/endpoint/output receipt
+  -> producer explicitly chooses an audition or bridge placement
+```
+
+The React surface sends storyline edit IDs and source times, never absolute input paths. Native code
+resolves the selected preserved version inside the project boundary before extracting a frame. A shot
+audition never rewrites the active master or approved plan. A bridge defaults to the Masters bin and
+changes the storyline only when the producer selected insert or replace before generation.
 
 ## Music production lifecycle
 

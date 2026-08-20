@@ -30,6 +30,8 @@ Rust application boundary
   |     |-- project-pinned Director + Reviewer through the single inference lease
   |     |-- recoverable local protocol-qualification receipts for generic GGUFs
   |     |-- one project-local movie_workspace tool; no research/archive tools
+  |     |-- durable generation_workspace candidates, two native checks, and fresh-context review
+  |     |-- H3 shot auditions and first/last-frame bridges require explicit producer placement
   |     |-- ComfyUI MiniMax H3 on fixed 127.0.0.1:8188
   |     |-- immutable native-audio MP4 masters + continuity stills
   |     `-- FFmpeg first-cut and edited exports
