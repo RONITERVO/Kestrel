@@ -443,23 +443,27 @@ export interface MovieCapturedFrame {
   path: string;
 }
 
-export interface MovieFl2vBridgeRequest {
+export type MovieTransitionPosition = "before" | "between" | "after";
+export type MovieTransitionPlacement = "add_to_masters" | "insert_before_right" | "insert_after_left" | "replace_range";
+
+export interface MovieFl2vTransitionRequest {
   id: string;
-  firstAnchor: MovieFrameAnchor;
-  lastAnchor: MovieFrameAnchor;
+  position: MovieTransitionPosition;
+  firstAnchor?: MovieFrameAnchor;
+  lastAnchor?: MovieFrameAnchor;
   prompt: string;
   durationSeconds: number;
   seed?: number;
-  placement: "add_to_masters" | "insert_after_left" | "replace_range";
+  placement: MovieTransitionPlacement;
 }
 
 export type MovieGenerationTask =
   | { kind: "shotVersion"; clipId: string; direction: string }
-  | { kind: "bridge"; firstAnchor: MovieFrameAnchor; lastAnchor: MovieFrameAnchor; direction: string; durationSeconds: number };
+  | { kind: "transition"; position: MovieTransitionPosition; firstAnchor?: MovieFrameAnchor; lastAnchor?: MovieFrameAnchor; direction: string; durationSeconds: number };
 
 export type MovieGenerationCandidate =
   | { kind: "shotVersion"; clipId: string; clip: PlannedClip; checklist: string[] }
-  | { kind: "bridge"; motionPrompt: string; durationSeconds: number; cameraMotion: string; subjectMotion: string; transitionNotes: string; checklist: string[] };
+  | { kind: "transition"; motionPrompt: string; durationSeconds: number; cameraMotion: string; subjectMotion: string; transitionNotes: string; checklist: string[] };
 
 export interface MovieGenerationAgentRequest {
   requestId: string;

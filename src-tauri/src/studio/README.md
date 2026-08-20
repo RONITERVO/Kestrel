@@ -32,7 +32,7 @@ and must not acquire authority implicitly.
 | --- | --- | --- |
 | `studio.rs` | Public Tauri-facing domain types, project persistence, job coordination, rendering and edit facade | Model stream framing or workspace action semantics |
 | `agent_flow.rs` | Director planning orchestration, producer-control boundaries, per-turn model leases, tool dispatch, independent-review coordination | Wire parsing or file mutation rules |
-| `generation_agent.rs` | Durable shot/bridge candidate orchestration, typed workspace actions, two-check gate, fresh-context review, and visible events | Rendering, arbitrary media paths, or storyline mutation |
+| `generation_agent.rs` | Durable shot/transition candidate orchestration, typed workspace actions, two-check gate, fresh-context review, and visible events | Rendering, arbitrary media paths, or storyline mutation |
 | `agent_lifecycle.rs` | Pure session, tool-use, and reviewer-budget transitions | HTTP, filesystem, UI events, or project state |
 | `agent_protocol.rs` | Exact planning requests, lossless transcript history, assistant/tool-call assembly | Workspace mutation or producer copy |
 | `model_stream.rs` | Shared OpenAI-compatible SSE framing, UTF-8 fragmentation, JSON validation, completion markers, and explicit reasoning-channel extraction | Tool schemas or producer-facing UI events |
@@ -133,12 +133,12 @@ select one storyline shot or two exact frame anchors in Generate
   -> independent fresh-context Reviewer accepts or returns blocking repairs
   -> producer edits or discards the accepted candidate
   -> H3 writes a preserved audition plus exact graph/endpoint/output receipt
-  -> producer explicitly chooses an audition or bridge placement
+  -> producer explicitly chooses an audition or before/between/after placement
 ```
 
 The React surface sends storyline edit IDs and source times, never absolute input paths. Native code
 resolves the selected preserved version inside the project boundary before extracting a frame. A shot
-audition never rewrites the active master or approved plan. A bridge defaults to the Masters bin and
+audition never rewrites the active master or approved plan. A transition defaults to the Masters bin and
 changes the storyline only when the producer selected insert or replace before generation.
 
 ## Music production lifecycle

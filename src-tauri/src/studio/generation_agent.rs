@@ -10,7 +10,7 @@ use super::agent_protocol::{self, AgentTranscript, AssistantTurn};
 use super::{
     check_cancel, has_meaningful_prose, prepare_producer_plan, prompt_quality_issues,
     reference_manifest, write_json_atomic, MovieFrameAnchor, MovieModelRuntime, MovieProject,
-    MovieStudio, PlannedClip, StudioError,
+    MovieStudio, MovieTransitionPosition, PlannedClip, StudioError,
 };
 use crate::models::ThinkingLevel;
 use chrono::Utc;
@@ -40,9 +40,12 @@ pub enum MovieGenerationTask {
         clip_id: String,
         direction: String,
     },
-    Bridge {
-        first_anchor: MovieFrameAnchor,
-        last_anchor: MovieFrameAnchor,
+    Transition {
+        position: MovieTransitionPosition,
+        #[serde(default)]
+        first_anchor: Option<MovieFrameAnchor>,
+        #[serde(default)]
+        last_anchor: Option<MovieFrameAnchor>,
         direction: String,
         duration_seconds: f32,
     },
@@ -65,7 +68,7 @@ pub enum MovieGenerationCandidate {
         #[serde(default)]
         checklist: Vec<String>,
     },
-    Bridge {
+    Transition {
         motion_prompt: String,
         duration_seconds: f32,
         camera_motion: String,
@@ -295,7 +298,9 @@ impl GenerationWorkspace {
                             .into(),
                     ));
                 }
-                Ok(GenerationToolOutcome::Submitted(Box::new(candidate.clone())))
+                Ok(GenerationToolOutcome::Submitted(Box::new(
+                    candidate.clone(),
+                )))
             }
         }
     }
@@ -340,7 +345,9 @@ pub(super) async fn run(
     )?;
     let result_path = workspace_root.join("result.json");
     if result_path.is_file() && fs::metadata(&result_path)?.len() <= 256 * 1024 {
-        if let Ok(result) = serde_json::from_slice::<MovieGenerationProposal>(&fs::read(&result_path)?) {
+        if let Ok(result) =
+            serde_json::from_slice::<MovieGenerationProposal>(&fs::read(&result_path)?)
+        {
             if validate_generation_candidate(&project, &request.task, &result).is_ok() {
                 emit(app, request, "complete", "reviewer", &result.review_summary);
                 return Ok(result);
@@ -368,7 +375,10 @@ pub(super) async fn run(
             super::prompts::generation_resume()
         };
         let mut transcript = if lifecycle.session() == 1 && resume_saved_transcript {
-            AgentTranscript::resume(transcript_path.clone(), &super::prompts::generation_resume())?
+            AgentTranscript::resume(
+                transcript_path.clone(),
+                &super::prompts::generation_resume(),
+            )?
         } else {
             AgentTranscript::begin(
                 transcript_path.clone(),
@@ -615,22 +625,22 @@ fn validate_generation_request(request: &MovieGenerationAgentRequest) -> Result<
                 ));
             }
         }
-        MovieGenerationTask::Bridge {
+        MovieGenerationTask::Transition {
+            position,
             first_anchor,
             last_anchor,
             direction,
             duration_seconds,
         } => {
-            validate_anchor(first_anchor)?;
-            validate_anchor(last_anchor)?;
+            validate_transition_anchors(*position, first_anchor.as_ref(), last_anchor.as_ref())?;
             if !has_meaningful_prose(direction, 3) {
                 return Err(StudioError::Invalid(
-                    "bridge assistance needs a producer direction".into(),
+                    "transition assistance needs a producer direction".into(),
                 ));
             }
             if !duration_seconds.is_finite() || !(1.0..=15.0).contains(duration_seconds) {
                 return Err(StudioError::Invalid(
-                    "bridge duration must be between 1 and 15 seconds".into(),
+                    "transition duration must be between 1 and 15 seconds".into(),
                 ));
             }
         }
@@ -645,6 +655,31 @@ fn validate_anchor(anchor: &MovieFrameAnchor) -> Result<(), StudioError> {
     {
         return Err(StudioError::Invalid(
             "frame anchors require a valid storyline edit and non-negative time".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_transition_anchors(
+    position: MovieTransitionPosition,
+    first: Option<&MovieFrameAnchor>,
+    last: Option<&MovieFrameAnchor>,
+) -> Result<(), StudioError> {
+    if let Some(anchor) = first {
+        validate_anchor(anchor)?;
+    }
+    if let Some(anchor) = last {
+        validate_anchor(anchor)?;
+    }
+    let valid = match position {
+        MovieTransitionPosition::Before => first.is_none() && last.is_some(),
+        MovieTransitionPosition::Between => first.is_some() && last.is_some(),
+        MovieTransitionPosition::After => first.is_some() && last.is_none(),
+    };
+    if !valid {
+        return Err(StudioError::Invalid(
+            "before needs only a story end frame, between needs both frames, and after needs only a story start frame"
+                .into(),
         ));
     }
     Ok(())
@@ -692,8 +727,8 @@ fn validate_generation_candidate(
             }
         }
         (
-            MovieGenerationTask::Bridge { .. },
-            MovieGenerationCandidate::Bridge {
+            MovieGenerationTask::Transition { .. },
+            MovieGenerationCandidate::Transition {
                 motion_prompt,
                 duration_seconds,
                 camera_motion,
@@ -705,12 +740,12 @@ fn validate_generation_candidate(
             let words = motion_prompt.split_whitespace().count();
             if !(120..=450).contains(&words) {
                 return Err(StudioError::Invalid(format!(
-                    "bridge renderer direction has {words} words; H3 directions require 120-450"
+                    "transition renderer direction has {words} words; H3 directions require 120-450"
                 )));
             }
             if !duration_seconds.is_finite() || !(1.0..=15.0).contains(duration_seconds) {
                 return Err(StudioError::Invalid(
-                    "bridge candidate duration must be between 1 and 15 seconds".into(),
+                    "transition candidate duration must be between 1 and 15 seconds".into(),
                 ));
             }
             if !has_meaningful_prose(camera_motion, 3)
@@ -718,7 +753,7 @@ fn validate_generation_candidate(
                 || !has_meaningful_prose(transition_notes, 3)
             {
                 return Err(StudioError::Invalid(
-                    "bridge candidate needs explicit camera, subject, and transition direction"
+                    "transition candidate needs explicit camera, subject, and continuity direction"
                         .into(),
                 ));
             }
@@ -729,7 +764,7 @@ fn validate_generation_candidate(
                     .any(|reference| motion_prompt.contains(&reference.asset_id))
             {
                 return Err(StudioError::Invalid(
-                    "bridge renderer prose cannot contain internal reference tags or asset ids"
+                    "transition renderer prose cannot contain internal reference tags or asset ids"
                         .into(),
                 ));
             }
@@ -756,13 +791,15 @@ fn generation_context(
             "plannedClip":project.plan.as_ref().and_then(|plan| plan.clips.iter().find(|clip| clip.id == *clip_id)),
             "renderedClip":project.clips.iter().find(|clip| clip.id == *clip_id),
         }),
-        MovieGenerationTask::Bridge {
+        MovieGenerationTask::Transition {
+            position,
             first_anchor,
             last_anchor,
             ..
         } => json!({
-            "first":anchor_context(project, first_anchor)?,
-            "last":anchor_context(project, last_anchor)?,
+            "position":position,
+            "first":first_anchor.as_ref().map(|anchor| anchor_context(project, anchor)).transpose()?,
+            "last":last_anchor.as_ref().map(|anchor| anchor_context(project, anchor)).transpose()?,
         }),
     };
     Ok(json!({
@@ -821,13 +858,13 @@ fn generation_candidate_schema(task: &MovieGenerationTask) -> Value {
                 },"required":["kind","clipId","clip","checklist"]}
             },"required":["summary","reviewSummary","candidate"]
         }),
-        MovieGenerationTask::Bridge { .. } => json!({
+        MovieGenerationTask::Transition { .. } => json!({
             "type":"object","additionalProperties":false,
             "properties":{
                 "summary":{"type":"string","minLength":10,"maxLength":4000},
                 "reviewSummary":{"type":"string","maxLength":4000},
                 "candidate":{"type":"object","additionalProperties":false,"properties":{
-                    "kind":{"const":"bridge"},
+                    "kind":{"const":"transition"},
                     "motionPrompt":{"type":"string","minLength":300,"maxLength":65536},
                     "durationSeconds":{"type":"number","minimum":1,"maximum":15},
                     "cameraMotion":{"type":"string","minLength":10,"maxLength":4000},
@@ -909,28 +946,29 @@ fn emit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::studio::{ClipEdit, MovieBridgePlacement, MovieSettings};
+    use crate::studio::{ClipEdit, MovieSettings, MovieTransitionPlacement};
 
     #[test]
     fn workspace_tool_requires_two_clean_checks_after_the_last_write() {
         let root = tempfile::tempdir().unwrap();
         let project = test_project();
-        let task = MovieGenerationTask::Bridge {
-            first_anchor: MovieFrameAnchor {
+        let task = MovieGenerationTask::Transition {
+            position: MovieTransitionPosition::Between,
+            first_anchor: Some(MovieFrameAnchor {
                 edit_id: "edit-1".into(),
                 time_seconds: 4.9,
                 label: None,
-            },
-            last_anchor: MovieFrameAnchor {
+            }),
+            last_anchor: Some(MovieFrameAnchor {
                 edit_id: "edit-2".into(),
                 time_seconds: 0.0,
                 label: None,
-            },
-            direction: "Bridge the running player into the quiet wide shot.".into(),
+            }),
+            direction: "Move the running player into the quiet wide shot.".into(),
             duration_seconds: 5.0,
         };
         let mut workspace = GenerationWorkspace::open(root.path().into(), project, task).unwrap();
-        let proposal = bridge_proposal();
+        let proposal = transition_proposal();
         assert!(matches!(
             workspace.execute(GenerationToolRequest {
                 action: GenerationAction::WriteCandidate,
@@ -967,7 +1005,7 @@ mod tests {
             clip_id: "clip-001".into(),
             direction: "Make the camera settle sooner and preserve the ending.".into(),
         };
-        assert!(validate_generation_candidate(&project, &task, &bridge_proposal()).is_err());
+        assert!(validate_generation_candidate(&project, &task, &transition_proposal()).is_err());
     }
 
     #[test]
@@ -998,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    fn replacement_bridge_uses_exact_storyline_edit_ids_and_keeps_edge_fragments() {
+    fn replacement_transition_uses_exact_storyline_edit_ids_and_keeps_edge_fragments() {
         let mut project = test_project();
         let first = MovieFrameAnchor {
             edit_id: "edit-1".into(),
@@ -1010,9 +1048,9 @@ mod tests {
             time_seconds: 1.0,
             label: None,
         };
-        let bridge = ClipEdit {
-            id: "edit-bridge".into(),
-            clip_id: "bridge".into(),
+        let transition = ClipEdit {
+            id: "edit-transition".into(),
+            clip_id: "transition".into(),
             enabled: true,
             order: 0,
             trim_start: 0.0,
@@ -1027,49 +1065,145 @@ mod tests {
             label: String::new(),
             notes: String::new(),
         };
-        super::super::validate_bridge_placement(
+        super::super::validate_transition_placement(
             &project,
-            &first,
-            &last,
-            MovieBridgePlacement::ReplaceRange,
+            MovieTransitionPosition::Between,
+            Some(&first),
+            Some(&last),
+            MovieTransitionPlacement::ReplaceRange,
         )
         .unwrap();
-        super::super::replace_storyline_range_with_bridge(&mut project, &first, &last, bridge)
-            .unwrap();
+        super::super::replace_storyline_range_with_transition(
+            &mut project,
+            &first,
+            &last,
+            transition,
+        )
+        .unwrap();
         assert_eq!(project.edit.clips.len(), 3);
         assert_eq!(project.edit.clips[0].id, "edit-1");
         assert_eq!(project.edit.clips[0].trim_end, 2.0);
-        assert_eq!(project.edit.clips[1].id, "edit-bridge");
+        assert_eq!(project.edit.clips[1].id, "edit-transition");
         assert_eq!(project.edit.clips[2].id, "edit-2");
         assert_eq!(project.edit.clips[2].trim_start, 1.0);
     }
 
     #[test]
-    fn replacement_bridge_rejects_backward_storyline_ranges() {
+    fn replacement_transition_rejects_backward_storyline_ranges() {
         let project = test_project();
-        let error = super::super::validate_bridge_placement(
+        let error = super::super::validate_transition_placement(
             &project,
-            &MovieFrameAnchor {
+            MovieTransitionPosition::Between,
+            Some(&MovieFrameAnchor {
                 edit_id: "edit-2".into(),
                 time_seconds: 1.0,
                 label: None,
-            },
-            &MovieFrameAnchor {
+            }),
+            Some(&MovieFrameAnchor {
                 edit_id: "edit-1".into(),
                 time_seconds: 3.0,
                 label: None,
-            },
-            MovieBridgePlacement::ReplaceRange,
+            }),
+            MovieTransitionPlacement::ReplaceRange,
         )
         .unwrap_err();
         assert!(error.to_string().contains("run forward"));
     }
 
-    fn bridge_proposal() -> MovieGenerationProposal {
+    #[test]
+    fn edge_transitions_accept_only_the_story_facing_endpoint_and_placement() {
+        let project = test_project();
+        let first = MovieFrameAnchor {
+            edit_id: "edit-1".into(),
+            time_seconds: 0.0,
+            label: None,
+        };
+        let last = MovieFrameAnchor {
+            edit_id: "edit-2".into(),
+            time_seconds: 4.9,
+            label: None,
+        };
+        super::super::validate_transition_placement(
+            &project,
+            MovieTransitionPosition::Before,
+            None,
+            Some(&first),
+            MovieTransitionPlacement::InsertBeforeRight,
+        )
+        .unwrap();
+        super::super::validate_transition_placement(
+            &project,
+            MovieTransitionPosition::After,
+            Some(&last),
+            None,
+            MovieTransitionPlacement::InsertAfterLeft,
+        )
+        .unwrap();
+        assert!(super::super::validate_transition_placement(
+            &project,
+            MovieTransitionPosition::Before,
+            Some(&first),
+            None,
+            MovieTransitionPlacement::InsertAfterLeft,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn placed_transition_moves_the_real_cut_to_the_nudged_endpoint_frames() {
+        let mut project = test_project();
+        let first = MovieFrameAnchor {
+            edit_id: "edit-1".into(),
+            time_seconds: 4.0,
+            label: None,
+        };
+        let last = MovieFrameAnchor {
+            edit_id: "edit-2".into(),
+            time_seconds: 1.0,
+            label: None,
+        };
+        super::super::validate_transition_placement(
+            &project,
+            MovieTransitionPosition::Between,
+            Some(&first),
+            Some(&last),
+            MovieTransitionPlacement::InsertAfterLeft,
+        )
+        .unwrap();
+        super::super::place_transition_edit(
+            &mut project,
+            Some(&first),
+            Some(&last),
+            MovieTransitionPlacement::InsertAfterLeft,
+            ClipEdit {
+                id: "edit-transition".into(),
+                clip_id: "transition".into(),
+                enabled: true,
+                order: 0,
+                trim_start: 0.0,
+                trim_end: 0.0,
+                audio_gain: 1.0,
+                source_version_id: String::new(),
+                speed: 1.0,
+                fade_in: 0.0,
+                fade_out: 0.0,
+                audio_fade_in: 0.0,
+                audio_fade_out: 0.0,
+                label: String::new(),
+                notes: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(project.edit.clips[0].trim_end, 1.0);
+        assert_eq!(project.edit.clips[1].id, "edit-transition");
+        assert_eq!(project.edit.clips[2].trim_start, 1.0);
+    }
+
+    fn transition_proposal() -> MovieGenerationProposal {
         MovieGenerationProposal {
-            summary: "A controlled physical bridge between the selected endpoints.".into(),
+            summary: "A controlled physical transition between the selected endpoints.".into(),
             review_summary: String::new(),
-            candidate: MovieGenerationCandidate::Bridge {
+            candidate: MovieGenerationCandidate::Transition {
                 motion_prompt: (0..130)
                     .map(|index| format!("motion{index}"))
                     .collect::<Vec<_>>()

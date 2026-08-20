@@ -752,28 +752,40 @@ pub struct MovieCapturedFrame {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum MovieBridgePlacement {
+pub enum MovieTransitionPosition {
+    Before,
+    Between,
+    After,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MovieTransitionPlacement {
     AddToMasters,
+    InsertBeforeRight,
     InsertAfterLeft,
     ReplaceRange,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MovieFl2vBridgeRequest {
+pub struct MovieFl2vTransitionRequest {
     pub id: String,
-    pub first_anchor: MovieFrameAnchor,
-    pub last_anchor: MovieFrameAnchor,
+    pub position: MovieTransitionPosition,
+    #[serde(default)]
+    pub first_anchor: Option<MovieFrameAnchor>,
+    #[serde(default)]
+    pub last_anchor: Option<MovieFrameAnchor>,
     pub prompt: String,
     pub duration_seconds: f32,
     #[serde(default)]
     pub seed: Option<u64>,
-    #[serde(default = "default_bridge_placement")]
-    pub placement: MovieBridgePlacement,
+    #[serde(default = "default_transition_placement")]
+    pub placement: MovieTransitionPlacement,
 }
 
-fn default_bridge_placement() -> MovieBridgePlacement {
-    MovieBridgePlacement::AddToMasters
+fn default_transition_placement() -> MovieTransitionPlacement {
+    MovieTransitionPlacement::AddToMasters
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2629,14 +2641,15 @@ impl MovieStudio {
         })
     }
 
-    pub async fn render_fl2v_bridge(
+    pub async fn render_fl2v_transition(
         &self,
-        request: MovieFl2vBridgeRequest,
+        request: MovieFl2vTransitionRequest,
         cancel: &CancellationToken,
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
-        let MovieFl2vBridgeRequest {
+        let MovieFl2vTransitionRequest {
             id,
+            position,
             first_anchor,
             last_anchor,
             prompt,
@@ -2651,26 +2664,43 @@ impl MovieStudio {
         let prompt_words = prompt.split_whitespace().count();
         if !(MIN_H3_PROMPT_WORDS..=MAX_H3_PROMPT_WORDS).contains(&prompt_words) {
             return Err(StudioError::Invalid(
-                "bridge direction must contain 120 to 450 words of clear renderer prose".into(),
+                "transition direction must contain 120 to 450 words of clear renderer prose".into(),
             ));
         }
         if !duration_seconds.is_finite() || !(1.0..=15.0).contains(&duration_seconds) {
             return Err(StudioError::Invalid(
-                "bridge duration must be between 1 and 15 seconds".into(),
+                "transition duration must be between 1 and 15 seconds".into(),
             ));
         }
         let project_dir = self.project_dir(&project.id);
-        let first_source = resolve_frame_anchor(&project_dir, &project, &first_anchor)?;
-        let last_source = resolve_frame_anchor(&project_dir, &project, &last_anchor)?;
-        validate_bridge_placement(&project, &first_anchor, &last_anchor, placement)?;
+        validate_transition_placement(
+            &project,
+            position,
+            first_anchor.as_ref(),
+            last_anchor.as_ref(),
+            placement,
+        )?;
+        let first_source = first_anchor
+            .as_ref()
+            .map(|anchor| resolve_frame_anchor(&project_dir, &project, anchor))
+            .transpose()?;
+        let last_source = last_anchor
+            .as_ref()
+            .map(|anchor| resolve_frame_anchor(&project_dir, &project, anchor))
+            .transpose()?;
         let comfy_root = project.settings.comfy_root.clone();
         self.ensure_comfy(&comfy_root, &mut project, app).await?;
 
-        let bridge_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+        let transition_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let default_gen_seed = project
             .clips
             .iter()
-            .find(|clip| clip.id == first_source.clip_id)
+            .find(|clip| {
+                first_source
+                    .as_ref()
+                    .or(last_source.as_ref())
+                    .is_some_and(|source| clip.id == source.clip_id)
+            })
             .map(|c| c.seed)
             .or_else(|| {
                 if project.settings.seed != 0 {
@@ -2682,42 +2712,46 @@ impl MovieStudio {
             .unwrap_or_else(|| (uuid::Uuid::new_v4().as_u128() as u64) % 1_000_000_000);
         let chosen_seed = seed.unwrap_or(default_gen_seed);
 
-        let first_target_rel = format!("kestrel/{}/fl2v-first-{bridge_id}.png", project.id);
-        let first_target_path = PathBuf::from(&project.settings.comfy_root)
-            .join("input")
-            .join(&first_target_rel);
-        extract_exact_frame(
-            &first_source.path,
-            first_anchor.time_seconds,
-            &first_target_path,
-        )
-        .await?;
-
-        let last_target_rel = format!("kestrel/{}/fl2v-last-{bridge_id}.png", project.id);
-        let last_target_path = PathBuf::from(&project.settings.comfy_root)
-            .join("input")
-            .join(&last_target_rel);
-        extract_exact_frame(
-            &last_source.path,
-            last_anchor.time_seconds,
-            &last_target_path,
-        )
-        .await?;
-
         let stills_dir = self.project_dir(&project.id).join("stills");
         fs::create_dir_all(&stills_dir)?;
-        tokio::fs::copy(
-            &first_target_path,
-            stills_dir.join(format!("fl2v-first-{bridge_id}.png")),
-        )
-        .await?;
-        tokio::fs::copy(
-            &last_target_path,
-            stills_dir.join(format!("fl2v-last-{bridge_id}.png")),
-        )
-        .await?;
+        let first_target =
+            if let (Some(source), Some(anchor)) = (first_source.as_ref(), first_anchor.as_ref()) {
+                let relative = format!(
+                    "kestrel/{}/transition-first-{transition_id}.png",
+                    project.id
+                );
+                let path = PathBuf::from(&project.settings.comfy_root)
+                    .join("input")
+                    .join(&relative);
+                extract_exact_frame(&source.path, anchor.time_seconds, &path).await?;
+                tokio::fs::copy(
+                    &path,
+                    stills_dir.join(format!("transition-first-{transition_id}.png")),
+                )
+                .await?;
+                Some((relative, path))
+            } else {
+                None
+            };
+        let last_target = if let (Some(source), Some(anchor)) =
+            (last_source.as_ref(), last_anchor.as_ref())
+        {
+            let relative = format!("kestrel/{}/transition-last-{transition_id}.png", project.id);
+            let path = PathBuf::from(&project.settings.comfy_root)
+                .join("input")
+                .join(&relative);
+            extract_exact_frame(&source.path, anchor.time_seconds, &path).await?;
+            tokio::fs::copy(
+                &path,
+                stills_dir.join(format!("transition-last-{transition_id}.png")),
+            )
+            .await?;
+            Some((relative, path))
+        } else {
+            None
+        };
 
-        let prefix = format!("kestrel_movies/{}/fl2v_{bridge_id}", project.id);
+        let prefix = format!("kestrel_movies/{}/transition_{transition_id}", project.id);
         let preview_available = self.comfy_preview_available().await;
 
         let bounded_duration = duration_seconds;
@@ -2729,8 +2763,8 @@ impl MovieStudio {
             steps: project.settings.steps,
             seed: chosen_seed,
             prefix: &prefix,
-            first_frame: Some(&first_target_rel),
-            last_frame: Some(&last_target_rel),
+            first_frame: first_target.as_ref().map(|(relative, _)| relative.as_str()),
+            last_frame: last_target.as_ref().map(|(relative, _)| relative.as_str()),
             references: &[],
             ref_image_size: &project.settings.ref_image_size,
             preview_available,
@@ -2738,18 +2772,25 @@ impl MovieStudio {
         let generation_dir = self
             .project_dir(&project.id)
             .join("generations")
-            .join(format!("fl2v-{bridge_id}"));
+            .join(format!("transition-{transition_id}"));
         fs::create_dir_all(&generation_dir)?;
-        let (_, first_sha256) = hash_file(&first_target_path)?;
-        let (_, last_sha256) = hash_file(&last_target_path)?;
+        let first_sha256 = first_target
+            .as_ref()
+            .map(|(_, path)| hash_file(path).map(|(_, hash)| hash))
+            .transpose()?;
+        let last_sha256 = last_target
+            .as_ref()
+            .map(|(_, path)| hash_file(path).map(|(_, hash)| hash))
+            .transpose()?;
         write_json_atomic(&generation_dir.join("graph.json"), &graph)?;
         let mut generation_receipt = json!({
             "format":"kestrel.movie-generation",
             "version":1,
-            "id":format!("fl2v-{bridge_id}"),
-            "kind":"first-last-frame-video",
+            "id":format!("transition-{transition_id}"),
+            "kind":"story-transition-video",
             "status":"submitted",
             "createdAt":Utc::now().to_rfc3339(),
+            "position":position,
             "firstAnchor":first_anchor.clone(),
             "lastAnchor":last_anchor.clone(),
             "firstFrameSha256":first_sha256,
@@ -2764,7 +2805,7 @@ impl MovieStudio {
 
         let render_result: Result<String, StudioError> = async {
             let client_id = format!("kestrel-preview-{}", uuid::Uuid::new_v4().simple());
-            let job_id = format!("fl2v-{bridge_id}");
+            let job_id = format!("transition-{transition_id}");
             let preview_target = PreviewTarget::movie_clip(
                 job_id.clone(),
                 &project.id,
@@ -2788,7 +2829,7 @@ impl MovieStudio {
             let value: Value = response.json().await?;
             if !status.is_success() {
                 return Err(StudioError::Render(format!(
-                    "ComfyUI rejected FL2V bridge: {}",
+                    "ComfyUI rejected the H3 transition: {}",
                     truncate(&value.to_string(), 700)
                 )));
             }
@@ -2810,7 +2851,7 @@ impl MovieStudio {
                 }
                 if tokio::time::Instant::now() >= deadline {
                     return Err(StudioError::Render(
-                        "ComfyUI did not finish FL2V bridge within 24 hours.".to_string(),
+                        "ComfyUI did not finish the H3 transition within 24 hours.".to_string(),
                     ));
                 }
                 let history: Value = self
@@ -2821,12 +2862,10 @@ impl MovieStudio {
                     .json()
                     .await?;
                 if let Some(entry) = history.get(prompt_id) {
-                    if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
+                    if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error")
+                    {
                         let detail = comfy_execution_error(entry).unwrap_or_else(|| {
-                            format!(
-                                "execution failed: {}",
-                                truncate(&entry.to_string(), 1_000)
-                            )
+                            format!("execution failed: {}", truncate(&entry.to_string(), 1_000))
                         });
                         return Err(StudioError::Render(format!("ComfyUI {detail}")));
                     }
@@ -2836,7 +2875,7 @@ impl MovieStudio {
                         }
                         let media = find_output_media(entry, "videos").ok_or_else(|| {
                             StudioError::Render(
-                                "completed FL2V job exposed no saved video".into(),
+                                "completed H3 transition exposed no saved video".into(),
                             )
                         })?;
                         let source = PathBuf::from(&project.settings.comfy_root)
@@ -2846,7 +2885,7 @@ impl MovieStudio {
                         let target = self
                             .project_dir(&project.id)
                             .join("raw")
-                            .join(format!("clip-fl2v-{bridge_id}.mp4"));
+                            .join(format!("clip-transition-{transition_id}.mp4"));
                         tokio::fs::copy(&source, &target).await.map_err(|error| {
                             StudioError::Render(format!(
                                 "could not preserve {}: {error}",
@@ -2863,24 +2902,38 @@ impl MovieStudio {
         let target_mp4 = match render_result {
             Ok(path) => path,
             Err(error) => {
-                generation_receipt["status"] =
-                    json!(if matches!(&error, StudioError::Cancelled) { "cancelled" } else { "failed" });
+                generation_receipt["status"] = json!(if matches!(&error, StudioError::Cancelled) {
+                    "cancelled"
+                } else {
+                    "failed"
+                });
                 generation_receipt["finishedAt"] = json!(Utc::now().to_rfc3339());
                 generation_receipt["error"] = json!(truncate(&error.to_string(), 4_000));
-                let _ = write_json_atomic(&generation_dir.join("receipt.json"), &generation_receipt);
+                let _ =
+                    write_json_atomic(&generation_dir.join("receipt.json"), &generation_receipt);
                 return Err(error);
             }
         };
 
         let first_label = first_anchor
-            .label
-            .clone()
-            .unwrap_or_else(|| format!("{:.1}s", first_anchor.time_seconds));
+            .as_ref()
+            .map(|anchor| {
+                anchor
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| format!("{:.1}s", anchor.time_seconds))
+            })
+            .unwrap_or_else(|| "new opening".into());
         let last_label = last_anchor
-            .label
-            .clone()
-            .unwrap_or_else(|| format!("{:.1}s", last_anchor.time_seconds));
-        let new_clip_id = format!("fl2v-{bridge_id}");
+            .as_ref()
+            .map(|anchor| {
+                anchor
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| format!("{:.1}s", anchor.time_seconds))
+            })
+            .unwrap_or_else(|| "new ending".into());
+        let new_clip_id = format!("transition-{transition_id}");
         let (_, output_sha256) = hash_file(Path::new(&target_mp4))?;
         generation_receipt["status"] = json!("complete");
         generation_receipt["completedAt"] = json!(Utc::now().to_rfc3339());
@@ -2890,7 +2943,13 @@ impl MovieStudio {
         let new_clip = RenderedClip {
             id: new_clip_id.clone(),
             index: project.clips.len() as u32,
-            title: format!("Bridge: {} → {}", first_label, last_label),
+            title: match position {
+                MovieTransitionPosition::Before => format!("Before: {last_label}"),
+                MovieTransitionPosition::Between => {
+                    format!("Between: {first_label} → {last_label}")
+                }
+                MovieTransitionPosition::After => format!("After: {first_label}"),
+            },
             prompt: prompt.clone(),
             duration_seconds: bounded_duration,
             seed: chosen_seed,
@@ -2901,8 +2960,8 @@ impl MovieStudio {
         };
         project.clips.push(new_clip);
 
-        let bridge_edit = ClipEdit {
-            id: format!("edit-{bridge_id}"),
+        let transition_edit = ClipEdit {
+            id: format!("edit-{transition_id}"),
             clip_id: new_clip_id,
             enabled: true,
             order: 0,
@@ -2915,35 +2974,19 @@ impl MovieStudio {
             fade_out: 0.0,
             audio_fade_in: 0.0,
             audio_fade_out: 0.0,
-            label: "Generated bridge".into(),
+            label: "Generated transition".into(),
             notes: format!(
-                "FL2V anchors: {} at {:.2}s to {} at {:.2}s",
-                first_anchor.edit_id,
-                first_anchor.time_seconds,
-                last_anchor.edit_id,
-                last_anchor.time_seconds
+                "H3 {:?} transition; first endpoint: {}; last endpoint: {}",
+                position, first_label, last_label
             ),
         };
-        match placement {
-            MovieBridgePlacement::AddToMasters => {}
-            MovieBridgePlacement::InsertAfterLeft => {
-                let position = project
-                    .edit
-                    .clips
-                    .iter()
-                    .position(|edit| edit.id == first_anchor.edit_id)
-                    .expect("bridge placement was validated before rendering");
-                project.edit.clips.insert(position + 1, bridge_edit);
-            }
-            MovieBridgePlacement::ReplaceRange => {
-                replace_storyline_range_with_bridge(
-                    &mut project,
-                    &first_anchor,
-                    &last_anchor,
-                    bridge_edit,
-                )?;
-            }
-        }
+        place_transition_edit(
+            &mut project,
+            first_anchor.as_ref(),
+            last_anchor.as_ref(),
+            placement,
+            transition_edit,
+        )?;
         for (index, edit) in project.edit.clips.iter_mut().enumerate() {
             edit.order = index as u32;
         }
@@ -3633,44 +3676,197 @@ fn resolve_frame_anchor(
     })
 }
 
-fn validate_bridge_placement(
+fn validate_transition_placement(
     project: &MovieProject,
-    first: &MovieFrameAnchor,
-    last: &MovieFrameAnchor,
-    placement: MovieBridgePlacement,
+    position: MovieTransitionPosition,
+    first: Option<&MovieFrameAnchor>,
+    last: Option<&MovieFrameAnchor>,
+    placement: MovieTransitionPlacement,
 ) -> Result<(), StudioError> {
-    let first_index = project
-        .edit
-        .clips
-        .iter()
-        .position(|edit| edit.id == first.edit_id)
-        .ok_or_else(|| {
-            StudioError::Invalid("the bridge start is absent from the storyline".into())
-        })?;
-    let last_index = project
-        .edit
-        .clips
-        .iter()
-        .position(|edit| edit.id == last.edit_id)
-        .ok_or_else(|| {
-            StudioError::Invalid("the bridge end is absent from the storyline".into())
-        })?;
-    if placement == MovieBridgePlacement::ReplaceRange
-        && (first_index > last_index
-            || (first_index == last_index && first.time_seconds >= last.time_seconds))
+    let endpoint_shape_is_valid = match position {
+        MovieTransitionPosition::Before => first.is_none() && last.is_some(),
+        MovieTransitionPosition::Between => first.is_some() && last.is_some(),
+        MovieTransitionPosition::After => first.is_some() && last.is_none(),
+    };
+    if !endpoint_shape_is_valid {
+        return Err(StudioError::Invalid(
+            "before needs only a story end frame, between needs both frames, and after needs only a story start frame"
+                .into(),
+        ));
+    }
+    let placement_is_valid = match position {
+        MovieTransitionPosition::Before => matches!(
+            placement,
+            MovieTransitionPlacement::AddToMasters | MovieTransitionPlacement::InsertBeforeRight
+        ),
+        MovieTransitionPosition::Between => matches!(
+            placement,
+            MovieTransitionPlacement::AddToMasters
+                | MovieTransitionPlacement::InsertAfterLeft
+                | MovieTransitionPlacement::ReplaceRange
+        ),
+        MovieTransitionPosition::After => matches!(
+            placement,
+            MovieTransitionPlacement::AddToMasters | MovieTransitionPlacement::InsertAfterLeft
+        ),
+    };
+    if !placement_is_valid {
+        return Err(StudioError::Invalid(
+            "the requested placement does not match the selected before, between, or after story position"
+                .into(),
+        ));
+    }
+    let find_index = |anchor: &MovieFrameAnchor| {
+        project
+            .edit
+            .clips
+            .iter()
+            .position(|edit| edit.id == anchor.edit_id)
+            .ok_or_else(|| {
+                StudioError::Invalid("a transition endpoint is absent from the storyline".into())
+            })
+    };
+    let first_index = first.map(find_index).transpose()?;
+    let last_index = last.map(find_index).transpose()?;
+    if placement != MovieTransitionPlacement::AddToMasters && project.edit.clips.len() >= 512 {
+        return Err(StudioError::Invalid(
+            "the storyline already contains the maximum 512 items; keep this generation as a Masters audition or remove an edit first"
+                .into(),
+        ));
+    }
+    if position == MovieTransitionPosition::Between
+        && placement == MovieTransitionPlacement::InsertAfterLeft
+        && first_index == last_index
     {
         return Err(StudioError::Invalid(
-            "a replacement bridge must run forward from the first anchor to the last".into(),
+            "a transition inside one storyline shot must replace the selected range so both preserved edge fragments remain explicit"
+                .into(),
+        ));
+    }
+    if placement == MovieTransitionPlacement::ReplaceRange {
+        let first = first.expect("replacement endpoint shape was validated");
+        let last = last.expect("replacement endpoint shape was validated");
+        let first_index = first_index.expect("replacement endpoint shape was validated");
+        let last_index = last_index.expect("replacement endpoint shape was validated");
+        if first_index > last_index
+            || (first_index == last_index && first.time_seconds >= last.time_seconds)
+        {
+            return Err(StudioError::Invalid(
+                "a replacement transition must run forward from the first anchor to the last"
+                    .into(),
+            ));
+        }
+    }
+    match placement {
+        MovieTransitionPlacement::InsertBeforeRight => {
+            validate_endpoint_trim(project, last.expect("endpoint shape was validated"), false)?;
+        }
+        MovieTransitionPlacement::InsertAfterLeft => {
+            validate_endpoint_trim(project, first.expect("endpoint shape was validated"), true)?;
+            if let Some(last) = last {
+                validate_endpoint_trim(project, last, false)?;
+            }
+        }
+        MovieTransitionPlacement::AddToMasters | MovieTransitionPlacement::ReplaceRange => {}
+    }
+    Ok(())
+}
+
+fn validate_endpoint_trim(
+    project: &MovieProject,
+    anchor: &MovieFrameAnchor,
+    keep_before: bool,
+) -> Result<(), StudioError> {
+    let edit = project
+        .edit
+        .clips
+        .iter()
+        .find(|edit| edit.id == anchor.edit_id)
+        .expect("transition endpoint existence was validated");
+    let source = selected_clip_source(project, edit)?;
+    let preserved = if keep_before {
+        anchor.time_seconds as f32 - edit.trim_start
+    } else {
+        source.duration_seconds - edit.trim_end - anchor.time_seconds as f32
+    };
+    if preserved < 0.1 {
+        return Err(StudioError::Invalid(
+            "move the transition endpoint farther inside the shot so placement preserves at least 0.1 seconds of the existing story"
+                .into(),
+        ));
+    }
+    let output_duration = preserved / edit.speed;
+    if edit.fade_in + edit.fade_out > output_duration + 0.001
+        || edit.audio_fade_in + edit.audio_fade_out > output_duration + 0.001
+    {
+        return Err(StudioError::Invalid(
+            "the adjusted cut would overlap the existing picture or audio fades; shorten those fades in Edit or choose a nearby frame"
+                .into(),
         ));
     }
     Ok(())
 }
 
-fn replace_storyline_range_with_bridge(
+fn place_transition_edit(
+    project: &mut MovieProject,
+    first: Option<&MovieFrameAnchor>,
+    last: Option<&MovieFrameAnchor>,
+    placement: MovieTransitionPlacement,
+    transition: ClipEdit,
+) -> Result<(), StudioError> {
+    match placement {
+        MovieTransitionPlacement::AddToMasters => {}
+        MovieTransitionPlacement::InsertBeforeRight => {
+            let anchor = last.expect("transition placement was validated before rendering");
+            let index = project
+                .edit
+                .clips
+                .iter()
+                .position(|edit| edit.id == anchor.edit_id)
+                .expect("transition placement was validated before rendering");
+            project.edit.clips[index].trim_start = anchor.time_seconds as f32;
+            project.edit.clips.insert(index, transition);
+        }
+        MovieTransitionPlacement::InsertAfterLeft => {
+            let anchor = first.expect("transition placement was validated before rendering");
+            let index = project
+                .edit
+                .clips
+                .iter()
+                .position(|edit| edit.id == anchor.edit_id)
+                .expect("transition placement was validated before rendering");
+            let source_duration =
+                selected_clip_source(project, &project.edit.clips[index])?.duration_seconds;
+            project.edit.clips[index].trim_end =
+                (source_duration - anchor.time_seconds as f32).max(0.0);
+            if let Some(last) = last {
+                let last_index = project
+                    .edit
+                    .clips
+                    .iter()
+                    .position(|edit| edit.id == last.edit_id)
+                    .expect("transition placement was validated before rendering");
+                project.edit.clips[last_index].trim_start = last.time_seconds as f32;
+            }
+            project.edit.clips.insert(index + 1, transition);
+        }
+        MovieTransitionPlacement::ReplaceRange => {
+            replace_storyline_range_with_transition(
+                project,
+                first.expect("transition placement was validated before rendering"),
+                last.expect("transition placement was validated before rendering"),
+                transition,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn replace_storyline_range_with_transition(
     project: &mut MovieProject,
     first: &MovieFrameAnchor,
     last: &MovieFrameAnchor,
-    bridge: ClipEdit,
+    transition: ClipEdit,
 ) -> Result<(), StudioError> {
     let first_index = project
         .edit
@@ -3678,7 +3874,7 @@ fn replace_storyline_range_with_bridge(
         .iter()
         .position(|edit| edit.id == first.edit_id)
         .ok_or_else(|| {
-            StudioError::Invalid("the bridge start is absent from the storyline".into())
+            StudioError::Invalid("the transition start is absent from the storyline".into())
         })?;
     let last_index = project
         .edit
@@ -3686,7 +3882,7 @@ fn replace_storyline_range_with_bridge(
         .iter()
         .position(|edit| edit.id == last.edit_id)
         .ok_or_else(|| {
-            StudioError::Invalid("the bridge end is absent from the storyline".into())
+            StudioError::Invalid("the transition end is absent from the storyline".into())
         })?;
     let first_edit = project.edit.clips[first_index].clone();
     let last_edit = project.edit.clips[last_index].clone();
@@ -3698,7 +3894,7 @@ fn replace_storyline_range_with_bridge(
         leading.trim_end = first_source.duration_seconds - first.time_seconds as f32;
         replacement.push(leading);
     }
-    replacement.push(bridge);
+    replacement.push(transition);
     if last_source.duration_seconds - last_edit.trim_end - last.time_seconds as f32 > 0.04 {
         let mut trailing = last_edit;
         if first_index == last_index {
@@ -6209,6 +6405,28 @@ mod tests {
         });
         assert_eq!(graph["15"]["class_type"], "LoadImage");
         assert_eq!(graph["5"]["inputs"]["first_frame"], json!(["15", 0]));
+    }
+
+    #[test]
+    fn h3_graph_can_arrive_at_a_preserved_story_opening() {
+        let graph = h3_graph(H3GraphRequest {
+            prompt: "test",
+            width: 864,
+            height: 480,
+            seconds: 5.0,
+            steps: 20,
+            seed: 7,
+            prefix: "test",
+            first_frame: None,
+            last_frame: Some("kestrel/story-opening.png"),
+            references: &[],
+            ref_image_size: "match",
+            preview_available: true,
+        });
+        assert!(graph.get("15").is_none());
+        assert_eq!(graph["16"]["class_type"], "LoadImage");
+        assert_eq!(graph["16"]["inputs"]["image"], "kestrel/story-opening.png");
+        assert_eq!(graph["5"]["inputs"]["last_frame"], json!(["16", 0]));
     }
 
     #[test]

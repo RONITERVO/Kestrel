@@ -58,7 +58,7 @@ use store::ResearchStore;
 use studio::{
     ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
     ImageSummary, MovieClipRenderRequest, MovieCopilotJob, MovieCopilotReceipt,
-    MovieCopilotRequest, MovieEdit, MovieFl2vBridgeRequest, MovieGenerationAgentRequest,
+    MovieCopilotRequest, MovieEdit, MovieFl2vTransitionRequest, MovieGenerationAgentRequest,
     MovieGenerationProposal, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
     MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
     MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
@@ -1593,8 +1593,8 @@ async fn capture_movie_frame(
 }
 
 #[tauri::command]
-async fn generate_movie_fl2v_bridge(
-    request: MovieFl2vBridgeRequest,
+async fn generate_movie_fl2v_transition(
+    request: MovieFl2vTransitionRequest,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<MovieProject, String> {
@@ -1609,7 +1609,7 @@ async fn generate_movie_fl2v_bridge(
     let id = request.id.clone();
     let result = state
         .studio
-        .render_fl2v_bridge(request, &cancel, Some(&app))
+        .render_fl2v_transition(request, &cancel, Some(&app))
         .await
         .map_err(|error| error.to_string());
     if let Ok(mut jobs) = state.movie_jobs.lock() {
@@ -3658,7 +3658,7 @@ pub fn run() {
             approve_movie_plan,
             render_movie_clip_version,
             capture_movie_frame,
-            generate_movie_fl2v_bridge,
+            generate_movie_fl2v_transition,
             cancel_movie_render,
             save_movie_edits,
             render_movie_edit,

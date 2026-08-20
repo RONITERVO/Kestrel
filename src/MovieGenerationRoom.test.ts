@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bridgeAnchorsForCut, editWithSourceVersion, insertTimelineSourceAfter } from "./MovieGenerationRoom";
+import { editWithSourceVersion, insertTimelineSourceAfter, insertTimelineSourceBefore, transitionAnchorsForPosition } from "./MovieGenerationRoom";
 import { timelineItems } from "./MovieTimeline";
 import type { ClipEdit, MovieEdit, MovieProject } from "./types";
 
@@ -22,16 +22,30 @@ const project = {
 } as unknown as MovieProject;
 
 describe("Generate audition decisions", () => {
-  it("anchors a bridge to exact storyline edit IDs, not repeated source clip IDs", () => {
+  it("anchors an existing cut to exact storyline edit IDs, not repeated source clip IDs", () => {
     const first = decision("edit-a", "one", 0);
     first.trimEnd = 2;
     const second = decision("edit-b", "two", 1);
     second.trimStart = 1.5;
-    const anchors = bridgeAnchorsForCut(timelineItems(project, edit([first, second])), 0);
-    expect(anchors).toEqual([
-      { editId: "edit-a", timeSeconds: 7.96, label: "One · cut out" },
-      { editId: "edit-b", timeSeconds: 1.5, label: "Two · cut in" },
-    ]);
+    const anchors = transitionAnchorsForPosition(timelineItems(project, edit([first, second])), "between", 0);
+    expect(anchors).toEqual({
+      firstAnchor: { editId: "edit-a", timeSeconds: 7.96, label: "One · cut out" },
+      lastAnchor: { editId: "edit-b", timeSeconds: 1.5, label: "Two · cut in" },
+    });
+  });
+
+  it("uses only the constrained story endpoint before the opening and after the ending", () => {
+    const first = decision("edit-a", "one", 0);
+    first.trimStart = 1.25;
+    const last = decision("edit-b", "two", 1);
+    last.trimEnd = 2;
+    const items = timelineItems(project, edit([first, last]));
+    expect(transitionAnchorsForPosition(items, "before", 0)).toEqual({
+      lastAnchor: { editId: "edit-a", timeSeconds: 1.25, label: "One · story begins" },
+    });
+    expect(transitionAnchorsForPosition(items, "after", 1)).toEqual({
+      firstAnchor: { editId: "edit-b", timeSeconds: 5.96, label: "Two · story ends" },
+    });
   });
 
   it("changes only the selected storyline decision when accepting an audition", () => {
@@ -54,6 +68,18 @@ describe("Generate audition decisions", () => {
       ["edit-a", "one", 0],
       ["edit-bridge", "bridge-master", 1],
       ["edit-b", "two", 2],
+    ]);
+  });
+
+  it("can place a preserved audition before the first story edit", () => {
+    const updated = insertTimelineSourceBefore(
+      edit([decision("edit-a", "one", 0), decision("edit-b", "two", 1)]),
+      "opening-master",
+      "edit-a",
+      "edit-opening",
+    );
+    expect(updated.clips.map((clip) => [clip.id, clip.order])).toEqual([
+      ["edit-opening", 0], ["edit-a", 1], ["edit-b", 2],
     ]);
   });
 });

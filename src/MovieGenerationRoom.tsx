@@ -1,10 +1,10 @@
 import {
-  ArrowRight, Check, CircleStop, Eye, Film, LoaderCircle, Play, Save, ShieldCheck,
-  Sparkles, Video,
+  ArrowLeft, ArrowRight, Check, CircleStop, Eye, Film, LoaderCircle, Minus, Play,
+  Plus, Save, ShieldCheck, Sparkles, Video,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
-  cancelMovieGenerationAgent, cancelMovieRender, captureMovieFrame, generateMovieFl2vBridge,
+  cancelMovieGenerationAgent, cancelMovieRender, captureMovieFrame, generateMovieFl2vTransition,
   getMovieGenerationAgentSnapshot, movieMediaUrl, onMovieGenerationAgent,
   renderMovieClipVersion, runMovieGenerationAgent, saveMovieEdits,
 } from "./api";
@@ -13,11 +13,11 @@ import { appendTimelineSource, orderedMovieEdit, timelineItems, type TimelineIte
 import { effectiveThinkingLevelForModel } from "./types";
 import type {
   ControlSettings, MovieCapturedFrame, MovieEdit, MovieFrameAnchor,
-  MovieGenerationProposal, MovieProject, ThinkingLevel,
+  MovieGenerationProposal, MovieProject, MovieTransitionPlacement, MovieTransitionPosition,
+  ThinkingLevel,
 } from "./types";
 
-type GenerationMode = "shot" | "bridge";
-type BridgePlacement = "add_to_masters" | "insert_after_left" | "replace_range";
+type GenerationMode = "shot" | "transition";
 type AgentRole = "director" | "reviewer";
 type AgentRoleStream = { reasoning: string; text: string };
 
@@ -27,19 +27,32 @@ function requestId(): string {
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function bridgeAnchorsForCut(items: TimelineItem[], selectedIndex: number): [MovieFrameAnchor, MovieFrameAnchor] | undefined {
+function visibleStart(item: TimelineItem): number {
+  return item.edit.trimStart;
+}
+
+function visibleEnd(item: TimelineItem): number {
+  return Math.max(item.edit.trimStart, item.sourceDuration - item.edit.trimEnd - .04);
+}
+
+export function transitionAnchorsForPosition(items: TimelineItem[], position: MovieTransitionPosition, selectedIndex: number): {
+  firstAnchor?: MovieFrameAnchor;
+  lastAnchor?: MovieFrameAnchor;
+} | undefined {
   const selected = items[selectedIndex];
+  if (!selected) return undefined;
+  if (position === "before") return { lastAnchor: {
+    editId: selected.edit.id, timeSeconds: visibleStart(selected), label: `${selected.clip.title} · story begins`,
+  } };
+  if (position === "after") return { firstAnchor: {
+    editId: selected.edit.id, timeSeconds: visibleEnd(selected), label: `${selected.clip.title} · story ends`,
+  } };
   const next = items[selectedIndex + 1];
-  if (!selected || !next) return undefined;
-  return [{
-    editId: selected.edit.id,
-    timeSeconds: Math.max(selected.edit.trimStart, selected.sourceDuration - selected.edit.trimEnd - .04),
-    label: `${selected.clip.title} · cut out`,
-  }, {
-    editId: next.edit.id,
-    timeSeconds: next.edit.trimStart,
-    label: `${next.clip.title} · cut in`,
-  }];
+  if (!next) return undefined;
+  return {
+    firstAnchor: { editId: selected.edit.id, timeSeconds: visibleEnd(selected), label: `${selected.clip.title} · cut out` },
+    lastAnchor: { editId: next.edit.id, timeSeconds: visibleStart(next), label: `${next.clip.title} · cut in` },
+  };
 }
 
 export function editWithSourceVersion(edit: MovieEdit, editId: string, versionId: string): MovieEdit {
@@ -63,6 +76,18 @@ export function insertTimelineSourceAfter(edit: MovieEdit, clipId: string, after
   return orderedMovieEdit({ ...edit, clips });
 }
 
+export function insertTimelineSourceBefore(edit: MovieEdit, clipId: string, beforeEditId: string, id: string): MovieEdit {
+  const clips = [...edit.clips].sort((left, right) => left.order - right.order);
+  const before = clips.findIndex((item) => item.id === beforeEditId);
+  if (before < 0) return edit;
+  clips.splice(before, 0, {
+    id, clipId, enabled: true, order: before, trimStart: 0, trimEnd: 0,
+    audioGain: 1, sourceVersionId: "", speed: 1, fadeIn: 0, fadeOut: 0,
+    audioFadeIn: 0, audioFadeOut: 0, label: "", notes: "",
+  });
+  return orderedMovieEdit({ ...edit, clips });
+}
+
 export function MovieGenerationRoom({ project, edit, disabled, advanced, controlSettings, preview, onProject, onEdit, onError }: {
   project: MovieProject;
   edit: MovieEdit;
@@ -76,10 +101,10 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
 }) {
   const items = useMemo(() => timelineItems(project, edit), [edit, project]);
   const [mode, setMode] = useState<GenerationMode>("shot");
+  const [transitionPosition, setTransitionPosition] = useState<MovieTransitionPosition>("between");
   const [selectedEditId, setSelectedEditId] = useState(items[0]?.edit.id ?? "");
   const selectedIndex = Math.max(0, items.findIndex((item) => item.edit.id === selectedEditId));
   const selected = items[selectedIndex] ?? items[0];
-  const next = items[selectedIndex + 1];
   const [firstAnchor, setFirstAnchor] = useState<MovieFrameAnchor>();
   const [lastAnchor, setLastAnchor] = useState<MovieFrameAnchor>();
   const [firstFrame, setFirstFrame] = useState<MovieCapturedFrame>();
@@ -88,7 +113,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
   const [duration, setDuration] = useState(5);
   const [shotDuration, setShotDuration] = useState(selected?.clip.durationSeconds ?? 5);
   const [seed, setSeed] = useState(project.settings.seed || project.clips[0]?.seed || 0);
-  const [placement, setPlacement] = useState<BridgePlacement>("add_to_masters");
+  const [placement, setPlacement] = useState<MovieTransitionPlacement>("add_to_masters");
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
   const [activeRequestId, setActiveRequestId] = useState("");
   const [checkpointRequestId, setCheckpointRequestId] = useState("");
@@ -140,25 +165,26 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     return () => dispose?.();
   }, [project.id]);
 
-  const setCutAnchors = async () => {
-    const anchors = bridgeAnchorsForCut(items, selectedIndex);
-    if (!anchors) {
-      onError("Select a storyline shot that has a following shot.");
-      return;
-    }
-    const [first, last] = anchors;
+  const chooseTransition = async (position: MovieTransitionPosition, index: number) => {
+    const anchors = transitionAnchorsForPosition(items, position, index);
+    const item = items[index];
+    if (!anchors || !item) return;
+    const { firstAnchor: first, lastAnchor: last } = anchors;
+    setSelectedEditId(item.edit.id);
+    setTransitionPosition(position);
     setCheckpointRequestId("");
     setFirstAnchor(first);
     setLastAnchor(last);
+    setPlacement(position === "before" ? "insert_before_right" : "insert_after_left");
     setFirstFrame(undefined);
     setLastFrame(undefined);
     try {
       const [capturedFirst, capturedLast] = await Promise.all([
-        captureMovieFrame(project.id, first),
-        captureMovieFrame(project.id, last),
+        first ? captureMovieFrame(project.id, first) : Promise.resolve(undefined),
+        last ? captureMovieFrame(project.id, last) : Promise.resolve(undefined),
       ]);
-      setFirstFrame(capturedFirst);
-      setLastFrame(capturedLast);
+      if (capturedFirst) setFirstFrame(capturedFirst);
+      if (capturedLast) setLastFrame(capturedLast);
     } catch (error) {
       onError(String(error));
     }
@@ -177,6 +203,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
       label: `${selected.clip.title} · range out`,
     };
     setCheckpointRequestId("");
+    setTransitionPosition("between");
     setPlacement("replace_range");
     setFirstAnchor(first);
     setLastAnchor(last);
@@ -194,10 +221,34 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     }
   };
 
+  const adjustEndpoint = async (side: "first" | "last", deltaFrames: number) => {
+    const anchor = side === "first" ? firstAnchor : lastAnchor;
+    if (!anchor) return;
+    const item = items.find((candidate) => candidate.edit.id === anchor.editId);
+    if (!item) return;
+    const timeSeconds = Math.min(visibleEnd(item), Math.max(visibleStart(item), anchor.timeSeconds + deltaFrames / 24));
+    const adjusted = { ...anchor, timeSeconds };
+    setCheckpointRequestId("");
+    if (side === "first") {
+      setFirstAnchor(adjusted);
+      setFirstFrame(undefined);
+    } else {
+      setLastAnchor(adjusted);
+      setLastFrame(undefined);
+    }
+    try {
+      const frame = await captureMovieFrame(project.id, adjusted);
+      if (side === "first") setFirstFrame(frame);
+      else setLastFrame(frame);
+    } catch (error) {
+      onError(String(error));
+    }
+  };
+
   const askDirector = async () => {
     if (!selected || direction.trim().length < 3) return;
-    if (mode === "bridge" && (!firstAnchor || !lastAnchor)) {
-      onError("Choose the bridge endpoint frames first.");
+    if (mode === "transition" && !firstAnchor && !lastAnchor) {
+      onError("Choose a story start, cut, or ending first.");
       return;
     }
     const id = checkpointRequestId || requestId();
@@ -213,12 +264,12 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
         projectId: project.id,
         task: mode === "shot"
           ? { kind: "shotVersion", clipId: selected.clip.id, direction }
-          : { kind: "bridge", firstAnchor: firstAnchor!, lastAnchor: lastAnchor!, direction, durationSeconds: duration },
+          : { kind: "transition", position: transitionPosition, firstAnchor, lastAnchor, direction, durationSeconds: duration },
         thinkingLevel: thinkingLevel === "default" ? undefined : thinkingLevel,
       });
       setProposal(result);
       setRenderPrompt(result.candidate.kind === "shotVersion" ? result.candidate.clip.prompt : result.candidate.motionPrompt);
-      if (result.candidate.kind === "bridge") setDuration(result.candidate.durationSeconds);
+      if (result.candidate.kind === "transition") setDuration(result.candidate.durationSeconds);
       else setShotDuration(result.candidate.clip.durationSeconds);
       if (advanced) setSnapshot(await getMovieGenerationAgentSnapshot(project.id, id));
       setCheckpointRequestId("");
@@ -265,10 +316,11 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
         setGeneratedVersionId(source?.versions.at(-1)?.id ?? "");
         onProject(updated);
       } else {
-        if (!firstAnchor || !lastAnchor) throw new Error("Choose both bridge endpoint frames.");
+        if (!firstAnchor && !lastAnchor) throw new Error("Choose a story transition position first.");
         const previousIds = new Set(project.clips.map((clip) => clip.id));
-        const updated = await generateMovieFl2vBridge({
+        const updated = await generateMovieFl2vTransition({
           id: project.id,
+          position: transitionPosition,
           firstAnchor,
           lastAnchor,
           prompt: renderPrompt,
@@ -292,12 +344,14 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     setActivities((value) => [...value.slice(-7), "H3 stop requested; completed masters and the current storyline remain unchanged"]);
   };
 
-  const placeMaster = async (clipId: string, where: "append" | "after") => {
+  const placeMaster = async (clipId: string, where: "append" | "before" | "after") => {
     if (!selected) return;
     const id = `edit-${requestId()}`;
     const candidate = where === "append"
       ? appendTimelineSource(edit, clipId, id)
-      : insertTimelineSourceAfter(edit, clipId, selected.edit.id, id);
+      : where === "before"
+        ? insertTimelineSourceBefore(edit, clipId, selected.edit.id, id)
+        : insertTimelineSourceAfter(edit, clipId, selected.edit.id, id);
     try {
       const updated = await saveMovieEdits(project.id, candidate);
       onEdit(updated.edit);
@@ -322,6 +376,12 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
   };
 
   const wordCount = renderPrompt.trim() ? renderPrompt.trim().split(/\s+/).length : 0;
+  const transitionReady = transitionPosition === "before"
+    ? Boolean(lastAnchor) && !firstAnchor
+    : transitionPosition === "after"
+      ? Boolean(firstAnchor) && !lastAnchor
+      : Boolean(firstAnchor && lastAnchor);
+  const sameShotRange = Boolean(firstAnchor && lastAnchor && firstAnchor.editId === lastAnchor.editId);
   const visibleAgentRoles = (["director", "reviewer"] as AgentRole[]).filter((role) =>
     roleStreams[role].reasoning || roleStreams[role].text || (Boolean(activeRequestId) && activeRole === role));
 
@@ -330,14 +390,20 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
       <div><span className="eyebrow">Producer + local Generative Director + H3</span><strong>Generate, audition, then place</strong><small>Nothing changes the storyline until you explicitly choose a placement.</small></div>
       <div role="tablist" aria-label="Generation task">
         <button role="tab" aria-selected={mode === "shot"} className={mode === "shot" ? "active" : ""} onClick={() => setMode("shot")}><Video /> Shot audition</button>
-        <button role="tab" aria-selected={mode === "bridge"} className={mode === "bridge" ? "active" : ""} onClick={() => setMode("bridge")}><ArrowRight /> In-between</button>
+        <button role="tab" aria-selected={mode === "transition"} className={mode === "transition" ? "active" : ""} onClick={() => setMode("transition")}><ArrowRight /> Story transitions</button>
       </div>
     </header>
 
-    <div className="generation-storyline" aria-label="Primary storyline sources">
-      {items.map((item, index) => <button key={item.edit.id} className={item.edit.id === selected?.edit.id ? "active" : ""} onClick={() => setSelectedEditId(item.edit.id)}>
-        <span>{index + 1}</span><strong>{item.edit.label || item.clip.title}</strong><small>{item.outputDuration.toFixed(1)}s · {item.versionLabel}</small>
-      </button>)}
+    <div className="generation-storyline" aria-label="Story shots and existing cut points">
+      {items.map((item, index) => <Fragment key={item.edit.id}>
+        {index === 0 && <button type="button" className={`generation-cut-point edge ${mode === "transition" && transitionPosition === "before" && selectedIndex === 0 && Boolean(lastAnchor) ? "active" : ""}`} disabled={disabled || rendering || Boolean(activeRequestId)} onClick={() => { setMode("transition"); void chooseTransition("before", 0); }} aria-label="Generate before the story begins"><ArrowLeft /><strong>Before</strong><small>Story start</small></button>}
+        <button type="button" className={`generation-story-shot ${item.edit.id === selected?.edit.id ? "active" : ""}`} onClick={() => setSelectedEditId(item.edit.id)}>
+          <span>{index + 1}</span><strong>{item.edit.label || item.clip.title}</strong><small>{item.outputDuration.toFixed(1)}s · {item.versionLabel}</small>
+        </button>
+        {index < items.length - 1
+          ? <button type="button" className={`generation-cut-point ${mode === "transition" && transitionPosition === "between" && selectedIndex === index && Boolean(firstAnchor && lastAnchor) ? "active" : ""}`} disabled={disabled || rendering || Boolean(activeRequestId)} onClick={() => { setMode("transition"); void chooseTransition("between", index); }} aria-label={`Generate at cut ${index + 1} between ${item.clip.title} and ${items[index + 1].clip.title}`}><span>{index + 1}</span><strong>Cut</strong><small>{index + 1} / {index + 2}</small></button>
+          : <button type="button" className={`generation-cut-point edge ${mode === "transition" && transitionPosition === "after" && selectedIndex === index && Boolean(firstAnchor) ? "active" : ""}`} disabled={disabled || rendering || Boolean(activeRequestId)} onClick={() => { setMode("transition"); void chooseTransition("after", index); }} aria-label="Generate after the story ends"><ArrowRight /><strong>After</strong><small>Story end</small></button>}
+      </Fragment>)}
     </div>
 
     <div className="generation-room-grid">
@@ -345,14 +411,14 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
         {preview ? <div className="generation-live-preview">{preview}</div> : mode === "shot" ? <div className="generation-shot-monitor">
           {selected?.sourcePath ? <video controls preload="metadata" src={movieMediaUrl(selected.sourcePath)} /> : <div className="generation-monitor-empty"><Film /><span>Select a preserved master.</span></div>}
           <header><span><strong>Source audition</strong><small>{selected?.clip.title ?? "No shot selected"}</small></span><em>Storyline unchanged</em></header>
-        </div> : <>
-          <div className="generation-anchor-actions"><button disabled={!next} onClick={() => void setCutAnchors()}><ArrowRight /> Use selected cut</button><button onClick={() => void setShotRangeAnchors()}><Film /> Use selected range</button></div>
+        </div> : <div className="generation-transition-view">
+          <div className="generation-anchor-actions"><span><strong>{transitionPosition === "before" ? "Before story" : transitionPosition === "after" ? "After story" : "At existing cut"}</strong><small>{transitionPosition === "between" ? "Both story endpoints are locked" : "One story endpoint is locked; H3 invents the open side"}</small></span><button disabled={!selected || rendering || Boolean(activeRequestId)} onClick={() => void setShotRangeAnchors()}><Film /> Replace selected shot range</button></div>
           <div className="generation-anchor-monitors">
-            <figure>{firstFrame ? <img src={movieMediaUrl(firstFrame.path)} alt="Bridge first frame" /> : <div><Eye /><span>First endpoint</span></div>}<figcaption>{firstAnchor?.label ?? "Choose a cut or range"}</figcaption></figure>
+            <figure className={!firstAnchor ? "open-endpoint" : ""}>{firstFrame ? <img src={movieMediaUrl(firstFrame.path)} alt="First transition endpoint" /> : <div><Eye /><span>{transitionPosition === "before" ? "New opening" : "First endpoint"}</span></div>}<figcaption>{firstAnchor?.label ?? "H3 creates the opening frame"}</figcaption>{firstAnchor && <div className="generation-endpoint-adjust"><button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void adjustEndpoint("first", -1)} aria-label="Move first endpoint one frame earlier"><Minus /></button><output>{firstAnchor.timeSeconds.toFixed(2)}s</output><button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void adjustEndpoint("first", 1)} aria-label="Move first endpoint one frame later"><Plus /></button></div>}</figure>
             <ArrowRight />
-            <figure>{lastFrame ? <img src={movieMediaUrl(lastFrame.path)} alt="Bridge last frame" /> : <div><Eye /><span>Last endpoint</span></div>}<figcaption>{lastAnchor?.label ?? "Choose a cut or range"}</figcaption></figure>
+            <figure className={!lastAnchor ? "open-endpoint" : ""}>{lastFrame ? <img src={movieMediaUrl(lastFrame.path)} alt="Last transition endpoint" /> : <div><Eye /><span>{transitionPosition === "after" ? "New ending" : "Last endpoint"}</span></div>}<figcaption>{lastAnchor?.label ?? "H3 creates the ending frame"}</figcaption>{lastAnchor && <div className="generation-endpoint-adjust"><button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void adjustEndpoint("last", -1)} aria-label="Move last endpoint one frame earlier"><Minus /></button><output>{lastAnchor.timeSeconds.toFixed(2)}s</output><button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void adjustEndpoint("last", 1)} aria-label="Move last endpoint one frame later"><Plus /></button></div>}</figure>
           </div>
-        </>}
+        </div>}
         {selected && <section className="generation-auditions">
           <header><strong>Preserved auditions</strong><small>Active source: {selected.versionLabel}</small></header>
           <div><button className={!selected.edit.sourceVersionId ? "active" : ""} onClick={() => void useVersion("")}><Play /> Active master</button>{selected.clip.versions.map((version) => <button key={version.id} className={selected.edit.sourceVersionId === version.id ? "active" : ""} onClick={() => void useVersion(version.id)}><Play /> {version.title}<small>{version.durationSeconds.toFixed(1)}s · seed {version.seed}</small></button>)}</div>
@@ -362,6 +428,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
           <div>{unplacedMasters.map((clip) => <article key={clip.id} className={clip.id === generatedMasterId ? "new" : ""}>
             <video controls preload="metadata" src={movieMediaUrl(clip.path)} />
             <span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {clip.seed}</small></span>
+            <button type="button" disabled={disabled} onClick={() => void placeMaster(clip.id, "before")}><ArrowLeft /> Insert before selected</button>
             <button type="button" disabled={disabled} onClick={() => void placeMaster(clip.id, "after")}><ArrowRight /> Insert after selected</button>
             <button type="button" disabled={disabled} onClick={() => void placeMaster(clip.id, "append")}><Film /> Append</button>
           </article>)}</div>
@@ -369,9 +436,9 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
       </section>
 
       <aside className="generation-inspector">
-        <header><span className="eyebrow">{mode === "shot" ? "Shot version" : "First / last frame video"}</span><strong>{selected?.clip.title ?? "Select a storyline shot"}</strong></header>
-        <label>Producer direction<textarea rows={4} maxLength={8000} disabled={Boolean(activeRequestId)} value={direction} onChange={(event) => { setDirection(event.target.value); setCheckpointRequestId(""); }} placeholder={mode === "shot" ? "What should change, and what must remain identical?" : "Describe the movement and continuity needed between these endpoint frames."} /></label>
-        <div className="generation-agent-controls"><label>Thinking<select value={thinkingLevel} disabled={Boolean(activeRequestId)} onChange={(event) => setThinkingLevel(event.target.value as ThinkingLevel | "default")}><option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, project.modelRoles?.director.modelId || project.model)})</option><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>{activeRequestId ? <button className="danger" onClick={() => void stopAgent()}><CircleStop /> Stop + checkpoint</button> : <button className="accent" disabled={disabled || direction.trim().length < 3 || (mode === "bridge" && (!firstAnchor || !lastAnchor))} onClick={() => void askDirector()}><Sparkles /> {checkpointRequestId ? "Resume Director" : "Ask Director"}</button>}</div>
+        <header><span className="eyebrow">{mode === "shot" ? "Shot version" : `${transitionPosition} story transition`}</span><strong>{selected?.clip.title ?? "Select a storyline shot"}</strong></header>
+        <label>Producer direction<textarea rows={4} maxLength={8000} disabled={Boolean(activeRequestId)} value={direction} onChange={(event) => { setDirection(event.target.value); setCheckpointRequestId(""); }} placeholder={mode === "shot" ? "What should change, and what must remain identical?" : transitionPosition === "before" ? "What happens before the story, and how should it arrive at the shown first frame?" : transitionPosition === "after" ? "What happens after the shown final frame?" : "Describe the movement and continuity needed between the shown cut frames."} /></label>
+        <div className="generation-agent-controls"><label>Thinking<select value={thinkingLevel} disabled={Boolean(activeRequestId)} onChange={(event) => setThinkingLevel(event.target.value as ThinkingLevel | "default")}><option value="default">Default ({effectiveThinkingLevelForModel(controlSettings, project.modelRoles?.director.modelId || project.model)})</option><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>{activeRequestId ? <button className="danger" onClick={() => void stopAgent()}><CircleStop /> Stop + checkpoint</button> : <button className="accent" disabled={disabled || direction.trim().length < 3 || (mode === "transition" && !transitionReady)} onClick={() => void askDirector()}><Sparkles /> {checkpointRequestId ? "Resume Director" : "Ask Director"}</button>}</div>
 
         {visibleAgentRoles.map((role) => {
           const roleModelId = role === "reviewer"
@@ -386,8 +453,8 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
 
         {proposal && <section className="generation-review-result"><ShieldCheck /><span><strong>Fresh reviewer passed this candidate</strong><small>{proposal.reviewSummary}</small></span></section>}
         <label>H3 renderer direction <span className={wordCount >= 120 && wordCount <= 450 ? "valid" : ""}>{wordCount} / 120–450 words</span><textarea rows={10} maxLength={65536} disabled={rendering || Boolean(activeRequestId)} value={renderPrompt} onChange={(event) => setRenderPrompt(event.target.value)} placeholder="You may write the complete H3 direction yourself, or ask the Director above." /></label>
-        <div className="generation-render-settings"><label>Duration<input type="number" min={1} max={15} step={1} value={mode === "bridge" ? duration : shotDuration} onChange={(event) => { const value = Number(event.target.value); if (mode === "bridge") { setDuration(value); setCheckpointRequestId(""); } else setShotDuration(value); }} /></label><label>Seed<input type="number" min={0} max={Number.MAX_SAFE_INTEGER} value={seed} onChange={(event) => setSeed(Number(event.target.value))} /></label></div>
-        {mode === "bridge" && <fieldset><legend>After generation</legend><label><input type="radio" name="bridge-placement" checked={placement === "add_to_masters"} onChange={() => setPlacement("add_to_masters")} /> Keep as an audition in Masters</label><label><input type="radio" name="bridge-placement" checked={placement === "insert_after_left"} onChange={() => setPlacement("insert_after_left")} /> Insert after the first endpoint</label><label><input type="radio" name="bridge-placement" checked={placement === "replace_range"} onChange={() => setPlacement("replace_range")} /> Replace the selected range</label></fieldset>}
+        <div className="generation-render-settings"><label>Duration<input type="number" min={1} max={15} step={1} value={mode === "transition" ? duration : shotDuration} onChange={(event) => { const value = Number(event.target.value); if (mode === "transition") { setDuration(value); setCheckpointRequestId(""); } else setShotDuration(value); }} /></label><label>Seed<input type="number" min={0} max={Number.MAX_SAFE_INTEGER} value={seed} onChange={(event) => setSeed(Number(event.target.value))} /></label></div>
+        {mode === "transition" && <fieldset><legend>After generation</legend><label><input type="radio" name="transition-placement" checked={placement === "add_to_masters"} onChange={() => setPlacement("add_to_masters")} /> Keep as an audition in Masters</label>{!sameShotRange && <label><input type="radio" name="transition-placement" checked={placement === (transitionPosition === "before" ? "insert_before_right" : "insert_after_left")} onChange={() => setPlacement(transitionPosition === "before" ? "insert_before_right" : "insert_after_left")} /> {transitionPosition === "before" ? "Place before the story" : transitionPosition === "after" ? "Place after the story" : "Place at this cut"}</label>}{transitionPosition === "between" && <label><input type="radio" name="transition-placement" checked={placement === "replace_range"} onChange={() => setPlacement("replace_range")} /> Replace the selected endpoint range</label>}</fieldset>}
         {rendering ? <button className="generation-render-button danger" onClick={() => void stopRender()}><CircleStop /> Stop H3 audition</button> : <button className="generation-render-button" disabled={disabled || Boolean(activeRequestId) || wordCount < 120 || wordCount > 450} onClick={() => void renderCandidate()}><Video /> Generate audition</button>}
         {mode === "shot" && generatedVersionId && <button className="generation-use-button" onClick={() => void useVersion(generatedVersionId)}><Check /> Use new audition in selected storyline edit</button>}
         {advanced && Boolean(snapshot) && <details className="generation-advanced"><summary>Exact agent context, checks, transcript, and reviewer request</summary><pre>{JSON.stringify(snapshot, null, 2)}</pre></details>}

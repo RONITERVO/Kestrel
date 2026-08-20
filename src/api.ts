@@ -41,7 +41,7 @@ import type {
   MovieCopilotReceipt,
   MovieCopilotRequest,
   MovieEdit,
-  MovieFl2vBridgeRequest,
+  MovieFl2vTransitionRequest,
   MovieFrameAnchor,
   MovieCapturedFrame,
   MovieGenerationAgentEvent,
@@ -501,9 +501,9 @@ export async function onMovieGenerationAgent(callback: (event: MovieGenerationAg
   return () => undefined;
 }
 
-export async function generateMovieFl2vBridge(request: MovieFl2vBridgeRequest): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("FL2V bridge generation requires the desktop application.");
-  return invoke<MovieProject>("generate_movie_fl2v_bridge", { request });
+export async function generateMovieFl2vTransition(request: MovieFl2vTransitionRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("H3 transition generation requires the desktop application.");
+  return invoke<MovieProject>("generate_movie_fl2v_transition", { request });
 }
 
 export async function cancelMovieRender(id: string): Promise<void> {
