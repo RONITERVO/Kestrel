@@ -133,6 +133,23 @@ describe("Kestrel research experience", () => {
     }
   });
 
+  it("retains an opened workspace and its local state while another app tab is visible", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Portable setup/i }));
+    const editor = await screen.findByLabelText("Editable portable setup JSON");
+    await waitFor(() => expect((editor as HTMLTextAreaElement).value).toContain('"schemaVersion": 1'));
+    fireEvent.change(editor, { target: { value: "producer draft retained across tabs" } });
+    await waitFor(() => expect(editor).toHaveValue("producer draft retained across tabs"));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Research$/i }));
+    expect(await screen.findByText("Your research")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^System$/i }));
+
+    expect(screen.getByLabelText("Editable portable setup JSON")).toBe(editor);
+    expect(editor).toHaveValue("producer draft retained across tabs");
+  });
+
   it("displays the validated portable export beside its editable text", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: /^System$/i }));

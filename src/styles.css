@@ -234,6 +234,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .empty-list { min-height: 150px; display: grid; place-content: center; gap: 8px; color: var(--faint); text-align: center; font-size: 12px; }
 
 .main-stage { height: 100%; min-width: 0; min-height: 0; overflow: hidden; grid-column: 2; }
+.retained-app-view { display: contents; }
+.retained-app-view[hidden] { display: none; }
 .reader-layout { height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; display: grid; grid-template-columns: minmax(0, 820px) 190px; justify-content: center; align-content: start; gap: 54px; padding: 44px 46px 100px; }
 .research-article { min-width: 0; }
 .reader-breadcrumb { display: flex; gap: 9px; align-items: center; color: #8a877e; font-size: 11px; margin-bottom: 38px; }
@@ -1619,6 +1621,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .studio-workspace-tabs small { overflow: hidden; color: #607067; text-overflow: ellipsis; white-space: nowrap; font: 9px var(--sans); }
 .studio-workspace-tabs b { min-width: 20px; height: 20px; padding: 0 5px; display: grid; place-items: center; border-radius: 99px; color: #cfe4bc; background: #2b3929; font: 700 9px var(--mono); }
 .studio-workspace-body { min-width: 0; min-height: 0; overflow: hidden; background: #0b100d; }
+.retained-studio-workspace[hidden] { display: none; }
 .launch-workspace-panel, .project-room-scroll { width: min(1120px,calc(100% - 34px)); height: 100%; margin: 0 auto; padding: 18px 0 26px; overflow-y: auto; overscroll-behavior: contain; scrollbar-color: #465249 transparent; }
 .launch-workspace-panel.story-room { display: grid; grid-template-rows: auto minmax(190px,1fr) auto auto; align-content: stretch; }
 .studio-room-heading { min-width: 0; margin-bottom: 13px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }

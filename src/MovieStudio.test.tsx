@@ -149,6 +149,44 @@ describe("Kestrel Movie Studio", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("keeps the Generate workspace attached while another production stage is visible", async () => {
+    const project: MovieProject = {
+      ...makeRunningProject("movie-retained", "Retained Director"),
+      status: "complete",
+      phase: "complete",
+      detail: "Review cut ready",
+      plan: {
+        title: "Retained Director",
+        logline: "A single completed shot.",
+        audience: "Producers",
+        creativeDirection: "Keep every approved frame available.",
+        continuityBible: ["Preserve the subject."],
+        sourceCredits: [],
+        qualityReview: { attempts: 1, score: 100, verdict: "Ready" },
+        clips: [{ id: "clip-1", title: "The Shot", purpose: "Open", durationSeconds: 5, prompt: "A precise cinematic shot.", continuityIn: "Start", continuityOut: "End", transition: "cut", usePreviousFrame: false, sourceRefs: [], referenceIds: [] }],
+      },
+      clips: [{ id: "clip-1", index: 1, title: "The Shot", prompt: "A precise cinematic shot.", durationSeconds: 5, seed: 7, status: "complete", path: "C:\\Movies\\clip-1.mp4", error: "", versions: [] }],
+      edit: {
+        clips: [{ id: "edit-1", clipId: "clip-1", enabled: true, order: 0, trimStart: 0, trimEnd: 0, audioGain: 1, sourceVersionId: "", speed: 1, fadeIn: 0, fadeOut: 0, audioFadeIn: 0, audioFadeOut: 0, label: "", notes: "" }],
+        exportTitle: "Retained Director", exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [],
+      },
+    };
+    vi.mocked(api.listMovies).mockResolvedValue([{ ...makeMovieSummary(project.id, project.title), status: "complete", phase: "complete", clipCount: 1 }]);
+    vi.mocked(api.getMovie).mockResolvedValue(project);
+
+    render(<MovieStudio advancedEnabled models={[baselineModel]} selectedModelId={baselineModel.id} onError={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Retained Director/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /GenerateH3 picture and sound/i }));
+    const direction = await screen.findByLabelText("Producer direction");
+    fireEvent.change(direction, { target: { value: "Preserve this unfinished producer direction." } });
+
+    fireEvent.click(screen.getByRole("button", { name: /EditStoryline and native mix/i }));
+    fireEvent.click(screen.getByRole("button", { name: /GenerateH3 picture and sound/i }));
+
+    expect(screen.getByLabelText("Producer direction")).toBe(direction);
+    expect(direction).toHaveValue("Preserve this unfinished producer direction.");
+  });
+
   it("presents a one-prompt offline production path", async () => {
     render(<MovieStudio advancedEnabled models={[baselineModel]} selectedModelId={baselineModel.id} onError={vi.fn()} />);
     expect(screen.getByText(/Shape the production brief together/i)).toBeInTheDocument();

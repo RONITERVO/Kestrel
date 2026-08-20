@@ -926,6 +926,9 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
   const [draftPlan, setDraftPlan] = useState<MoviePlan | undefined>(project.plan);
   const [working, setWorking] = useState(false);
   const [workspace, setWorkspace] = useState<ProjectWorkspace>(() => preferredProjectWorkspace(project));
+  const [mountedWorkspaces, setMountedWorkspaces] = useState<Set<ProjectWorkspace>>(
+    () => new Set([preferredProjectWorkspace(project)]),
+  );
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [directorModelId, setDirectorModelId] = useState(() => project.modelRoles?.director.modelId || selectedModelId || models[0]?.id || "");
   const [directorThinkingLevel, setDirectorThinkingLevel] = useState<ThinkingLevel | "default">(() => project.modelRoles?.director.thinkingLevel ?? "default");
@@ -937,7 +940,15 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
   const persistedDirectorThinkingLevel = project.modelRoles?.director.thinkingLevel ?? "default";
   const persistedReviewerThinkingLevel = project.modelRoles?.reviewer.thinkingLevel ?? "default";
   useEffect(() => setDraftPlan(project.plan), [project.id, project.plan]);
-  useEffect(() => setWorkspace(preferredProjectWorkspace(project)), [project.id]);
+  const showWorkspace = useCallback((next: ProjectWorkspace) => {
+    setMountedWorkspaces((current) => current.has(next) ? new Set(current) : new Set([...current, next]));
+    setWorkspace(next);
+  }, []);
+  useEffect(() => {
+    const preferred = preferredProjectWorkspace(project);
+    setMountedWorkspaces(new Set([preferred]));
+    setWorkspace(preferred);
+  }, [project.id]);
   useEffect(() => {
     setDirectorModelId(persistedDirectorModelId || selectedModelId || models[0]?.id || "");
     setReviewerModelId(persistedReviewerModelId);
@@ -945,10 +956,10 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
     setReviewerThinkingLevel(persistedReviewerThinkingLevel);
   }, [availableModelIds, persistedDirectorModelId, persistedReviewerModelId, persistedDirectorThinkingLevel, persistedReviewerThinkingLevel, project.id, selectedModelId]);
   useEffect(() => {
-    if (project.status === "awaiting-review" || project.status === "planning-checkpoint") setWorkspace("plan");
-    else if (project.status === "running") setWorkspace(project.phase.includes("render") || project.clips.length ? "generate" : "plan");
-    else if (project.status === "complete" && project.clips.length) setWorkspace((current) => current === "plan" ? "generate" : current);
-  }, [project.clips.length, project.phase, project.status]);
+    if (project.status === "awaiting-review" || project.status === "planning-checkpoint") showWorkspace("plan");
+    else if (project.status === "running") showWorkspace(project.phase.includes("render") || project.clips.length ? "generate" : "plan");
+    else if (project.status === "complete" && project.clips.length && workspace === "plan") showWorkspace("generate");
+  }, [project.clips.length, project.phase, project.status, showWorkspace, workspace]);
   const complete = project.clips.filter((clip) => clip.status === "complete").length;
   const progress = project.clips.length ? Math.round((complete / project.clips.length) * 100) : project.plan ? 10 : 3;
   const canResume = project.status === "planning-checkpoint" || ["failed", "cancelled", "interrupted"].includes(project.status);
@@ -985,13 +996,13 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
       {project.error && <button title={project.error} onClick={() => onError(project.error)}>Production issue</button>}
     </div>
     <nav className="studio-workspace-tabs project-tabs" aria-label="Production workspaces">
-      <button className={workspace === "plan" ? "active" : ""} onClick={() => setWorkspace("plan")}><Sparkles /><span><strong>Plan</strong><small>Write directly or ask Director</small></span>{project.plan && <Check />}</button>
-      <button className={workspace === "generate" ? "active" : ""} disabled={!project.plan && !planningLive} onClick={() => setWorkspace("generate")}><Video /><span><strong>Generate</strong><small>H3 picture and sound</small></span>{project.status === "running" ? <LoaderCircle className="spin" /> : project.clips.length > 0 && <b>{complete}/{project.clips.length}</b>}</button>
-      <button className={workspace === "edit" ? "active" : ""} disabled={!project.clips.length} onClick={() => setWorkspace("edit")}><Film /><span><strong>Edit</strong><small>Storyline and native mix</small></span>{edit.clips.length > 0 && <b>{edit.clips.filter((item) => item.enabled).length}</b>}</button>
-      <button className={workspace === "deliver" ? "active" : ""} disabled={!project.clips.length} onClick={() => setWorkspace("deliver")}><Download /><span><strong>Deliver</strong><small>Review and immutable exports</small></span>{project.exports?.length > 0 && <b>{project.exports.length}</b>}</button>
+      <button className={workspace === "plan" ? "active" : ""} onClick={() => showWorkspace("plan")}><Sparkles /><span><strong>Plan</strong><small>Write directly or ask Director</small></span>{project.plan && <Check />}</button>
+      <button className={workspace === "generate" ? "active" : ""} disabled={!project.plan && !planningLive} onClick={() => showWorkspace("generate")}><Video /><span><strong>Generate</strong><small>H3 picture and sound</small></span>{project.status === "running" ? <LoaderCircle className="spin" /> : project.clips.length > 0 && <b>{complete}/{project.clips.length}</b>}</button>
+      <button className={workspace === "edit" ? "active" : ""} disabled={!project.clips.length} onClick={() => showWorkspace("edit")}><Film /><span><strong>Edit</strong><small>Storyline and native mix</small></span>{edit.clips.length > 0 && <b>{edit.clips.filter((item) => item.enabled).length}</b>}</button>
+      <button className={workspace === "deliver" ? "active" : ""} disabled={!project.clips.length} onClick={() => showWorkspace("deliver")}><Download /><span><strong>Deliver</strong><small>Review and immutable exports</small></span>{project.exports?.length > 0 && <b>{project.exports.length}</b>}</button>
     </nav>
     <div className={`studio-workspace-body project-${workspace}`}>
-      {workspace === "plan" && <section className="project-room-scroll">
+      {mountedWorkspaces.has("plan") && <section className="project-room-scroll retained-studio-workspace" hidden={workspace !== "plan"} aria-hidden={workspace !== "plan"}>
         <div className="project-model-team"><StudioModelRoles models={models} compatibility={modelCompatibility} directorModelId={directorModelId} reviewerModelId={reviewerModelId} directorThinkingLevel={directorThinkingLevel} reviewerThinkingLevel={reviewerThinkingLevel} controlSettings={controlSettings} advancedEnabled={advancedEnabled} disabled={modelRolesLocked} qualifyingModelId={qualifyingModelId} onDirector={setDirectorModelId} onReviewer={setReviewerModelId} onDirectorThinkingLevel={setDirectorThinkingLevel} onReviewerThinkingLevel={setReviewerThinkingLevel} onCheck={onCheckModel} />
           <button disabled={modelRolesLocked || !modelRolesChanged || !directorModelId} onClick={() => void runProjectAction(() => setMovieModelRoles(project.id, {
             directorModelId,
@@ -1007,7 +1018,7 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
           onApprove={() => void runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return approveMoviePlan(project.id); })} />}
         {project.plan && project.status !== "awaiting-review" && !planningLive && <><div className="studio-room-heading"><span><small>Approved production plan</small><strong>Producer-owned creative contract for picture and sound</strong></span><em>{project.plan.clips.length} scenes</em></div><section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Plan validation</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "review" : "reviews"}. {project.plan.qualityReview.verdict}</p></article></section></>}
       </section>}
-      {workspace === "generate" && <section className="project-generate-room">
+      {mountedWorkspaces.has("generate") && <section className="project-generate-room retained-studio-workspace" hidden={workspace !== "generate"} aria-hidden={workspace !== "generate"}>
         <MovieGenerationRoom
           project={project}
           edit={edit}
@@ -1022,10 +1033,10 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
           onError={onError}
         />
       </section>}
-      {workspace === "edit" && project.clips.length > 0 && <section className="project-edit-room">
+      {mountedWorkspaces.has("edit") && project.clips.length > 0 && <section className="project-edit-room retained-studio-workspace" hidden={workspace !== "edit"} aria-hidden={workspace !== "edit"}>
         <MovieTimeline key={project.id} project={project} value={edit} disabled={busy || project.status === "running"} onChange={onEdit} onRequestSave={onSave} />
       </section>}
-      {workspace === "deliver" && <section className="project-room-scroll delivery-room">
+      {mountedWorkspaces.has("deliver") && <section className="project-room-scroll delivery-room retained-studio-workspace" hidden={workspace !== "deliver"} aria-hidden={workspace !== "deliver"}>
         <div className="studio-room-heading"><span><small>Producer delivery room</small><strong>Review, export, and recover every approved cut</strong></span><button className="accent" disabled={busy || complete === 0 || project.status === "running" || !edit.clips.some((item) => item.enabled)} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export current cut</button></div>
         {project.finalPath ? <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">{latestExport ? "Latest immutable timeline export" : "Assembled file"}</span><h2>{latestExport?.title ?? "Untouched H3 review cut"}</h2><small>{latestExport ? `${latestExport.preset} preset · ${latestExport.clipCount} timeline items · SHA-256 recorded` : "Native clip duration and audio are preserved. Only an explicit editor export creates an altered cut."}</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section> : <div className="studio-room-empty"><Download /><strong>No deliverable yet</strong><span>Finish or review the storyline, then export a new immutable cut. Masters and prior decisions remain untouched.</span></div>}
         {project.exports?.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2><small>Every cut remains addressable with its decision-list sidecar and SHA-256 identity.</small></div></div><div>{[...project.exports].reverse().map((item) => <article key={item.id}><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s · {readableSize(item.bytes)}</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>)}</div></section>}
