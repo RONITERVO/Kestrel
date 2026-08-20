@@ -139,7 +139,10 @@ select one storyline shot or two exact frame anchors in Generate
 The React surface sends storyline edit IDs and source times, never absolute input paths. Native code
 resolves the selected preserved version inside the project boundary before extracting a frame. A shot
 audition never rewrites the active master or approved plan. A transition defaults to the Masters bin and
-changes the storyline only when the producer selected insert or replace before generation.
+changes the storyline only when the producer selected insert or replace before generation. An internal
+shot replacement uses frame-aligned In and Out points: native placement splits the existing edit into
+untouched leading and trailing decisions, clears only the obsolete fades at the new joins, and inserts the
+generated master between them. The original source and every prior audition remain immutable.
 
 ## Music production lifecycle
 

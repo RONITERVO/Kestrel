@@ -1,6 +1,6 @@
 import {
   ArrowLeft, ArrowRight, Check, CircleStop, Eye, Film, LoaderCircle, Minus, Play,
-  Plus, Save, ShieldCheck, Sparkles, Video,
+  Pause, Plus, Save, ShieldCheck, SkipBack, SkipForward, Sparkles, Video,
 } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -9,7 +9,7 @@ import {
   renderMovieClipVersion, runMovieGenerationAgent, saveMovieEdits,
 } from "./api";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
-import { appendTimelineSource, orderedMovieEdit, timelineItems, type TimelineItem } from "./MovieTimeline";
+import { appendTimelineSource, formatTimecode, orderedMovieEdit, timelineItems, type TimelineItem } from "./MovieTimeline";
 import { effectiveThinkingLevelForModel } from "./types";
 import type {
   ControlSettings, MovieCapturedFrame, MovieEdit, MovieFrameAnchor,
@@ -20,6 +20,8 @@ import type {
 type GenerationMode = "shot" | "transition";
 type AgentRole = "director" | "reviewer";
 type AgentRoleStream = { reasoning: string; text: string };
+const FPS = 24;
+const FRAME_SECONDS = 1 / FPS;
 
 function requestId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -33,6 +35,80 @@ function visibleStart(item: TimelineItem): number {
 
 function visibleEnd(item: TimelineItem): number {
   return Math.max(item.edit.trimStart, item.sourceDuration - item.edit.trimEnd - .04);
+}
+
+export function parseGenerationTimecode(value: string, fps = FPS): number | undefined {
+  const trimmed = value.trim();
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    return Number.isFinite(seconds) ? seconds : undefined;
+  }
+  const match = /^(\d{1,3}):(\d{1,2}):(\d{1,2}):(\d{1,2})$/.exec(trimmed);
+  if (!match) return undefined;
+  const [, hoursText, minutesText, secondsText, framesText] = match;
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+  const seconds = Number(secondsText);
+  const frames = Number(framesText);
+  if (minutes >= 60 || seconds >= 60 || frames >= fps) return undefined;
+  return hours * 3600 + minutes * 60 + seconds + frames / fps;
+}
+
+export function boundedGenerationFrame(value: number, minimum: number, maximum: number, fps = FPS): number {
+  const bounded = Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? value : minimum));
+  return Math.max(minimum, Math.min(maximum, Math.round(bounded * fps) / fps));
+}
+
+export function replacementRangeAnchors(item: TimelineItem, inSeconds: number, outSeconds: number): {
+  firstAnchor: MovieFrameAnchor;
+  lastAnchor: MovieFrameAnchor;
+} {
+  const minimum = visibleStart(item);
+  const maximum = visibleEnd(item);
+  const firstTime = boundedGenerationFrame(inSeconds, minimum, Math.max(minimum, maximum - FRAME_SECONDS));
+  const lastTime = boundedGenerationFrame(outSeconds, Math.min(maximum, firstTime + FRAME_SECONDS), maximum);
+  return {
+    firstAnchor: { editId: item.edit.id, timeSeconds: firstTime, label: `${item.clip.title} · replacement in` },
+    lastAnchor: { editId: item.edit.id, timeSeconds: lastTime, label: `${item.clip.title} · replacement out` },
+  };
+}
+
+function TimecodeField({ label, value, minimum, maximum, disabled, onCommit }: {
+  label: string;
+  value: number;
+  minimum: number;
+  maximum: number;
+  disabled: boolean;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(formatTimecode(value));
+  useEffect(() => setDraft(formatTimecode(value)), [value]);
+  const commit = () => {
+    const parsed = parseGenerationTimecode(draft);
+    if (parsed === undefined || parsed < minimum || parsed > maximum) {
+      setDraft(formatTimecode(value));
+      return;
+    }
+    onCommit(parsed);
+  };
+  return <label className="generation-timecode-field">
+    <span>{label}</span>
+    <input
+      aria-label={`${label} timecode`}
+      disabled={disabled}
+      inputMode="numeric"
+      value={draft}
+      onBlur={commit}
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        else if (event.key === "Escape") {
+          setDraft(formatTimecode(value));
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  </label>;
 }
 
 export function transitionAnchorsForPosition(items: TimelineItem[], position: MovieTransitionPosition, selectedIndex: number): {
@@ -109,6 +185,9 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
   const [lastAnchor, setLastAnchor] = useState<MovieFrameAnchor>();
   const [firstFrame, setFirstFrame] = useState<MovieCapturedFrame>();
   const [lastFrame, setLastFrame] = useState<MovieCapturedFrame>();
+  const rangeVideoRef = useRef<HTMLVideoElement>(null);
+  const [rangePlayhead, setRangePlayhead] = useState(selected ? visibleStart(selected) : 0);
+  const [rangePlaying, setRangePlaying] = useState(false);
   const [direction, setDirection] = useState("");
   const [duration, setDuration] = useState(5);
   const [shotDuration, setShotDuration] = useState(selected?.clip.durationSeconds ?? 5);
@@ -134,6 +213,13 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     return project.clips.filter((clip) => clip.status === "complete" && clip.path && !placed.has(clip.id));
   }, [edit.clips, project.clips]);
 
+  const ensureCurrentEditSaved = async () => {
+    if (JSON.stringify(orderedMovieEdit(edit)) === JSON.stringify(orderedMovieEdit(project.edit))) return;
+    const updated = await saveMovieEdits(project.id, edit);
+    onProject(updated);
+    onEdit(updated.edit);
+  };
+
   useEffect(() => {
     if (selectedEditId && items.some((item) => item.edit.id === selectedEditId)) return;
     setSelectedEditId(items[0]?.edit.id ?? "");
@@ -144,7 +230,11 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     setRenderPrompt("");
     setGeneratedVersionId("");
     setCheckpointRequestId("");
-    if (selected) setShotDuration(selected.clip.durationSeconds);
+    if (selected) {
+      setShotDuration(selected.clip.durationSeconds);
+      setRangePlayhead(visibleStart(selected));
+      setRangePlaying(false);
+    }
   }, [mode, selectedEditId]);
 
   useEffect(() => {
@@ -179,6 +269,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     setFirstFrame(undefined);
     setLastFrame(undefined);
     try {
+      await ensureCurrentEditSaved();
       const [capturedFirst, capturedLast] = await Promise.all([
         first ? captureMovieFrame(project.id, first) : Promise.resolve(undefined),
         last ? captureMovieFrame(project.id, last) : Promise.resolve(undefined),
@@ -192,24 +283,22 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
 
   const setShotRangeAnchors = async () => {
     if (!selected) return;
-    const first: MovieFrameAnchor = {
-      editId: selected.edit.id,
-      timeSeconds: selected.edit.trimStart,
-      label: `${selected.clip.title} · range in`,
-    };
-    const last: MovieFrameAnchor = {
-      editId: selected.edit.id,
-      timeSeconds: Math.max(selected.edit.trimStart + .04, selected.sourceDuration - selected.edit.trimEnd - .04),
-      label: `${selected.clip.title} · range out`,
-    };
+    const { firstAnchor: first, lastAnchor: last } = replacementRangeAnchors(
+      selected,
+      visibleStart(selected),
+      visibleEnd(selected),
+    );
     setCheckpointRequestId("");
     setTransitionPosition("between");
     setPlacement("replace_range");
     setFirstAnchor(first);
     setLastAnchor(last);
+    setRangePlayhead(first.timeSeconds);
+    setRangePlaying(false);
     setFirstFrame(undefined);
     setLastFrame(undefined);
     try {
+      await ensureCurrentEditSaved();
       const [capturedFirst, capturedLast] = await Promise.all([
         captureMovieFrame(project.id, first),
         captureMovieFrame(project.id, last),
@@ -245,6 +334,90 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     }
   };
 
+  const updateRangeBoundary = async (side: "first" | "last", requestedTime: number, capture: boolean) => {
+    if (!selected || !firstAnchor || !lastAnchor || firstAnchor.editId !== selected.edit.id || lastAnchor.editId !== selected.edit.id) return;
+    const minimum = visibleStart(selected);
+    const maximum = visibleEnd(selected);
+    const firstLimit = Math.max(minimum, lastAnchor.timeSeconds - FRAME_SECONDS);
+    const lastLimit = Math.min(maximum, firstAnchor.timeSeconds + FRAME_SECONDS);
+    const timeSeconds = side === "first"
+      ? boundedGenerationFrame(requestedTime, minimum, firstLimit)
+      : boundedGenerationFrame(requestedTime, lastLimit, maximum);
+    const anchor: MovieFrameAnchor = {
+      ...(side === "first" ? firstAnchor : lastAnchor),
+      timeSeconds,
+    };
+    setCheckpointRequestId("");
+    if (side === "first") {
+      setFirstAnchor(anchor);
+      setFirstFrame(undefined);
+    } else {
+      setLastAnchor(anchor);
+      setLastFrame(undefined);
+    }
+    if (!capture) return;
+    try {
+      const frame = await captureMovieFrame(project.id, anchor);
+      if (side === "first") setFirstFrame(frame);
+      else setLastFrame(frame);
+    } catch (error) {
+      onError(String(error));
+    }
+  };
+
+  const seekRange = (requestedTime: number) => {
+    if (!selected) return;
+    const time = boundedGenerationFrame(requestedTime, visibleStart(selected), visibleEnd(selected));
+    setRangePlayhead(time);
+    const player = rangeVideoRef.current;
+    if (player) player.currentTime = time;
+  };
+
+  const toggleRangePlayback = () => {
+    const player = rangeVideoRef.current;
+    if (!player || !firstAnchor || !lastAnchor) return;
+    if (!player.paused) {
+      player.pause();
+      setRangePlaying(false);
+      return;
+    }
+    if (player.currentTime < firstAnchor.timeSeconds || player.currentTime >= lastAnchor.timeSeconds - .01) {
+      player.currentTime = firstAnchor.timeSeconds;
+      setRangePlayhead(firstAnchor.timeSeconds);
+    }
+    void player.play().catch(() => setRangePlaying(false));
+  };
+
+  const handleRangeTimeUpdate = () => {
+    const player = rangeVideoRef.current;
+    if (!player || !lastAnchor) return;
+    if (player.currentTime >= lastAnchor.timeSeconds - .005) {
+      player.pause();
+      player.currentTime = lastAnchor.timeSeconds;
+      setRangePlaying(false);
+      setRangePlayhead(lastAnchor.timeSeconds);
+      return;
+    }
+    setRangePlayhead(player.currentTime);
+  };
+
+  const handleRangeKeys = (event: React.KeyboardEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).matches("input, button")) return;
+    if (event.key === " ") {
+      event.preventDefault();
+      toggleRangePlayback();
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      seekRange(rangePlayhead + (event.key === "ArrowLeft" ? -FRAME_SECONDS : FRAME_SECONDS));
+    } else if (event.key.toLowerCase() === "i") {
+      event.preventDefault();
+      void updateRangeBoundary("first", rangePlayhead, true);
+    } else if (event.key.toLowerCase() === "o") {
+      event.preventDefault();
+      void updateRangeBoundary("last", rangePlayhead, true);
+    }
+  };
+
   const askDirector = async () => {
     if (!selected || direction.trim().length < 3) return;
     if (mode === "transition" && !firstAnchor && !lastAnchor) {
@@ -259,6 +432,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     setProposal(undefined);
     setSnapshot(undefined);
     try {
+      await ensureCurrentEditSaved();
       const result = await runMovieGenerationAgent({
         requestId: id,
         projectId: project.id,
@@ -297,6 +471,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
     }
     setRendering(true);
     try {
+      await ensureCurrentEditSaved();
       if (mode === "shot") {
         const planned = proposal?.candidate.kind === "shotVersion"
           ? proposal.candidate.clip
@@ -382,6 +557,14 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
       ? Boolean(firstAnchor) && !lastAnchor
       : Boolean(firstAnchor && lastAnchor);
   const sameShotRange = Boolean(firstAnchor && lastAnchor && firstAnchor.editId === lastAnchor.editId);
+  const rangeMinimum = selected ? visibleStart(selected) : 0;
+  const rangeMaximum = selected ? visibleEnd(selected) : 0;
+  const rangeSpan = Math.max(FRAME_SECONDS, rangeMaximum - rangeMinimum);
+  const selectedRangeDuration = sameShotRange && firstAnchor && lastAnchor && selected
+    ? Math.max(0, lastAnchor.timeSeconds - firstAnchor.timeSeconds) / Math.max(.25, selected.edit.speed)
+    : 0;
+  const generatedDurationDelta = duration - selectedRangeDuration;
+  const rangePosition = (time: number) => `${Math.max(0, Math.min(100, (time - rangeMinimum) / rangeSpan * 100))}%`;
   const visibleAgentRoles = (["director", "reviewer"] as AgentRole[]).filter((role) =>
     roleStreams[role].reasoning || roleStreams[role].text || (Boolean(activeRequestId) && activeRole === role));
 
@@ -411,13 +594,78 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, control
         {preview ? <div className="generation-live-preview">{preview}</div> : mode === "shot" ? <div className="generation-shot-monitor">
           {selected?.sourcePath ? <video controls preload="metadata" src={movieMediaUrl(selected.sourcePath)} /> : <div className="generation-monitor-empty"><Film /><span>Select a preserved master.</span></div>}
           <header><span><strong>Source audition</strong><small>{selected?.clip.title ?? "No shot selected"}</small></span><em>Storyline unchanged</em></header>
-        </div> : <div className="generation-transition-view">
-          <div className="generation-anchor-actions"><span><strong>{transitionPosition === "before" ? "Before story" : transitionPosition === "after" ? "After story" : "At existing cut"}</strong><small>{transitionPosition === "between" ? "Both story endpoints are locked" : "One story endpoint is locked; H3 invents the open side"}</small></span><button disabled={!selected || rendering || Boolean(activeRequestId)} onClick={() => void setShotRangeAnchors()}><Film /> Replace selected shot range</button></div>
-          <div className="generation-anchor-monitors">
+        </div> : <div className={`generation-transition-view ${sameShotRange ? "range-active" : ""}`}>
+          <div className="generation-anchor-actions"><span><strong>{sameShotRange ? "Inside selected shot" : transitionPosition === "before" ? "Before story" : transitionPosition === "after" ? "After story" : "At existing cut"}</strong><small>{sameShotRange ? "Choose exact In and Out frames; only the selected middle changes" : transitionPosition === "between" ? "Both story endpoints are locked" : "One story endpoint is locked; H3 invents the open side"}</small></span><button disabled={!selected || rendering || Boolean(activeRequestId)} onClick={() => void setShotRangeAnchors()}><Film /> {sameShotRange ? "Reset to full shot" : "Replace selected shot range"}</button></div>
+          {sameShotRange && selected && firstAnchor && lastAnchor ? <section className="generation-range-editor" tabIndex={0} onKeyDown={handleRangeKeys} aria-label="Choose the source range to replace">
+            <div className="generation-range-source-monitor">
+              <video
+                ref={rangeVideoRef}
+                preload="metadata"
+                src={movieMediaUrl(selected.sourcePath)}
+                onClick={toggleRangePlayback}
+                onLoadedMetadata={() => seekRange(firstAnchor.timeSeconds)}
+                onPlay={() => setRangePlaying(true)}
+                onPause={() => setRangePlaying(false)}
+                onTimeUpdate={handleRangeTimeUpdate}
+              />
+              <span><strong>{selected.edit.label || selected.clip.title}</strong><small>Source audition · original remains preserved</small></span>
+            </div>
+            <div className="generation-range-transport">
+              <button type="button" onClick={() => seekRange(firstAnchor.timeSeconds)} aria-label="Go to replacement In point"><SkipBack /></button>
+              <button type="button" onClick={() => seekRange(rangePlayhead - FRAME_SECONDS)} aria-label="Step one frame backward"><ArrowLeft /></button>
+              <button type="button" className="play" onClick={toggleRangePlayback} aria-label={rangePlaying ? "Pause selected range" : "Play selected range"}>{rangePlaying ? <Pause /> : <Play />}</button>
+              <button type="button" onClick={() => seekRange(rangePlayhead + FRAME_SECONDS)} aria-label="Step one frame forward"><ArrowRight /></button>
+              <button type="button" onClick={() => seekRange(lastAnchor.timeSeconds)} aria-label="Go to replacement Out point"><SkipForward /></button>
+              <output aria-label="Source playhead timecode">{formatTimecode(rangePlayhead)}</output>
+              <small>Space play · I set In · O set Out · arrows step frames</small>
+            </div>
+            <button
+              type="button"
+              className="generation-range-rail"
+              aria-label="Seek within the visible source shot"
+              onPointerDown={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                seekRange(rangeMinimum + Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * rangeSpan);
+              }}
+            >
+              <span className="source" />
+              <span className="selection" style={{ left: rangePosition(firstAnchor.timeSeconds), width: `${Math.max(0, (lastAnchor.timeSeconds - firstAnchor.timeSeconds) / rangeSpan * 100)}%` }} />
+              <span className="in" style={{ left: rangePosition(firstAnchor.timeSeconds) }}><i>IN</i></span>
+              <span className="out" style={{ left: rangePosition(lastAnchor.timeSeconds) }}><i>OUT</i></span>
+              <span className="playhead" style={{ left: rangePosition(rangePlayhead) }} />
+            </button>
+            <div className="generation-range-summary">
+              <span><strong>{formatTimecode(selectedRangeDuration)}</strong><small>source range replaced</small></span>
+              <ArrowRight />
+              <span><strong>{formatTimecode(duration)}</strong><small>new H3 audition</small></span>
+              <em className={generatedDurationDelta > .01 ? "longer" : generatedDurationDelta < -.01 ? "shorter" : "same"}>{generatedDurationDelta > .01 ? "+" : ""}{generatedDurationDelta.toFixed(2)}s in story</em>
+            </div>
+            <div className="generation-range-boundaries">
+              <div>
+                <label>In point<input type="range" min={rangeMinimum} max={Math.max(rangeMinimum, lastAnchor.timeSeconds - FRAME_SECONDS)} step={FRAME_SECONDS} value={firstAnchor.timeSeconds} disabled={rendering || Boolean(activeRequestId)} onChange={(event) => void updateRangeBoundary("first", Number(event.target.value), false)} onPointerUp={(event) => void updateRangeBoundary("first", Number(event.currentTarget.value), true)} onKeyUp={(event) => { if (event.key.startsWith("Arrow")) void updateRangeBoundary("first", Number(event.currentTarget.value), true); }} /></label>
+                <button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void updateRangeBoundary("first", firstAnchor.timeSeconds - FRAME_SECONDS, true)} aria-label="Move In point one frame earlier"><Minus /></button>
+                <TimecodeField label="In" value={firstAnchor.timeSeconds} minimum={rangeMinimum} maximum={lastAnchor.timeSeconds - FRAME_SECONDS} disabled={rendering || Boolean(activeRequestId)} onCommit={(value) => void updateRangeBoundary("first", value, true)} />
+                <button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void updateRangeBoundary("first", firstAnchor.timeSeconds + FRAME_SECONDS, true)} aria-label="Move In point one frame later"><Plus /></button>
+                <button type="button" className="mark" disabled={rendering || Boolean(activeRequestId) || rangePlayhead >= lastAnchor.timeSeconds - FRAME_SECONDS} onClick={() => void updateRangeBoundary("first", rangePlayhead, true)}>Mark In</button>
+              </div>
+              <div>
+                <label>Out point<input type="range" min={Math.min(rangeMaximum, firstAnchor.timeSeconds + FRAME_SECONDS)} max={rangeMaximum} step={FRAME_SECONDS} value={lastAnchor.timeSeconds} disabled={rendering || Boolean(activeRequestId)} onChange={(event) => void updateRangeBoundary("last", Number(event.target.value), false)} onPointerUp={(event) => void updateRangeBoundary("last", Number(event.currentTarget.value), true)} onKeyUp={(event) => { if (event.key.startsWith("Arrow")) void updateRangeBoundary("last", Number(event.currentTarget.value), true); }} /></label>
+                <button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void updateRangeBoundary("last", lastAnchor.timeSeconds - FRAME_SECONDS, true)} aria-label="Move Out point one frame earlier"><Minus /></button>
+                <TimecodeField label="Out" value={lastAnchor.timeSeconds} minimum={firstAnchor.timeSeconds + FRAME_SECONDS} maximum={rangeMaximum} disabled={rendering || Boolean(activeRequestId)} onCommit={(value) => void updateRangeBoundary("last", value, true)} />
+                <button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void updateRangeBoundary("last", lastAnchor.timeSeconds + FRAME_SECONDS, true)} aria-label="Move Out point one frame later"><Plus /></button>
+                <button type="button" className="mark" disabled={rendering || Boolean(activeRequestId) || rangePlayhead <= firstAnchor.timeSeconds + FRAME_SECONDS} onClick={() => void updateRangeBoundary("last", rangePlayhead, true)}>Mark Out</button>
+              </div>
+            </div>
+            <div className="generation-range-endpoints">
+              <figure>{firstFrame ? <img src={movieMediaUrl(firstFrame.path)} alt="Exact replacement In frame" /> : <LoaderCircle className="spin" />}<figcaption>IN · {formatTimecode(firstAnchor.timeSeconds)}</figcaption></figure>
+              <span><strong>Director preserves both frames</strong><small>Only the selected middle is regenerated</small></span>
+              <figure>{lastFrame ? <img src={movieMediaUrl(lastFrame.path)} alt="Exact replacement Out frame" /> : <LoaderCircle className="spin" />}<figcaption>OUT · {formatTimecode(lastAnchor.timeSeconds)}</figcaption></figure>
+            </div>
+          </section> : <div className="generation-anchor-monitors">
             <figure className={!firstAnchor ? "open-endpoint" : ""}>{firstFrame ? <img src={movieMediaUrl(firstFrame.path)} alt="First transition endpoint" /> : <div><Eye /><span>{transitionPosition === "before" ? "New opening" : "First endpoint"}</span></div>}<figcaption>{firstAnchor?.label ?? "H3 creates the opening frame"}</figcaption>{firstAnchor && <div className="generation-endpoint-adjust"><button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void adjustEndpoint("first", -1)} aria-label="Move first endpoint one frame earlier"><Minus /></button><output>{firstAnchor.timeSeconds.toFixed(2)}s</output><button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void adjustEndpoint("first", 1)} aria-label="Move first endpoint one frame later"><Plus /></button></div>}</figure>
             <ArrowRight />
             <figure className={!lastAnchor ? "open-endpoint" : ""}>{lastFrame ? <img src={movieMediaUrl(lastFrame.path)} alt="Last transition endpoint" /> : <div><Eye /><span>{transitionPosition === "after" ? "New ending" : "Last endpoint"}</span></div>}<figcaption>{lastAnchor?.label ?? "H3 creates the ending frame"}</figcaption>{lastAnchor && <div className="generation-endpoint-adjust"><button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void adjustEndpoint("last", -1)} aria-label="Move last endpoint one frame earlier"><Minus /></button><output>{lastAnchor.timeSeconds.toFixed(2)}s</output><button type="button" disabled={rendering || Boolean(activeRequestId)} onClick={() => void adjustEndpoint("last", 1)} aria-label="Move last endpoint one frame later"><Plus /></button></div>}</figure>
-          </div>
+          </div>}
         </div>}
         {selected && <section className="generation-auditions">
           <header><strong>Preserved auditions</strong><small>Active source: {selected.versionLabel}</small></header>

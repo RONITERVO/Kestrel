@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { editWithSourceVersion, insertTimelineSourceAfter, insertTimelineSourceBefore, transitionAnchorsForPosition } from "./MovieGenerationRoom";
+import {
+  boundedGenerationFrame, editWithSourceVersion, insertTimelineSourceAfter, insertTimelineSourceBefore,
+  parseGenerationTimecode, replacementRangeAnchors, transitionAnchorsForPosition,
+} from "./MovieGenerationRoom";
 import { timelineItems } from "./MovieTimeline";
 import type { ClipEdit, MovieEdit, MovieProject } from "./types";
 
@@ -46,6 +49,25 @@ describe("Generate audition decisions", () => {
     expect(transitionAnchorsForPosition(items, "after", 1)).toEqual({
       firstAnchor: { editId: "edit-b", timeSeconds: 5.96, label: "Two · story ends" },
     });
+  });
+
+  it("creates frame-aligned replacement endpoints inside the selected visible shot", () => {
+    const selected = decision("edit-a", "one", 0);
+    selected.trimStart = 1;
+    selected.trimEnd = 2;
+    const [item] = timelineItems(project, edit([selected]));
+    expect(replacementRangeAnchors(item, 2.011, 6.03)).toEqual({
+      firstAnchor: { editId: "edit-a", timeSeconds: 2, label: "One · replacement in" },
+      lastAnchor: { editId: "edit-a", timeSeconds: 6.041666666666667, label: "One · replacement out" },
+    });
+  });
+
+  it("accepts editor timecode or seconds and rejects impossible frame fields", () => {
+    expect(parseGenerationTimecode("00:01:02:12")).toBe(62.5);
+    expect(parseGenerationTimecode("6.25")).toBe(6.25);
+    expect(parseGenerationTimecode("00:00:12:24")).toBeUndefined();
+    expect(parseGenerationTimecode("00:67:00:00")).toBeUndefined();
+    expect(boundedGenerationFrame(4.019, 1, 7)).toBe(4);
   });
 
   it("changes only the selected storyline decision when accepting an audition", () => {

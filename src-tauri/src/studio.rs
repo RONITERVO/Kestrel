@@ -3892,6 +3892,8 @@ fn replace_storyline_range_with_transition(
     if first.time_seconds as f32 - first_edit.trim_start > 0.04 {
         let mut leading = first_edit.clone();
         leading.trim_end = first_source.duration_seconds - first.time_seconds as f32;
+        leading.fade_out = 0.0;
+        leading.audio_fade_out = 0.0;
         replacement.push(leading);
     }
     replacement.push(transition);
@@ -3901,6 +3903,8 @@ fn replace_storyline_range_with_transition(
             trailing.id = format!("edit-{}", uuid::Uuid::new_v4().simple());
         }
         trailing.trim_start = last.time_seconds as f32;
+        trailing.fade_in = 0.0;
+        trailing.audio_fade_in = 0.0;
         replacement.push(trailing);
     }
     project
@@ -6660,6 +6664,96 @@ mod tests {
             "my-offline-cut-01"
         );
         assert_eq!(safe_export_stem("🎬"), "kestrel-movie");
+    }
+
+    #[test]
+    fn replacing_part_of_one_shot_preserves_clean_edge_fragments() {
+        let mut project: MovieProject = serde_json::from_value(json!({
+            "schemaVersion": 5,
+            "id": "e3e9e619-7e6a-4eed-a433-53c9e01ad99f",
+            "prompt": "test", "title": "Range replacement", "status": "complete",
+            "phase": "complete", "detail": "ready",
+            "createdAt": "2026-08-12T00:00:00Z", "updatedAt": "2026-08-12T00:00:00Z",
+            "model": "test", "renderer": "test", "settings": {},
+            "clips": [{
+                "id": "clip-001", "index": 0, "title": "One", "prompt": "prompt",
+                "durationSeconds": 8.0, "seed": 1, "status": "complete", "path": "one.mp4"
+            }, {
+                "id": "transition-001", "index": 1, "title": "Generated middle", "prompt": "prompt",
+                "durationSeconds": 4.0, "seed": 2, "status": "complete", "path": "middle.mp4"
+            }],
+            "edit": { "clips": [], "exportTitle": "Range replacement" },
+            "finalPath": "", "error": "", "producerReviewRequired": false,
+            "producerApprovedAt": ""
+        }))
+        .unwrap();
+        normalize_movie_project(&mut project);
+        project.edit.clips = vec![ClipEdit {
+            id: "edit-original".into(),
+            clip_id: "clip-001".into(),
+            enabled: true,
+            order: 0,
+            trim_start: 1.0,
+            trim_end: 1.0,
+            audio_gain: 1.0,
+            source_version_id: String::new(),
+            speed: 1.0,
+            fade_in: 0.5,
+            fade_out: 0.6,
+            audio_fade_in: 0.7,
+            audio_fade_out: 0.8,
+            label: "Original".into(),
+            notes: String::new(),
+        }];
+        let transition = ClipEdit {
+            id: "edit-generated".into(),
+            clip_id: "transition-001".into(),
+            enabled: true,
+            order: 0,
+            trim_start: 0.0,
+            trim_end: 0.0,
+            audio_gain: 1.0,
+            source_version_id: String::new(),
+            speed: 1.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            audio_fade_in: 0.0,
+            audio_fade_out: 0.0,
+            label: "Generated".into(),
+            notes: String::new(),
+        };
+        replace_storyline_range_with_transition(
+            &mut project,
+            &MovieFrameAnchor {
+                edit_id: "edit-original".into(),
+                time_seconds: 2.0,
+                label: None,
+            },
+            &MovieFrameAnchor {
+                edit_id: "edit-original".into(),
+                time_seconds: 5.0,
+                label: None,
+            },
+            transition,
+        )
+        .unwrap();
+
+        assert_eq!(project.edit.clips.len(), 3);
+        let leading = &project.edit.clips[0];
+        let generated = &project.edit.clips[1];
+        let trailing = &project.edit.clips[2];
+        assert_eq!(leading.id, "edit-original");
+        assert_eq!(leading.trim_end, 6.0);
+        assert_eq!((leading.fade_in, leading.fade_out), (0.5, 0.0));
+        assert_eq!((leading.audio_fade_in, leading.audio_fade_out), (0.7, 0.0));
+        assert_eq!(generated.id, "edit-generated");
+        assert_ne!(trailing.id, leading.id);
+        assert_eq!(trailing.trim_start, 5.0);
+        assert_eq!((trailing.fade_in, trailing.fade_out), (0.0, 0.6));
+        assert_eq!(
+            (trailing.audio_fade_in, trailing.audio_fade_out),
+            (0.0, 0.8)
+        );
     }
 
     #[tokio::test]
