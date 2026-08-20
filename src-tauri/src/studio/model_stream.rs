@@ -69,7 +69,7 @@ impl OpenAiSseDecoder {
         }
         if !self.completed {
             return Err(
-                "the model stream ended before its completion marker; accepted output remains intact"
+                "the model stream ended before its completion marker; received output remains retained for inspection"
                     .into(),
             );
         }

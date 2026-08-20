@@ -5,7 +5,8 @@ import {
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelMovieGenerationAgent, cancelMovieRender, captureMovieFrame, generateMovieFl2vTransition,
-  getMovieGenerationAgentSnapshot, movieMediaUrl, onMovieGenerationAgent,
+  getLatestMovieGenerationAgentSnapshot, getMovieGenerationAgentSnapshot, isMovieGenerationAgentActive,
+  movieMediaUrl, onMovieGenerationAgent,
   renderMovieClipVersion, runMovieGenerationAgent, saveMovieEdits,
 } from "./api";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
@@ -13,15 +14,93 @@ import { appendTimelineSource, formatTimecode, orderedMovieEdit, timelineItems, 
 import { effectiveThinkingLevelForModel } from "./types";
 import type {
   ControlSettings, MovieCapturedFrame, MovieEdit, MovieFrameAnchor,
-  ModelCompatibility, ModelInfo, MovieGenerationProposal, MovieProject, MovieTransitionPlacement, MovieTransitionPosition,
+  ModelCompatibility, ModelInfo, MovieGenerationAgentEvent, MovieGenerationProposal, MovieGenerationTask, MovieProject, MovieTransitionPlacement, MovieTransitionPosition,
   ThinkingLevel,
 } from "./types";
 
 type GenerationMode = "shot" | "transition";
 type AgentRole = "frameAnalyst" | "director" | "reviewer";
-type AgentRoleStream = { reasoning: string; text: string };
+type AgentRoleStream = { reasoning: string; text: string; toolArguments: string; status: string; failed: boolean };
+type GenerationAgentSnapshot = {
+  requestId?: string;
+  active?: boolean;
+  events?: MovieGenerationAgentEvent[];
+  task?: MovieGenerationTask;
+  result?: MovieGenerationProposal;
+};
 const FPS = 24;
 const FRAME_SECONDS = 1 / FPS;
+
+const emptyRoleStream = (): AgentRoleStream => ({ reasoning: "", text: "", toolArguments: "", status: "", failed: false });
+
+export function mergeGenerationAgentEvents(
+  current: MovieGenerationAgentEvent[],
+  incoming: MovieGenerationAgentEvent[],
+): MovieGenerationAgentEvent[] {
+  if (!incoming.length) return current;
+  const additions = [...new Map(incoming.map((event) => [event.sequence, event])).values()]
+    .sort((left, right) => left.sequence - right.sequence);
+  const merged: MovieGenerationAgentEvent[] = [];
+  let currentIndex = 0;
+  let incomingIndex = 0;
+  while (currentIndex < current.length || incomingIndex < additions.length) {
+    const existing = current[currentIndex];
+    const addition = additions[incomingIndex];
+    if (!addition || (existing && existing.sequence < addition.sequence)) {
+      merged.push(existing);
+      currentIndex += 1;
+    } else if (!existing || addition.sequence < existing.sequence) {
+      merged.push(addition);
+      incomingIndex += 1;
+    } else {
+      merged.push(addition);
+      currentIndex += 1;
+      incomingIndex += 1;
+    }
+  }
+  return merged;
+}
+
+export function replayGenerationAgentEvents(events: MovieGenerationAgentEvent[]): {
+  roleStreams: Record<AgentRole, AgentRoleStream>;
+  activities: string[];
+  activeRole: AgentRole;
+} {
+  const roleStreams: Record<AgentRole, AgentRoleStream> = {
+    frameAnalyst: emptyRoleStream(), director: emptyRoleStream(), reviewer: emptyRoleStream(),
+  };
+  const activities: string[] = [];
+  let activeRole: AgentRole = "director";
+  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+    const role: AgentRole = event.modelRole === "reviewer" ? "reviewer" : event.modelRole === "frameAnalyst" ? "frameAnalyst" : "director";
+    activeRole = role;
+    const stream = roleStreams[role];
+    if (event.kind === "reasoning") stream.reasoning = appendModelThinking(stream.reasoning, event.content);
+    else if (event.kind === "token") stream.text += event.content;
+    else if (event.kind === "advanced-token") stream.toolArguments += event.content;
+    else if (event.kind === "turn-start" || event.kind === "attempt-start") {
+      const marker = `${stream.text || stream.reasoning || stream.toolArguments ? "\n\n" : ""}— ${event.content} —\n`;
+      stream.text += marker;
+      activities.push(event.content);
+    } else if (event.kind === "submission-invalid" || event.kind === "request-failed") {
+      stream.status = event.content;
+      stream.failed = true;
+      activities.push(`${role}: ${event.content}`);
+    } else if (event.kind.startsWith("stream-")) {
+      const marker = event.completionMarkerSeen === undefined
+        ? "completion marker not reported"
+        : event.completionMarkerSeen ? "completion marker received" : "completion marker missing";
+      stream.status = `${event.content} (${marker}${event.finishReason ? `; finish reason: ${event.finishReason}` : ""})`;
+      stream.failed = event.kind !== "stream-complete";
+      activities.push(`${role}: ${stream.status}`);
+    } else if (event.kind === "activity" || event.kind === "complete") activities.push(event.content);
+  }
+  return { roleStreams, activities, activeRole };
+}
+
+export function generationRequestIsActive(snapshotActive: boolean | undefined, commandPending: boolean): boolean {
+  return Boolean(snapshotActive) || commandPending;
+}
 
 function requestId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -215,11 +294,14 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
   const [activeRequestId, setActiveRequestId] = useState("");
   const [checkpointRequestId, setCheckpointRequestId] = useState("");
   const activeRequestIdRef = useRef("");
-  const [roleStreams, setRoleStreams] = useState<Record<AgentRole, AgentRoleStream>>({
-    frameAnalyst: { reasoning: "", text: "" }, director: { reasoning: "", text: "" }, reviewer: { reasoning: "", text: "" },
-  });
-  const [activities, setActivities] = useState<string[]>([]);
-  const [activeRole, setActiveRole] = useState("director");
+  const commandPendingRef = useRef(false);
+  const restoringAgentRef = useRef(false);
+  const [agentEvents, setAgentEvents] = useState<MovieGenerationAgentEvent[]>([]);
+  const [localActivities, setLocalActivities] = useState<string[]>([]);
+  const replayedAgent = useMemo(() => replayGenerationAgentEvents(agentEvents), [agentEvents]);
+  const roleStreams = replayedAgent.roleStreams;
+  const activeRole = replayedAgent.activeRole;
+  const activities = [...localActivities, ...replayedAgent.activities].slice(-32);
   const [proposal, setProposal] = useState<MovieGenerationProposal>();
   const [renderPrompt, setRenderPrompt] = useState("");
   const [rendering, setRendering] = useState(false);
@@ -249,6 +331,10 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
   }, [frameAnalystModelId, preferredFrameAnalystId, visionModels]);
 
   useEffect(() => {
+    if (restoringAgentRef.current) {
+      restoringAgentRef.current = false;
+      return;
+    }
     setProposal(undefined);
     setRenderPrompt("");
     setGeneratedVersionId("");
@@ -262,21 +348,108 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
 
   useEffect(() => {
     let dispose: (() => void) | undefined;
+    let flushTimer: number | undefined;
+    let pendingEvents: MovieGenerationAgentEvent[] = [];
+    const flushEvents = () => {
+      flushTimer = undefined;
+      const batch = pendingEvents;
+      pendingEvents = [];
+      if (batch.length) setAgentEvents((value) => mergeGenerationAgentEvents(value, batch));
+    };
     void onMovieGenerationAgent((event) => {
       if (event.projectId !== project.id || event.requestId !== activeRequestIdRef.current) return;
-      const role: AgentRole = event.modelRole === "reviewer" ? "reviewer" : event.modelRole === "frameAnalyst" ? "frameAnalyst" : "director";
-      setActiveRole(role);
-      if (event.kind === "reasoning") setRoleStreams((value) => ({ ...value, [role]: { ...value[role], reasoning: appendModelThinking(value[role].reasoning, event.content) } }));
-      else if (event.kind === "token") setRoleStreams((value) => ({ ...value, [role]: { ...value[role], text: value[role].text + event.content } }));
-      else if (event.kind === "turn-start") {
-        setRoleStreams((value) => ({ ...value, [role]: { reasoning: "", text: "" } }));
-        setActivities((value) => [...value.slice(-7), event.content]);
-      } else if (event.kind === "activity" || event.kind === "complete") {
-        setActivities((value) => [...value.slice(-7), event.content]);
-      }
+      pendingEvents.push(event);
+      flushTimer ??= window.setTimeout(flushEvents, 100);
     }).then((unlisten) => { dispose = unlisten; });
-    return () => dispose?.();
+    return () => {
+      dispose?.();
+      if (flushTimer !== undefined) window.clearTimeout(flushTimer);
+    };
   }, [project.id]);
+
+  useEffect(() => {
+    let disposed = false;
+    activeRequestIdRef.current = "";
+    setActiveRequestId("");
+    setAgentEvents([]);
+    setLocalActivities([]);
+    void getLatestMovieGenerationAgentSnapshot(project.id).then((value) => {
+      if (disposed || !value || typeof value !== "object") return;
+      if (commandPendingRef.current || activeRequestIdRef.current) return;
+      const restored = value as GenerationAgentSnapshot;
+      if (!restored.requestId) return;
+      setAgentEvents((events) => mergeGenerationAgentEvents(events, restored.events ?? []));
+      const task = restored.task;
+      if (task?.kind === "shotVersion") {
+        const item = items.find((candidate) => candidate.clip.id === task.clipId);
+        restoringAgentRef.current = mode !== "shot" || Boolean(item && item.edit.id !== selectedEditId);
+        setMode("shot");
+        if (item) setSelectedEditId(item.edit.id);
+        setDirection(task.direction);
+      } else if (task?.kind === "transition") {
+        const editId = task.firstAnchor?.editId ?? task.lastAnchor?.editId;
+        restoringAgentRef.current = mode !== "transition" || Boolean(editId && editId !== selectedEditId);
+        setMode("transition");
+        setTransitionPosition(task.position);
+        setFirstAnchor(task.firstAnchor);
+        setLastAnchor(task.lastAnchor);
+        setDirection(task.direction);
+        setDuration(task.durationSeconds);
+        if (editId && items.some((candidate) => candidate.edit.id === editId)) setSelectedEditId(editId);
+      }
+      if (restored.result) {
+        setProposal(restored.result);
+        setRenderPrompt(restored.result.candidate.kind === "shotVersion" ? restored.result.candidate.clip.prompt : restored.result.candidate.motionPrompt);
+      } else {
+        setCheckpointRequestId(restored.requestId);
+      }
+      if (restored.active) {
+        activeRequestIdRef.current = restored.requestId;
+        setActiveRequestId(restored.requestId);
+      }
+      if (advanced) setSnapshot(restored);
+    }).catch((error) => {
+      if (!disposed) onError(String(error));
+    });
+    return () => { disposed = true; };
+  }, [project.id]);
+
+  useEffect(() => {
+    if (!activeRequestId) return;
+    let disposed = false;
+    let activeSnapshotSynchronized = false;
+    const reconcile = async () => {
+      try {
+        const active = await isMovieGenerationAgentActive(activeRequestId);
+        if (disposed) return;
+        if (generationRequestIsActive(active, commandPendingRef.current)) {
+          if (active && !activeSnapshotSynchronized) {
+            const value = await getMovieGenerationAgentSnapshot(project.id, activeRequestId) as GenerationAgentSnapshot;
+            if (disposed) return;
+            setAgentEvents((events) => mergeGenerationAgentEvents(events, value.events ?? []));
+            if (advanced) setSnapshot(value);
+            activeSnapshotSynchronized = true;
+          }
+          return;
+        }
+        const value = await getMovieGenerationAgentSnapshot(project.id, activeRequestId) as GenerationAgentSnapshot;
+        if (disposed) return;
+        setAgentEvents((events) => mergeGenerationAgentEvents(events, value.events ?? []));
+        activeRequestIdRef.current = "";
+        setActiveRequestId("");
+        if (!value.result) setCheckpointRequestId(activeRequestId);
+        if (advanced) setSnapshot(value);
+      } catch (error) {
+        if (!disposed) onError(String(error));
+      }
+    };
+    const timer = window.setInterval(() => void reconcile(), 1_000);
+    void reconcile();
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [activeRequestId, advanced, project.id]);
 
   const chooseTransition = async (position: MovieTransitionPosition, index: number) => {
     const anchors = transitionAnchorsForPosition(items, position, index);
@@ -448,10 +621,11 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
       return;
     }
     const id = checkpointRequestId || requestId();
+    commandPendingRef.current = true;
     activeRequestIdRef.current = id;
     setActiveRequestId(id);
-    setRoleStreams({ frameAnalyst: { reasoning: "", text: "" }, director: { reasoning: "", text: "" }, reviewer: { reasoning: "", text: "" } });
-    setActivities(["Opening the durable generative-edit workspace"]);
+    setAgentEvents([]);
+    setLocalActivities(["Opening the durable generative-edit workspace"]);
     setProposal(undefined);
     setSnapshot(undefined);
     try {
@@ -478,6 +652,8 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
       activeRequestIdRef.current = "";
       setActiveRequestId("");
       onError(String(error));
+    } finally {
+      commandPendingRef.current = false;
     }
   };
 
@@ -485,7 +661,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
     if (!activeRequestId) return;
     setCheckpointRequestId(activeRequestId);
     await cancelMovieGenerationAgent(activeRequestId);
-    setActivities((value) => [...value.slice(-7), "Stop requested; durable candidate and transcript retained"]);
+    setLocalActivities((value) => [...value.slice(-7), "Stop requested; durable candidate, transcript, and every streamed token retained"]);
   };
 
   const renderCandidate = async () => {
@@ -540,7 +716,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
 
   const stopRender = async () => {
     await cancelMovieRender(project.id);
-    setActivities((value) => [...value.slice(-7), "H3 stop requested; completed masters and the current storyline remain unchanged"]);
+    setLocalActivities((value) => [...value.slice(-7), "H3 stop requested; completed masters and the current storyline remain unchanged"]);
   };
 
   const placeMaster = async (clipId: string, where: "append" | "before" | "after") => {
@@ -591,7 +767,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
   const rangePosition = (time: number) => `${Math.max(0, Math.min(100, (time - rangeMinimum) / rangeSpan * 100))}%`;
   const frameAnalystModel = visionModels.find((model) => model.id === frameAnalystModelId);
   const visibleAgentRoles = (["frameAnalyst", "director", "reviewer"] as AgentRole[]).filter((role) =>
-    roleStreams[role].reasoning || roleStreams[role].text || (Boolean(activeRequestId) && activeRole === role));
+    roleStreams[role].reasoning || roleStreams[role].text || roleStreams[role].toolArguments || roleStreams[role].status || (Boolean(activeRequestId) && activeRole === role));
 
   return <section className="generation-workspace" aria-label="Generate and auditions workspace">
     <header className="generation-command-bar">
@@ -731,7 +907,7 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
             : project.modelRoles?.director.modelName || project.model;
           const roleActive = Boolean(activeRequestId) && activeRole === role;
           const roleTitle = role === "frameAnalyst" ? "Endpoint Frame Analyst" : role === "reviewer" ? "Fresh-context Reviewer" : "Generative Director";
-          return <section className="generation-agent-live" key={role}><header><strong>{roleTitle}</strong><small>{roleActive ? "Working live" : "Turn retained"}</small></header><ModelThinkingStream text={roleStreams[role].reasoning} active={roleActive} modelName={roleModelName} thinkingLevel={thinkingLevel === "default" ? effectiveThinkingLevelForModel(controlSettings, roleModelId) : thinkingLevel} /><div className="generation-agent-text">{roleStreams[role].text || (roleActive ? role === "frameAnalyst" ? "The local vision model is comparing the exact endpoint pixels…" : "The local model is preparing its next checked workspace action…" : "No visible prose in this typed tool turn.")}</div>{role === activeRole && <ol>{activities.map((activity, index) => <li key={`${index}-${activity}`}>{activity}</li>)}</ol>}</section>;
+          return <section className="generation-agent-live" key={role}><header><strong>{roleTitle}</strong><small>{roleActive ? "Working live · output is being saved" : "Complete and incomplete output retained"}</small></header><ModelThinkingStream text={roleStreams[role].reasoning} active={roleActive} modelName={roleModelName} thinkingLevel={thinkingLevel === "default" ? effectiveThinkingLevelForModel(controlSettings, roleModelId) : thinkingLevel} /><div className="generation-agent-text">{roleStreams[role].text || (roleActive ? role === "frameAnalyst" ? "The local vision model is comparing the exact endpoint pixels…" : "The local model is preparing its next checked workspace action…" : "No separate prose was produced in this typed tool turn.")}</div>{roleStreams[role].toolArguments && <section className="generation-agent-tool-output" aria-label={`${roleTitle} exact typed output`}><strong>Exact typed workspace output</strong><pre>{roleStreams[role].toolArguments}</pre></section>}{roleStreams[role].status && <p className={`generation-agent-stream-status ${roleStreams[role].failed ? "failed" : "complete"}`}>{roleStreams[role].status}</p>}{role === activeRole && <ol>{activities.map((activity, index) => <li key={`${index}-${activity}`}>{activity}</li>)}</ol>}</section>;
         })}
 
         {proposal && <section className="generation-review-result"><ShieldCheck /><span><strong>Fresh reviewer passed this candidate</strong><small>{proposal.reviewSummary}</small></span></section>}

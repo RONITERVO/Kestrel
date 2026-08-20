@@ -502,6 +502,16 @@ export async function getMovieGenerationAgentSnapshot(projectId: string, request
   return invoke("get_movie_generation_agent_snapshot", { projectId, requestId });
 }
 
+export async function getLatestMovieGenerationAgentSnapshot(projectId: string): Promise<unknown | null> {
+  if (!isTauri()) throw new Error("Generative Director inspection requires the desktop application.");
+  return invoke("get_latest_movie_generation_agent_snapshot", { projectId });
+}
+
+export async function isMovieGenerationAgentActive(requestId: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  return invoke<boolean>("is_movie_generation_agent_active", { requestId });
+}
+
 export async function onMovieGenerationAgent(callback: (event: MovieGenerationAgentEvent) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MovieGenerationAgentEvent>("movie-generation-agent", (event) => callback(event.payload));
   return () => undefined;

@@ -97,6 +97,13 @@ Generative Director and Reviewer. They are never inferred from ordinary answer t
 production instruction, or copied into the model's durable tool transcript. A model that exposes no
 separate channel is identified honestly in the UI.
 
+Generative-edit sessions additionally append every reasoning, prose, and typed-tool fragment to the
+bounded project-local `events.jsonl` journal before emitting it to the window. Attempt boundaries,
+schema rejection details, finish reasons, and completion-marker state use the same sequence. Generate
+replays that journal after navigation or restart and then reconciles it while a backend request is
+active. The accepted transcript remains the model-input authority; the event journal is lossless
+producer-facing evidence and must never be treated as an executable tool request.
+
 When adding a compatible runtime variation:
 
 1. Add fragmented-wire tests in `model_stream.rs`.

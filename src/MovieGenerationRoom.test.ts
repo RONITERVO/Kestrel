@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   boundedGenerationFrame, editWithSourceVersion, insertTimelineSourceAfter, insertTimelineSourceBefore,
-  parseGenerationTimecode, preferredFrameAnalystModelId, replacementRangeAnchors, transitionAnchorsForPosition,
+  generationRequestIsActive, mergeGenerationAgentEvents, parseGenerationTimecode, preferredFrameAnalystModelId,
+  replayGenerationAgentEvents, replacementRangeAnchors, transitionAnchorsForPosition,
 } from "./MovieGenerationRoom";
 import { timelineItems } from "./MovieTimeline";
-import type { ClipEdit, MovieEdit, MovieProject } from "./types";
+import type { ClipEdit, MovieEdit, MovieGenerationAgentEvent, MovieProject } from "./types";
 
 const decision = (id: string, clipId: string, order: number): ClipEdit => ({
   id, clipId, order, enabled: true, trimStart: 0, trimEnd: 0, audioGain: 1,
@@ -115,5 +116,36 @@ describe("Generate audition decisions", () => {
     expect(preferredFrameAnalystModelId(models, ["text", "vision-b"])).toBe("vision-b");
     expect(preferredFrameAnalystModelId(models, ["missing"])).toBe("vision-a");
     expect(preferredFrameAnalystModelId(models.slice(0, 1), ["text"])).toBe("");
+  });
+
+  it("replays every partial output channel and the exact incomplete stream reason", () => {
+    const event = (sequence: number, kind: string, content: string, extra = {}): MovieGenerationAgentEvent => ({
+      sequence, kind, content, requestId: "request-1", projectId: "project-1",
+      modelRole: "reviewer", at: `2026-08-20T00:00:0${sequence}Z`, ...extra,
+    });
+    const events = mergeGenerationAgentEvents(
+      [event(1, "turn-start", "Fresh-context review started")],
+      [
+        event(2, "reasoning", "Checking continuity."),
+        event(3, "token", "Submitting the review."),
+        event(4, "advanced-token", "{\"approved\":true"),
+        event(5, "stream-failed", "model stream ended before its completion marker", { completionMarkerSeen: false }),
+        event(4, "advanced-token", "{\"approved\":true"),
+      ],
+    );
+
+    expect(events).toHaveLength(5);
+    const replayed = replayGenerationAgentEvents(events);
+    expect(replayed.roleStreams.reviewer.reasoning).toContain("Checking continuity.");
+    expect(replayed.roleStreams.reviewer.text).toContain("Submitting the review.");
+    expect(replayed.roleStreams.reviewer.toolArguments).toBe("{\"approved\":true");
+    expect(replayed.roleStreams.reviewer.status).toContain("completion marker missing");
+    expect(replayed.roleStreams.reviewer.failed).toBe(true);
+  });
+
+  it("does not demote a locally pending Director command during backend preparation", () => {
+    expect(generationRequestIsActive(false, true)).toBe(true);
+    expect(generationRequestIsActive(true, false)).toBe(true);
+    expect(generationRequestIsActive(false, false)).toBe(false);
   });
 });

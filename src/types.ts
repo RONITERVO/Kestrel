@@ -481,12 +481,15 @@ export interface MovieGenerationProposal {
 }
 
 export interface MovieGenerationAgentEvent {
+  sequence: number;
   requestId: string;
   projectId: string;
   kind: "turn-start" | "reasoning" | "token" | "activity" | "advanced-token" | "complete" | string;
   modelRole: "director" | "reviewer" | string;
   content: string;
   at: string;
+  completionMarkerSeen?: boolean;
+  finishReason?: string;
 }
 
 export interface ClipEdit {

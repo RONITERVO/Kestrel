@@ -18,8 +18,10 @@ use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    fs,
+    fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
@@ -28,6 +30,8 @@ const GENERATION_AGENT_STEPS_PER_SESSION: u32 = 24;
 const GENERATION_CONTEXT_BYTES: usize = 384 * 1024;
 const MAX_ANCHOR_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const FRAME_ANALYSIS_OUTPUT_TOKENS: u32 = 4_096;
+const GENERATION_EVENT_JOURNAL_BYTES: u64 = 16 * 1024 * 1024;
+const STREAM_EVENT_BATCH_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,24 +101,180 @@ pub enum MovieGenerationCandidate {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MovieGenerationAgentEvent {
+    pub sequence: u64,
     pub request_id: String,
     pub project_id: String,
     pub kind: String,
     pub model_role: String,
     pub content: String,
     pub at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_marker_seen: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Clone)]
+struct GenerationEventJournal {
+    state: Arc<Mutex<GenerationEventJournalState>>,
+}
+
+struct GenerationEventJournalState {
+    file: File,
+    bytes: u64,
+    next_sequence: u64,
+    error: Option<String>,
+}
+
+struct GenerationEventRecord<'a> {
+    kind: &'a str,
+    model_role: &'a str,
+    content: &'a str,
+    completion_marker_seen: Option<bool>,
+    finish_reason: Option<String>,
+}
+
+impl GenerationEventJournal {
+    fn open(path: &Path) -> Result<Self, StudioError> {
+        let bytes = fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        if bytes > GENERATION_EVENT_JOURNAL_BYTES {
+            return Err(StudioError::Invalid(
+                "the saved generative agent event journal exceeds the 16 MiB inspection limit"
+                    .into(),
+            ));
+        }
+        let next_sequence = if path.is_file() {
+            let reader = BufReader::new(File::open(path)?);
+            reader
+                .lines()
+                .map_while(Result::ok)
+                .filter_map(|line| serde_json::from_str::<MovieGenerationAgentEvent>(&line).ok())
+                .map(|event| event.sequence)
+                .max()
+                .unwrap_or_default()
+                .saturating_add(1)
+        } else {
+            1
+        };
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self {
+            state: Arc::new(Mutex::new(GenerationEventJournalState {
+                file,
+                bytes,
+                next_sequence,
+                error: None,
+            })),
+        })
+    }
+
+    fn record(
+        &self,
+        app: Option<&AppHandle>,
+        request: &MovieGenerationAgentRequest,
+        record: GenerationEventRecord<'_>,
+    ) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        let event = MovieGenerationAgentEvent {
+            sequence: state.next_sequence,
+            request_id: request.request_id.clone(),
+            project_id: request.project_id.clone(),
+            kind: record.kind.into(),
+            model_role: record.model_role.into(),
+            content: record.content.into(),
+            at: Utc::now().to_rfc3339(),
+            completion_marker_seen: record.completion_marker_seen,
+            finish_reason: record.finish_reason,
+        };
+        state.next_sequence = state.next_sequence.saturating_add(1);
+        if state.error.is_none() {
+            match serde_json::to_vec(&event) {
+                Ok(mut line) => {
+                    line.push(b'\n');
+                    if state.bytes.saturating_add(line.len() as u64)
+                        > GENERATION_EVENT_JOURNAL_BYTES
+                    {
+                        state.error = Some(
+                            "the generative agent event journal reached its 16 MiB safety limit"
+                                .into(),
+                        );
+                    } else if let Err(error) =
+                        state.file.write_all(&line).and_then(|_| state.file.flush())
+                    {
+                        state.error = Some(format!(
+                            "cannot preserve the generative agent's streamed output: {error}"
+                        ));
+                    } else {
+                        state.bytes += line.len() as u64;
+                    }
+                }
+                Err(error) => {
+                    state.error = Some(format!(
+                        "cannot serialize the generative agent's streamed output: {error}"
+                    ));
+                }
+            }
+        }
+        drop(state);
+        if let Some(app) = app {
+            let _ = app.emit("movie-generation-agent", event);
+        }
+    }
+
+    fn ensure_healthy(&self) -> Result<(), StudioError> {
+        let state = self.state.lock().map_err(|_| {
+            StudioError::Invalid("the generative agent event journal is unavailable".into())
+        })?;
+        match &state.error {
+            Some(error) => Err(StudioError::Invalid(error.clone())),
+            None => Ok(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerationReview {
-    approved: bool,
     summary: String,
     #[serde(default)]
     issues: Vec<String>,
+}
+
+impl GenerationReview {
+    fn passed(&self) -> bool {
+        self.issues.is_empty()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerationReviewSubmission {
+    #[serde(default)]
+    issues: Vec<String>,
+}
+
+impl From<GenerationReviewSubmission> for GenerationReview {
+    fn from(value: GenerationReviewSubmission) -> Self {
+        let count = value.issues.len();
+        Self {
+            summary: if count == 0 {
+                "The fresh-context Reviewer found no blocking issues.".into()
+            } else {
+                format!(
+                    "The fresh-context Reviewer found {count} blocking issue{}.",
+                    if count == 1 { "" } else { "s" }
+                )
+            },
+            issues: value.issues,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -229,7 +389,19 @@ struct GenerationReviewContext<'a> {
     cancel: &'a CancellationToken,
     app: Option<&'a AppHandle>,
     workspace_root: &'a std::path::Path,
+    journal: &'a GenerationEventJournal,
     exact_frame_analysis: Option<Value>,
+}
+
+struct GenerationFrameAnalysisContext<'a> {
+    studio: &'a MovieStudio,
+    request: &'a MovieGenerationAgentRequest,
+    project: &'a MovieProject,
+    model_runtime: MovieModelRuntime<'a>,
+    cancel: &'a CancellationToken,
+    app: Option<&'a AppHandle>,
+    workspace_root: &'a Path,
+    journal: &'a GenerationEventJournal,
 }
 
 impl GenerationWorkspace {
@@ -404,6 +576,48 @@ impl GenerationWorkspace {
     }
 }
 
+pub(super) fn prepare_run(
+    studio: &MovieStudio,
+    request: &MovieGenerationAgentRequest,
+    app: Option<&AppHandle>,
+) -> Result<(), StudioError> {
+    validate_generation_request(request)?;
+    let project = studio.get(&request.project_id)?;
+    let workspace_root = studio
+        .project_dir(&project.id)
+        .join("agent-workspace")
+        .join("generative-edits")
+        .join(&request.request_id);
+    fs::create_dir_all(&workspace_root)?;
+    validate_checkpoint_task(&workspace_root, &request.task)?;
+    let journal = GenerationEventJournal::open(&workspace_root.join("events.jsonl"))?;
+    emit(
+        &journal,
+        app,
+        request,
+        "activity",
+        "director",
+        "Preparing the selected local models and durable generative workspace",
+    );
+    journal.ensure_healthy()
+}
+
+pub(super) fn record_request_failure(
+    studio: &MovieStudio,
+    request: &MovieGenerationAgentRequest,
+    error: &str,
+    app: Option<&AppHandle>,
+) -> Result<(), StudioError> {
+    let workspace_root = studio
+        .project_dir(&request.project_id)
+        .join("agent-workspace")
+        .join("generative-edits")
+        .join(&request.request_id);
+    let journal = GenerationEventJournal::open(&workspace_root.join("events.jsonl"))?;
+    emit(&journal, app, request, "request-failed", "director", error);
+    journal.ensure_healthy()
+}
+
 pub(super) async fn run(
     studio: &MovieStudio,
     request: &MovieGenerationAgentRequest,
@@ -421,15 +635,17 @@ pub(super) async fn run(
         .join(&request.request_id);
     fs::create_dir_all(&workspace_root)?;
     validate_checkpoint_task(&workspace_root, &request.task)?;
-    let frame_analysis = prepare_frame_analysis(
+    let journal = GenerationEventJournal::open(&workspace_root.join("events.jsonl"))?;
+    let frame_analysis = prepare_frame_analysis(GenerationFrameAnalysisContext {
         studio,
         request,
-        &project,
+        project: &project,
         model_runtime,
         cancel,
         app,
-        &workspace_root,
-    )
+        workspace_root: &workspace_root,
+        journal: &journal,
+    })
     .await?;
     let transcript_path = workspace_root.join("transcript.json");
     let resume_saved_transcript = transcript_path.is_file();
@@ -445,7 +661,15 @@ pub(super) async fn run(
             serde_json::from_slice::<MovieGenerationProposal>(&fs::read(&result_path)?)
         {
             if validate_generation_candidate(&project, &request.task, &result).is_ok() {
-                emit(app, request, "complete", "reviewer", &result.review_summary);
+                emit(
+                    &journal,
+                    app,
+                    request,
+                    "complete",
+                    "reviewer",
+                    &result.review_summary,
+                );
+                journal.ensure_healthy()?;
                 return Ok(result);
             }
         }
@@ -487,6 +711,7 @@ pub(super) async fn run(
             check_cancel(cancel)?;
             let step = lifecycle.begin_step();
             emit(
+                &journal,
                 app,
                 request,
                 "turn-start",
@@ -494,10 +719,9 @@ pub(super) async fn run(
                 &format!("Generative Director turn {step}"),
             );
             let messages = transcript.request_messages(workspace.authoritative_memory()?);
-            let director_settings = project.settings.runtime_settings_for(
-                model_runtime.settings,
-                model_runtime.director_model_id,
-            );
+            let director_settings = project
+                .settings
+                .runtime_settings_for(model_runtime.settings, model_runtime.director_model_id);
             let lease = tokio::select! {
                 result = model_runtime.runtime.lease_model(
                     model_runtime.director_model_id,
@@ -512,6 +736,7 @@ pub(super) async fn run(
                 .thinking_level
                 .unwrap_or(director_settings.thinking_level)
                 .budget_tokens(32_768);
+            let mut stream = GenerationStreamEventSink::new(&journal, app, request, "director");
             let response = agent_protocol::complete_stream(
                 &studio.http,
                 agent_protocol::StreamCompletionRequest {
@@ -524,9 +749,11 @@ pub(super) async fn run(
                     audit_path: Some(&workspace_root.join("last-request.json")),
                     fallback_tool_call_prefix: &format!("generation-tool-{step}"),
                 },
-                |event| emit_stream_event(app, request, "director", event),
+                |event| stream.accept(event),
             )
             .await;
+            stream.flush();
+            journal.ensure_healthy()?;
             drop(lease);
             let response = match response {
                 Ok(response) => response,
@@ -563,22 +790,21 @@ pub(super) async fn run(
                 let result = execute_call(&mut workspace, call);
                 let (message, submitted, restart_after_tool_error) = match result {
                     GenerationToolOutcome::Continue(message) => (message, None, false),
-                    GenerationToolOutcome::MalformedArguments(message) => {
-                        (message, None, true)
-                    }
+                    GenerationToolOutcome::MalformedArguments(message) => (message, None, true),
                     GenerationToolOutcome::Submitted(candidate) => (
                         "Candidate submitted for independent review.".into(),
                         Some(candidate),
                         false,
                     ),
                 };
-                emit(app, request, "activity", "director", &message);
+                emit(&journal, app, request, "activity", "director", &message);
                 transcript.push(
                     json!({"role":"tool","tool_call_id":call_id,"content":message}),
                     step,
                 )?;
                 if restart_after_tool_error {
                     emit(
+                        &journal,
                         app,
                         request,
                         "activity",
@@ -601,6 +827,7 @@ pub(super) async fn run(
                         cancel,
                         app,
                         workspace_root: &workspace_root,
+                        journal: &journal,
                         exact_frame_analysis: workspace
                             .context
                             .get("exactFrameAnalysis")
@@ -609,16 +836,18 @@ pub(super) async fn run(
                     },
                 )
                 .await?;
-                if review.approved && review.issues.is_empty() {
+                if review.passed() {
                     candidate.review_summary = review.summary;
                     workspace.persist_result(&candidate)?;
                     emit(
+                        &journal,
                         app,
                         request,
                         "complete",
                         "reviewer",
                         &candidate.review_summary,
                     );
+                    journal.ensure_healthy()?;
                     return Ok(*candidate);
                 }
                 workspace.record_review_rejection(&review)?;
@@ -692,22 +921,16 @@ fn execute_call(workspace: &mut GenerationWorkspace, call: &Value) -> Generation
                 },
             )
         }
-        "generation_check" => {
-            parse_generation_arguments::<EmptyGenerationToolRequest>(arguments).map(|_| {
-                GenerationToolRequest {
-                    action: GenerationAction::Check,
-                    candidate: None,
-                }
-            })
-        }
-        "generation_submit" => {
-            parse_generation_arguments::<EmptyGenerationToolRequest>(arguments).map(|_| {
-                GenerationToolRequest {
-                    action: GenerationAction::Submit,
-                    candidate: None,
-                }
-            })
-        }
+        "generation_check" => parse_generation_arguments::<EmptyGenerationToolRequest>(arguments)
+            .map(|_| GenerationToolRequest {
+                action: GenerationAction::Check,
+                candidate: None,
+            }),
+        "generation_submit" => parse_generation_arguments::<EmptyGenerationToolRequest>(arguments)
+            .map(|_| GenerationToolRequest {
+                action: GenerationAction::Submit,
+                candidate: None,
+            }),
         // Read old in-flight calls safely, but never advertise this overloaded protocol again.
         "generation_workspace" => parse_generation_arguments(arguments),
         _ => return GenerationToolOutcome::Continue("ERROR: unknown tool".into()),
@@ -720,7 +943,9 @@ fn execute_call(workspace: &mut GenerationWorkspace, call: &Value) -> Generation
     }
 }
 
-fn parse_generation_arguments<T: DeserializeOwned>(arguments: &Value) -> Result<T, serde_json::Error> {
+fn parse_generation_arguments<T: DeserializeOwned>(
+    arguments: &Value,
+) -> Result<T, serde_json::Error> {
     if let Some(text) = arguments.as_str() {
         serde_json::from_str(text)
     } else {
@@ -748,19 +973,20 @@ async fn review_candidate(
         cancel,
         app,
         workspace_root,
+        journal,
         exact_frame_analysis,
     } = context;
     emit(
+        journal,
         app,
         request,
         "turn-start",
         "reviewer",
         "Fresh-context review started",
     );
-    let reviewer_settings = project.settings.runtime_settings_for(
-        model_runtime.settings,
-        model_runtime.reviewer_model_id,
-    );
+    let reviewer_settings = project
+        .settings
+        .runtime_settings_for(model_runtime.settings, model_runtime.reviewer_model_id);
     let lease = tokio::select! {
         result = model_runtime.runtime.lease_model(
             model_runtime.reviewer_model_id,
@@ -784,25 +1010,31 @@ async fn review_candidate(
         .thinking_level
         .unwrap_or(reviewer_settings.thinking_level)
         .budget_tokens(32_768);
-    let mut on_event = |event| emit_stream_event(app, request, "reviewer", event);
-    let review = agent_protocol::complete_tool_submission(
-        &studio.http,
-        agent_protocol::ToolSubmissionRequest {
-            connection: &lease.connection,
-            initial_messages: &messages,
-            tool_name: "submit_generation_review",
-            tool_description: "Submit the independent review of the generative-edit candidate.",
-            response_format: generation_review_schema(),
-            settings: &movie_settings,
-            runtime_max_output_tokens: reviewer_settings.max_output_tokens,
-            label: "generative edit review",
-            audit_path: Some(&workspace_root.join("review-last-request.json")),
-            cancel: Some(cancel),
-            on_event: Some(&mut on_event),
-        },
-    )
-    .await?;
+    let mut stream = GenerationStreamEventSink::new(journal, app, request, "reviewer");
+    let submission: Result<GenerationReviewSubmission, StudioError> = {
+        let mut on_event = |event| stream.accept(event);
+        agent_protocol::complete_tool_submission(
+            &studio.http,
+            agent_protocol::ToolSubmissionRequest {
+                connection: &lease.connection,
+                initial_messages: &messages,
+                tool_name: "submit_generation_review",
+                tool_description: "Submit every blocking issue. Use an empty issues list when the candidate passes.",
+                response_format: generation_review_schema(),
+                settings: &movie_settings,
+                runtime_max_output_tokens: reviewer_settings.max_output_tokens,
+                label: "generative edit review",
+                audit_path: Some(&workspace_root.join("review-last-request.json")),
+                cancel: Some(cancel),
+                on_event: Some(&mut on_event),
+            },
+        )
+        .await
+    };
+    stream.flush();
+    journal.ensure_healthy()?;
     drop(lease);
+    let review = GenerationReview::from(submission?);
     write_json_atomic(&workspace_root.join("review.json"), &review)?;
     Ok(review)
 }
@@ -827,14 +1059,18 @@ fn generation_review_messages(
 }
 
 async fn prepare_frame_analysis(
-    studio: &MovieStudio,
-    request: &MovieGenerationAgentRequest,
-    project: &MovieProject,
-    model_runtime: MovieModelRuntime<'_>,
-    cancel: &CancellationToken,
-    app: Option<&AppHandle>,
-    workspace_root: &Path,
+    context: GenerationFrameAnalysisContext<'_>,
 ) -> Result<Option<GenerationFrameAnalysis>, StudioError> {
+    let GenerationFrameAnalysisContext {
+        studio,
+        request,
+        project,
+        model_runtime,
+        cancel,
+        app,
+        workspace_root,
+        journal,
+    } = context;
     let anchors = task_frame_anchors(&request.task);
     if anchors.is_empty() {
         return Ok(None);
@@ -846,6 +1082,7 @@ async fn prepare_frame_analysis(
         .filter(|value| !value.is_empty())
     else {
         emit(
+            journal,
             app,
             request,
             "activity",
@@ -882,6 +1119,7 @@ async fn prepare_frame_analysis(
         let analysis: GenerationFrameAnalysis = serde_json::from_slice(&fs::read(&analysis_path)?)?;
         validate_frame_analysis(&analysis, &anchors)?;
         emit(
+            journal,
             app,
             request,
             "activity",
@@ -892,6 +1130,7 @@ async fn prepare_frame_analysis(
             ),
         );
         emit(
+            journal,
             app,
             request,
             "token",
@@ -903,6 +1142,7 @@ async fn prepare_frame_analysis(
 
     check_cancel(cancel)?;
     emit(
+        journal,
         app,
         request,
         "turn-start",
@@ -966,25 +1206,30 @@ async fn prepare_frame_analysis(
             return Err(error);
         }
     };
-    let mut on_event = |event| emit_stream_event(app, request, "frameAnalyst", event);
-    let submission = agent_protocol::complete_tool_submission::<FrameAnalysisSubmission>(
-        &studio.http,
-        agent_protocol::ToolSubmissionRequest {
-            connection: &lease.connection,
-            initial_messages: &messages,
-            tool_name: "submit_frame_analysis",
-            tool_description:
-                "Describe only the directly visible state of each exact endpoint frame.",
-            response_format: schema,
-            settings: &movie_settings,
-            runtime_max_output_tokens: model_settings.max_output_tokens,
-            label: "endpoint frame analysis",
-            audit_path: None,
-            cancel: Some(cancel),
-            on_event: Some(&mut on_event),
-        },
-    )
-    .await;
+    let mut stream = GenerationStreamEventSink::new(journal, app, request, "frameAnalyst");
+    let submission = {
+        let mut on_event = |event| stream.accept(event);
+        agent_protocol::complete_tool_submission::<FrameAnalysisSubmission>(
+            &studio.http,
+            agent_protocol::ToolSubmissionRequest {
+                connection: &lease.connection,
+                initial_messages: &messages,
+                tool_name: "submit_frame_analysis",
+                tool_description:
+                    "Describe only the directly visible state of each exact endpoint frame.",
+                response_format: schema,
+                settings: &movie_settings,
+                runtime_max_output_tokens: model_settings.max_output_tokens,
+                label: "endpoint frame analysis",
+                audit_path: None,
+                cancel: Some(cancel),
+                on_event: Some(&mut on_event),
+            },
+        )
+        .await
+    };
+    stream.flush();
+    journal.ensure_healthy()?;
     drop(lease);
     let submission = match submission {
         Ok(value) => value,
@@ -997,6 +1242,7 @@ async fn prepare_frame_analysis(
     write_json_atomic(&analysis_path, &analysis)?;
     let _ = fs::remove_file(workspace_root.join("frame-analysis-error.json"));
     emit(
+        journal,
         app,
         request,
         "token",
@@ -1004,6 +1250,7 @@ async fn prepare_frame_analysis(
         &frame_analysis_visible_summary(&analysis),
     );
     emit(
+        journal,
         app,
         request,
         "activity",
@@ -1561,13 +1808,85 @@ fn planned_clip_schema() -> Value {
 fn generation_review_schema() -> Value {
     json!({"type":"json_schema","json_schema":{"name":"kestrel_generation_review","strict":true,"schema":{
         "type":"object","additionalProperties":false,"properties":{
-            "approved":{"type":"boolean"},"summary":{"type":"string","minLength":10,"maxLength":4000},
             "issues":{"type":"array","maxItems":24,"items":{"type":"string","minLength":3,"maxLength":2000}}
-        },"required":["approved","summary","issues"]
+        },"required":["issues"]
     }}})
 }
 
+struct GenerationStreamEventSink<'a> {
+    journal: &'a GenerationEventJournal,
+    app: Option<&'a AppHandle>,
+    request: &'a MovieGenerationAgentRequest,
+    model_role: &'a str,
+    pending_kind: Option<&'static str>,
+    pending_content: String,
+}
+
+impl<'a> GenerationStreamEventSink<'a> {
+    fn new(
+        journal: &'a GenerationEventJournal,
+        app: Option<&'a AppHandle>,
+        request: &'a MovieGenerationAgentRequest,
+        model_role: &'a str,
+    ) -> Self {
+        Self {
+            journal,
+            app,
+            request,
+            model_role,
+            pending_kind: None,
+            pending_content: String::new(),
+        }
+    }
+
+    fn accept(&mut self, event: agent_protocol::StreamEvent) {
+        match event {
+            agent_protocol::StreamEvent::Content(content) => self.append("token", &content),
+            agent_protocol::StreamEvent::Reasoning(content) => self.append("reasoning", &content),
+            agent_protocol::StreamEvent::ToolArguments(content) => {
+                self.append("advanced-token", &content)
+            }
+            event => {
+                self.flush();
+                emit_stream_event(self.journal, self.app, self.request, self.model_role, event);
+            }
+        }
+    }
+
+    fn append(&mut self, kind: &'static str, content: &str) {
+        if content.is_empty() {
+            return;
+        }
+        if self.pending_kind.is_some_and(|pending| pending != kind) {
+            self.flush();
+        }
+        self.pending_kind = Some(kind);
+        self.pending_content.push_str(content);
+        if self.pending_content.len() >= STREAM_EVENT_BATCH_BYTES {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        let Some(kind) = self.pending_kind.take() else {
+            return;
+        };
+        if !self.pending_content.is_empty() {
+            emit(
+                self.journal,
+                self.app,
+                self.request,
+                kind,
+                self.model_role,
+                &self.pending_content,
+            );
+            self.pending_content.clear();
+        }
+    }
+}
+
 fn emit_stream_event(
+    journal: &GenerationEventJournal,
     app: Option<&AppHandle>,
     request: &MovieGenerationAgentRequest,
     model_role: &str,
@@ -1575,41 +1894,85 @@ fn emit_stream_event(
 ) {
     match event {
         agent_protocol::StreamEvent::Content(content) => {
-            emit(app, request, "token", model_role, &content)
+            emit(journal, app, request, "token", model_role, &content)
         }
         agent_protocol::StreamEvent::Reasoning(content) => {
-            emit(app, request, "reasoning", model_role, &content)
+            emit(journal, app, request, "reasoning", model_role, &content)
         }
         agent_protocol::StreamEvent::ToolArgumentsStarted => emit(
+            journal,
             app,
             request,
             "activity",
             model_role,
             "Streaming a typed generative workspace action",
         ),
-        agent_protocol::StreamEvent::ToolArguments(content) => {
-            emit(app, request, "advanced-token", model_role, &content)
+        agent_protocol::StreamEvent::ToolArguments(content) => emit(
+            journal,
+            app,
+            request,
+            "advanced-token",
+            model_role,
+            &content,
+        ),
+        agent_protocol::StreamEvent::AttemptStarted { attempt, maximum } => emit(
+            journal,
+            app,
+            request,
+            "attempt-start",
+            model_role,
+            &format!("Typed submission attempt {attempt} of {maximum}"),
+        ),
+        agent_protocol::StreamEvent::SubmissionInvalid(detail) => journal.record(
+            app,
+            request,
+            GenerationEventRecord {
+                kind: "submission-invalid",
+                model_role,
+                content: &detail,
+                completion_marker_seen: Some(true),
+                finish_reason: None,
+            },
+        ),
+        agent_protocol::StreamEvent::Terminal {
+            status,
+            detail,
+            completion_marker_seen,
+            finish_reason,
+        } => {
+            let kind = format!("stream-{status}");
+            journal.record(
+                app,
+                request,
+                GenerationEventRecord {
+                    kind: &kind,
+                    model_role,
+                    content: &detail,
+                    completion_marker_seen: Some(completion_marker_seen),
+                    finish_reason,
+                },
+            );
         }
     }
 }
 
 fn emit(
+    journal: &GenerationEventJournal,
     app: Option<&AppHandle>,
     request: &MovieGenerationAgentRequest,
     kind: &str,
     model_role: &str,
     content: &str,
 ) {
-    let Some(app) = app else { return };
-    let _ = app.emit(
-        "movie-generation-agent",
-        MovieGenerationAgentEvent {
-            request_id: request.request_id.clone(),
-            project_id: request.project_id.clone(),
-            kind: kind.into(),
-            model_role: model_role.into(),
-            content: content.into(),
-            at: Utc::now().to_rfc3339(),
+    journal.record(
+        app,
+        request,
+        GenerationEventRecord {
+            kind,
+            model_role,
+            content,
+            completion_marker_seen: None,
+            finish_reason: None,
         },
     );
 }
@@ -1618,6 +1981,199 @@ fn emit(
 mod tests {
     use super::*;
     use crate::studio::{ClipEdit, MovieSettings, MovieTransitionPlacement};
+
+    #[test]
+    fn event_journal_preserves_partial_tokens_and_terminal_transport_state_across_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.jsonl");
+        let request = MovieGenerationAgentRequest {
+            request_id: "request-123".into(),
+            project_id: "project-123".into(),
+            task: MovieGenerationTask::ShotVersion {
+                clip_id: "clip-1".into(),
+                direction: "Keep the performance but change the light.".into(),
+            },
+            thinking_level: None,
+            frame_analyst_model_id: None,
+        };
+        let journal = GenerationEventJournal::open(&path).unwrap();
+        emit(
+            &journal,
+            None,
+            &request,
+            "reasoning",
+            "reviewer",
+            "Checking",
+        );
+        emit(
+            &journal,
+            None,
+            &request,
+            "advanced-token",
+            "reviewer",
+            "{\"approved\":true",
+        );
+        journal.record(
+            None,
+            &request,
+            GenerationEventRecord {
+                kind: "stream-failed",
+                model_role: "reviewer",
+                content: "the model stream ended before its completion marker",
+                completion_marker_seen: Some(false),
+                finish_reason: None,
+            },
+        );
+        journal.ensure_healthy().unwrap();
+        drop(journal);
+
+        let reopened = GenerationEventJournal::open(&path).unwrap();
+        emit(
+            &reopened, None, &request, "activity", "reviewer", "Retrying",
+        );
+        reopened.ensure_healthy().unwrap();
+        let events = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<MovieGenerationAgentEvent>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(events[1].content, "{\"approved\":true");
+        assert_eq!(events[2].completion_marker_seen, Some(false));
+    }
+
+    #[test]
+    fn stream_sink_batches_fragments_without_losing_incomplete_output() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.jsonl");
+        let request = MovieGenerationAgentRequest {
+            request_id: "request-batched".into(),
+            project_id: "project-batched".into(),
+            task: MovieGenerationTask::ShotVersion {
+                clip_id: "clip-1".into(),
+                direction: "Preserve the performance.".into(),
+            },
+            thinking_level: None,
+            frame_analyst_model_id: None,
+        };
+        let journal = GenerationEventJournal::open(&path).unwrap();
+        let mut stream = GenerationStreamEventSink::new(&journal, None, &request, "director");
+        for _ in 0..300 {
+            stream.accept(agent_protocol::StreamEvent::Reasoning("x".into()));
+        }
+        stream.accept(agent_protocol::StreamEvent::ToolArguments(
+            "{\"candidate\":".into(),
+        ));
+        stream.accept(agent_protocol::StreamEvent::ToolArguments("null".into()));
+        stream.accept(agent_protocol::StreamEvent::Terminal {
+            status: "failed",
+            detail: "the response connection closed".into(),
+            completion_marker_seen: false,
+            finish_reason: None,
+        });
+        stream.flush();
+        journal.ensure_healthy().unwrap();
+
+        let events = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<MovieGenerationAgentEvent>(line).unwrap())
+            .collect::<Vec<_>>();
+        let reasoning = events
+            .iter()
+            .filter(|event| event.kind == "reasoning")
+            .map(|event| event.content.as_str())
+            .collect::<String>();
+        let arguments = events
+            .iter()
+            .filter(|event| event.kind == "advanced-token")
+            .map(|event| event.content.as_str())
+            .collect::<String>();
+        assert_eq!(reasoning, "x".repeat(300));
+        assert_eq!(arguments, "{\"candidate\":null");
+        assert!(
+            events.len() < 20,
+            "stream fragments should be durably coalesced"
+        );
+        assert_eq!(events.last().unwrap().kind, "stream-failed");
+        assert_eq!(events.last().unwrap().completion_marker_seen, Some(false));
+    }
+
+    #[test]
+    fn generation_review_uses_the_plan_style_native_approval_contract() {
+        let schema = generation_review_schema();
+        assert!(schema
+            .pointer("/json_schema/schema/properties/approved")
+            .is_none());
+        assert!(schema
+            .pointer("/json_schema/schema/properties/summary")
+            .is_none());
+        assert_eq!(
+            schema.pointer("/json_schema/schema/required"),
+            Some(&json!(["issues"]))
+        );
+
+        let passed = GenerationReview::from(GenerationReviewSubmission { issues: vec![] });
+        assert!(passed.passed());
+        assert!(passed.summary.contains("no blocking issues"));
+
+        let legacy: GenerationReview = serde_json::from_value(json!({
+            "approved":true,
+            "summary":"A prior saved review remains readable after the contract change.",
+            "issues":[]
+        }))
+        .unwrap();
+        assert!(legacy.passed());
+
+        let blocked = GenerationReview::from(GenerationReviewSubmission {
+            issues: vec!["Restore the selected ending-frame pose.".into()],
+        });
+        assert!(!blocked.passed());
+        assert!(blocked.summary.contains("1 blocking issue."));
+    }
+
+    #[test]
+    fn preparing_a_run_makes_the_new_request_visible_before_model_startup() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let project = test_project();
+        fs::create_dir_all(studio.project_dir(&project.id)).unwrap();
+        studio.save(&project).unwrap();
+        let request = MovieGenerationAgentRequest {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            project_id: project.id.clone(),
+            task: MovieGenerationTask::ShotVersion {
+                clip_id: "clip-001".into(),
+                direction: "Preserve the performance while changing only the light.".into(),
+            },
+            thinking_level: None,
+            frame_analyst_model_id: None,
+        };
+
+        prepare_run(&studio, &request, None).unwrap();
+
+        assert_eq!(
+            studio
+                .latest_generation_agent_request_id(&project.id)
+                .unwrap()
+                .as_deref(),
+            Some(request.request_id.as_str())
+        );
+        let snapshot = studio
+            .generation_agent_snapshot(&project.id, &request.request_id)
+            .unwrap();
+        assert_eq!(snapshot["events"][0]["kind"], "activity");
+        assert!(snapshot["events"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Preparing"));
+    }
 
     #[test]
     fn frontend_camel_case_generation_contract_round_trips_and_keeps_legacy_tasks_readable() {
@@ -1836,7 +2392,9 @@ mod tests {
                 visible_action: "Its front flippers rest beside the stone.".into(),
                 composition: "A side-on medium shot keeps the animal and stone visible.".into(),
                 continuity_facts: vec!["The stone is still on the table.".into()],
-                uncertainties: vec!["The still does not establish whether it tried to lift it.".into()],
+                uncertainties: vec![
+                    "The still does not establish whether it tried to lift it.".into()
+                ],
             }],
             created_at: "2026-08-20T00:00:00Z".into(),
         };
@@ -1909,9 +2467,7 @@ mod tests {
         let mut workspace =
             GenerationWorkspace::open(root.path().into(), project, task, None).unwrap();
         let tools = workspace.tools();
-        let tools = tools
-            .as_array()
-            .unwrap();
+        let tools = tools.as_array().unwrap();
         let submit = tools
             .iter()
             .find(|tool| tool.pointer("/function/name") == Some(&json!("generation_submit")))

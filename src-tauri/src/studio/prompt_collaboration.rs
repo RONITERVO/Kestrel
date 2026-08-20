@@ -144,8 +144,16 @@ impl PromptDraftJob {
         } = self;
         validate_request(&request, &models)?;
         let mut settings = settings.for_model(&request.model_id);
-        let maximum_context = if settings.advanced_mode { 1_048_576 } else { 98_304 };
-        let maximum_output = if settings.advanced_mode { 262_144 } else { 32_768 };
+        let maximum_context = if settings.advanced_mode {
+            1_048_576
+        } else {
+            98_304
+        };
+        let maximum_output = if settings.advanced_mode {
+            262_144
+        } else {
+            32_768
+        };
         if let Some(value) = request.context_window {
             if !(4_096..=maximum_context).contains(&value) {
                 return Err(format!(

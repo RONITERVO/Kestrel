@@ -975,6 +975,23 @@ pub struct MovieStudio {
 }
 
 impl MovieStudio {
+    pub(crate) fn prepare_generation_agent(
+        &self,
+        request: &MovieGenerationAgentRequest,
+        app: Option<&AppHandle>,
+    ) -> Result<(), StudioError> {
+        generation_agent::prepare_run(self, request, app)
+    }
+
+    pub(crate) fn record_generation_agent_failure(
+        &self,
+        request: &MovieGenerationAgentRequest,
+        error: &str,
+        app: Option<&AppHandle>,
+    ) -> Result<(), StudioError> {
+        generation_agent::record_request_failure(self, request, error, app)
+    }
+
     pub(crate) async fn run_generation_agent(
         &self,
         request: &MovieGenerationAgentRequest,
@@ -1010,7 +1027,36 @@ impl MovieStudio {
             }
             Ok(Some(serde_json::from_slice(&fs::read(path)?)?))
         };
+        let read_events = || -> Result<Vec<Value>, StudioError> {
+            let path = root.join("events.jsonl");
+            if !path.is_file() {
+                return Ok(Vec::new());
+            }
+            let metadata = fs::metadata(&path)?;
+            if metadata.len() > 16 * 1024 * 1024 {
+                return Err(StudioError::Invalid(
+                    "generative agent events exceed the 16 MiB inspection limit".into(),
+                ));
+            }
+            let bytes = fs::read(path)?;
+            let complete = bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map(|index| &bytes[..=index])
+                .unwrap_or_default();
+            let text = std::str::from_utf8(complete).map_err(|error| {
+                StudioError::Invalid(format!(
+                    "the generative agent event journal is not valid UTF-8: {error}"
+                ))
+            })?;
+            text.lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| serde_json::from_str(line).map_err(StudioError::from))
+                .collect()
+        };
         Ok(json!({
+            "requestId": request_id,
+            "events": read_events()?,
             "context": read("context.json")?,
             "task": read("task.json")?,
             "candidate": read("candidate.json")?,
@@ -1024,6 +1070,53 @@ impl MovieStudio {
             "lastRequest": read("last-request.json")?,
             "reviewLastRequest": read("review-last-request.json")?,
         }))
+    }
+
+    pub fn latest_generation_agent_request_id(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<String>, StudioError> {
+        validate_id(project_id)?;
+        let root = self
+            .project_dir(project_id)
+            .join("agent-workspace")
+            .join("generative-edits");
+        if !root.is_dir() {
+            return Ok(None);
+        }
+        let mut latest: Option<(std::time::SystemTime, String)> = None;
+        for entry in fs::read_dir(root)?.take(4_096) {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let request_id = entry.file_name().to_string_lossy().into_owned();
+            if validate_id(&request_id).is_err() {
+                continue;
+            }
+            let directory = entry.path();
+            let modified = [
+                "events.jsonl",
+                "result.json",
+                "review.json",
+                "transcript.json",
+                "state.json",
+                "task.json",
+            ]
+            .iter()
+            .filter_map(|name| fs::metadata(directory.join(name)).ok())
+            .filter_map(|metadata| metadata.modified().ok())
+            .max()
+            .or_else(|| entry.metadata().ok()?.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if latest
+                .as_ref()
+                .is_none_or(|(current, _)| modified > *current)
+            {
+                latest = Some((modified, request_id));
+            }
+        }
+        Ok(latest.map(|(_, request_id)| request_id))
     }
 
     pub fn new(library_root: &Path) -> Result<Self, StudioError> {
@@ -2458,6 +2551,44 @@ impl MovieStudio {
                 PlanningEventKind::AdvancedToken,
                 PlanningStage::ToolArguments,
                 fragment,
+                request.position,
+                request.app,
+            ),
+            agent_protocol::StreamEvent::AttemptStarted { attempt, maximum } => self
+                .emit_reviewer_planning(
+                    request.project_id,
+                    PlanningEventKind::Activity,
+                    PlanningStage::Planning,
+                    format!("Reviewer submission attempt {attempt} of {maximum}"),
+                    request.position,
+                    request.app,
+                ),
+            agent_protocol::StreamEvent::SubmissionInvalid(detail) => self.emit_reviewer_planning(
+                request.project_id,
+                PlanningEventKind::Activity,
+                PlanningStage::Planning,
+                detail,
+                request.position,
+                request.app,
+            ),
+            agent_protocol::StreamEvent::Terminal {
+                detail,
+                completion_marker_seen,
+                finish_reason,
+                ..
+            } => self.emit_reviewer_planning(
+                request.project_id,
+                PlanningEventKind::Activity,
+                PlanningStage::Planning,
+                format!(
+                    "{detail} (completion marker {}; finish reason {})",
+                    if completion_marker_seen {
+                        "received"
+                    } else {
+                        "missing"
+                    },
+                    finish_reason.as_deref().unwrap_or("not reported")
+                ),
                 request.position,
                 request.app,
             ),
@@ -6321,6 +6452,39 @@ mod tests {
     fn comfy_workload_derives_ports_from_its_base_url() {
         assert_eq!(ComfyWorkload::Shared.port(), 8188);
         assert_eq!(ComfyWorkload::Music.port(), 8189);
+    }
+
+    #[test]
+    fn generative_event_snapshot_replays_complete_records_during_a_concurrent_append() {
+        let temporary = tempfile::tempdir().unwrap();
+        let studio = MovieStudio::new(temporary.path()).unwrap();
+        let project_id = "12345678-1234-4234-8234-123456789abc";
+        let request_id = "abcdefab-1234-4234-8234-abcdefabcdef";
+        let request_root = studio
+            .project_dir(project_id)
+            .join("agent-workspace")
+            .join("generative-edits")
+            .join(request_id);
+        fs::create_dir_all(&request_root).unwrap();
+        fs::write(request_root.join("task.json"), br#"{"kind":"shotVersion"}"#).unwrap();
+        fs::write(
+            request_root.join("events.jsonl"),
+            b"{\"sequence\":1,\"kind\":\"token\",\"content\":\"kept\"}\n{\"sequence\":2",
+        )
+        .unwrap();
+
+        let snapshot = studio
+            .generation_agent_snapshot(project_id, request_id)
+            .unwrap();
+        assert_eq!(snapshot["events"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["events"][0]["content"], "kept");
+        assert_eq!(
+            studio
+                .latest_generation_agent_request_id(project_id)
+                .unwrap()
+                .as_deref(),
+            Some(request_id)
+        );
     }
 
     #[test]

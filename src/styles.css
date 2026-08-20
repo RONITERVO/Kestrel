@@ -2723,6 +2723,11 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .generation-agent-live > header small { color: #9cc063; font: 7px var(--mono); }
 .generation-agent-live .model-thinking-stream { min-height: 96px; max-height: 180px; }
 .generation-agent-text { max-height: 100px; padding: 8px; overflow: auto; border: 1px solid #374139; border-radius: 4px; color: #b9c4bc; background: #0a0f0c; white-space: pre-wrap; font: 8px/1.5 var(--sans); }
+.generation-agent-tool-output { display: grid; gap: 4px; min-height: 0; padding: 7px; border: 1px solid #4b594e; border-radius: 4px; background: #101713; }
+.generation-agent-tool-output > strong { color: #d7dfd9; font: 700 7px var(--sans); text-transform: uppercase; letter-spacing: .08em; }
+.generation-agent-tool-output pre { max-height: 160px; margin: 0; overflow: auto; color: #bcd7c2; white-space: pre-wrap; overflow-wrap: anywhere; font: 7px/1.45 var(--mono); }
+.generation-agent-stream-status { margin: 0; padding: 6px 8px; border: 1px solid #526f4b; border-radius: 4px; color: #cce2c5; background: #172316; font: 7px/1.4 var(--mono); }
+.generation-agent-stream-status.failed { border-color: #8e5347; color: #ffd2c8; background: #2a1713; }
 .generation-agent-live ol { max-height: 72px; margin: 0; padding: 5px 5px 5px 24px; overflow: auto; color: #87938b; background: #151b17; font: 7px/1.4 var(--mono); }
 .generation-review-result { padding: 7px; display: flex; align-items: flex-start; gap: 7px; border: 1px solid #53723c; border-radius: 5px; color: #cde9af; background: #182416; }
 .generation-review-result svg { flex: 0 0 auto; width: 15px; }

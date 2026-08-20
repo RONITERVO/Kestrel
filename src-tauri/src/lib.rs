@@ -61,10 +61,10 @@ use studio::{
     MovieCopilotRequest, MovieEdit, MovieFl2vTransitionRequest, MovieGenerationAgentRequest,
     MovieGenerationProposal, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
     MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
-    MovieRuntimePolicyRequest,
-    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieStudio, MovieSummary,
-    MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, PromptDraftJob,
-    PromptDraftRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
+    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieRuntimePolicyRequest,
+    MovieStudio, MovieSummary, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
+    MusicSummary, PromptDraftJob, PromptDraftRequest, SaveMusicMidiDocumentRequest,
+    StartMovieRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -1322,9 +1322,7 @@ async fn run_movie_generation_agent(
                 compatibility.detail
             ));
         }
-        if !(research.advanced_mode
-            || runtime_settings.advanced_mode
-            || compatibility.studio_ready)
+        if !(research.advanced_mode || runtime_settings.advanced_mode || compatibility.studio_ready)
         {
             return Err(format!(
                 "{} has not passed Kestrel's local Studio protocol check. Run Check for Studio before using it for endpoint frame understanding.",
@@ -1332,12 +1330,6 @@ async fn run_movie_generation_agent(
             ));
         }
     }
-    release_all_comfy_memory(&state).await;
-    state
-        .runtime
-        .stop_managed()
-        .await
-        .map_err(|error| error.to_string())?;
     let cancel = CancellationToken::new();
     state
         .interactive_jobs
@@ -1345,22 +1337,40 @@ async fn run_movie_generation_agent(
         .map_err(|_| "interactive job registry is unavailable".to_string())?
         .insert(request.request_id.clone(), cancel.clone());
     let request_id = request.request_id.clone();
-    let result = state
-        .studio
-        .run_generation_agent(
-            &request,
-            MovieModelRuntime {
-                runtime: &state.runtime,
-                models: &models,
-                settings: &runtime_settings,
-                director_model_id: &director_model_id,
-                reviewer_model_id: &reviewer_model_id,
-            },
-            &cancel,
-            Some(&app),
-        )
-        .await
-        .map_err(|error| error.to_string());
+    let result: Result<MovieGenerationProposal, String> = async {
+        state
+            .studio
+            .prepare_generation_agent(&request, Some(&app))
+            .map_err(|error| error.to_string())?;
+        release_all_comfy_memory(&state).await;
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .studio
+            .run_generation_agent(
+                &request,
+                MovieModelRuntime {
+                    runtime: &state.runtime,
+                    models: &models,
+                    settings: &runtime_settings,
+                    director_model_id: &director_model_id,
+                    reviewer_model_id: &reviewer_model_id,
+                },
+                &cancel,
+                Some(&app),
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    if let Err(error) = &result {
+        let _ = state
+            .studio
+            .record_generation_agent_failure(&request, error, Some(&app));
+    }
     if let Ok(mut jobs) = state.interactive_jobs.lock() {
         jobs.remove(&request_id);
     }
@@ -1390,10 +1400,54 @@ fn get_movie_generation_agent_snapshot(
     request_id: String,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    state
+    let mut snapshot = state
         .studio
         .generation_agent_snapshot(&project_id, &request_id)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    let active = state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable".to_string())?
+        .contains_key(&request_id);
+    snapshot["active"] = Value::Bool(active);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn is_movie_generation_agent_active(
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable".to_string())?
+        .contains_key(&request_id))
+}
+
+#[tauri::command]
+fn get_latest_movie_generation_agent_snapshot(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<Value>, String> {
+    let Some(request_id) = state
+        .studio
+        .latest_generation_agent_request_id(&project_id)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mut snapshot = state
+        .studio
+        .generation_agent_snapshot(&project_id, &request_id)
+        .map_err(|error| error.to_string())?;
+    let active = state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable".to_string())?
+        .contains_key(&request_id);
+    snapshot["active"] = Value::Bool(active);
+    Ok(Some(snapshot))
 }
 
 #[tauri::command]
@@ -1484,8 +1538,16 @@ async fn set_movie_runtime_policy(
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let maximum_context = if control.advanced_mode { 1_048_576 } else { 98_304 };
-    let maximum_output = if control.advanced_mode { 262_144 } else { 32_768 };
+    let maximum_context = if control.advanced_mode {
+        1_048_576
+    } else {
+        98_304
+    };
+    let maximum_output = if control.advanced_mode {
+        262_144
+    } else {
+        32_768
+    };
     if !(4_096..=maximum_context).contains(&policy.context_window) {
         return Err(format!(
             "Project context must be between 4,096 and {maximum_context} tokens."
@@ -3722,6 +3784,8 @@ pub fn run() {
             run_movie_generation_agent,
             cancel_movie_generation_agent,
             get_movie_generation_agent_snapshot,
+            get_latest_movie_generation_agent_snapshot,
+            is_movie_generation_agent_active,
             get_movie_plan_exchange_prompt,
             parse_movie_plan_exchange,
             save_movie_plan,

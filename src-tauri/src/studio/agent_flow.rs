@@ -612,6 +612,44 @@ async fn complete_agent_stream(
                 request.position,
                 request.app,
             ),
+            agent_protocol::StreamEvent::AttemptStarted { attempt, maximum } => studio
+                .emit_planning(
+                    request.project_id,
+                    PlanningEventKind::Activity,
+                    PlanningStage::Planning,
+                    format!("Structured submission attempt {attempt} of {maximum}"),
+                    request.position,
+                    request.app,
+                ),
+            agent_protocol::StreamEvent::SubmissionInvalid(detail) => studio.emit_planning(
+                request.project_id,
+                PlanningEventKind::Activity,
+                PlanningStage::Planning,
+                detail,
+                request.position,
+                request.app,
+            ),
+            agent_protocol::StreamEvent::Terminal {
+                detail,
+                completion_marker_seen,
+                finish_reason,
+                ..
+            } => studio.emit_planning(
+                request.project_id,
+                PlanningEventKind::Activity,
+                PlanningStage::Planning,
+                format!(
+                    "{detail} (completion marker {}; finish reason {})",
+                    if completion_marker_seen {
+                        "received"
+                    } else {
+                        "missing"
+                    },
+                    finish_reason.as_deref().unwrap_or("not reported")
+                ),
+                request.position,
+                request.app,
+            ),
         },
     )
     .await?;
