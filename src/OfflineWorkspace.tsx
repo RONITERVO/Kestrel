@@ -1884,7 +1884,7 @@ function Message({
         </details>
       )}
       <MarkdownContent value={message.content} speechProgress={speechProgress} />
-      {message.content.trim() && (
+      {message.content.trim() && message.role !== "user" && (
         <SpeechPlaybackButton
           sourceKind="chat"
           sourceId={sessionId}
