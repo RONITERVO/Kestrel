@@ -181,4 +181,57 @@ Architecture Diagram:
     expect(mark).toBeInTheDocument();
     expect(mark).toHaveTextContent("fast");
   });
+
+  it("renders live word-level highlight inside ASCII diagram / text charts", () => {
+    const chartMarkdown = "+-------------------+\n| Chatterbox TTS    |\n+-------------------+\n";
+    const { container } = render(
+      <MarkdownContent
+        value={chartMarkdown}
+        speechProgress={{
+          active: true,
+          passageId: "p1",
+          text: "Chatterbox TTS",
+          seconds: 0.1,
+          duration: 1.0,
+          timings: [
+            { value: "Chatterbox", start: 0, end: 0.5 },
+            { value: "TTS", start: 0.5, end: 1.0 },
+          ],
+        }}
+      />,
+    );
+
+    const mark = container.querySelector(".markdown-chart-body mark.speech-word-active");
+    expect(mark).toBeInTheDocument();
+    expect(mark).toHaveTextContent("Chatterbox");
+
+    // Symbol tokens (diagram lines) must be preserved
+    const symbols = container.querySelectorAll(".speech-symbol-token");
+    expect(symbols.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders live word-level highlight inside Markdown table headers and cells", () => {
+    const tableMarkdown = `| Empire | Duration |\n| --- | --- |\n| Akkadian | 180 years |`;
+    const { container } = render(
+      <MarkdownContent
+        value={tableMarkdown}
+        speechProgress={{
+          active: true,
+          passageId: "p1",
+          text: "Akkadian 180 years",
+          seconds: 0.1,
+          duration: 1.0,
+          timings: [
+            { value: "Akkadian", start: 0, end: 0.5 },
+            { value: "180", start: 0.5, end: 0.8 },
+            { value: "years", start: 0.8, end: 1.0 },
+          ],
+        }}
+      />,
+    );
+
+    const mark = container.querySelector(".markdown-table mark.speech-word-active");
+    expect(mark).toBeInTheDocument();
+    expect(mark).toHaveTextContent("Akkadian");
+  });
 });

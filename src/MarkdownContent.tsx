@@ -359,7 +359,15 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
   });
 }
 
-function CodeBlockView({ language, code }: { language: string; code: string }) {
+function CodeBlockView({
+  language,
+  code,
+  speechProgress,
+}: {
+  language: string;
+  code: string;
+  speechProgress?: SpeechProgressState | null;
+}) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -396,13 +404,25 @@ function CodeBlockView({ language, code }: { language: string; code: string }) {
         </button>
       </div>
       <pre className="markdown-code-pre">
-        <code>{code}</code>
+        <code>
+          {speechProgress?.active ? (
+            <SpokenText text={code} progress={speechProgress} />
+          ) : (
+            code
+          )}
+        </code>
       </pre>
     </div>
   );
 }
 
-function ChartCardView({ text }: { text: string }) {
+function ChartCardView({
+  text,
+  speechProgress,
+}: {
+  text: string;
+  speechProgress?: SpeechProgressState | null;
+}) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -439,13 +459,24 @@ function ChartCardView({ text }: { text: string }) {
         </button>
       </div>
       <pre className="markdown-chart-body">
-        <code>{text}</code>
+        <code>
+          {speechProgress?.active ? (
+            <SpokenText text={text} progress={speechProgress} />
+          ) : (
+            text
+          )}
+        </code>
       </pre>
     </div>
   );
 }
 
-function TableView({ headers, alignments, rows }: TableBlock) {
+function TableView({
+  headers,
+  alignments,
+  rows,
+  speechProgress,
+}: TableBlock & { speechProgress?: SpeechProgressState | null }) {
   return (
     <div className="markdown-table-wrapper">
       <table className="markdown-table">
@@ -456,7 +487,11 @@ function TableView({ headers, alignments, rows }: TableBlock) {
                 key={colIndex}
                 style={{ textAlign: alignments[colIndex] }}
               >
-                {renderInlineMarkdown(header)}
+                {speechProgress?.active ? (
+                  <SpokenText text={header} progress={speechProgress} />
+                ) : (
+                  renderInlineMarkdown(header)
+                )}
               </th>
             ))}
           </tr>
@@ -469,7 +504,11 @@ function TableView({ headers, alignments, rows }: TableBlock) {
                   key={colIndex}
                   style={{ textAlign: alignments[colIndex] }}
                 >
-                  {renderInlineMarkdown(cell)}
+                  {speechProgress?.active ? (
+                    <SpokenText text={cell} progress={speechProgress} />
+                  ) : (
+                    renderInlineMarkdown(cell)
+                  )}
                 </td>
               ))}
             </tr>
@@ -505,11 +544,11 @@ export function MarkdownContent({
       {blocks.map((block, index) => {
         switch (block.type) {
           case "table":
-            return <TableView key={index} {...block} />;
+            return <TableView key={index} {...block} speechProgress={speechProgress} />;
           case "code":
-            return <CodeBlockView key={index} language={block.language} code={block.code} />;
+            return <CodeBlockView key={index} language={block.language} code={block.code} speechProgress={speechProgress} />;
           case "chart":
-            return <ChartCardView key={index} text={block.text} />;
+            return <ChartCardView key={index} text={block.text} speechProgress={speechProgress} />;
           case "heading": {
             const text = speechProgress?.active
               ? <SpokenText text={block.text} progress={speechProgress} />

@@ -718,6 +718,23 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   color: #92a498;
   transition: color 0.15s ease;
 }
+
+pre .speech-word-active, code .speech-word-active {
+  font-family: inherit !important;
+  font-size: inherit !important;
+  padding: 0 2px !important;
+  margin: 0 !important;
+}
+
+.markdown-chart-body .speech-symbol-token {
+  color: #55785c;
+}
+
+.markdown-chart-body .speech-word-active {
+  background: #b7e866 !important;
+  color: #070f09 !important;
+  box-shadow: 0 0 14px rgba(183, 232, 102, 0.75) !important;
+}
 .control-composer { margin: 0 clamp(20px, 4vw, 64px) 16px; min-height: 90px; padding: 11px; border: 1px solid #2a3931; border-radius: 12px; background: #101713; }
 .composer-row { min-height: 66px; display: grid; grid-template-columns: 40px 36px minmax(0,1fr) 43px; gap: 8px; }
 .control-composer textarea { min-width: 0; resize: none; border: 0; outline: 0; color: #e5efe8; background: transparent; font: 12px/1.5 var(--sans); }

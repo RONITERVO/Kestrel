@@ -45,6 +45,10 @@ export function getActiveWordIndex(
   return 0;
 }
 
+export function isWordToken(token: string): boolean {
+  return /[\p{L}\p{N}]/u.test(token);
+}
+
 export function isPassageActiveForText(
   text: string,
   passageId?: string,
@@ -59,13 +63,24 @@ export function isPassageActiveForText(
     return false;
   }
 
-  // 2. If passageId is omitted (e.g. Markdown paragraphs inside Chat messages)
+  // 2. If passageId is omitted (e.g. Markdown paragraphs, charts, tables inside Chat messages)
   const normText = normalizeSpeechMatchingText(text);
   const normProgress = normalizeSpeechMatchingText(progress.text);
   if (!normText || !normProgress) return false;
 
-  // Check if this paragraph text matches or is contained in the current spoken passage
-  return normProgress.includes(normText) || normText.includes(normProgress);
+  // Direct containment
+  if (normProgress.includes(normText) || normText.includes(normProgress)) return true;
+
+  // For charts and tables: check continuous slice matching (12+ chars)
+  const minLen = Math.min(12, normProgress.length);
+  if (normProgress.length >= minLen) {
+    for (let i = 0; i <= normProgress.length - minLen; i += 4) {
+      const slice = normProgress.slice(i, i + minLen);
+      if (normText.includes(slice)) return true;
+    }
+  }
+
+  return false;
 }
 
 export function SpokenText({
@@ -102,6 +117,16 @@ export function SpokenText({
         if (/^\s+$/.test(token)) {
           return token;
         }
+
+        // If this token contains no readable letters/digits (e.g. +---+ or | or --->), render as diagram symbol
+        if (!isWordToken(token)) {
+          return (
+            <span key={index} className="speech-symbol-token">
+              {token}
+            </span>
+          );
+        }
+
         const currentWordIndex = wordCounter++;
         const isWordActive = currentWordIndex === activeIndex;
         const isPast = currentWordIndex < activeIndex;
