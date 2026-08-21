@@ -1,6 +1,6 @@
 # Kestrel Speech Highlight & Timing Simulation Report
 
-- **Generated:** 2026-08-21T13:01:43.313Z
+- **Generated:** 2026-08-21T13:10:54.485Z
 - **Total Passages:** 19
 - **Total Spoken Duration:** 247.04s
 - **Simulation Time Step:** 100ms

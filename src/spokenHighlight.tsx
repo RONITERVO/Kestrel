@@ -275,12 +275,8 @@ export function SpokenText({
     return <span className={className}>{text}</span>;
   }
 
-  const activeIndex = getActiveWordIndex(
-    progress.text || text,
-    progress.seconds,
-    progress.duration,
-    progress.timings,
-  );
+  const resolved = resolveActiveBlockAndWord([{ id: "spoken-target", text }], progress);
+  const activeIndex = resolved ? resolved.activeWordIndex : -1;
 
   return (
     <span className={`speech-passage-speaking ${className}`}>

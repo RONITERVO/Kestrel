@@ -1,6 +1,6 @@
 # Kestrel Voice Activity Detection (VAD) & Dictation Audit Report
 
-**Execution Timestamp:** 2026-08-21T12:49:27.920Z  
+**Execution Timestamp:** 2026-08-21T13:11:33.345Z  
 **Scenarios Evaluated:** 10 / 10 Passed (100.0%)  
 **Total Simulated Audio:** 112.3s (1866 50ms frames evaluated)  
 
