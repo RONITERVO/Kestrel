@@ -1853,12 +1853,6 @@ function Message({
   const [speechProgress, setSpeechProgress] = useState<SpeechProgressState | null>(null);
   const speaking = Boolean(speechProgress?.active);
 
-  useEffect(() => {
-    if (speaking) {
-      document.getElementById(`chat-message-${message.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
-  }, [message.id, speaking]);
-
   return (
     <article
       className={`${message.role} ${speaking ? "speech-message-active" : ""}`}

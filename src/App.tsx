@@ -456,15 +456,6 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
   const handleSpeechPassage = useCallback((anchorId: string | null, passageId?: string | null) => {
     setSpokenAnchor(anchorId);
     setSpokenPassageId(passageId ?? null);
-    if (passageId) {
-      const baseId = passageId.replace(/-\d+$/, "");
-      const element = document.getElementById(`speech-target-${passageId}`) || document.getElementById(`speech-target-${baseId}`) || (anchorId ? document.getElementById(anchorId) : null);
-      if (element) {
-        element.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
-    } else if (anchorId) {
-      document.getElementById(anchorId)?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
   }, []);
   const focusSource = (id: string) => {
     setSourceFocus(id);

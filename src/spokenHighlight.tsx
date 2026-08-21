@@ -12,6 +12,10 @@ export interface SpeechProgressState {
   timings: SpeechTiming[];
 }
 
+export function normalizeSpeechMatchingText(str: string): string {
+  return str.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+
 export function wordTimings(text: string, duration: number): SpeechTiming[] {
   const words = text.match(/\S+/g) ?? [];
   const weights = words.map((word) => Math.max(1, word.replace(/[^\p{L}\p{N}]/gu, "").length));
@@ -41,6 +45,29 @@ export function getActiveWordIndex(
   return 0;
 }
 
+export function isPassageActiveForText(
+  text: string,
+  passageId?: string,
+  progress?: SpeechProgressState | null,
+): boolean {
+  if (!progress || !progress.active) return false;
+
+  // 1. If explicit passageId is provided (e.g. Research Reader)
+  if (passageId) {
+    if (progress.passageId === passageId) return true;
+    if (progress.passageId.startsWith(`${passageId}-`)) return true;
+    return false;
+  }
+
+  // 2. If passageId is omitted (e.g. Markdown paragraphs inside Chat messages)
+  const normText = normalizeSpeechMatchingText(text);
+  const normProgress = normalizeSpeechMatchingText(progress.text);
+  if (!normText || !normProgress) return false;
+
+  // Check if this paragraph text matches or is contained in the current spoken passage
+  return normProgress.includes(normText) || normText.includes(normProgress);
+}
+
 export function SpokenText({
   text,
   passageId,
@@ -54,14 +81,8 @@ export function SpokenText({
 }) {
   if (!text) return null;
 
-  const isCurrentPassage =
-    Boolean(progress?.active) &&
-    (!passageId ||
-      progress?.passageId === passageId ||
-      Boolean(progress?.passageId?.startsWith(`${passageId}-`)) ||
-      Boolean(passageId?.startsWith(`${progress?.passageId}-`)));
-
-  if (!isCurrentPassage || !progress) {
+  const isActive = isPassageActiveForText(text, passageId, progress);
+  if (!isActive || !progress) {
     return <span className={className}>{text}</span>;
   }
 
@@ -82,20 +103,12 @@ export function SpokenText({
           return token;
         }
         const currentWordIndex = wordCounter++;
-        const isActive = currentWordIndex === activeIndex;
+        const isWordActive = currentWordIndex === activeIndex;
         const isPast = currentWordIndex < activeIndex;
 
-        if (isActive) {
+        if (isWordActive) {
           return (
-            <mark
-              key={index}
-              className="speech-word-active"
-              ref={(node) => {
-                if (node && typeof node.scrollIntoView === "function") {
-                  node.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-                }
-              }}
-            >
+            <mark key={index} className="speech-word-active">
               {token}
             </mark>
           );
