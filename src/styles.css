@@ -691,6 +691,33 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   box-shadow: 0 0 0 1px rgba(183, 232, 102, 0.35), 0 8px 28px rgba(0, 0, 0, 0.4) !important;
   transition: all 0.22s ease-in-out;
 }
+
+/* Word-Level Spoken Highlighting */
+.speech-passage-speaking {
+  display: inline;
+}
+
+.speech-word-active {
+  background: #b7e866 !important;
+  color: #08110a !important;
+  font-weight: 700 !important;
+  border-radius: 3px !important;
+  padding: 1px 4px !important;
+  margin: 0 -1px !important;
+  box-shadow: 0 0 12px rgba(183, 232, 102, 0.6) !important;
+  transition: background 0.08s ease, color 0.08s ease;
+  display: inline;
+}
+
+.speech-word-spoken {
+  color: #e5efe8;
+  transition: color 0.15s ease;
+}
+
+.speech-word-pending {
+  color: #92a498;
+  transition: color 0.15s ease;
+}
 .control-composer { margin: 0 clamp(20px, 4vw, 64px) 16px; min-height: 90px; padding: 11px; border: 1px solid #2a3931; border-radius: 12px; background: #101713; }
 .composer-row { min-height: 66px; display: grid; grid-template-columns: 40px 36px minmax(0,1fr) 43px; gap: 8px; }
 .control-composer textarea { min-width: 0; resize: none; border: 0; outline: 0; color: #e5efe8; background: transparent; font: 12px/1.5 var(--sans); }

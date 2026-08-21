@@ -1,10 +1,12 @@
 import { useState, useMemo, type ReactNode } from "react";
 import { Check, Copy, Code2, BarChart2 } from "lucide-react";
+import { SpokenText, type SpeechProgressState } from "./spokenHighlight";
 
 export interface MarkdownContentProps {
   value: string;
   streaming?: boolean;
   className?: string;
+  speechProgress?: SpeechProgressState | null;
 }
 
 type TableAlign = "left" | "center" | "right" | undefined;
@@ -478,7 +480,12 @@ function TableView({ headers, alignments, rows }: TableBlock) {
   );
 }
 
-export function MarkdownContent({ value, streaming = false, className = "" }: MarkdownContentProps) {
+export function MarkdownContent({
+  value,
+  streaming = false,
+  className = "",
+  speechProgress = null,
+}: MarkdownContentProps) {
   const blocks = useMemo(() => parseMarkdownBlocks(value), [value]);
 
   if (!value && streaming) {
@@ -504,7 +511,9 @@ export function MarkdownContent({ value, streaming = false, className = "" }: Ma
           case "chart":
             return <ChartCardView key={index} text={block.text} />;
           case "heading": {
-            const text = renderInlineMarkdown(block.text);
+            const text = speechProgress?.active
+              ? <SpokenText text={block.text} progress={speechProgress} />
+              : renderInlineMarkdown(block.text);
             switch (block.level) {
               case 1: return <h1 key={index} className="markdown-h1">{text}</h1>;
               case 2: return <h2 key={index} className="markdown-h2">{text}</h2>;
@@ -520,7 +529,11 @@ export function MarkdownContent({ value, streaming = false, className = "" }: Ma
             return (
               <ListTag key={index} start={block.start} className="markdown-list">
                 {block.items.map((item, itemIdx) => (
-                  <li key={itemIdx}>{renderInlineMarkdown(item)}</li>
+                  <li key={itemIdx}>
+                    {speechProgress?.active
+                      ? <SpokenText text={item} progress={speechProgress} />
+                      : renderInlineMarkdown(item)}
+                  </li>
                 ))}
               </ListTag>
             );
@@ -529,7 +542,11 @@ export function MarkdownContent({ value, streaming = false, className = "" }: Ma
             return (
               <blockquote key={index} className="markdown-blockquote">
                 {block.text.split("\n").map((line, lineIdx) => (
-                  <p key={lineIdx}>{renderInlineMarkdown(line)}</p>
+                  <p key={lineIdx}>
+                    {speechProgress?.active
+                      ? <SpokenText text={line} progress={speechProgress} />
+                      : renderInlineMarkdown(line)}
+                  </p>
                 ))}
               </blockquote>
             );
@@ -539,7 +556,11 @@ export function MarkdownContent({ value, streaming = false, className = "" }: Ma
           default:
             return (
               <p key={index} className="markdown-paragraph">
-                {renderInlineMarkdown(block.text)}
+                {speechProgress?.active ? (
+                  <SpokenText text={block.text} progress={speechProgress} />
+                ) : (
+                  renderInlineMarkdown(block.text)
+                )}
               </p>
             );
         }

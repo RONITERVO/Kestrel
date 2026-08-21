@@ -12,6 +12,7 @@ import {
   splitForSpeech,
 } from "./researchSpeechContent";
 import type { LocalSpeechSnapshot, SpeechTiming } from "./types";
+import { type SpeechProgressState } from "./spokenHighlight";
 import {
   claimPlayback,
   clearPlayback,
@@ -20,6 +21,7 @@ import {
 } from "./usePipelinedSpeechPlayer";
 
 export { claimPlayback, clearPlayback };
+export type { SpeechProgressState };
 
 type SpeechContextValue = {
   snapshot: LocalSpeechSnapshot | null;
@@ -103,13 +105,22 @@ export function SpeechLiveCaption({ text, seconds, duration, timings = [], onSee
   </div>;
 }
 
-export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, label = "Listen", onActiveChange }: {
+export function SpeechPlaybackButton({
+  sourceKind,
+  sourceId,
+  passageId,
+  text,
+  label = "Listen",
+  onActiveChange,
+  onSpeechProgress,
+}: {
   sourceKind: SourceKind;
   sourceId: string;
   passageId: string;
   text: string;
   label?: string;
   onActiveChange?: (active: boolean) => void;
+  onSpeechProgress?: (progress: SpeechProgressState | null) => void;
 }) {
   const { snapshot, prepare } = useSpeech();
   const passages = useMemo(
@@ -130,10 +141,39 @@ export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, la
   });
 
   const state = player.status;
+  const currentPassage = player.currentPassage;
 
   useEffect(() => {
-    onActiveChange?.(state === "playing" || state === "paused");
-  }, [onActiveChange, state]);
+    const active = state === "playing" || state === "paused";
+    onActiveChange?.(active);
+    if (active) {
+      onSpeechProgress?.({
+        active: true,
+        sourceKind,
+        sourceId,
+        passageId: currentPassage?.id ?? passageId,
+        text: currentPassage?.text ?? text,
+        seconds: player.speechSeconds,
+        duration: player.speechDuration,
+        timings: player.speechTimings,
+      });
+    } else {
+      onSpeechProgress?.(null);
+    }
+  }, [
+    currentPassage?.id,
+    currentPassage?.text,
+    onActiveChange,
+    onSpeechProgress,
+    passageId,
+    player.speechDuration,
+    player.speechSeconds,
+    player.speechTimings,
+    sourceId,
+    sourceKind,
+    state,
+    text,
+  ]);
 
   const toggle = () => {
     if (player.status === "playing" || (player.status === "paused" && player.audioRef.current?.src)) {
@@ -151,8 +191,6 @@ export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, la
       player.setDetail(String(error));
     });
   };
-
-  const currentPassage = player.currentPassage;
 
   return (
     <div className={`inline-speech ${state === "complete" ? "idle" : state}`}>

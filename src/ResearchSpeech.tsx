@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getLocalSpeechSnapshot, prepareLocalSpeech } from "./api";
 import { SpeechLiveCaption } from "./LocalSpeechControls";
 import { buildResearchSpeechPassages, type ResearchSpeechScope } from "./researchSpeechContent";
+import { type SpeechProgressState } from "./spokenHighlight";
 import type { LocalSpeechSnapshot, ResearchReport } from "./types";
 import { usePipelinedSpeechPlayer } from "./usePipelinedSpeechPlayer";
 
@@ -27,8 +28,9 @@ function savePreference(key: string, value: string) {
 }
 
 function initialRate(): number {
-  const saved = Number(readPreference(RATE_KEY));
-  return Number.isFinite(saved) && saved >= 0.8 && saved <= 1.5 ? saved : 1;
+  const saved = readPreference(RATE_KEY);
+  const parsed = saved ? Number(saved) : 1;
+  return Number.isFinite(parsed) && parsed >= 0.8 && parsed <= 1.5 ? parsed : 1;
 }
 
 function initialScope(): ResearchSpeechScope {
@@ -38,10 +40,11 @@ function initialScope(): ResearchSpeechScope {
 
 interface ResearchSpeechPlayerProps {
   report: ResearchReport;
-  onPassageChange: (anchorId: string | null, passageId?: string | null) => void;
+  onPassageChange?: (anchorId: string | null, passageId?: string | null) => void;
+  onSpeechProgress?: (progress: SpeechProgressState | null) => void;
 }
 
-export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeechPlayerProps) {
+export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress }: ResearchSpeechPlayerProps) {
   const [snapshot, setSnapshot] = useState<LocalSpeechSnapshot | null>(null);
   const [modelId, setModelId] = useState(() => readPreference(MODEL_KEY) ?? "");
   const [rate, setRate] = useState(initialRate);
@@ -59,8 +62,35 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
     alignmentModel,
     playbackRate: rate,
     initialDetail: "Checking local ComfyUI voice models...",
-    onPassageChange: (passage) => onPassageChange(passage?.anchorId ?? null, passage?.id ?? null),
+    onPassageChange: (passage) => onPassageChange?.(passage?.anchorId ?? null, passage?.id ?? null),
   });
+
+  const activePassage = player.currentPassage;
+
+  useEffect(() => {
+    if (["playing", "paused"].includes(player.status) && activePassage) {
+      onSpeechProgress?.({
+        active: true,
+        sourceKind: "research",
+        sourceId: report.id,
+        passageId: activePassage.id,
+        text: activePassage.text,
+        seconds: player.speechSeconds,
+        duration: player.speechDuration,
+        timings: player.speechTimings,
+      });
+    } else {
+      onSpeechProgress?.(null);
+    }
+  }, [
+    activePassage,
+    onSpeechProgress,
+    player.speechDuration,
+    player.speechSeconds,
+    player.speechTimings,
+    player.status,
+    report.id,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -112,7 +142,6 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
   };
 
   const unavailable = !snapshot?.narrationAvailable || !selectedModel;
-  const activePassage = player.currentPassage;
   const statusText = player.status === "error"
     ? `ComfyUI narration stopped: ${player.error ?? "Playback failed"}`
     : !snapshot

@@ -154,4 +154,31 @@ Architecture Diagram:
     rerender(<MarkdownContent value="" streaming={true} />);
     expect(container.querySelector(".stream-cursor-pulse")).toBeInTheDocument();
   });
+
+  it("renders live word-level highlight when speechProgress is provided", () => {
+    const text = "Kestrel provides fast local inference.";
+    const { container } = render(
+      <MarkdownContent
+        value={text}
+        speechProgress={{
+          active: true,
+          passageId: "p1",
+          text,
+          seconds: 0.8,
+          duration: 2.0,
+          timings: [
+            { value: "Kestrel", start: 0, end: 0.4 },
+            { value: "provides", start: 0.4, end: 0.8 },
+            { value: "fast", start: 0.8, end: 1.2 },
+            { value: "local", start: 1.2, end: 1.6 },
+            { value: "inference.", start: 1.6, end: 2.0 },
+          ],
+        }}
+      />,
+    );
+
+    const mark = container.querySelector("mark.speech-word-active");
+    expect(mark).toBeInTheDocument();
+    expect(mark).toHaveTextContent("fast");
+  });
 });

@@ -70,6 +70,7 @@ import { MusicStudio } from "./MusicStudio";
 import { ImageStudio } from "./ImageStudio";
 import { PromptPackVisualEditor } from "./PromptPackVisualEditor";
 import { ResearchSpeechPlayer } from "./ResearchSpeech";
+import { SpokenText, type SpeechProgressState } from "./spokenHighlight";
 import { SetupConsole } from "./Setup";
 import { useInferenceTelemetry } from "./InferenceTelemetry";
 import {
@@ -450,6 +451,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
   const [sourceFocus, setSourceFocus] = useState<string | null>(null);
   const [spokenAnchor, setSpokenAnchor] = useState<string | null>(null);
   const [spokenPassageId, setSpokenPassageId] = useState<string | null>(null);
+  const [speechProgress, setSpeechProgress] = useState<SpeechProgressState | null>(null);
   const sourceMap = useMemo(() => new Map(report.sources.map((source) => [source.id, source])), [report.sources]);
   const handleSpeechPassage = useCallback((anchorId: string | null, passageId?: string | null) => {
     setSpokenAnchor(anchorId);
@@ -475,7 +477,9 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
         <header className="report-header" id="report-overview">
           <div className="report-kicker"><span>Research brief</span><span>Edition {report.edition}</span><span>{formatDate(report.updatedAt)}</span></div>
           <h1>{report.title}</h1>
-          <p className={`report-dek ${spokenPassageId?.startsWith("overview") ? "speech-passage-active" : ""}`} id="speech-target-overview">{report.dek}</p>
+          <p className={`report-dek ${spokenPassageId?.startsWith("overview") ? "speech-passage-active" : ""}`} id="speech-target-overview">
+            <SpokenText text={report.dek} passageId="overview" progress={speechProgress} />
+          </p>
           <div className="report-byline">
             <span><Clock3 size={15} /> {report.readingMinutes} min read</span>
             <span><BookOpen size={15} /> {report.sources.length} inspected sources</span>
@@ -483,17 +487,28 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
           </div>
         </header>
 
-        <ResearchSpeechPlayer report={report} onPassageChange={handleSpeechPassage} />
+        <ResearchSpeechPlayer
+          report={report}
+          onPassageChange={handleSpeechPassage}
+          onSpeechProgress={setSpeechProgress}
+        />
 
         <section className="answer-card" id="short-answer" aria-labelledby="short-answer-title">
           <div className="section-label" id="short-answer-title"><Sparkles size={16} /> Short answer</div>
-          <p className={spokenPassageId?.startsWith("short-answer") ? "speech-passage-active" : ""} id="speech-target-short-answer">{report.answer}</p>
+          <p className={spokenPassageId?.startsWith("short-answer") ? "speech-passage-active" : ""} id="speech-target-short-answer">
+            <SpokenText text={report.answer} passageId="short-answer" progress={speechProgress} />
+          </p>
         </section>
 
         {report.edition > 1 && (
           <aside className="improvement-note" id="edition-improvement">
             <div className="improvement-icon"><History size={17} /></div>
-            <div><strong>What changed in this edition</strong><p className={spokenPassageId?.startsWith("edition") ? "speech-passage-active" : ""} id="speech-target-edition">{report.improvement}</p></div>
+            <div>
+              <strong>What changed in this edition</strong>
+              <p className={spokenPassageId?.startsWith("edition") ? "speech-passage-active" : ""} id="speech-target-edition">
+                <SpokenText text={report.improvement} passageId="edition" progress={speechProgress} />
+              </p>
+            </div>
             <span className="edition-badge">v{report.edition}</span>
           </aside>
         )}
@@ -505,7 +520,9 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
               <div className={`finding-card ${spokenPassageId?.startsWith(`finding-${index + 1}`) ? "speech-passage-active" : ""}`} id={`speech-target-finding-${index + 1}`} key={finding.title}>
                 <span className="finding-number">{String(index + 1).padStart(2, "0")}</span>
                 <h3>{finding.title}</h3>
-                <p>{finding.explanation}</p>
+                <p>
+                  <SpokenText text={finding.explanation} passageId={`finding-${index + 1}`} progress={speechProgress} />
+                </p>
                 <CitationRow ids={finding.citations} onFocus={focusSource} />
               </div>
             ))}
@@ -515,8 +532,14 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
         {report.sections.map((section, index) => (
           <section className="content-section narrative-section" id={section.id} key={section.id}>
             <div className="section-heading"><span className="section-number">{String(index + 2).padStart(2, "0")}</span><div><span className="eyebrow">Deep dive</span><h2>{section.heading}</h2></div></div>
-            <p className={`section-summary ${spokenPassageId?.startsWith(`section-${index + 1}-summary`) ? "speech-passage-active" : ""}`} id={`speech-target-section-${index + 1}-summary`}>{section.summary}</p>
-            {section.body.map((paragraph, paragraphIndex) => <p className={spokenPassageId?.startsWith(`section-${index + 1}-paragraph-${paragraphIndex + 1}`) ? "speech-passage-active" : ""} id={`speech-target-section-${index + 1}-paragraph-${paragraphIndex + 1}`} key={paragraphIndex}>{paragraph}</p>)}
+            <p className={`section-summary ${spokenPassageId?.startsWith(`section-${index + 1}-summary`) ? "speech-passage-active" : ""}`} id={`speech-target-section-${index + 1}-summary`}>
+              <SpokenText text={section.summary} passageId={`section-${index + 1}-summary`} progress={speechProgress} />
+            </p>
+            {section.body.map((paragraph, paragraphIndex) => (
+              <p className={spokenPassageId?.startsWith(`section-${index + 1}-paragraph-${paragraphIndex + 1}`) ? "speech-passage-active" : ""} id={`speech-target-section-${index + 1}-paragraph-${paragraphIndex + 1}`} key={paragraphIndex}>
+                <SpokenText text={paragraph} passageId={`section-${index + 1}-paragraph-${paragraphIndex + 1}`} progress={speechProgress} />
+              </p>
+            ))}
             <CitationRow ids={section.citations} onFocus={focusSource} labels={sourceMap} />
           </section>
         ))}
@@ -527,7 +550,7 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
             <div className="timeline">
               {report.timeline.map((item, index) => (
                 <div className={`timeline-item ${spokenPassageId?.startsWith(`timeline-${index + 1}`) ? "speech-passage-active" : ""}`} id={`speech-target-timeline-${index + 1}`} key={`${item.date}-${item.label}`}>
-                  <div className="timeline-date">{item.date}</div><div className="timeline-marker" /><div><h3>{item.label}</h3><p>{item.description}</p><CitationRow ids={item.citations} onFocus={focusSource} /></div>
+                  <div className="timeline-date">{item.date}</div><div className="timeline-marker" /><div><h3>{item.label}</h3><p><SpokenText text={item.description} passageId={`timeline-${index + 1}`} progress={speechProgress} /></p><CitationRow ids={item.citations} onFocus={focusSource} /></div>
                 </div>
               ))}
             </div>
@@ -537,11 +560,24 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
         <section className="content-section split-section" id="terms">
           <div>
             <div className="section-heading small"><div><span className="eyebrow">Plain language</span><h2>Terms worth knowing</h2></div></div>
-            <dl className="term-list">{report.terms.map((term, index) => <div className={spokenPassageId?.startsWith(`term-${index + 1}`) ? "speech-passage-active" : ""} id={`speech-target-term-${index + 1}`} key={term.term}><dt>{term.term}</dt><dd>{term.meaning}</dd></div>)}</dl>
+            <dl className="term-list">
+              {report.terms.map((term, index) => (
+                <div className={spokenPassageId?.startsWith(`term-${index + 1}`) ? "speech-passage-active" : ""} id={`speech-target-term-${index + 1}`} key={term.term}>
+                  <dt>{term.term}</dt>
+                  <dd><SpokenText text={term.meaning} passageId={`term-${index + 1}`} progress={speechProgress} /></dd>
+                </div>
+              ))}
+            </dl>
           </div>
           <div>
             <div className="section-heading small"><div><span className="eyebrow">Research frontier</span><h2>What remains open</h2></div></div>
-            <ol className="question-list">{report.openQuestions.map((question, index) => <li className={spokenPassageId?.startsWith(`question-${index + 1}`) ? "speech-passage-active" : ""} id={`speech-target-question-${index + 1}`} key={question}>{question}</li>)}</ol>
+            <ol className="question-list">
+              {report.openQuestions.map((question, index) => (
+                <li className={spokenPassageId?.startsWith(`question-${index + 1}`) ? "speech-passage-active" : ""} id={`speech-target-question-${index + 1}`} key={question}>
+                  <SpokenText text={question} passageId={`question-${index + 1}`} progress={speechProgress} />
+                </li>
+              ))}
+            </ol>
           </div>
         </section>
 
@@ -554,7 +590,9 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
                 <span className="source-id">{source.id}</span>
                 <div><div className="source-title-row"><h3>{source.title}</h3><span>{source.kind === "wikipedia" ? "Wikipedia" : "Kestrel research"}</span></div>
                   <p className="source-location">{source.section ?? "Full article"} · snapshot {source.snapshot ?? report.archiveSnapshot}</p>
-                  <blockquote>{source.excerpt}</blockquote>
+                  <blockquote>
+                    <SpokenText text={source.excerpt} passageId={`source-${index + 1}`} progress={speechProgress} />
+                  </blockquote>
                 </div>
               </div>
             ))}

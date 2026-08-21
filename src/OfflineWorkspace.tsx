@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownContent } from "./MarkdownContent";
+import { type SpeechProgressState } from "./spokenHighlight";
 import { useInferenceTelemetryReporter } from "./InferenceTelemetry";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
 import {
@@ -1849,7 +1850,8 @@ function Message({
   model?: string;
   onError: (message: string) => void;
 }) {
-  const [speaking, setSpeaking] = useState(false);
+  const [speechProgress, setSpeechProgress] = useState<SpeechProgressState | null>(null);
+  const speaking = Boolean(speechProgress?.active);
 
   useEffect(() => {
     if (speaking) {
@@ -1887,7 +1889,7 @@ function Message({
           <pre>{message.reasoning}</pre>
         </details>
       )}
-      <MarkdownContent value={message.content} />
+      <MarkdownContent value={message.content} speechProgress={speechProgress} />
       {message.content.trim() && (
         <SpeechPlaybackButton
           sourceKind="chat"
@@ -1895,7 +1897,7 @@ function Message({
           passageId={message.id}
           text={message.content}
           label="Listen"
-          onActiveChange={setSpeaking}
+          onSpeechProgress={setSpeechProgress}
         />
       )}
     </article>
