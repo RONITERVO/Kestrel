@@ -79,10 +79,12 @@ function convertTablesAndCharts(text: string): string {
       }
 
       if (tableHeaders && tableHeaders.length === cells.length) {
-        const rowProse = cells
-          .map((cell, idx) => `${tableHeaders![idx]}: ${cell}`)
-          .join(", ");
-        output.push(`${rowProse}.`);
+        // Read first cell as primary subject and remaining cells as details
+        if (cells.length > 1) {
+          output.push(`${cells[0]}: ${cells.slice(1).join(", ")}.`);
+        } else {
+          output.push(`${cells[0]}.`);
+        }
       } else {
         output.push(`${cells.join(", ")}.`);
       }
@@ -126,7 +128,17 @@ export function cleanProseForSpeech(raw: string, stripCodeBlocks = true): string
   // 3. Convert Markdown tables and ASCII box diagrams into readable prose
   text = convertTablesAndCharts(text);
 
-  // 4. Markdown syntax stripping
+  // 4. Natural pronunciation of numbers, ranges, and approximations
+  // Date ranges: 10,000-8,000 -> 10,000 to 8,000
+  text = text.replace(/(\d+(?:,\d+)?)\s*[-–—]\s*(\d+(?:,\d+)?)/g, "$1 to $2");
+  // Negative dates / circa prefix: -10,000 -> c. 10,000
+  text = text.replace(/(?<=\s|^)-(\d+(?:,\d+)?)/g, "c. $1");
+  // Approximation tildes: ~1,000 -> approximately 1,000
+  text = text.replace(/~+(\d+(?:,\d+)?)/g, "approximately $1");
+  // Mathematical plus: foragers + first farmers -> foragers plus first farmers
+  text = text.replace(/(\w+)\s*\+\s*(\w+)/g, "$1 plus $2");
+
+  // 5. Markdown syntax stripping
   // Links: [Text](url) -> Text
   text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
   // Images: ![Alt](url) -> ""
@@ -151,7 +163,7 @@ export function cleanProseForSpeech(raw: string, stripCodeBlocks = true): string
   // Horizontal rules: ---, ***, ===
   text = text.replace(/^[ \t]*[-*_=\s]{3,}[ \t]*$/gm, " ");
 
-  // 5. Symbol translation & noise cleanup
+  // 6. Symbol translation & noise cleanup
   // Convert currency symbols before numbers to natural spoken words (including M, K, B multipliers)
   text = text
     .replace(/\$(\d+(?:[.,]\d+)?)\s*([kKmMbBtT])\b/g, "$1$2 dollars")

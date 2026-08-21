@@ -102,8 +102,8 @@ Here is the performance overview:
     expect(text).not.toContain("|");
     expect(text).not.toContain("+");
     expect(text).not.toContain(":---");
-    expect(text).toContain("Model: Chatterbox, Latency: 400ms, Accuracy: 99 percent.");
-    expect(text).toContain("Model: Whisper, Latency: 250ms, Accuracy: 98.5 percent.");
+    expect(text).toContain("Chatterbox: 400ms, 99 percent.");
+    expect(text).toContain("Whisper: 250ms, 98.5 percent.");
     expect(text).toContain("Architecture Chart.");
   });
 

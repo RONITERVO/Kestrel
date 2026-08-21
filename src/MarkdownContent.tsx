@@ -286,7 +286,10 @@ function parseMarkdownBlocks(raw: string): MarkdownBlock[] {
   return blocks;
 }
 
-export function renderInlineMarkdown(text: string): ReactNode[] {
+export function renderInlineMarkdown(
+  text: string,
+  speechProgress?: SpeechProgressState | null,
+): ReactNode[] {
   if (!text) return [];
 
   // Match links, inline code, bold-italic, bold, italic, strikethrough
@@ -302,7 +305,10 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
     const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (linkMatch) {
       const url = linkMatch[2].trim();
-      const safeUrl = /^https?:\/\//i.test(url) || url.startsWith("#") || url.startsWith("/") ? url : `https://${url}`;
+      const safeUrl =
+        /^https?:\/\//i.test(url) || url.startsWith("#") || url.startsWith("/")
+          ? url
+          : `https://${url}`;
       return (
         <a
           key={index}
@@ -311,25 +317,41 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
           rel="noopener noreferrer"
           className="markdown-link"
         >
-          {linkMatch[1]}
+          {speechProgress?.active ? (
+            <SpokenText text={linkMatch[1]} progress={speechProgress} />
+          ) : (
+            linkMatch[1]
+          )}
         </a>
       );
     }
 
     // Inline Code: `code`
     if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
+      const inner = part.slice(1, -1);
       return (
         <code key={index} className="markdown-inline-code">
-          {part.slice(1, -1)}
+          {speechProgress?.active ? (
+            <SpokenText text={inner} progress={speechProgress} />
+          ) : (
+            inner
+          )}
         </code>
       );
     }
 
     // Bold-italic: ***text***
     if (part.startsWith("***") && part.endsWith("***") && part.length >= 6) {
+      const inner = part.slice(3, -3);
       return (
         <strong key={index}>
-          <em>{part.slice(3, -3)}</em>
+          <em>
+            {speechProgress?.active ? (
+              <SpokenText text={inner} progress={speechProgress} />
+            ) : (
+              inner
+            )}
+          </em>
         </strong>
       );
     }
@@ -339,7 +361,16 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
       (part.startsWith("**") && part.endsWith("**") && part.length >= 4) ||
       (part.startsWith("__") && part.endsWith("__") && part.length >= 4)
     ) {
-      return <strong key={index}>{part.slice(2, -2)}</strong>;
+      const inner = part.slice(2, -2);
+      return (
+        <strong key={index}>
+          {speechProgress?.active ? (
+            <SpokenText text={inner} progress={speechProgress} />
+          ) : (
+            inner
+          )}
+        </strong>
+      );
     }
 
     // Italic: *text* or _text_
@@ -347,15 +378,37 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
       (part.startsWith("*") && part.endsWith("*") && part.length >= 2) ||
       (part.startsWith("_") && part.endsWith("_") && part.length >= 2)
     ) {
-      return <em key={index}>{part.slice(1, -1)}</em>;
+      const inner = part.slice(1, -1);
+      return (
+        <em key={index}>
+          {speechProgress?.active ? (
+            <SpokenText text={inner} progress={speechProgress} />
+          ) : (
+            inner
+          )}
+        </em>
+      );
     }
 
     // Strikethrough: ~~text~~
     if (part.startsWith("~~") && part.endsWith("~~") && part.length >= 4) {
-      return <del key={index}>{part.slice(2, -2)}</del>;
+      const inner = part.slice(2, -2);
+      return (
+        <del key={index}>
+          {speechProgress?.active ? (
+            <SpokenText text={inner} progress={speechProgress} />
+          ) : (
+            inner
+          )}
+        </del>
+      );
     }
 
-    return <span key={index}>{part}</span>;
+    return speechProgress?.active ? (
+      <SpokenText key={index} text={part} progress={speechProgress} />
+    ) : (
+      <span key={index}>{part}</span>
+    );
   });
 }
 
@@ -487,11 +540,7 @@ function TableView({
                 key={colIndex}
                 style={{ textAlign: alignments[colIndex] }}
               >
-                {speechProgress?.active ? (
-                  <SpokenText text={header} progress={speechProgress} />
-                ) : (
-                  renderInlineMarkdown(header)
-                )}
+                {renderInlineMarkdown(header, speechProgress)}
               </th>
             ))}
           </tr>
@@ -504,11 +553,7 @@ function TableView({
                   key={colIndex}
                   style={{ textAlign: alignments[colIndex] }}
                 >
-                  {speechProgress?.active ? (
-                    <SpokenText text={cell} progress={speechProgress} />
-                  ) : (
-                    renderInlineMarkdown(cell)
-                  )}
+                  {renderInlineMarkdown(cell, speechProgress)}
                 </td>
               ))}
             </tr>
@@ -550,18 +595,16 @@ export function MarkdownContent({
           case "chart":
             return <ChartCardView key={index} text={block.text} speechProgress={speechProgress} />;
           case "heading": {
-            const text = speechProgress?.active
-              ? <SpokenText text={block.text} progress={speechProgress} />
-              : renderInlineMarkdown(block.text);
+            const children = renderInlineMarkdown(block.text, speechProgress);
             switch (block.level) {
-              case 1: return <h1 key={index} className="markdown-h1">{text}</h1>;
-              case 2: return <h2 key={index} className="markdown-h2">{text}</h2>;
-              case 3: return <h3 key={index} className="markdown-h3">{text}</h3>;
-              case 4: return <h4 key={index} className="markdown-h4">{text}</h4>;
-              case 5: return <h5 key={index} className="markdown-h5">{text}</h5>;
-              case 6: return <h6 key={index} className="markdown-h6">{text}</h6>;
+              case 1: return <h1 key={index} className="markdown-h1">{children}</h1>;
+              case 2: return <h2 key={index} className="markdown-h2">{children}</h2>;
+              case 3: return <h3 key={index} className="markdown-h3">{children}</h3>;
+              case 4: return <h4 key={index} className="markdown-h4">{children}</h4>;
+              case 5: return <h5 key={index} className="markdown-h5">{children}</h5>;
+              case 6: return <h6 key={index} className="markdown-h6">{children}</h6>;
             }
-            return <h6 key={index} className="markdown-h6">{text}</h6>;
+            return <h6 key={index} className="markdown-h6">{children}</h6>;
           }
           case "list": {
             const ListTag = block.ordered ? "ol" : "ul";
@@ -569,9 +612,7 @@ export function MarkdownContent({
               <ListTag key={index} start={block.start} className="markdown-list">
                 {block.items.map((item, itemIdx) => (
                   <li key={itemIdx}>
-                    {speechProgress?.active
-                      ? <SpokenText text={item} progress={speechProgress} />
-                      : renderInlineMarkdown(item)}
+                    {renderInlineMarkdown(item, speechProgress)}
                   </li>
                 ))}
               </ListTag>
@@ -582,9 +623,7 @@ export function MarkdownContent({
               <blockquote key={index} className="markdown-blockquote">
                 {block.text.split("\n").map((line, lineIdx) => (
                   <p key={lineIdx}>
-                    {speechProgress?.active
-                      ? <SpokenText text={line} progress={speechProgress} />
-                      : renderInlineMarkdown(line)}
+                    {renderInlineMarkdown(line, speechProgress)}
                   </p>
                 ))}
               </blockquote>
@@ -595,11 +634,7 @@ export function MarkdownContent({
           default:
             return (
               <p key={index} className="markdown-paragraph">
-                {speechProgress?.active ? (
-                  <SpokenText text={block.text} progress={speechProgress} />
-                ) : (
-                  renderInlineMarkdown(block.text)
-                )}
+                {renderInlineMarkdown(block.text, speechProgress)}
               </p>
             );
         }
