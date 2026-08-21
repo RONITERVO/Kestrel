@@ -609,7 +609,65 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .control-chat article > span { color: #96c34a; font: 700 8px var(--mono); letter-spacing: .11em; }
 .control-chat article p { margin: 9px 0 0; color: #dbe6de; white-space: pre-wrap; font: 13px/1.65 var(--sans); }
 .control-chat details { margin-top: 10px; color: #8ea095; font-size: 9px; }
-.control-chat pre { max-height: 200px; overflow: auto; white-space: pre-wrap; }
+.control-chat pre { max-height: 480px; overflow: auto; white-space: pre; }
+
+/* Markdown & Rich Content Formatting */
+.markdown-content { font: 13px/1.65 var(--sans); color: #dbe6de; word-break: break-word; }
+.markdown-content.streaming .stream-cursor-pulse { display: inline-block; width: 7px; height: 14px; margin-left: 4px; vertical-align: -2px; background: #b7e866; border-radius: 2px; animation: cursor-pulse 0.9s infinite; }
+@keyframes cursor-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+.markdown-paragraph { margin: 10px 0; white-space: pre-wrap; }
+.markdown-paragraph:first-child { margin-top: 0; }
+.markdown-paragraph:last-child { margin-bottom: 0; }
+
+.markdown-h1, .markdown-h2, .markdown-h3, .markdown-h4, .markdown-h5, .markdown-h6 { margin: 16px 0 8px; color: #f0f6f2; font-weight: 700; line-height: 1.3; }
+.markdown-h1 { font-size: 19px; border-bottom: 1px solid rgba(64, 82, 70, 0.4); padding-bottom: 6px; }
+.markdown-h2 { font-size: 16px; border-bottom: 1px solid rgba(64, 82, 70, 0.25); padding-bottom: 4px; }
+.markdown-h3 { font-size: 14px; color: #bde47a; }
+.markdown-h4 { font-size: 13px; }
+.markdown-h5 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #8fa095; }
+.markdown-h6 { font-size: 11px; text-transform: uppercase; color: #728378; }
+
+.markdown-list { margin: 8px 0; padding-left: 22px; display: grid; gap: 4px; }
+.markdown-list li { color: #d0ded4; line-height: 1.55; }
+.markdown-list li::marker { color: #95c54d; }
+
+.markdown-blockquote { margin: 12px 0; padding: 6px 14px; border-left: 3px solid #8cb845; background: rgba(22, 33, 26, 0.6); border-radius: 0 6px 6px 0; color: #b7c7be; font-style: italic; }
+.markdown-blockquote p { margin: 4px 0; font-style: normal; }
+
+.markdown-hr { margin: 18px 0; border: 0; border-top: 1px solid #33443a; }
+
+.markdown-inline-code { padding: 2px 5px; border: 1px solid #36493e; border-radius: 4px; background: #0c1410; color: #bde774; font: 11.5px/1.3 var(--mono); }
+
+.markdown-link { color: #a4dc48; text-decoration: underline; text-underline-offset: 2px; }
+.markdown-link:hover { color: #c6f27b; text-decoration-color: #c6f27b; }
+
+/* Markdown Table */
+.markdown-table-wrapper { margin: 14px 0; max-width: 100%; overflow-x: auto; border: 1px solid #304136; border-radius: 8px; background: #0b120e; scrollbar-width: thin; scrollbar-color: #3b4d42 #0b120e; }
+.markdown-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+.markdown-table thead { background: #15221b; border-bottom: 1px solid #3b4f42; }
+.markdown-table th { padding: 8px 12px; color: #cce3b1; font-weight: 700; font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; border-right: 1px solid #28372d; }
+.markdown-table th:last-child { border-right: 0; }
+.markdown-table td { padding: 7px 12px; color: #d0dbd4; border-top: 1px solid #202c24; border-right: 1px solid #202c24; line-height: 1.45; }
+.markdown-table td:last-child { border-right: 0; }
+.markdown-table tbody tr:nth-child(even) { background: rgba(18, 29, 23, 0.45); }
+.markdown-table tbody tr:hover { background: rgba(43, 64, 50, 0.35); }
+
+/* Markdown Code Block Card */
+.markdown-code-card { margin: 14px 0; border: 1px solid #324338; border-radius: 8px; background: #080e0a; overflow: hidden; }
+.markdown-code-header { min-height: 28px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; background: #121c16; border-bottom: 1px solid #28372e; }
+.markdown-code-lang { display: inline-flex; align-items: center; gap: 5px; color: #879b8f; font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; }
+.markdown-code-lang svg { color: #9bc84d; }
+.markdown-code-copy { height: 22px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid #314237; border-radius: 4px; background: #17241c; color: #9eb1a6; font: 600 10px var(--sans); cursor: pointer; transition: all 0.15s ease; }
+.markdown-code-copy:hover { color: #e1ede5; background: #23352a; border-color: #4b6353; }
+.markdown-code-copy svg.copy-success { color: #8ee038; }
+.markdown-code-pre { margin: 0; padding: 12px 14px; overflow-x: auto; max-height: 480px; font: 12px/1.55 var(--mono); color: #d5e5db; background: transparent; scrollbar-width: thin; scrollbar-color: #3b4d42 #080e0a; white-space: pre; }
+
+/* Markdown Chart & ASCII Diagram Card */
+.markdown-chart-card { margin: 14px 0; border: 1px solid #3a4d3f; border-radius: 8px; background: #070d09; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
+.markdown-chart-header { min-height: 28px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; background: linear-gradient(90deg, #132219, #0d1712); border-bottom: 1px solid #2f4035; }
+.markdown-chart-title { display: inline-flex; align-items: center; gap: 6px; color: #a9d95f; font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; }
+.markdown-chart-body { margin: 0; padding: 12px 14px; overflow-x: auto; max-height: 520px; font: 12px/1.4 var(--mono); color: #bfe87e; background: radial-gradient(circle, #0e1a12 0%, #060b08 100%); scrollbar-width: thin; scrollbar-color: #3b4d42 #070d09; white-space: pre; }
 .control-composer { margin: 0 clamp(20px, 4vw, 64px) 16px; min-height: 90px; padding: 11px; border: 1px solid #2a3931; border-radius: 12px; background: #101713; }
 .composer-row { min-height: 66px; display: grid; grid-template-columns: 40px 36px minmax(0,1fr) 43px; gap: 8px; }
 .control-composer textarea { min-width: 0; resize: none; border: 0; outline: 0; color: #e5efe8; background: transparent; font: 12px/1.5 var(--sans); }

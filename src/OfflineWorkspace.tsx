@@ -29,6 +29,7 @@ import {
   ZapOff,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MarkdownContent } from "./MarkdownContent";
 import { useInferenceTelemetryReporter } from "./InferenceTelemetry";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
 import {
@@ -1136,13 +1137,14 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
                       <small style={{ color: "#8a948c", font: "8px var(--sans)" }}>Generating direct response without reasoning channel</small>
                     </div>
                   ) : null}
-                  <RichText
+                  <MarkdownContent
                     value={
                       stream.content ||
                       (stream.phase === "queued"
                         ? "Waiting for the inference slot…"
                         : "")
                     }
+                    streaming={stream.phase === "generating"}
                   />
                   <Metrics
                     data={stream.metrics}
@@ -1874,7 +1876,7 @@ function Message({
           <pre>{message.reasoning}</pre>
         </details>
       )}
-      <RichText value={message.content} />
+      <MarkdownContent value={message.content} />
       {message.role === "assistant" && message.content.trim() && (
         <SpeechPlaybackButton sourceKind="chat" sourceId={sessionId} passageId={message.id} text={message.content} label="Listen" />
       )}
@@ -1941,41 +1943,6 @@ function AttachmentIcon({ attachment }: { attachment: ContextAttachment }) {
   if (attachment.kind === "image") return <Image />;
   if (attachment.kind === "audio") return <AudioLines />;
   return <FileText />;
-}
-
-function RichText({ value }: { value: string }) {
-  if (!value) return <p className="stream-cursor">Thinking</p>;
-  const blocks = value.split(/```/g);
-  return (
-    <div className="rich-message">
-      {blocks.map((block, index) =>
-        index % 2 ? (
-          <pre key={index}>
-            <code>{block.replace(/^\w+\n/, "")}</code>
-          </pre>
-        ) : (
-          block
-            .split(/\n{2,}/)
-            .filter(Boolean)
-            .map((paragraph, child) => (
-              <p key={`${index}-${child}`}>{inlineCode(paragraph)}</p>
-            ))
-        ),
-      )}
-    </div>
-  );
-}
-
-function inlineCode(value: string) {
-  return value
-    .split(/(`[^`]+`)/g)
-    .map((part, index) =>
-      part.startsWith("`") && part.endsWith("`") ? (
-        <code key={index}>{part.slice(1, -1)}</code>
-      ) : (
-        <span key={index}>{part}</span>
-      ),
-    );
 }
 
 function Metrics({
