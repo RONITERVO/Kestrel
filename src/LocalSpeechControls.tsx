@@ -209,6 +209,7 @@ export function SpeechPlaybackButton({
   passageId,
   text,
   label = "Listen",
+  recording,
   onActiveChange,
   onSpeechProgress,
 }: {
@@ -217,6 +218,10 @@ export function SpeechPlaybackButton({
   passageId: string;
   text: string;
   label?: string;
+  recording?: {
+    audioRelativePath: string;
+    words: SpeechTiming[];
+  };
   onActiveChange?: (active: boolean) => void;
   onSpeechProgress?: (progress: SpeechProgressState | null) => void;
 }) {
@@ -236,6 +241,7 @@ export function SpeechPlaybackButton({
     alignmentModel,
     playbackRate: 1,
     initialDetail: label,
+    recording,
   });
 
   const state = player.status;
@@ -279,6 +285,10 @@ export function SpeechPlaybackButton({
       return;
     }
     const start = async () => {
+      if (recording) {
+        await player.startAt(player.status === "complete" ? 0 : player.currentIndex, null);
+        return;
+      }
       const ready = snapshot?.narrationAvailable ? snapshot : await prepare();
       const readyVoice = ready.voices[0];
       if (!ready.narrationAvailable || !readyVoice) throw new Error(ready.detail);
@@ -542,6 +552,7 @@ export function SpeechDictationButton({
   sourceId,
   value,
   onChange,
+  onRecordingComplete,
   onActiveChange,
   disabled = false,
   label = "Dictate",
@@ -550,6 +561,7 @@ export function SpeechDictationButton({
   sourceId: string;
   value: string;
   onChange: (value: string) => void;
+  onRecordingComplete?: (recording: { audioRelativePath: string; words: SpeechTiming[] }) => void;
   onActiveChange?: (active: boolean) => void;
   disabled?: boolean;
   label?: string;
@@ -641,6 +653,12 @@ export function SpeechDictationButton({
         });
         provisionalTranscriptRef.current = result.text.trim();
         applyTranscript(provisionalTranscriptRef.current);
+        if (finalPass && result.audioRelativePath) {
+          onRecordingComplete?.({
+            audioRelativePath: result.audioRelativePath,
+            words: result.words,
+          });
+        }
         setDetail(
           finalPass ? "Saved locally with word timestamps" : "Listening · live text updated",
         );

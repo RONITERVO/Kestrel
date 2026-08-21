@@ -306,4 +306,98 @@ Here is the performance overview:
     expect(await screen.findByRole("status")).toHaveTextContent(/Dictation unavailable.*recorder startup failed/i);
     expect(stopTrack).toHaveBeenCalledOnce();
   });
+
+  it("plays back recorded user voice directly with word timestamps without synthesizing TTS", async () => {
+    const onSpeechProgress = vi.fn();
+    render(
+      <LocalSpeechProvider>
+        <SpeechPlaybackButton
+          sourceKind="chat"
+          sourceId="chat-1"
+          passageId="msg-user-1"
+          text="This is my spoken question."
+          recording={{
+            audioRelativePath: "recordings/chat/chat-1/voice.webm",
+            words: [
+              { value: "This", start: 0, end: 0.3 },
+              { value: "is", start: 0.3, end: 0.5 },
+              { value: "my", start: 0.5, end: 0.8 },
+              { value: "spoken", start: 0.8, end: 1.2 },
+              { value: "question.", start: 1.2, end: 1.6 },
+            ],
+          }}
+          label="Listen"
+          onSpeechProgress={onSpeechProgress}
+        />
+      </LocalSpeechProvider>,
+    );
+
+    const button = await screen.findByRole("button", { name: "Listen" });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+    });
+    // TTS synthesis should NOT be called for user voice recording!
+    expect(speechApi.synthesize).not.toHaveBeenCalled();
+    expect(onSpeechProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        active: true,
+        sourceKind: "chat",
+        timings: expect.arrayContaining([
+          expect.objectContaining({ value: "spoken", start: 0.8, end: 1.2 }),
+        ]),
+      }),
+    );
+  });
+
+  it("emits onRecordingComplete with audio path and whisper timings when dictation finishes", async () => {
+    class FakeRecorder {
+      static isTypeSupported() { return true; }
+      state: RecordingState = "inactive";
+      mimeType = "audio/webm;codecs=opus";
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onstop: (() => void) | null = null;
+      constructor(_stream: MediaStream, public options?: MediaRecorderOptions) {}
+      start() { this.state = "recording"; }
+      requestData() { this.ondataavailable?.({ data: new Blob([new Uint8Array(256)], { type: this.mimeType }) } as BlobEvent); }
+      stop() {
+        this.requestData();
+        this.state = "inactive";
+        this.onstop?.();
+      }
+    }
+    const stopTrack = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) } });
+    Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: FakeRecorder });
+    const onRecordingComplete = vi.fn();
+
+    render(
+      <LocalSpeechProvider>
+        <SpeechDictationButton
+          sourceKind="chat"
+          sourceId="chat-1"
+          value=""
+          onChange={vi.fn()}
+          onRecordingComplete={onRecordingComplete}
+        />
+      </LocalSpeechProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dictate" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop dictation" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
+
+    await waitFor(() => {
+      expect(onRecordingComplete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          audioRelativePath: "recordings/chat/chat-1/voice.webm",
+          words: expect.arrayContaining([
+            expect.objectContaining({ value: "clearer", start: 0.2, end: 0.5 }),
+          ]),
+        }),
+      );
+    });
+  });
 });

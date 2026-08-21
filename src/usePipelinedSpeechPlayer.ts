@@ -41,6 +41,10 @@ export interface UsePipelinedSpeechPlayerProps {
   alignmentModel?: SpeechModel | null;
   playbackRate?: number;
   initialDetail?: string;
+  recording?: {
+    audioRelativePath: string;
+    words: SpeechTiming[];
+  };
   onPassageChange?: (passage: SpeechPassage | null, index: number) => void;
   onEnded?: () => void;
 }
@@ -53,6 +57,7 @@ export function usePipelinedSpeechPlayer({
   alignmentModel,
   playbackRate = 1,
   initialDetail = "Ready with local ComfyUI",
+  recording,
   onPassageChange,
   onEnded,
 }: UsePipelinedSpeechPlayerProps) {
@@ -144,12 +149,12 @@ export function usePipelinedSpeechPlayer({
     setAudioProgress(0);
     setSpeechSeconds(0);
     setSpeechDuration(0);
-    setSpeechTimings([]);
+    setSpeechTimings(recording?.words ?? []);
     setBufferingIndex(null);
     setStatus("ready");
     setError(null);
     onPassageChangeRef.current?.(null, -1);
-  }, [cancelActiveJobs]);
+  }, [cancelActiveJobs, recording]);
 
   const stopPlayback = useCallback(() => {
     const wasOwner = ownsPlaybackRef.current;
@@ -183,16 +188,32 @@ export function usePipelinedSpeechPlayer({
 
   const clipKey = useCallback((index: number, voice?: SpeechModel | null) => {
     const passage = passages[index];
+    if (!passage) return "";
+    if (recording) {
+      return `${sourceKind}:${sourceId}:voice-recording:${passage.id}:${passage.text}`;
+    }
     const activeVoice = voice ?? selectedVoiceModel;
-    return passage && activeVoice
+    return activeVoice
       ? `${sourceKind}:${sourceId}:${activeVoice.id}:${passage.id}:${passage.text}`
       : "";
-  }, [passages, selectedVoiceModel, sourceId, sourceKind]);
+  }, [passages, recording, selectedVoiceModel, sourceId, sourceKind]);
 
   const ensureClip = useCallback((index: number, background: boolean, voiceOverride?: SpeechModel | null): Promise<string> => {
     const passage = passages[index];
+    if (!passage) {
+      return Promise.reject(new Error("Passage not found."));
+    }
+    if (recording) {
+      const url = localSpeechMediaUrl(recording.audioRelativePath);
+      if (!url) throw new Error("Kestrel could not create a private URL for your voice recording.");
+      const key = clipKey(index);
+      clipUrlsRef.current.set(key, url);
+      clipTimingsRef.current.set(key, recording.words);
+      clipPathsRef.current.set(key, recording.audioRelativePath);
+      return Promise.resolve(url);
+    }
     const activeVoice = voiceOverride ?? selectedVoiceModel;
-    if (!passage || !activeVoice) {
+    if (!activeVoice) {
       return Promise.reject(new Error("No local ComfyUI voice model is selected."));
     }
     const key = clipKey(index, activeVoice);
@@ -237,12 +258,21 @@ export function usePipelinedSpeechPlayer({
 
     pendingClipsRef.current.set(key, promise);
     return promise;
-  }, [clipKey, passages, selectedVoiceModel, sourceId, sourceKind]);
+  }, [clipKey, passages, recording, selectedVoiceModel, sourceId, sourceKind]);
 
   const alignClip = useCallback((index: number, voiceOverride?: SpeechModel | null): Promise<void> => {
     const passage = passages[index];
+    if (!passage) return Promise.resolve();
+    if (recording) {
+      const key = clipKey(index);
+      clipTimingsRef.current.set(key, recording.words);
+      if (mountedRef.current && clipKey(currentIndexRef.current) === key) {
+        setSpeechTimings(recording.words);
+      }
+      return Promise.resolve();
+    }
     const activeVoice = voiceOverride ?? selectedVoiceModel;
-    if (!passage || !activeVoice || !alignmentModel) return Promise.resolve();
+    if (!activeVoice || !alignmentModel) return Promise.resolve();
     const key = clipKey(index, activeVoice);
     if (clipTimingsRef.current.get(key)?.length) return Promise.resolve();
     const pending = pendingAlignmentsRef.current.get(key);
@@ -280,12 +310,10 @@ export function usePipelinedSpeechPlayer({
 
     pendingAlignmentsRef.current.set(key, task);
     return task;
-  }, [alignmentModel, clipKey, passages, selectedVoiceModel, sourceId, sourceKind]);
+  }, [alignmentModel, clipKey, passages, recording, selectedVoiceModel, sourceId, sourceKind]);
 
-  const startAt = useCallback(async (requestedIndex: number, voiceOverride?: SpeechModel | null) => {
-    const activeVoice = voiceOverride ?? selectedVoiceModel;
-    if (!activeVoice || !passages.length) return;
-    const index = Math.max(0, Math.min(requestedIndex, passages.length - 1));
+  const startAt = useCallback(async (index: number, voiceOverride?: SpeechModel | null) => {
+    if (!passages[index]) return;
     const generation = playbackGenerationRef.current + 1;
     playbackGenerationRef.current = generation;
     const audio = audioRef.current;
@@ -296,24 +324,28 @@ export function usePipelinedSpeechPlayer({
     setAudioProgress(0);
     setSpeechSeconds(0);
     setSpeechDuration(0);
-    setSpeechTimings([]);
+    setSpeechTimings(recording?.words ?? []);
     setError(null);
     onPassageChangeRef.current?.(passages[index], index);
     ownsPlaybackRef.current = true;
     claimPlayback(stopPlayback);
     try {
-      const url = await ensureClip(index, false, activeVoice);
+      const url = await ensureClip(index, false, voiceOverride);
       if (!mountedRef.current || generation !== playbackGenerationRef.current) return;
       audio.src = url;
-      setSpeechTimings(clipTimingsRef.current.get(clipKey(index, activeVoice)) ?? []);
+      setSpeechTimings(clipTimingsRef.current.get(clipKey(index, voiceOverride)) ?? recording?.words ?? []);
       audio.playbackRate = rateRef.current;
       await audio.play();
       if (!mountedRef.current || generation !== playbackGenerationRef.current) return;
       setStatus("playing");
-      setDetail(`Reading ${passages[index].label} with ${activeVoice.name}.`);
-      void alignClip(index, activeVoice);
-      if (mountedRef.current && generation === playbackGenerationRef.current && index + 1 < passages.length) {
-        void ensureClip(index + 1, true, activeVoice).catch(() => undefined);
+      setDetail(
+        recording
+          ? "Playing your voice recording."
+          : `Reading ${passages[index].label} with ${(voiceOverride ?? selectedVoiceModel)?.name ?? "voice"}.`,
+      );
+      void alignClip(index, voiceOverride);
+      if (!recording && mountedRef.current && generation === playbackGenerationRef.current && index + 1 < passages.length) {
+        void ensureClip(index + 1, true, voiceOverride).catch(() => undefined);
       }
     } catch (cause) {
       if (!mountedRef.current || generation !== playbackGenerationRef.current) return;
@@ -329,7 +361,7 @@ export function usePipelinedSpeechPlayer({
       clearPlayback(stopPlayback);
       void releaseLocalSpeechMemory().catch(() => undefined);
     }
-  }, [alignClip, clipKey, ensureClip, passages, selectedVoiceModel, stopPlayback]);
+  }, [alignClip, clipKey, ensureClip, passages, recording, selectedVoiceModel, stopPlayback]);
 
   useEffect(() => {
     startAtRef.current = startAt;
@@ -344,7 +376,7 @@ export function usePipelinedSpeechPlayer({
 
   const togglePlayback = useCallback(() => {
     const audio = audioRef.current;
-    if (!audio || !selectedVoiceModel) return;
+    if (!audio || (!selectedVoiceModel && !recording)) return;
     if (status === "playing") {
       audio.pause();
       setStatus("paused");
@@ -359,7 +391,7 @@ export function usePipelinedSpeechPlayer({
     } else if (status !== "preparing") {
       void startAt(status === "complete" ? 0 : currentIndexRef.current);
     }
-  }, [selectedVoiceModel, startAt, status, stopPlayback]);
+  }, [status, stopPlayback, selectedVoiceModel, recording, startAt]);
 
   const seekSpeech = useCallback((nextSeconds: number) => {
     const audio = audioRef.current;

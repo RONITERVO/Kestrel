@@ -68,6 +68,7 @@ import type {
   ComputerTaskSummary,
   ContextAttachment,
   ControlSnapshot,
+  SpeechRecordingAttachment,
   ThinkingLevel,
 } from "./types";
 
@@ -94,6 +95,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   const [chatAttachments, setChatAttachments] = useState<ContextAttachment[]>(
     [],
   );
+  const pendingVoiceRecordingRef = useRef<SpeechRecordingAttachment | null>(null);
   const [stream, setStream] = useState<{
     requestId: string;
     phase: string;
@@ -408,6 +410,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     message: string,
     baseSession: ChatSession | null,
     attachments: ContextAttachment[] = [],
+    recording?: SpeechRecordingAttachment,
   ) {
     const current = latestChatRef.current;
     if (!current.selected) return;
@@ -416,6 +419,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       role: "user",
       content: message || "Analyze the attached local context.",
       attachments,
+      recording,
       createdAt: new Date().toISOString(),
     };
     setSession(
@@ -429,6 +433,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
         modelId: current.selected.id,
         message,
         attachmentIds: attachments.map((item) => item.id),
+        recording,
         temperature: 0.2,
         topP: 0.9,
         topK: 40,
@@ -495,6 +500,8 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     if (!selected || (!draft.trim() && chatAttachments.length === 0)) return;
     const message = draft.trim();
     const attachments = chatAttachments;
+    const recording = pendingVoiceRecordingRef.current;
+    pendingVoiceRecordingRef.current = null;
     setDraft("");
     setChatAttachments([]);
     if (stream) {
@@ -513,7 +520,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       }
       return;
     }
-    await launchChat(message, session, attachments);
+    await launchChat(message, session, attachments, recording ?? undefined);
   };
 
   const cancelGeneration = async () => {
@@ -1219,6 +1226,9 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
                   sourceId={session?.id ?? "chat-draft"}
                   value={draft}
                   onChange={setDraft}
+                  onRecordingComplete={(recording) => {
+                    pendingVoiceRecordingRef.current = recording;
+                  }}
                   onActiveChange={setChatDictating}
                   disabled={control.runtime.phase !== "ready" || !!taskRunRef.current || !!stream}
                   label="Dictate message"
@@ -1884,12 +1894,13 @@ function Message({
         </details>
       )}
       <MarkdownContent value={message.content} speechProgress={speechProgress} />
-      {message.content.trim() && message.role !== "user" && (
+      {message.content.trim() && (message.role !== "user" || Boolean(message.recording)) && (
         <SpeechPlaybackButton
           sourceKind="chat"
           sourceId={sessionId}
           passageId={message.id}
           text={message.content}
+          recording={message.recording}
           label="Listen"
           onSpeechProgress={setSpeechProgress}
         />

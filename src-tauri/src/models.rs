@@ -265,7 +265,23 @@ pub struct RuntimeLog {
     pub at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechTimingRecord {
+    pub value: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechRecordingAttachment {
+    pub audio_relative_path: String,
+    #[serde(default)]
+    pub words: Vec<SpeechTimingRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub id: String,
@@ -278,6 +294,8 @@ pub struct ChatMessage {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<ContextAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<SpeechRecordingAttachment>,
     pub created_at: String,
 }
 
@@ -310,6 +328,8 @@ pub struct StartChatRequest {
     pub message: String,
     #[serde(default)]
     pub attachment_ids: Vec<String>,
+    #[serde(default)]
+    pub recording: Option<SpeechRecordingAttachment>,
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: u32,
