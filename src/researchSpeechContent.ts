@@ -2,27 +2,45 @@ import type { ResearchReport } from "./types";
 
 export type ResearchSpeechScope = "summary" | "article" | "all";
 
-export interface ResearchSpeechPassage {
+export interface SpeechPassage {
   id: string;
   label: string;
-  anchorId: string;
+  anchorId?: string;
   text: string;
+}
+
+export type ResearchSpeechPassage = SpeechPassage;
+
+export interface SpeechSplitOptions {
+  maxPassageChars?: number;
+  stripCodeBlocks?: boolean;
+  basePassageId?: string;
+  label?: string;
+  anchorId?: string;
 }
 
 // Chatterbox starts playback sooner with short passages; the player prepares the next one while
 // this one is playing. Sentence boundaries keep the joins natural rather than mechanically timed.
-const MAX_PASSAGE_CHARS = 320;
+export const MAX_PASSAGE_CHARS = 320;
 
-function normalized(text: string): string {
+export function normalizedSpeechText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function splitForSpeech(text: string): string[] {
-  const value = normalized(text);
+export function splitForSpeech(
+  text: string,
+  maxChars = MAX_PASSAGE_CHARS,
+  stripCodeBlocks = false,
+): string[] {
+  let value = text;
+  if (stripCodeBlocks) {
+    value = value.replace(/```[\s\S]*?```/g, " Code block available on screen. ");
+  }
+  value = normalizedSpeechText(value);
   if (!value) return [];
-  if (value.length <= MAX_PASSAGE_CHARS) return [value];
+  if (value.length <= maxChars) return [value];
 
-  const sentences = value.match(/[^.!?]+(?:[.!?]+["'\u2019\u201d)]*|$)/g)?.map(normalized).filter(Boolean) ?? [value];
+  const sentences = value.match(/[^.!?]+(?:[.!?]+["'\u2019\u201d)]*|$)/g)?.map(normalizedSpeechText).filter(Boolean) ?? [value];
   const chunks: string[] = [];
   let pending = "";
   const flush = () => {
@@ -31,16 +49,16 @@ function splitForSpeech(text: string): string[] {
   };
 
   for (const sentence of sentences) {
-    if (sentence.length > MAX_PASSAGE_CHARS) {
+    if (sentence.length > maxChars) {
       flush();
       for (const word of sentence.split(" ")) {
-        if (pending && pending.length + word.length + 1 > MAX_PASSAGE_CHARS) flush();
+        if (pending && pending.length + word.length + 1 > maxChars) flush();
         pending = pending ? `${pending} ${word}` : word;
       }
       flush();
     } else if (!pending) {
       pending = sentence;
-    } else if (pending.length + sentence.length + 1 <= MAX_PASSAGE_CHARS) {
+    } else if (pending.length + sentence.length + 1 <= maxChars) {
       pending = `${pending} ${sentence}`;
     } else {
       flush();
@@ -49,6 +67,25 @@ function splitForSpeech(text: string): string[] {
   }
   flush();
   return chunks;
+}
+
+export function buildSpeechPassages(
+  text: string,
+  options: SpeechSplitOptions = {},
+): SpeechPassage[] {
+  const maxChars = options.maxPassageChars ?? MAX_PASSAGE_CHARS;
+  const stripCode = options.stripCodeBlocks ?? false;
+  const baseId = options.basePassageId ?? "passage";
+  const label = options.label ?? "Passage";
+  const anchorId = options.anchorId;
+  const chunks = splitForSpeech(text, maxChars, stripCode);
+
+  return chunks.map((chunk, index) => ({
+    id: chunks.length === 1 ? baseId : `${baseId}-${index + 1}`,
+    label: chunks.length === 1 ? label : `${label} (part ${index + 1} of ${chunks.length})`,
+    anchorId,
+    text: chunk,
+  }));
 }
 
 export function buildResearchSpeechPassages(report: ResearchReport, scope: ResearchSpeechScope): ResearchSpeechPassage[] {

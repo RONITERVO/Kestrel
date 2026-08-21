@@ -1,18 +1,25 @@
 import { LoaderCircle, Mic, Pause, Play, Square, Volume2 } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  alignLocalSpeech,
-  cancelLocalSpeech,
   getLocalSpeechSnapshot,
-  localSpeechMediaUrl,
   prepareLocalSpeech,
   releaseLocalSpeechMemory,
-  synthesizeLocalSpeech,
   transcribeLocalSpeech,
 } from "./api";
+import {
+  buildSpeechPassages,
+  MAX_PASSAGE_CHARS,
+  splitForSpeech,
+} from "./researchSpeechContent";
 import type { LocalSpeechSnapshot, SpeechTiming } from "./types";
+import {
+  claimPlayback,
+  clearPlayback,
+  usePipelinedSpeechPlayer,
+  type SourceKind,
+} from "./usePipelinedSpeechPlayer";
 
-type SourceKind = "research" | "chat" | "task" | "copilot";
+export { claimPlayback, clearPlayback };
 
 type SpeechContextValue = {
   snapshot: LocalSpeechSnapshot | null;
@@ -21,17 +28,6 @@ type SpeechContextValue = {
 };
 
 const SpeechContext = createContext<SpeechContextValue | null>(null);
-
-let activePlaybackStop: (() => void) | null = null;
-
-function claimPlayback(stop: () => void) {
-  activePlaybackStop?.();
-  activePlaybackStop = stop;
-}
-
-function clearPlayback(stop: () => void) {
-  if (activePlaybackStop === stop) activePlaybackStop = null;
-}
 
 export function LocalSpeechProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<LocalSpeechSnapshot | null>(null);
@@ -61,33 +57,8 @@ function useSpeech() {
   };
 }
 
-export function splitSpeechText(text: string, maximum = 1_800): string[] {
-  const normalized = text.replace(/```[\s\S]*?```/g, " Code block available on screen. ").replace(/\s+/g, " ").trim();
-  if (!normalized) return [];
-  const sentences = normalized.match(/[^.!?]+(?:[.!?]+["'’”)]*|$)/g) ?? [normalized];
-  const chunks: string[] = [];
-  let current = "";
-  for (const raw of sentences) {
-    const sentence = raw.trim();
-    if (!sentence) continue;
-    if (sentence.length > maximum) {
-      if (current) chunks.push(current);
-      const characters = Array.from(sentence);
-      for (let offset = 0; offset < characters.length; offset += maximum) {
-        chunks.push(characters.slice(offset, offset + maximum).join("").trim());
-      }
-      current = "";
-    } else if (!current) {
-      current = sentence;
-    } else if (current.length + sentence.length + 1 <= maximum) {
-      current += ` ${sentence}`;
-    } else {
-      chunks.push(current);
-      current = sentence;
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks;
+export function splitSpeechText(text: string, maximum = MAX_PASSAGE_CHARS): string[] {
+  return splitForSpeech(text, maximum, true);
 }
 
 function id(prefix: string): string {
@@ -140,150 +111,92 @@ export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, la
   label?: string;
 }) {
   const { snapshot, prepare } = useSpeech();
-  const [state, setState] = useState<"idle" | "preparing" | "playing" | "paused" | "error">("idle");
-  const [detail, setDetail] = useState("");
-  const [currentText, setCurrentText] = useState("");
-  const [seconds, setSeconds] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [timings, setTimings] = useState<SpeechTiming[]>([]);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const jobRef = useRef<string | null>(null);
-  const alignmentJobRef = useRef<string | null>(null);
-  const activeChunkRef = useRef(-1);
-  const generationRef = useRef(0);
-  const chunks = useMemo(() => splitSpeechText(text), [text]);
+  const passages = useMemo(
+    () => buildSpeechPassages(text, { stripCodeBlocks: true, basePassageId: passageId, label }),
+    [label, passageId, text],
+  );
+  const voice = snapshot?.voices[0] ?? null;
+  const alignmentModel = snapshot?.transcriptionAvailable ? snapshot.transcribers[0] : undefined;
 
-  const stop = useCallback(() => {
-    generationRef.current += 1;
-    if (jobRef.current) void cancelLocalSpeech(jobRef.current);
-    if (alignmentJobRef.current) void cancelLocalSpeech(alignmentJobRef.current);
-    jobRef.current = null;
-    alignmentJobRef.current = null;
-    activeChunkRef.current = -1;
-    audioRef.current?.pause();
-    if (audioRef.current) audioRef.current.removeAttribute("src");
-    setState("idle");
-    setSeconds(0);
-    setCurrentText("");
-  }, []);
-
-  useEffect(() => () => {
-    clearPlayback(stop);
-    stop();
-  }, [stop]);
-
-  const playChunk = useCallback(async (index: number, generation: number, voiceId: string, alignmentModelId?: string) => {
-    const chunk = chunks[index];
-    if (!chunk || generation !== generationRef.current) {
-      clearPlayback(stop);
-      stop();
-      void releaseLocalSpeechMemory().catch(() => undefined);
-      return;
-    }
-    if (alignmentJobRef.current) void cancelLocalSpeech(alignmentJobRef.current);
-    alignmentJobRef.current = null;
-    activeChunkRef.current = index;
-    const jobId = id("tts");
-    jobRef.current = jobId;
-    setCurrentText(chunk);
-    setTimings([]);
-    setSeconds(0);
-    setDuration(0);
-    setState("preparing");
-    setDetail(index ? `Preparing part ${index + 1} of ${chunks.length}` : "Preparing local voice");
-    try {
-      const clip = await synthesizeLocalSpeech({
-        jobId,
-        sourceKind,
-        sourceId,
-        passageId: `${passageId}-${index + 1}`,
-        text: chunk,
-        modelId: voiceId,
-      });
-      if (generation !== generationRef.current) return;
-      jobRef.current = null;
-      const audio = audioRef.current;
-      if (!audio) return;
-      audio.src = localSpeechMediaUrl(clip.relativePath);
-      setTimings(clip.words);
-      audio.onended = () => void playChunk(index + 1, generation, voiceId, alignmentModelId);
-      await audio.play();
-      setState("playing");
-      setDetail(`${label} · ${index + 1} / ${chunks.length}`);
-      if (!clip.words.length && alignmentModelId) {
-        const alignmentJobId = id("speech-alignment");
-        alignmentJobRef.current = alignmentJobId;
-        void alignLocalSpeech({
-          jobId: alignmentJobId,
-          sourceKind,
-          sourceId,
-          passageId: `${passageId}-${index + 1}`,
-          text: chunk,
-          relativePath: clip.relativePath,
-          voiceModelId: voiceId,
-          alignmentModelId,
-        }).then((aligned) => {
-          if (generation === generationRef.current && activeChunkRef.current === index) setTimings(aligned.words);
-        }).catch(() => undefined).finally(() => {
-          if (alignmentJobRef.current === alignmentJobId) alignmentJobRef.current = null;
-        });
-      }
-    } catch (error) {
-      if (generation !== generationRef.current) return;
-      jobRef.current = null;
-      clearPlayback(stop);
-      setState("error");
-      setDetail(String(error));
-      void releaseLocalSpeechMemory().catch(() => undefined);
-    }
-  }, [chunks, label, passageId, sourceId, sourceKind, stop]);
+  const player = usePipelinedSpeechPlayer({
+    sourceKind,
+    sourceId,
+    passages,
+    selectedVoiceModel: voice,
+    alignmentModel,
+    playbackRate: 1,
+    initialDetail: label,
+  });
 
   const toggle = () => {
-    if (state === "playing") {
-      audioRef.current?.pause();
-      setState("paused");
-      return;
-    }
-    if (state === "paused" && audioRef.current?.src) {
-      void audioRef.current.play().then(() => setState("playing"));
+    if (player.status === "playing" || (player.status === "paused" && player.audioRef.current?.src)) {
+      player.togglePlayback();
       return;
     }
     const start = async () => {
       const ready = snapshot?.narrationAvailable ? snapshot : await prepare();
-      const voice = ready.voices[0];
-      if (!ready.narrationAvailable || !voice) throw new Error(ready.detail);
-      const generation = generationRef.current + 1;
-      generationRef.current = generation;
-      claimPlayback(stop);
-      await playChunk(0, generation, voice.id, ready.transcriptionAvailable ? ready.transcribers[0]?.id : undefined);
+      const readyVoice = ready.voices[0];
+      if (!ready.narrationAvailable || !readyVoice) throw new Error(ready.detail);
+      await player.startAt(player.status === "complete" ? 0 : player.currentIndex);
     };
     void start().catch((error) => {
-      setState("error");
-      setDetail(String(error));
+      player.setStatus("error");
+      player.setDetail(String(error));
     });
   };
 
-  const caption = currentText ? activeCaption(currentText, seconds, duration, timings) : null;
-  const seek = (nextSeconds: number) => {
-    const audio = audioRef.current;
-    if (!audio || !Number.isFinite(nextSeconds)) return;
-    const maximum = Number.isFinite(audio.duration) ? audio.duration : nextSeconds;
-    audio.currentTime = Math.max(0, Math.min(nextSeconds, maximum));
-    setSeconds(audio.currentTime);
-  };
-  return <div className={`inline-speech ${state}`}>
-    <audio ref={audioRef} preload="auto" onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)} onTimeUpdate={(event) => setSeconds(event.currentTarget.currentTime)} />
-    <button type="button" className="inline-speech-button" title={detail || label} aria-label={state === "playing" ? `Pause ${label.toLowerCase()}` : label} disabled={!chunks.length || state === "preparing"} onClick={toggle}>
-      {state === "preparing" ? <LoaderCircle className="spin" /> : state === "playing" ? <Pause /> : <Volume2 />}
-      <span>{state === "preparing" ? "Preparing…" : state === "paused" ? "Resume" : label}</span>
-    </button>
-    {state !== "idle" && <button type="button" className="inline-speech-stop" title="Stop speaking" aria-label="Stop speaking" onClick={() => { clearPlayback(stop); stop(); void releaseLocalSpeechMemory().catch(() => undefined); }}><Square /></button>}
-    {caption && ["playing", "paused"].includes(state) && <>
-      <input className="speech-inline-seek" type="range" aria-label="Speech position" min={0} max={Math.max(duration, 0.01)} step={0.01} value={Math.min(seconds, Math.max(duration, 0.01))} onChange={(event) => seek(event.currentTarget.valueAsNumber)} />
-      <SpeechLiveCaption text={currentText} seconds={seconds} duration={duration} timings={timings} onSeek={seek} />
-    </>}
-    {state === "error" && <small className="speech-inline-error">{detail}</small>}
-  </div>;
+  const currentPassage = player.currentPassage;
+  const state = player.status;
+
+  return (
+    <div className={`inline-speech ${state === "complete" ? "idle" : state}`}>
+      <audio ref={player.audioRef} {...player.audioProps} />
+      <button
+        type="button"
+        className="inline-speech-button"
+        title={player.detail || label}
+        aria-label={state === "playing" ? `Pause ${label.toLowerCase()}` : label}
+        disabled={!passages.length || state === "preparing"}
+        onClick={toggle}
+      >
+        {state === "preparing" ? <LoaderCircle className="spin" /> : state === "playing" ? <Pause /> : <Volume2 />}
+        <span>{state === "preparing" ? "Preparing…" : state === "paused" ? "Resume" : label}</span>
+      </button>
+      {state !== "ready" && state !== "complete" && (
+        <button
+          type="button"
+          className="inline-speech-stop"
+          title="Stop speaking"
+          aria-label="Stop speaking"
+          onClick={player.stopPlayback}
+        >
+          <Square />
+        </button>
+      )}
+      {currentPassage && ["playing", "paused"].includes(state) && (
+        <>
+          <input
+            className="speech-inline-seek"
+            type="range"
+            aria-label="Speech position"
+            min={0}
+            max={Math.max(player.speechDuration, 0.01)}
+            step={0.01}
+            value={Math.min(player.speechSeconds, Math.max(player.speechDuration, 0.01))}
+            onChange={(event) => player.seekSpeech(event.currentTarget.valueAsNumber)}
+          />
+          <SpeechLiveCaption
+            text={currentPassage.text}
+            seconds={player.speechSeconds}
+            duration={player.speechDuration}
+            timings={player.speechTimings}
+            onSeek={player.seekSpeech}
+          />
+        </>
+      )}
+      {state === "error" && <small className="speech-inline-error">{player.error ?? player.detail}</small>}
+    </div>
+  );
 }
 
 function recorderMimeType(): string {
@@ -316,7 +229,7 @@ export function advanceLiveTranscriptionCheckpoint(elapsedSeconds: number, nextI
 function utf8Tail(value: string, maximumBytes: number): string {
   const bytes = new TextEncoder().encode(value);
   if (bytes.length <= maximumBytes) return value;
-  return new TextDecoder().decode(bytes.slice(bytes.length - maximumBytes)).replace(/^�/, "");
+  return new TextDecoder().decode(bytes.slice(bytes.length - maximumBytes)).replace(/^/, "");
 }
 
 export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, onActiveChange, disabled = false, label = "Dictate" }: {

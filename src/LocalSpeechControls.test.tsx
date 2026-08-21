@@ -36,18 +36,18 @@ const ready = {
 beforeEach(() => {
   speechApi.snapshot.mockReset().mockResolvedValue(ready);
   speechApi.prepare.mockReset().mockResolvedValue(ready);
-  speechApi.synthesize.mockReset().mockResolvedValue({
-    jobId: "tts-1",
-    passageId: "answer-1",
-    relativePath: "generated/chat/chat-1/answer.opus",
-    modelId: "chatterbox:local",
+  speechApi.synthesize.mockReset().mockImplementation(async (request: { passageId: string; jobId: string; modelId: string }) => ({
+    jobId: request.jobId,
+    passageId: request.passageId,
+    relativePath: `generated/chat/chat-1/${request.passageId}.opus`,
+    modelId: request.modelId,
     cacheHit: false,
-    segments: [{ value: "First sentence.", start: 0, end: 1 }],
+    segments: [{ value: "Spoken sentence.", start: 0, end: 1 }],
     words: [
-      { value: "First", start: 0, end: .4 },
+      { value: "Spoken", start: 0, end: .4 },
       { value: "sentence.", start: .4, end: 1 },
     ],
-  });
+  }));
   speechApi.cancel.mockReset().mockResolvedValue(undefined);
   speechApi.align.mockReset().mockResolvedValue({
     jobId: "alignment-1",
@@ -139,6 +139,36 @@ describe("shared local speech controls", () => {
     })));
     await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
     expect(container.querySelector("audio")?.src).toContain("kestrel-speech.localhost");
+  });
+
+  it("pipelines and prebuffers multiple passages in inline speech responses", async () => {
+    const sentence1 = "First important sentence that explains the initial context in full detail.".repeat(4);
+    const sentence2 = "Second crucial paragraph that continues the explanation thoroughly.".repeat(4);
+    const longText = `${sentence1}\n\n${sentence2}`;
+    const { container } = render(
+      <LocalSpeechProvider>
+        <SpeechPlaybackButton sourceKind="chat" sourceId="chat-1" passageId="answer" text={longText} />
+      </LocalSpeechProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Listen" }));
+    await waitFor(() => expect(speechApi.synthesize).toHaveBeenCalled());
+    expect(speechApi.synthesize.mock.calls[0][0]).toMatchObject({
+      sourceKind: "chat",
+      sourceId: "chat-1",
+      passageId: "answer-1",
+    });
+
+    // Proactive background pre-buffering kicks off for passage 2
+    await waitFor(() => expect(speechApi.synthesize.mock.calls.some(([req]) => req.passageId === "answer-2")).toBe(true));
+
+    // When audio completes passage 1, it seamlessly transitions to passage 2
+    fireEvent.ended(container.querySelector("audio")!);
+    await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2));
+
+    // Stop resets and releases memory
+    fireEvent.click(screen.getByRole("button", { name: "Stop speaking" }));
+    expect(speechApi.release).toHaveBeenCalled();
   });
 
   it("aligns the unchanged cached recording in the background when timings are missing", async () => {
