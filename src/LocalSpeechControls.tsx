@@ -137,7 +137,7 @@ export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, la
       const ready = snapshot?.narrationAvailable ? snapshot : await prepare();
       const readyVoice = ready.voices[0];
       if (!ready.narrationAvailable || !readyVoice) throw new Error(ready.detail);
-      await player.startAt(player.status === "complete" ? 0 : player.currentIndex);
+      await player.startAt(player.status === "complete" ? 0 : player.currentIndex, readyVoice);
     };
     void start().catch((error) => {
       player.setStatus("error");
@@ -229,7 +229,11 @@ export function advanceLiveTranscriptionCheckpoint(elapsedSeconds: number, nextI
 function utf8Tail(value: string, maximumBytes: number): string {
   const bytes = new TextEncoder().encode(value);
   if (bytes.length <= maximumBytes) return value;
-  return new TextDecoder().decode(bytes.slice(bytes.length - maximumBytes)).replace(/^/, "");
+  let start = bytes.length - maximumBytes;
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) {
+    start++;
+  }
+  return new TextDecoder().decode(bytes.slice(start));
 }
 
 export function SpeechDictationButton({ sourceKind, sourceId, value, onChange, onActiveChange, disabled = false, label = "Dictate" }: {

@@ -113,19 +113,21 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
 
   const unavailable = !snapshot?.narrationAvailable || !selectedModel;
   const activePassage = player.currentPassage;
-  const statusText = !snapshot
-    ? "Checking local ComfyUI"
-    : unavailable
-      ? "ComfyUI TTS unavailable"
-      : player.status === "preparing"
-        ? `Preparing ${activePassage?.label ?? "passage"} - ${player.elapsed}s`
-        : player.status === "playing"
-          ? `Reading ${activePassage?.label ?? "report"}`
-          : player.status === "paused"
-            ? `Paused at ${activePassage?.label ?? "report"}`
-            : player.status === "complete"
-              ? "Finished"
-              : "Ready with local ComfyUI";
+  const statusText = player.status === "error"
+    ? `ComfyUI narration stopped: ${player.error ?? "Playback failed"}`
+    : !snapshot
+      ? "Checking local ComfyUI"
+      : unavailable
+        ? "ComfyUI TTS unavailable"
+        : player.status === "preparing"
+          ? `Preparing ${activePassage?.label ?? "passage"} - ${player.elapsed}s`
+          : player.status === "playing"
+            ? `Reading ${activePassage?.label ?? "report"}`
+            : player.status === "paused"
+              ? `Paused at ${activePassage?.label ?? "report"}`
+              : player.status === "complete"
+                ? "Finished"
+                : "Ready with local ComfyUI";
 
   return (
     <section className="research-speech-player" aria-label="Listen to report">
