@@ -306,6 +306,9 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .markdown-chart-body { color: #0f3d17; background: #f7faf7; }
 .markdown-blockquote { background: #f3f7f4; border-left: 4px solid var(--control-accent); color: #3a443e; }
 .stream-cursor-pulse, .stream-cursor::after { background: var(--control-accent); }
+.speech-passage-active { background: #eef7de !important; border-left: 3px solid #6b933a !important; box-shadow: 0 0 8px rgba(107, 147, 58, 0.15); }
+.finding-card.speech-passage-active, .timeline-item.speech-passage-active, .term-card.speech-passage-active, .source-card.speech-passage-active { border-color: #6b933a !important; box-shadow: 3px 3px 0 #6b933a !important; }
+.control-chat article.speech-message-active { border-color: #6b933a !important; box-shadow: 3px 3px 0 #6b933a !important; }
 .generation-metrics span, .context-notice { color: #3f474b; border: 1px solid #111; background: #fff; }
 .runtime-feed { color: #111; border: var(--tech-rule); background: var(--tech-yellow-soft); box-shadow: 2px 2px 0 #111; }
 .runtime-feed svg, .runtime-feed strong { color: #111; }

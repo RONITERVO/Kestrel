@@ -666,8 +666,31 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 /* Markdown Chart & ASCII Diagram Card */
 .markdown-chart-card { margin: 14px 0; border: 1px solid #3a4d3f; border-radius: 8px; background: #070d09; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
 .markdown-chart-header { min-height: 28px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; background: linear-gradient(90deg, #132219, #0d1712); border-bottom: 1px solid #2f4035; }
-.markdown-chart-title { display: inline-flex; align-items: center; gap: 6px; color: #a9d95f; font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; }
 .markdown-chart-body { margin: 0; padding: 12px 14px; overflow-x: auto; max-height: 520px; font: 12px/1.4 var(--mono); color: #bfe87e; background: radial-gradient(circle, #0e1a12 0%, #060b08 100%); scrollbar-width: thin; scrollbar-color: #3b4d42 #070d09; white-space: pre; }
+
+/* Speech Highlight & Auto-scroll Focus */
+.speech-passage-active {
+  background: rgba(183, 232, 102, 0.13) !important;
+  border-left: 3px solid #b7e866 !important;
+  border-radius: 4px;
+  padding-left: 10px !important;
+  box-shadow: 0 0 16px rgba(183, 232, 102, 0.1);
+  transition: all 0.22s ease-in-out;
+}
+
+.finding-card.speech-passage-active,
+.timeline-item.speech-passage-active,
+.term-card.speech-passage-active,
+.source-card.speech-passage-active {
+  border-color: #7fa44b !important;
+  box-shadow: 0 0 0 1px rgba(183, 232, 102, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35) !important;
+}
+
+.control-chat article.speech-message-active {
+  border-color: #6a8e3d !important;
+  box-shadow: 0 0 0 1px rgba(183, 232, 102, 0.35), 0 8px 28px rgba(0, 0, 0, 0.4) !important;
+  transition: all 0.22s ease-in-out;
+}
 .control-composer { margin: 0 clamp(20px, 4vw, 64px) 16px; min-height: 90px; padding: 11px; border: 1px solid #2a3931; border-radius: 12px; background: #101713; }
 .composer-row { min-height: 66px; display: grid; grid-template-columns: 40px 36px minmax(0,1fr) 43px; gap: 8px; }
 .control-composer textarea { min-width: 0; resize: none; border: 0; outline: 0; color: #e5efe8; background: transparent; font: 12px/1.5 var(--sans); }

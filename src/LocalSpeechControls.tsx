@@ -103,12 +103,13 @@ export function SpeechLiveCaption({ text, seconds, duration, timings = [], onSee
   </div>;
 }
 
-export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, label = "Listen" }: {
+export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, label = "Listen", onActiveChange }: {
   sourceKind: SourceKind;
   sourceId: string;
   passageId: string;
   text: string;
   label?: string;
+  onActiveChange?: (active: boolean) => void;
 }) {
   const { snapshot, prepare } = useSpeech();
   const passages = useMemo(
@@ -128,6 +129,12 @@ export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, la
     initialDetail: label,
   });
 
+  const state = player.status;
+
+  useEffect(() => {
+    onActiveChange?.(state === "playing" || state === "paused");
+  }, [onActiveChange, state]);
+
   const toggle = () => {
     if (player.status === "playing" || (player.status === "paused" && player.audioRef.current?.src)) {
       player.togglePlayback();
@@ -146,7 +153,6 @@ export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, la
   };
 
   const currentPassage = player.currentPassage;
-  const state = player.status;
 
   return (
     <div className={`inline-speech ${state === "complete" ? "idle" : state}`}>
@@ -174,25 +180,16 @@ export function SpeechPlaybackButton({ sourceKind, sourceId, passageId, text, la
         </button>
       )}
       {currentPassage && ["playing", "paused"].includes(state) && (
-        <>
-          <input
-            className="speech-inline-seek"
-            type="range"
-            aria-label="Speech position"
-            min={0}
-            max={Math.max(player.speechDuration, 0.01)}
-            step={0.01}
-            value={Math.min(player.speechSeconds, Math.max(player.speechDuration, 0.01))}
-            onChange={(event) => player.seekSpeech(event.currentTarget.valueAsNumber)}
-          />
-          <SpeechLiveCaption
-            text={currentPassage.text}
-            seconds={player.speechSeconds}
-            duration={player.speechDuration}
-            timings={player.speechTimings}
-            onSeek={player.seekSpeech}
-          />
-        </>
+        <input
+          className="speech-inline-seek"
+          type="range"
+          aria-label="Speech position"
+          min={0}
+          max={Math.max(player.speechDuration, 0.01)}
+          step={0.01}
+          value={Math.min(player.speechSeconds, Math.max(player.speechDuration, 0.01))}
+          onChange={(event) => player.seekSpeech(event.currentTarget.valueAsNumber)}
+        />
       )}
       {state === "error" && <small className="speech-inline-error">{player.error ?? player.detail}</small>}
     </div>

@@ -38,7 +38,7 @@ function initialScope(): ResearchSpeechScope {
 
 interface ResearchSpeechPlayerProps {
   report: ResearchReport;
-  onPassageChange: (anchorId: string | null) => void;
+  onPassageChange: (anchorId: string | null, passageId?: string | null) => void;
 }
 
 export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeechPlayerProps) {
@@ -59,7 +59,7 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
     alignmentModel,
     playbackRate: rate,
     initialDetail: "Checking local ComfyUI voice models...",
-    onPassageChange: (passage) => onPassageChange(passage?.anchorId ?? null),
+    onPassageChange: (passage) => onPassageChange(passage?.anchorId ?? null, passage?.id ?? null),
   });
 
   useEffect(() => {
@@ -232,13 +232,6 @@ export function ResearchSpeechPlayer({ report, onPassageChange }: ResearchSpeech
             step={0.01}
             value={Math.min(player.speechSeconds, Math.max(player.speechDuration, 0.01))}
             onChange={(event) => player.seekSpeech(event.currentTarget.valueAsNumber)}
-          />
-          <SpeechLiveCaption
-            text={activePassage.text}
-            seconds={player.speechSeconds}
-            duration={player.speechDuration}
-            timings={player.speechTimings}
-            onSeek={player.seekSpeech}
           />
         </div>
       )}

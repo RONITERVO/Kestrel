@@ -449,10 +449,20 @@ function LibrarySidebar({
 function ResearchReader({ report, onStandalone }: { report: ResearchReport; onStandalone: () => void }) {
   const [sourceFocus, setSourceFocus] = useState<string | null>(null);
   const [spokenAnchor, setSpokenAnchor] = useState<string | null>(null);
+  const [spokenPassageId, setSpokenPassageId] = useState<string | null>(null);
   const sourceMap = useMemo(() => new Map(report.sources.map((source) => [source.id, source])), [report.sources]);
-  const handleSpeechPassage = useCallback((anchorId: string | null) => {
+  const handleSpeechPassage = useCallback((anchorId: string | null, passageId?: string | null) => {
     setSpokenAnchor(anchorId);
-    if (anchorId) document.getElementById(anchorId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setSpokenPassageId(passageId ?? null);
+    if (passageId) {
+      const baseId = passageId.replace(/-\d+$/, "");
+      const element = document.getElementById(`speech-target-${passageId}`) || document.getElementById(`speech-target-${baseId}`) || (anchorId ? document.getElementById(anchorId) : null);
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    } else if (anchorId) {
+      document.getElementById(anchorId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   }, []);
   const focusSource = (id: string) => {
     setSourceFocus(id);
@@ -462,10 +472,10 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
     <div className="reader-layout">
       <article className="research-article">
         <nav className="reader-breadcrumb"><button><ArrowLeft size={15} /> Library</button><span>/</span><span>{report.title}</span></nav>
-        <header className={`report-header ${spokenAnchor === "report-overview" ? "speech-active" : ""}`} id="report-overview">
+        <header className="report-header" id="report-overview">
           <div className="report-kicker"><span>Research brief</span><span>Edition {report.edition}</span><span>{formatDate(report.updatedAt)}</span></div>
           <h1>{report.title}</h1>
-          <p className="report-dek">{report.dek}</p>
+          <p className={`report-dek ${spokenPassageId?.startsWith("overview") ? "speech-passage-active" : ""}`} id="speech-target-overview">{report.dek}</p>
           <div className="report-byline">
             <span><Clock3 size={15} /> {report.readingMinutes} min read</span>
             <span><BookOpen size={15} /> {report.sources.length} inspected sources</span>
@@ -475,24 +485,24 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
 
         <ResearchSpeechPlayer report={report} onPassageChange={handleSpeechPassage} />
 
-        <section className={`answer-card ${spokenAnchor === "short-answer" ? "speech-active" : ""}`} id="short-answer" aria-labelledby="short-answer-title">
+        <section className="answer-card" id="short-answer" aria-labelledby="short-answer-title">
           <div className="section-label" id="short-answer-title"><Sparkles size={16} /> Short answer</div>
-          <p>{report.answer}</p>
+          <p className={spokenPassageId?.startsWith("short-answer") ? "speech-passage-active" : ""} id="speech-target-short-answer">{report.answer}</p>
         </section>
 
         {report.edition > 1 && (
-          <aside className={`improvement-note ${spokenAnchor === "edition-improvement" ? "speech-active" : ""}`} id="edition-improvement">
+          <aside className="improvement-note" id="edition-improvement">
             <div className="improvement-icon"><History size={17} /></div>
-            <div><strong>What changed in this edition</strong><p>{report.improvement}</p></div>
+            <div><strong>What changed in this edition</strong><p className={spokenPassageId?.startsWith("edition") ? "speech-passage-active" : ""} id="speech-target-edition">{report.improvement}</p></div>
             <span className="edition-badge">v{report.edition}</span>
           </aside>
         )}
 
-        <section className={`content-section ${spokenAnchor === "findings" ? "speech-active" : ""}`} id="findings">
+        <section className="content-section" id="findings">
           <div className="section-heading"><span className="section-number">01</span><div><span className="eyebrow">The evidence at a glance</span><h2>Key findings</h2></div></div>
           <div className="findings-grid">
             {report.findings.map((finding, index) => (
-              <div className="finding-card" key={finding.title}>
+              <div className={`finding-card ${spokenPassageId?.startsWith(`finding-${index + 1}`) ? "speech-passage-active" : ""}`} id={`speech-target-finding-${index + 1}`} key={finding.title}>
                 <span className="finding-number">{String(index + 1).padStart(2, "0")}</span>
                 <h3>{finding.title}</h3>
                 <p>{finding.explanation}</p>
@@ -503,20 +513,20 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
         </section>
 
         {report.sections.map((section, index) => (
-          <section className={`content-section narrative-section ${spokenAnchor === section.id ? "speech-active" : ""}`} id={section.id} key={section.id}>
+          <section className="content-section narrative-section" id={section.id} key={section.id}>
             <div className="section-heading"><span className="section-number">{String(index + 2).padStart(2, "0")}</span><div><span className="eyebrow">Deep dive</span><h2>{section.heading}</h2></div></div>
-            <p className="section-summary">{section.summary}</p>
-            {section.body.map((paragraph, paragraphIndex) => <p key={paragraphIndex}>{paragraph}</p>)}
+            <p className={`section-summary ${spokenPassageId?.startsWith(`section-${index + 1}-summary`) ? "speech-passage-active" : ""}`} id={`speech-target-section-${index + 1}-summary`}>{section.summary}</p>
+            {section.body.map((paragraph, paragraphIndex) => <p className={spokenPassageId?.startsWith(`section-${index + 1}-paragraph-${paragraphIndex + 1}`) ? "speech-passage-active" : ""} id={`speech-target-section-${index + 1}-paragraph-${paragraphIndex + 1}`} key={paragraphIndex}>{paragraph}</p>)}
             <CitationRow ids={section.citations} onFocus={focusSource} labels={sourceMap} />
           </section>
         ))}
 
         {!!report.timeline.length && (
-          <section className={`content-section ${spokenAnchor === "timeline" ? "speech-active" : ""}`} id="timeline">
+          <section className="content-section" id="timeline">
             <div className="section-heading"><span className="section-number">{String(report.sections.length + 2).padStart(2, "0")}</span><div><span className="eyebrow">Sequence</span><h2>Timeline</h2></div></div>
             <div className="timeline">
-              {report.timeline.map((item) => (
-                <div className="timeline-item" key={`${item.date}-${item.label}`}>
+              {report.timeline.map((item, index) => (
+                <div className={`timeline-item ${spokenPassageId?.startsWith(`timeline-${index + 1}`) ? "speech-passage-active" : ""}`} id={`speech-target-timeline-${index + 1}`} key={`${item.date}-${item.label}`}>
                   <div className="timeline-date">{item.date}</div><div className="timeline-marker" /><div><h3>{item.label}</h3><p>{item.description}</p><CitationRow ids={item.citations} onFocus={focusSource} /></div>
                 </div>
               ))}
@@ -524,23 +534,23 @@ function ResearchReader({ report, onStandalone }: { report: ResearchReport; onSt
           </section>
         )}
 
-        <section className={`content-section split-section ${spokenAnchor === "terms" ? "speech-active" : ""}`} id="terms">
+        <section className="content-section split-section" id="terms">
           <div>
             <div className="section-heading small"><div><span className="eyebrow">Plain language</span><h2>Terms worth knowing</h2></div></div>
-            <dl className="term-list">{report.terms.map((term) => <div key={term.term}><dt>{term.term}</dt><dd>{term.meaning}</dd></div>)}</dl>
+            <dl className="term-list">{report.terms.map((term, index) => <div className={spokenPassageId?.startsWith(`term-${index + 1}`) ? "speech-passage-active" : ""} id={`speech-target-term-${index + 1}`} key={term.term}><dt>{term.term}</dt><dd>{term.meaning}</dd></div>)}</dl>
           </div>
           <div>
             <div className="section-heading small"><div><span className="eyebrow">Research frontier</span><h2>What remains open</h2></div></div>
-            <ol className="question-list">{report.openQuestions.map((question) => <li key={question}>{question}</li>)}</ol>
+            <ol className="question-list">{report.openQuestions.map((question, index) => <li className={spokenPassageId?.startsWith(`question-${index + 1}`) ? "speech-passage-active" : ""} id={`speech-target-question-${index + 1}`} key={question}>{question}</li>)}</ol>
           </div>
         </section>
 
-        <section className={`content-section sources-section ${spokenAnchor === "sources" ? "speech-active" : ""}`} id="sources">
+        <section className="content-section sources-section" id="sources">
           <div className="section-heading"><span className="section-number">{String(report.sections.length + 3).padStart(2, "0")}</span><div><span className="eyebrow">Evidence ledger</span><h2>Sources inspected</h2></div></div>
           <p className="sources-intro">Every source below was opened by the local model. Excerpts show the evidence it received; Wikipedia is a tertiary starting point, not a substitute for primary sources.</p>
           <div className="source-list">
-            {report.sources.map((source) => (
-              <div id={`source-${source.id}`} className={`source-card ${sourceFocus === source.id ? "focused" : ""}`} key={source.id}>
+            {report.sources.map((source, index) => (
+              <div id={`source-${source.id}`} className={`source-card ${sourceFocus === source.id ? "focused" : ""} ${spokenPassageId?.startsWith(`source-${index + 1}`) ? "speech-passage-active" : ""}`} key={source.id}>
                 <span className="source-id">{source.id}</span>
                 <div><div className="source-title-row"><h3>{source.title}</h3><span>{source.kind === "wikipedia" ? "Wikipedia" : "Kestrel research"}</span></div>
                   <p className="source-location">{source.section ?? "Full article"} · snapshot {source.snapshot ?? report.archiveSnapshot}</p>

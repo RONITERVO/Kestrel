@@ -1849,8 +1849,19 @@ function Message({
   model?: string;
   onError: (message: string) => void;
 }) {
+  const [speaking, setSpeaking] = useState(false);
+
+  useEffect(() => {
+    if (speaking) {
+      document.getElementById(`chat-message-${message.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [message.id, speaking]);
+
   return (
-    <article className={message.role}>
+    <article
+      className={`${message.role} ${speaking ? "speech-message-active" : ""}`}
+      id={`chat-message-${message.id}`}
+    >
       <span>
         {message.role === "user" ? "YOU" : (model ?? "MODEL")}
         {message.status && (
@@ -1877,8 +1888,15 @@ function Message({
         </details>
       )}
       <MarkdownContent value={message.content} />
-      {message.role === "assistant" && message.content.trim() && (
-        <SpeechPlaybackButton sourceKind="chat" sourceId={sessionId} passageId={message.id} text={message.content} label="Listen" />
+      {message.content.trim() && (
+        <SpeechPlaybackButton
+          sourceKind="chat"
+          sourceId={sessionId}
+          passageId={message.id}
+          text={message.content}
+          label="Listen"
+          onActiveChange={setSpeaking}
+        />
       )}
     </article>
   );
