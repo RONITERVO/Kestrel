@@ -85,6 +85,52 @@ describe("shared local speech controls", () => {
     expect(chunks.join(" ")).not.toContain("secret");
   });
 
+  it("sanitizes text formatted charts and markdown tables into natural spoken sentences", () => {
+    const tableMarkdown = `
+Here is the performance overview:
+| Model | Latency | Accuracy |
+| :--- | :--- | :--- |
+| Chatterbox | 400ms | 99% |
+| Whisper | 250ms | 98.5% |
+
++--------------------+
+| Architecture Chart |
++--------------------+
+`;
+    const chunks = splitSpeechText(tableMarkdown);
+    const text = chunks.join(" ");
+    expect(text).not.toContain("|");
+    expect(text).not.toContain("+");
+    expect(text).not.toContain(":---");
+    expect(text).toContain("Model: Chatterbox, Latency: 400ms, Accuracy: 99 percent.");
+    expect(text).toContain("Model: Whisper, Latency: 250ms, Accuracy: 98.5 percent.");
+    expect(text).toContain("Architecture Chart.");
+  });
+
+  it("removes unpronounceable symbol clusters and stutter triggers like '#¤-_''*+' without breaking natural human words", () => {
+    const raw = `The latest update (#¤-_''*+) delivered $50M in savings and +15% performance! Check foo_bar_baz at https://kestrel.local/docs for details.`;
+    const chunks = splitSpeechText(raw);
+    const text = chunks.join(" ");
+    expect(text).not.toContain("#");
+    expect(text).not.toContain("¤");
+    expect(text).not.toContain("*");
+    expect(text).not.toContain("https://");
+    expect(text).toContain("50M dollars");
+    expect(text).toContain("plus 15 percent");
+    expect(text).toContain("foo bar baz");
+    expect(text).toContain("kestrel.local");
+  });
+
+  it("preserves multilingual sentences, natural contractions, and hyphenated terms", () => {
+    const multilingual = `Don't worry, it's a state-of-the-art system. Älä huoli, kaikki toimii loistavasti. Das ist großartig! 東京は晴れです。`;
+    const chunks = splitSpeechText(multilingual);
+    const text = chunks.join(" ");
+    expect(text).toContain("Don't worry, it's a state-of-the-art system.");
+    expect(text).toContain("Älä huoli, kaikki toimii loistavasti.");
+    expect(text).toContain("Das ist großartig!");
+    expect(text).toContain("東京は晴れです。");
+  });
+
   it("marks the currently spoken word inside its sentence", () => {
     render(<SpeechLiveCaption text="First sentence. Second sentence." seconds={1.4} duration={2} timings={[
       { value: "First", start: 0, end: .4 },
