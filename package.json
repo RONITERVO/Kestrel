@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:speech": "npx vite-node scripts/speech_highlight_harness.ts",
+    "test:vad": "npx vite-node scripts/vad_dictation_harness.ts",
     "package:offline": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-offline.ps1",
     "launch": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/launch-from-shortcut.ps1"
   },
