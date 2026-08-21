@@ -16,6 +16,14 @@ export function normalizeSpeechMatchingText(str: string): string {
   return str.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 }
 
+/**
+ * Extracts pure spoken words matching renderHighlightedTokens word boundaries.
+ */
+export function extractSpeechWords(str: string): string[] {
+  if (!str) return [];
+  return (str.match(/[\p{L}\p{N}]+/gu) ?? []).map((w) => w.toLowerCase());
+}
+
 export function wordTimings(text: string, duration: number): SpeechTiming[] {
   const words = text.match(/\S+/g) ?? [];
   const weights = words.map((word) => Math.max(1, word.replace(/[^\p{L}\p{N}]/gu, "").length));
@@ -49,6 +57,127 @@ export function isWordToken(token: string): boolean {
   return /[\p{L}\p{N}]/u.test(token);
 }
 
+export interface BlockHighlightContext {
+  activeWordIndex: number;
+  tracker: WordOffsetTracker;
+}
+
+export interface CandidateBlock {
+  id: string;
+  text: string;
+}
+
+let lastResolvedResult: { activeId: string; activeWordIndex: number } | null = null;
+let lastResolvedPassageId: string | null = null;
+
+/**
+ * Resolves which candidate block and which word index inside that block
+ * corresponds to the currently spoken word at progress.seconds.
+ * Tolerant to inserted grammatical expansions and smoothly bridges frame boundaries.
+ */
+export function resolveActiveBlockAndWord(
+  candidates: CandidateBlock[],
+  progress?: SpeechProgressState | null,
+): { activeId: string; activeWordIndex: number } | null {
+  if (!progress || !progress.active || !progress.text || candidates.length === 0) {
+    lastResolvedResult = null;
+    lastResolvedPassageId = null;
+    return null;
+  }
+
+  if (lastResolvedPassageId !== progress.passageId) {
+    lastResolvedResult = null;
+    lastResolvedPassageId = progress.passageId;
+  }
+
+  const progWords = extractSpeechWords(progress.text);
+  if (progWords.length === 0) return null;
+
+  const rawIdx = getActiveWordIndex(
+    progress.text,
+    progress.seconds,
+    progress.duration,
+    progress.timings,
+  );
+
+  if (rawIdx < 0) {
+    return null;
+  }
+
+  const currentProgIdx = Math.min(progWords.length - 1, Math.max(0, rawIdx));
+  let targetWord = progWords[currentProgIdx];
+
+  let bestCandidateId: string | null = null;
+  let bestWordIndexInBlock = -1;
+  let bestScore = -1;
+
+  for (const candidate of candidates) {
+    const blockWords = extractSpeechWords(candidate.text);
+    if (blockWords.length === 0) continue;
+
+    let effectiveTargetWord = targetWord;
+    if (!blockWords.includes(effectiveTargetWord)) {
+      for (let delta = 1; delta <= 3; delta++) {
+        if (currentProgIdx + delta < progWords.length && blockWords.includes(progWords[currentProgIdx + delta])) {
+          effectiveTargetWord = progWords[currentProgIdx + delta];
+          break;
+        }
+        if (currentProgIdx - delta >= 0 && blockWords.includes(progWords[currentProgIdx - delta])) {
+          effectiveTargetWord = progWords[currentProgIdx - delta];
+          break;
+        }
+      }
+    }
+
+    for (let bIdx = 0; bIdx < blockWords.length; bIdx++) {
+      if (blockWords[bIdx] !== effectiveTargetWord) continue;
+
+      let score = 10;
+      let left = 1;
+      while (
+        currentProgIdx - left >= 0 &&
+        bIdx - left >= 0 &&
+        progWords[currentProgIdx - left] === blockWords[bIdx - left]
+      ) {
+        score += 10;
+        left++;
+      }
+
+      let right = 1;
+      while (
+        currentProgIdx + right < progWords.length &&
+        bIdx + right < blockWords.length &&
+        progWords[currentProgIdx + right] === blockWords[bIdx + right]
+      ) {
+        score += 10;
+        right++;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestCandidateId = candidate.id;
+        bestWordIndexInBlock = Math.min(blockWords.length - 1, Math.max(0, bIdx));
+      }
+    }
+  }
+
+  if (bestCandidateId && bestScore >= 5 && bestWordIndexInBlock >= 0) {
+    const result = {
+      activeId: bestCandidateId,
+      activeWordIndex: bestWordIndexInBlock,
+    };
+    lastResolvedResult = result;
+    return result;
+  }
+
+  // Boundary bridge: maintain steady visual focus across audio block tails
+  if (lastResolvedResult && progress.seconds > 0) {
+    return lastResolvedResult;
+  }
+
+  return null;
+}
+
 export function isPassageActiveForText(
   text: string,
   passageId?: string,
@@ -56,32 +185,21 @@ export function isPassageActiveForText(
 ): boolean {
   if (!progress || !progress.active) return false;
 
-  // 1. If explicit passageId is provided (e.g. Research Reader sections/paragraphs)
   if (passageId) {
     if (progress.passageId === passageId) return true;
     if (progress.passageId.startsWith(`${passageId}-`)) return true;
     return false;
   }
 
-  // 2. Chat / Markdown blocks without explicit passageId:
   const normText = normalizeSpeechMatchingText(text);
   const normProgress = normalizeSpeechMatchingText(progress.text);
   if (!normText || !normProgress) return false;
 
-  // Must have at least 6 characters of normalized text to prevent single-word false positives
-  if (normText.length < 6 && normProgress.length >= 6) {
-    return normProgress === normText || normProgress.startsWith(normText);
-  }
-
-  // Exact match
-  if (normText === normProgress) return true;
-
-  // Significant containment (one contains the other)
-  if (normProgress.startsWith(normText) || normText.startsWith(normProgress)) return true;
-  if (normProgress.includes(normText) && normText.length >= 10) return true;
-  if (normText.includes(normProgress) && normProgress.length >= 10) return true;
-
-  return false;
+  return (
+    normText === normProgress ||
+    normProgress.includes(normText) ||
+    normText.includes(normProgress)
+  );
 }
 
 export interface WordOffsetTracker {
@@ -93,15 +211,13 @@ export function renderHighlightedTokens(
   activeWordIndex: number,
   tracker?: WordOffsetTracker,
 ): ReactNode[] {
-  const tokens = text.split(/(\s+)/);
+  if (!text) return [];
+  const tokens = text.split(/([^\p{L}\p{N}]+)/gu);
   const offset = tracker ?? { current: 0 };
 
   return tokens.map((token, index) => {
-    if (/^\s+$/.test(token)) {
-      return token;
-    }
+    if (!token) return null;
 
-    // Pure punctuation/border/symbol tokens do not advance the word counter
     if (!isWordToken(token)) {
       return (
         <span key={index} className="speech-symbol-token">

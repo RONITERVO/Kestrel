@@ -2,12 +2,13 @@ import { useState, useMemo, type ReactNode } from "react";
 import { Check, Copy, Code2, BarChart2 } from "lucide-react";
 import {
   SpokenText,
-  isPassageActiveForText,
-  getActiveWordIndex,
+  resolveActiveBlockAndWord,
   renderHighlightedTokens,
+  type CandidateBlock,
   type SpeechProgressState,
   type WordOffsetTracker,
 } from "./spokenHighlight";
+import { cleanProseForSpeech } from "./researchSpeechContent";
 
 export interface MarkdownContentProps {
   value: string;
@@ -18,53 +19,53 @@ export interface MarkdownContentProps {
 
 type TableAlign = "left" | "center" | "right" | undefined;
 
-interface TableBlock {
+export interface TableBlock {
   type: "table";
   headers: string[];
   alignments: TableAlign[];
   rows: string[][];
 }
 
-interface CodeBlock {
+export interface CodeBlock {
   type: "code";
   language: string;
   code: string;
   isChart?: boolean;
 }
 
-interface ChartBlock {
+export interface ChartBlock {
   type: "chart";
   text: string;
 }
 
-interface HeadingBlock {
+export interface HeadingBlock {
   type: "heading";
   level: 1 | 2 | 3 | 4 | 5 | 6;
   text: string;
 }
 
-interface ListBlock {
+export interface ListBlock {
   type: "list";
   ordered: boolean;
   start?: number;
   items: string[];
 }
 
-interface BlockquoteBlock {
+export interface BlockquoteBlock {
   type: "blockquote";
   text: string;
 }
 
-interface DividerBlock {
+export interface DividerBlock {
   type: "divider";
 }
 
-interface ParagraphBlock {
+export interface ParagraphBlock {
   type: "paragraph";
   text: string;
 }
 
-type MarkdownBlock =
+export type MarkdownBlock =
   | TableBlock
   | CodeBlock
   | ChartBlock
@@ -137,6 +138,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
       continue;
     }
 
+    // 1. GFM Tables
     if (
       trimmed.includes("|") &&
       lines[i + 1] &&
@@ -168,6 +170,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
       continue;
     }
 
+    // 2. Fenced Code Blocks (```lang or ~~~lang)
     const codeMatch = trimmed.match(/^[ \t]*(```|~~~)(.*)$/);
     if (codeMatch) {
       const fence = codeMatch[1];
@@ -195,6 +198,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
       continue;
     }
 
+    // 4. Standalone ASCII / Text Chart Card
     if (isAsciiChartLine(line)) {
       const chartLines: string[] = [];
       while (i < lines.length && isAsciiChartLine(lines[i])) {
@@ -205,6 +209,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
       continue;
     }
 
+    // 5. Headings (# H1 to ###### H6)
     const headingMatch = line.match(/^[ \t]*(#{1,6})[ \t]+([^\n]+)$/);
     if (headingMatch) {
       const level = headingMatch[1].length as 1 | 2 | 3 | 4 | 5 | 6;
@@ -213,6 +218,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
       continue;
     }
 
+    // 6. Blockquotes (> Quote)
     if (trimmed.startsWith(">")) {
       const quoteLines: string[] = [];
       while (i < lines.length && lines[i].trim().startsWith(">")) {
@@ -223,6 +229,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
       continue;
     }
 
+    // 7. Unordered & Ordered Lists
     const unorderedMatch = line.match(/^[ \t]*([*+-])[ \t]+([^\n]+)$/);
     const orderedMatch = line.match(/^[ \t]*(\d+)[.)][ \t]+([^\n]+)$/);
 
@@ -256,6 +263,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
       continue;
     }
 
+    // 8. Regular Paragraphs
     const paragraphLines: string[] = [];
     while (i < lines.length) {
       const curLine = lines[i];
@@ -290,22 +298,51 @@ export interface BlockHighlightContext {
   tracker: WordOffsetTracker;
 }
 
+export function collectCandidateBlocks(blocks: MarkdownBlock[]): CandidateBlock[] {
+  const candidates: CandidateBlock[] = [];
+  blocks.forEach((block, bIdx) => {
+    switch (block.type) {
+      case "table": {
+        candidates.push({ id: `table-${bIdx}-hdr`, text: block.headers.join(" ") });
+        block.rows.forEach((row, rIdx) => {
+          candidates.push({ id: `table-${bIdx}-row-${rIdx}`, text: row.join(" ") });
+        });
+        break;
+      }
+      case "heading":
+        candidates.push({ id: `heading-${bIdx}`, text: block.text });
+        break;
+      case "list":
+        block.items.forEach((item, iIdx) => {
+          candidates.push({ id: `list-${bIdx}-${iIdx}`, text: item });
+        });
+        break;
+      case "blockquote":
+        block.text.split("\n").forEach((line, lIdx) => {
+          candidates.push({ id: `quote-${bIdx}-${lIdx}`, text: line });
+        });
+        break;
+      case "chart":
+        candidates.push({ id: `chart-${bIdx}`, text: block.text });
+        break;
+      case "code":
+        candidates.push({ id: `code-${bIdx}`, text: block.code });
+        break;
+      case "paragraph":
+        candidates.push({ id: `para-${bIdx}`, text: block.text });
+        break;
+    }
+  });
+  return candidates;
+}
+
 export function getBlockSpeechHighlight(
-  blockText: string,
-  speechProgress?: SpeechProgressState | null,
+  elementId: string,
+  activeHighlight: { activeId: string; activeWordIndex: number } | null,
 ): BlockHighlightContext | null {
-  if (!speechProgress || !speechProgress.active) return null;
-  if (!isPassageActiveForText(blockText, undefined, speechProgress)) return null;
-
-  const activeWordIndex = getActiveWordIndex(
-    speechProgress.text || blockText,
-    speechProgress.seconds,
-    speechProgress.duration,
-    speechProgress.timings,
-  );
-
+  if (!activeHighlight || elementId !== activeHighlight.activeId) return null;
   return {
-    activeWordIndex,
+    activeWordIndex: activeHighlight.activeWordIndex,
     tracker: { current: 0 },
   };
 }
@@ -324,6 +361,7 @@ export function renderInlineMarkdown(
   return parts.map((part, index) => {
     if (!part) return null;
 
+    // Link: [Label](url)
     const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (linkMatch) {
       const url = linkMatch[2].trim();
@@ -346,6 +384,7 @@ export function renderInlineMarkdown(
       );
     }
 
+    // Inline Code: `code`
     if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
       const inner = part.slice(1, -1);
       return (
@@ -357,6 +396,7 @@ export function renderInlineMarkdown(
       );
     }
 
+    // Bold-italic: ***text***
     if (part.startsWith("***") && part.endsWith("***") && part.length >= 6) {
       const inner = part.slice(3, -3);
       return (
@@ -370,6 +410,7 @@ export function renderInlineMarkdown(
       );
     }
 
+    // Bold: **text** or __text__
     if (
       (part.startsWith("**") && part.endsWith("**") && part.length >= 4) ||
       (part.startsWith("__") && part.endsWith("__") && part.length >= 4)
@@ -384,6 +425,7 @@ export function renderInlineMarkdown(
       );
     }
 
+    // Italic: *text* or _text_
     if (
       (part.startsWith("*") && part.endsWith("*") && part.length >= 2) ||
       (part.startsWith("_") && part.endsWith("_") && part.length >= 2)
@@ -398,6 +440,7 @@ export function renderInlineMarkdown(
       );
     }
 
+    // Strikethrough: ~~text~~
     if (part.startsWith("~~") && part.endsWith("~~") && part.length >= 4) {
       const inner = part.slice(2, -2);
       return (
@@ -420,10 +463,14 @@ export function renderInlineMarkdown(
 }
 
 function CodeBlockView({
+  elementId,
+  activeHighlight,
   language,
   code,
   speechProgress,
 }: {
+  elementId: string;
+  activeHighlight: { activeId: string; activeWordIndex: number } | null;
   language: string;
   code: string;
   speechProgress?: SpeechProgressState | null;
@@ -436,7 +483,7 @@ function CodeBlockView({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const isCodeActive = isPassageActiveForText(code, undefined, speechProgress);
+  const isCodeActive = activeHighlight?.activeId === elementId && Boolean(speechProgress?.active);
 
   return (
     <div className="markdown-code-card">
@@ -479,9 +526,13 @@ function CodeBlockView({
 }
 
 function ChartCardView({
+  elementId,
+  activeHighlight,
   text,
   speechProgress,
 }: {
+  elementId: string;
+  activeHighlight: { activeId: string; activeWordIndex: number } | null;
   text: string;
   speechProgress?: SpeechProgressState | null;
 }) {
@@ -493,7 +544,7 @@ function ChartCardView({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const isChartActive = isPassageActiveForText(text, undefined, speechProgress);
+  const isChartActive = activeHighlight?.activeId === elementId && Boolean(speechProgress?.active);
 
   return (
     <div className="markdown-chart-card">
@@ -536,13 +587,18 @@ function ChartCardView({
 }
 
 function TableView({
+  blockIndex,
+  activeHighlight,
   headers,
   alignments,
   rows,
-  speechProgress,
-}: TableBlock & { speechProgress?: SpeechProgressState | null }) {
-  const headerText = headers.join(" ");
-  const headerHighlight = getBlockSpeechHighlight(headerText, speechProgress);
+}: TableBlock & {
+  blockIndex: number;
+  activeHighlight: { activeId: string; activeWordIndex: number } | null;
+  speechProgress?: SpeechProgressState | null;
+}) {
+  const headerId = `table-${blockIndex}-hdr`;
+  const headerHighlight = getBlockSpeechHighlight(headerId, activeHighlight);
 
   return (
     <div className="markdown-table-wrapper">
@@ -561,8 +617,8 @@ function TableView({
         </thead>
         <tbody>
           {rows.map((row, rowIndex) => {
-            const rowText = row.join(" ");
-            const rowHighlight = getBlockSpeechHighlight(rowText, speechProgress);
+            const rowId = `table-${blockIndex}-row-${rowIndex}`;
+            const rowHighlight = getBlockSpeechHighlight(rowId, activeHighlight);
             return (
               <tr key={rowIndex}>
                 {row.map((cell, colIndex) => (
@@ -589,6 +645,11 @@ export function MarkdownContent({
   speechProgress = null,
 }: MarkdownContentProps) {
   const blocks = useMemo(() => parseMarkdownBlocks(value), [value]);
+  const candidates = useMemo(() => collectCandidateBlocks(blocks), [blocks]);
+  const activeHighlight = useMemo(
+    () => resolveActiveBlockAndWord(candidates, speechProgress),
+    [candidates, speechProgress?.text, speechProgress?.seconds, speechProgress?.active],
+  );
 
   if (!value && streaming) {
     return (
@@ -607,13 +668,38 @@ export function MarkdownContent({
       {blocks.map((block, index) => {
         switch (block.type) {
           case "table":
-            return <TableView key={index} {...block} speechProgress={speechProgress} />;
+            return (
+              <TableView
+                key={index}
+                blockIndex={index}
+                activeHighlight={activeHighlight}
+                {...block}
+                speechProgress={speechProgress}
+              />
+            );
           case "code":
-            return <CodeBlockView key={index} language={block.language} code={block.code} speechProgress={speechProgress} />;
+            return (
+              <CodeBlockView
+                key={index}
+                elementId={`code-${index}`}
+                activeHighlight={activeHighlight}
+                language={block.language}
+                code={block.code}
+                speechProgress={speechProgress}
+              />
+            );
           case "chart":
-            return <ChartCardView key={index} text={block.text} speechProgress={speechProgress} />;
+            return (
+              <ChartCardView
+                key={index}
+                elementId={`chart-${index}`}
+                activeHighlight={activeHighlight}
+                text={block.text}
+                speechProgress={speechProgress}
+              />
+            );
           case "heading": {
-            const highlight = getBlockSpeechHighlight(block.text, speechProgress);
+            const highlight = getBlockSpeechHighlight(`heading-${index}`, activeHighlight);
             const children = renderInlineMarkdown(block.text, highlight);
             switch (block.level) {
               case 1: return <h1 key={index} className="markdown-h1">{children}</h1>;
@@ -630,7 +716,7 @@ export function MarkdownContent({
             return (
               <ListTag key={index} start={block.start} className="markdown-list">
                 {block.items.map((item, itemIdx) => {
-                  const highlight = getBlockSpeechHighlight(item, speechProgress);
+                  const highlight = getBlockSpeechHighlight(`list-${index}-${itemIdx}`, activeHighlight);
                   return (
                     <li key={itemIdx}>
                       {renderInlineMarkdown(item, highlight)}
@@ -644,7 +730,7 @@ export function MarkdownContent({
             return (
               <blockquote key={index} className="markdown-blockquote">
                 {block.text.split("\n").map((line, lineIdx) => {
-                  const highlight = getBlockSpeechHighlight(line, speechProgress);
+                  const highlight = getBlockSpeechHighlight(`quote-${index}-${lineIdx}`, activeHighlight);
                   return (
                     <p key={lineIdx}>
                       {renderInlineMarkdown(line, highlight)}
@@ -657,7 +743,7 @@ export function MarkdownContent({
             return <hr key={index} className="markdown-hr" />;
           case "paragraph":
           default: {
-            const highlight = getBlockSpeechHighlight(block.text, speechProgress);
+            const highlight = getBlockSpeechHighlight(`para-${index}`, activeHighlight);
             return (
               <p key={index} className="markdown-paragraph">
                 {renderInlineMarkdown(block.text, highlight)}
