@@ -56,31 +56,81 @@ export function isPassageActiveForText(
 ): boolean {
   if (!progress || !progress.active) return false;
 
-  // 1. If explicit passageId is provided (e.g. Research Reader)
+  // 1. If explicit passageId is provided (e.g. Research Reader sections/paragraphs)
   if (passageId) {
     if (progress.passageId === passageId) return true;
     if (progress.passageId.startsWith(`${passageId}-`)) return true;
     return false;
   }
 
-  // 2. If passageId is omitted (e.g. Markdown paragraphs, charts, tables inside Chat messages)
+  // 2. Chat / Markdown blocks without explicit passageId:
   const normText = normalizeSpeechMatchingText(text);
   const normProgress = normalizeSpeechMatchingText(progress.text);
   if (!normText || !normProgress) return false;
 
-  // Direct containment
-  if (normProgress.includes(normText) || normText.includes(normProgress)) return true;
-
-  // For charts and tables: check continuous slice matching (12+ chars)
-  const minLen = Math.min(12, normProgress.length);
-  if (normProgress.length >= minLen) {
-    for (let i = 0; i <= normProgress.length - minLen; i += 4) {
-      const slice = normProgress.slice(i, i + minLen);
-      if (normText.includes(slice)) return true;
-    }
+  // Must have at least 6 characters of normalized text to prevent single-word false positives
+  if (normText.length < 6 && normProgress.length >= 6) {
+    return normProgress === normText || normProgress.startsWith(normText);
   }
 
+  // Exact match
+  if (normText === normProgress) return true;
+
+  // Significant containment (one contains the other)
+  if (normProgress.startsWith(normText) || normText.startsWith(normProgress)) return true;
+  if (normProgress.includes(normText) && normText.length >= 10) return true;
+  if (normText.includes(normProgress) && normProgress.length >= 10) return true;
+
   return false;
+}
+
+export interface WordOffsetTracker {
+  current: number;
+}
+
+export function renderHighlightedTokens(
+  text: string,
+  activeWordIndex: number,
+  tracker?: WordOffsetTracker,
+): ReactNode[] {
+  const tokens = text.split(/(\s+)/);
+  const offset = tracker ?? { current: 0 };
+
+  return tokens.map((token, index) => {
+    if (/^\s+$/.test(token)) {
+      return token;
+    }
+
+    // Pure punctuation/border/symbol tokens do not advance the word counter
+    if (!isWordToken(token)) {
+      return (
+        <span key={index} className="speech-symbol-token">
+          {token}
+        </span>
+      );
+    }
+
+    const currentWordIndex = offset.current++;
+    const isWordActive = currentWordIndex === activeWordIndex;
+    const isPast = currentWordIndex < activeWordIndex;
+
+    if (isWordActive) {
+      return (
+        <mark key={index} className="speech-word-active">
+          {token}
+        </mark>
+      );
+    }
+
+    return (
+      <span
+        key={index}
+        className={isPast ? "speech-word-spoken" : "speech-word-pending"}
+      >
+        {token}
+      </span>
+    );
+  });
 }
 
 export function SpokenText({
@@ -108,46 +158,9 @@ export function SpokenText({
     progress.timings,
   );
 
-  const tokens = text.split(/(\s+)/);
-  let wordCounter = 0;
-
   return (
     <span className={`speech-passage-speaking ${className}`}>
-      {tokens.map((token, index) => {
-        if (/^\s+$/.test(token)) {
-          return token;
-        }
-
-        // If this token contains no readable letters/digits (e.g. +---+ or | or --->), render as diagram symbol
-        if (!isWordToken(token)) {
-          return (
-            <span key={index} className="speech-symbol-token">
-              {token}
-            </span>
-          );
-        }
-
-        const currentWordIndex = wordCounter++;
-        const isWordActive = currentWordIndex === activeIndex;
-        const isPast = currentWordIndex < activeIndex;
-
-        if (isWordActive) {
-          return (
-            <mark key={index} className="speech-word-active">
-              {token}
-            </mark>
-          );
-        }
-
-        return (
-          <span
-            key={index}
-            className={isPast ? "speech-word-spoken" : "speech-word-pending"}
-          >
-            {token}
-          </span>
-        );
-      })}
+      {renderHighlightedTokens(text, activeIndex)}
     </span>
   );
 }

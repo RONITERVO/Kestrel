@@ -1,6 +1,13 @@
 import { useState, useMemo, type ReactNode } from "react";
 import { Check, Copy, Code2, BarChart2 } from "lucide-react";
-import { SpokenText, type SpeechProgressState } from "./spokenHighlight";
+import {
+  SpokenText,
+  isPassageActiveForText,
+  getActiveWordIndex,
+  renderHighlightedTokens,
+  type SpeechProgressState,
+  type WordOffsetTracker,
+} from "./spokenHighlight";
 
 export interface MarkdownContentProps {
   value: string;
@@ -25,6 +32,11 @@ interface CodeBlock {
   isChart?: boolean;
 }
 
+interface ChartBlock {
+  type: "chart";
+  text: string;
+}
+
 interface HeadingBlock {
   type: "heading";
   level: 1 | 2 | 3 | 4 | 5 | 6;
@@ -47,11 +59,6 @@ interface DividerBlock {
   type: "divider";
 }
 
-interface ChartBlock {
-  type: "chart";
-  text: string;
-}
-
 interface ParagraphBlock {
   type: "paragraph";
   text: string;
@@ -60,57 +67,64 @@ interface ParagraphBlock {
 type MarkdownBlock =
   | TableBlock
   | CodeBlock
+  | ChartBlock
   | HeadingBlock
   | ListBlock
   | BlockquoteBlock
   | DividerBlock
-  | ChartBlock
   | ParagraphBlock;
 
 function isTableDividerLine(line: string): boolean {
   const trimmed = line.trim();
   return (
     trimmed.length > 0 &&
-    /^\|?[\s|:=-]+\|?$/.test(trimmed) &&
-    trimmed.includes("|") &&
-    trimmed.includes("-") &&
-    !trimmed.includes("+")
+    /^[\s+|:=-]+$/.test(trimmed) &&
+    (trimmed.includes("|") || trimmed.includes("+") || trimmed.includes("-") || trimmed.includes("="))
   );
 }
 
-function parseTableAlignment(cell: string): TableAlign {
-  const trimmed = cell.trim();
-  const left = trimmed.startsWith(":");
-  const right = trimmed.endsWith(":");
-  if (left && right) return "center";
-  if (right) return "right";
-  if (left) return "left";
-  return undefined;
-}
-
-function splitTableCells(line: string): string[] {
+function parseTableRow(line: string): string[] {
   const trimmed = line.trim();
   const withoutOuter = trimmed.replace(/^\|/, "").replace(/\|$/, "");
-  return withoutOuter.split("|").map((cell) => cell.trim());
+  return withoutOuter.split("|").map((c) => c.trim());
+}
+
+function parseAlignment(cell: string): TableAlign {
+  const trimmed = cell.trim();
+  if (trimmed.startsWith(":") && trimmed.endsWith(":")) return "center";
+  if (trimmed.endsWith(":")) return "right";
+  if (trimmed.startsWith(":")) return "left";
+  return undefined;
 }
 
 function isAsciiChartLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
-  // Box-drawing characters
-  if (/[\u2500-\u257F\u2580-\u259F\u25A0-\u25FF\u2550-\u256C]/.test(trimmed)) return true;
-  // ASCII box corners and edges (+---+ or +===+)
-  if (/^\+[-=+]+\+$/.test(trimmed)) return true;
-  if (/^\+[-=+]+\s+\+[-=+]+\+?$/.test(trimmed)) return true;
-  if (trimmed.startsWith("+--") || trimmed.startsWith("+==")) return true;
-  if (/\b(?:-->|==>|->|<-|<--|<==)\b/.test(trimmed) && (trimmed.includes("|") || trimmed.includes("+") || trimmed.includes("["))) return true;
-  if (/\[[#=\-*█▒░]{3,}[^\]]*\]/.test(trimmed)) return true;
+  if (/^[ \t]*[-*_]{3,}[ \t]*$/.test(trimmed)) return false;
+  if (/^[+\-=|_]{3,}$/.test(trimmed) && (trimmed.includes("+") || trimmed.includes("|"))) return true;
+  if (/^[+\-=|_\s]+$/.test(trimmed) && trimmed.length >= 4 && (trimmed.includes("+") || trimmed.includes("|"))) return true;
+  if (
+    (trimmed.startsWith("+") && trimmed.endsWith("+")) ||
+    (trimmed.startsWith("|") && trimmed.endsWith("|")) ||
+    (trimmed.startsWith("┌") && trimmed.endsWith("┐")) ||
+    (trimmed.startsWith("└") && trimmed.endsWith("┘")) ||
+    (trimmed.startsWith("├") && trimmed.endsWith("┤"))
+  ) {
+    return true;
+  }
+  if (
+    trimmed.includes("-->") ||
+    trimmed.includes("<--") ||
+    trimmed.includes("==>")
+  ) {
+    return true;
+  }
   return false;
 }
 
-function parseMarkdownBlocks(raw: string): MarkdownBlock[] {
-  if (!raw) return [];
-  const lines = raw.split(/\r?\n/);
+export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
+  if (!markdown) return [];
+  const lines = markdown.split(/\r?\n/);
   const blocks: MarkdownBlock[] = [];
   let i = 0;
 
@@ -118,63 +132,79 @@ function parseMarkdownBlocks(raw: string): MarkdownBlock[] {
     const line = lines[i];
     const trimmed = line.trim();
 
-    // 1. Empty lines
     if (!trimmed) {
       i++;
       continue;
     }
 
-    // 2. Fenced Code Blocks (``` or ~~~)
-    const codeMatch = line.match(/^[ \t]*(```|~~~)([\w-]*)[ \t]*$/);
+    if (
+      trimmed.includes("|") &&
+      lines[i + 1] &&
+      isTableDividerLine(lines[i + 1])
+    ) {
+      const headers = parseTableRow(line);
+      const dividerCells = parseTableRow(lines[i + 1]);
+      const alignments = dividerCells.map(parseAlignment);
+      const rows: string[][] = [];
+      i += 2;
+
+      while (i < lines.length) {
+        const cur = lines[i].trim();
+        if (!cur || !cur.includes("|")) break;
+        if (isTableDividerLine(cur)) {
+          i++;
+          continue;
+        }
+        rows.push(parseTableRow(cur));
+        i++;
+      }
+
+      blocks.push({
+        type: "table",
+        headers,
+        alignments,
+        rows,
+      });
+      continue;
+    }
+
+    const codeMatch = trimmed.match(/^[ \t]*(```|~~~)(.*)$/);
     if (codeMatch) {
       const fence = codeMatch[1];
       const language = codeMatch[2]?.toLowerCase() || "text";
       const codeLines: string[] = [];
       i++;
-      while (i < lines.length) {
-        if (lines[i].trim().startsWith(fence)) {
-          i++;
-          break;
-        }
+      while (i < lines.length && !lines[i].trim().startsWith(fence)) {
         codeLines.push(lines[i]);
         i++;
       }
-      const code = codeLines.join("\n");
-      const isChart = ["chart", "ascii", "diagram", "mermaid", "table"].includes(language);
-      blocks.push({ type: "code", language, code, isChart });
+      i++;
+      blocks.push({
+        type: "code",
+        language,
+        code: codeLines.join("\n"),
+        isChart: ["chart", "ascii", "mermaid"].includes(language),
+      });
       continue;
     }
 
     // 3. Horizontal Rules
-    if (/^[ \t]*[-*_=\s]{3,}[ \t]*$/.test(trimmed) && !trimmed.includes("|") && !trimmed.includes("+")) {
+    if (/^[ \t]*[-*_]{3,}[ \t]*$/.test(trimmed)) {
       blocks.push({ type: "divider" });
       i++;
       continue;
     }
 
-    // 4. Standalone ASCII / Text Chart Card (if ascii chart or box diagram lines)
     if (isAsciiChartLine(line)) {
       const chartLines: string[] = [];
-      while (
-        i < lines.length &&
-        (isAsciiChartLine(lines[i]) ||
-          (lines[i].trim().length > 0 &&
-            chartLines.length > 0 &&
-            (lines[i].includes("|") || lines[i].includes("+") || lines[i].startsWith(" "))))
-      ) {
+      while (i < lines.length && isAsciiChartLine(lines[i])) {
         chartLines.push(lines[i]);
         i++;
       }
-      if (chartLines.length >= 2) {
-        blocks.push({ type: "chart", text: chartLines.join("\n") });
-        continue;
-      } else {
-        // Fallback to normal parsing if only single non-diagram line
-        i -= chartLines.length;
-      }
+      blocks.push({ type: "chart", text: chartLines.join("\n") });
+      continue;
     }
 
-    // 5. Headings (# H1 to ###### H6)
     const headingMatch = line.match(/^[ \t]*(#{1,6})[ \t]+([^\n]+)$/);
     if (headingMatch) {
       const level = headingMatch[1].length as 1 | 2 | 3 | 4 | 5 | 6;
@@ -183,67 +213,38 @@ function parseMarkdownBlocks(raw: string): MarkdownBlock[] {
       continue;
     }
 
-    // 6. Blockquotes (> quote)
     if (trimmed.startsWith(">")) {
       const quoteLines: string[] = [];
       while (i < lines.length && lines[i].trim().startsWith(">")) {
-        quoteLines.push(lines[i].trim().replace(/^>[ \t]?/, ""));
+        quoteLines.push(lines[i].replace(/^[ \t]*>[ \t]?/, ""));
         i++;
       }
       blocks.push({ type: "blockquote", text: quoteLines.join("\n") });
       continue;
     }
 
-    // 7. Markdown Tables (GFM standard)
-    if (trimmed.includes("|") && (trimmed.startsWith("|") || trimmed.endsWith("|") || trimmed.split("|").length > 2)) {
-      const nextLine = lines[i + 1]?.trim();
-      if (nextLine && isTableDividerLine(nextLine)) {
-        const headers = splitTableCells(line);
-        const alignments = splitTableCells(nextLine).map(parseTableAlignment);
-        const rows: string[][] = [];
-        i += 2; // skip header and divider
+    const unorderedMatch = line.match(/^[ \t]*([*+-])[ \t]+([^\n]+)$/);
+    const orderedMatch = line.match(/^[ \t]*(\d+)[.)][ \t]+([^\n]+)$/);
 
-        while (i < lines.length) {
-          const rowLine = lines[i].trim();
-          if (!rowLine || !rowLine.includes("|") || isAsciiChartLine(rowLine)) break;
-          if (isTableDividerLine(rowLine)) {
-            i++;
-            continue;
-          }
-          const cells = splitTableCells(rowLine);
-          // Pad or trim cells to match header count
-          while (cells.length < headers.length) cells.push("");
-          rows.push(cells.slice(0, headers.length));
-          i++;
-        }
-
-        blocks.push({ type: "table", headers, alignments, rows });
-        continue;
-      }
-    }
-
-    // 8. Lists (Unordered or Ordered)
-    const ulMatch = line.match(/^[ \t]*([*+-])[ \t]+([^\n]+)$/);
-    const olMatch = line.match(/^[ \t]*(\d+)[.)][ \t]+([^\n]+)$/);
-
-    if (ulMatch || olMatch) {
-      const isOrdered = !!olMatch;
-      const startNum = olMatch ? parseInt(olMatch[1], 10) : undefined;
+    if (unorderedMatch || orderedMatch) {
+      const ordered = Boolean(orderedMatch);
+      const start = orderedMatch ? parseInt(orderedMatch[1], 10) : undefined;
       const items: string[] = [];
 
       while (i < lines.length) {
-        const current = lines[i];
-        const match = isOrdered
-          ? current.match(/^[ \t]*\d+[.)][ \t]+([^\n]+)$/)
-          : current.match(/^[ \t]*[*+-][ \t]+([^\n]+)$/);
+        const cur = lines[i];
+        const uMatch = cur.match(/^[ \t]*[*+-][ \t]+([^\n]+)$/);
+        const oMatch = cur.match(/^[ \t]*\d+[.)][ \t]+([^\n]+)$/);
 
-        if (match) {
-          items.push(match[1].trim());
+        if (ordered && oMatch) {
+          items.push(oMatch[1]);
           i++;
-        } else if (current.startsWith("   ") || current.startsWith("\t")) {
-          // Indented continuation line
+        } else if (!ordered && uMatch) {
+          items.push(uMatch[1]);
+          i++;
+        } else if (cur.trim().startsWith("  ") || cur.trim().startsWith("\t")) {
           if (items.length > 0) {
-            items[items.length - 1] += `\n${current.trim()}`;
+            items[items.length - 1] += `\n${cur.trim()}`;
           }
           i++;
         } else {
@@ -251,11 +252,10 @@ function parseMarkdownBlocks(raw: string): MarkdownBlock[] {
         }
       }
 
-      blocks.push({ type: "list", ordered: isOrdered, start: startNum, items });
+      blocks.push({ type: "list", ordered, start, items });
       continue;
     }
 
-    // 9. Standard Paragraphs (gather contiguous non-empty lines)
     const paragraphLines: string[] = [];
     while (i < lines.length) {
       const curLine = lines[i];
@@ -275,7 +275,6 @@ function parseMarkdownBlocks(raw: string): MarkdownBlock[] {
       paragraphLines.push(curLine);
       i++;
     }
-
     if (paragraphLines.length > 0) {
       blocks.push({ type: "paragraph", text: paragraphLines.join("\n") });
     } else {
@@ -286,13 +285,37 @@ function parseMarkdownBlocks(raw: string): MarkdownBlock[] {
   return blocks;
 }
 
+export interface BlockHighlightContext {
+  activeWordIndex: number;
+  tracker: WordOffsetTracker;
+}
+
+export function getBlockSpeechHighlight(
+  blockText: string,
+  speechProgress?: SpeechProgressState | null,
+): BlockHighlightContext | null {
+  if (!speechProgress || !speechProgress.active) return null;
+  if (!isPassageActiveForText(blockText, undefined, speechProgress)) return null;
+
+  const activeWordIndex = getActiveWordIndex(
+    speechProgress.text || blockText,
+    speechProgress.seconds,
+    speechProgress.duration,
+    speechProgress.timings,
+  );
+
+  return {
+    activeWordIndex,
+    tracker: { current: 0 },
+  };
+}
+
 export function renderInlineMarkdown(
   text: string,
-  speechProgress?: SpeechProgressState | null,
+  highlight?: BlockHighlightContext | null,
 ): ReactNode[] {
   if (!text) return [];
 
-  // Match links, inline code, bold-italic, bold, italic, strikethrough
   const tokenRegex =
     /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*\*[^*]+\*\*\*|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|~~[^~]+~~)/g;
 
@@ -301,7 +324,6 @@ export function renderInlineMarkdown(
   return parts.map((part, index) => {
     if (!part) return null;
 
-    // Link: [Label](url)
     const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (linkMatch) {
       const url = linkMatch[2].trim();
@@ -317,46 +339,37 @@ export function renderInlineMarkdown(
           rel="noopener noreferrer"
           className="markdown-link"
         >
-          {speechProgress?.active ? (
-            <SpokenText text={linkMatch[1]} progress={speechProgress} />
-          ) : (
-            linkMatch[1]
-          )}
+          {highlight
+            ? renderHighlightedTokens(linkMatch[1], highlight.activeWordIndex, highlight.tracker)
+            : linkMatch[1]}
         </a>
       );
     }
 
-    // Inline Code: `code`
     if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
       const inner = part.slice(1, -1);
       return (
         <code key={index} className="markdown-inline-code">
-          {speechProgress?.active ? (
-            <SpokenText text={inner} progress={speechProgress} />
-          ) : (
-            inner
-          )}
+          {highlight
+            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+            : inner}
         </code>
       );
     }
 
-    // Bold-italic: ***text***
     if (part.startsWith("***") && part.endsWith("***") && part.length >= 6) {
       const inner = part.slice(3, -3);
       return (
         <strong key={index}>
           <em>
-            {speechProgress?.active ? (
-              <SpokenText text={inner} progress={speechProgress} />
-            ) : (
-              inner
-            )}
+            {highlight
+              ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+              : inner}
           </em>
         </strong>
       );
     }
 
-    // Bold: **text** or __text__
     if (
       (part.startsWith("**") && part.endsWith("**") && part.length >= 4) ||
       (part.startsWith("__") && part.endsWith("__") && part.length >= 4)
@@ -364,16 +377,13 @@ export function renderInlineMarkdown(
       const inner = part.slice(2, -2);
       return (
         <strong key={index}>
-          {speechProgress?.active ? (
-            <SpokenText text={inner} progress={speechProgress} />
-          ) : (
-            inner
-          )}
+          {highlight
+            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+            : inner}
         </strong>
       );
     }
 
-    // Italic: *text* or _text_
     if (
       (part.startsWith("*") && part.endsWith("*") && part.length >= 2) ||
       (part.startsWith("_") && part.endsWith("_") && part.length >= 2)
@@ -381,31 +391,28 @@ export function renderInlineMarkdown(
       const inner = part.slice(1, -1);
       return (
         <em key={index}>
-          {speechProgress?.active ? (
-            <SpokenText text={inner} progress={speechProgress} />
-          ) : (
-            inner
-          )}
+          {highlight
+            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+            : inner}
         </em>
       );
     }
 
-    // Strikethrough: ~~text~~
     if (part.startsWith("~~") && part.endsWith("~~") && part.length >= 4) {
       const inner = part.slice(2, -2);
       return (
         <del key={index}>
-          {speechProgress?.active ? (
-            <SpokenText text={inner} progress={speechProgress} />
-          ) : (
-            inner
-          )}
+          {highlight
+            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+            : inner}
         </del>
       );
     }
 
-    return speechProgress?.active ? (
-      <SpokenText key={index} text={part} progress={speechProgress} />
+    return highlight ? (
+      <span key={index}>
+        {renderHighlightedTokens(part, highlight.activeWordIndex, highlight.tracker)}
+      </span>
     ) : (
       <span key={index}>{part}</span>
     );
@@ -428,6 +435,8 @@ function CodeBlockView({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const isCodeActive = isPassageActiveForText(code, undefined, speechProgress);
 
   return (
     <div className="markdown-code-card">
@@ -458,7 +467,7 @@ function CodeBlockView({
       </div>
       <pre className="markdown-code-pre">
         <code>
-          {speechProgress?.active ? (
+          {isCodeActive ? (
             <SpokenText text={code} progress={speechProgress} />
           ) : (
             code
@@ -483,6 +492,8 @@ function ChartCardView({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const isChartActive = isPassageActiveForText(text, undefined, speechProgress);
 
   return (
     <div className="markdown-chart-card">
@@ -513,7 +524,7 @@ function ChartCardView({
       </div>
       <pre className="markdown-chart-body">
         <code>
-          {speechProgress?.active ? (
+          {isChartActive ? (
             <SpokenText text={text} progress={speechProgress} />
           ) : (
             text
@@ -530,6 +541,9 @@ function TableView({
   rows,
   speechProgress,
 }: TableBlock & { speechProgress?: SpeechProgressState | null }) {
+  const headerText = headers.join(" ");
+  const headerHighlight = getBlockSpeechHighlight(headerText, speechProgress);
+
   return (
     <div className="markdown-table-wrapper">
       <table className="markdown-table">
@@ -540,24 +554,28 @@ function TableView({
                 key={colIndex}
                 style={{ textAlign: alignments[colIndex] }}
               >
-                {renderInlineMarkdown(header, speechProgress)}
+                {renderInlineMarkdown(header, headerHighlight)}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              {row.map((cell, colIndex) => (
-                <td
-                  key={colIndex}
-                  style={{ textAlign: alignments[colIndex] }}
-                >
-                  {renderInlineMarkdown(cell, speechProgress)}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {rows.map((row, rowIndex) => {
+            const rowText = row.join(" ");
+            const rowHighlight = getBlockSpeechHighlight(rowText, speechProgress);
+            return (
+              <tr key={rowIndex}>
+                {row.map((cell, colIndex) => (
+                  <td
+                    key={colIndex}
+                    style={{ textAlign: alignments[colIndex] }}
+                  >
+                    {renderInlineMarkdown(cell, rowHighlight)}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -595,7 +613,8 @@ export function MarkdownContent({
           case "chart":
             return <ChartCardView key={index} text={block.text} speechProgress={speechProgress} />;
           case "heading": {
-            const children = renderInlineMarkdown(block.text, speechProgress);
+            const highlight = getBlockSpeechHighlight(block.text, speechProgress);
+            const children = renderInlineMarkdown(block.text, highlight);
             switch (block.level) {
               case 1: return <h1 key={index} className="markdown-h1">{children}</h1>;
               case 2: return <h2 key={index} className="markdown-h2">{children}</h2>;
@@ -610,33 +629,41 @@ export function MarkdownContent({
             const ListTag = block.ordered ? "ol" : "ul";
             return (
               <ListTag key={index} start={block.start} className="markdown-list">
-                {block.items.map((item, itemIdx) => (
-                  <li key={itemIdx}>
-                    {renderInlineMarkdown(item, speechProgress)}
-                  </li>
-                ))}
+                {block.items.map((item, itemIdx) => {
+                  const highlight = getBlockSpeechHighlight(item, speechProgress);
+                  return (
+                    <li key={itemIdx}>
+                      {renderInlineMarkdown(item, highlight)}
+                    </li>
+                  );
+                })}
               </ListTag>
             );
           }
           case "blockquote":
             return (
               <blockquote key={index} className="markdown-blockquote">
-                {block.text.split("\n").map((line, lineIdx) => (
-                  <p key={lineIdx}>
-                    {renderInlineMarkdown(line, speechProgress)}
-                  </p>
-                ))}
+                {block.text.split("\n").map((line, lineIdx) => {
+                  const highlight = getBlockSpeechHighlight(line, speechProgress);
+                  return (
+                    <p key={lineIdx}>
+                      {renderInlineMarkdown(line, highlight)}
+                    </p>
+                  );
+                })}
               </blockquote>
             );
           case "divider":
             return <hr key={index} className="markdown-hr" />;
           case "paragraph":
-          default:
+          default: {
+            const highlight = getBlockSpeechHighlight(block.text, speechProgress);
             return (
               <p key={index} className="markdown-paragraph">
-                {renderInlineMarkdown(block.text, speechProgress)}
+                {renderInlineMarkdown(block.text, highlight)}
               </p>
             );
+          }
         }
       })}
       {streaming && <span className="stream-cursor-pulse" aria-hidden="true" />}

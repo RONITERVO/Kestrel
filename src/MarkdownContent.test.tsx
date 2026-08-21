@@ -234,4 +234,58 @@ Architecture Diagram:
     expect(mark).toBeInTheDocument();
     expect(mark).toHaveTextContent("Akkadian");
   });
+
+  it("strictly isolates active word to ONLY the spoken paragraph without highlighting other paragraphs or table rows", () => {
+    const complexDoc = `
+I've chosen the scope: the **Neolithic Revolution** and the birth of civilization.
+
+# From Foragers to the First Cities: The Neolithic Revolution
+
+**Abstract.** This paper examines the transition from mobile foraging to settled food production.
+
+1. **Introduction.** The shift from hunting and gathering to agriculture.
+
+* **Scope:** c. 10,000–3000 BCE, global.
+* **Method:** Synthesis of standard consensus.
+
+| Region | Approx. Date | Key Crops |
+| --- | --- | --- |
+| Fertile Crescent | ~10,000–8,000 BCE | Emmer wheat, barley |
+| Andes | ~5,000–3,000 BCE | Potato, quinoa |
+`;
+
+    // Only the Abstract paragraph is being spoken
+    const spokenPassage = "Abstract. This paper examines the transition from mobile foraging to settled food production.";
+
+    const { container } = render(
+      <MarkdownContent
+        value={complexDoc}
+        speechProgress={{
+          active: true,
+          passageId: "p-abstract",
+          text: spokenPassage,
+          seconds: 0.5,
+          duration: 2.0,
+          timings: [
+            { value: "Abstract.", start: 0, end: 0.3 },
+            { value: "This", start: 0.3, end: 0.5 },
+            { value: "paper", start: 0.5, end: 0.8 },
+          ],
+        }}
+      />,
+    );
+
+    // There should be EXACTLY ONE <mark> in the entire document!
+    const marks = container.querySelectorAll("mark.speech-word-active");
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toHaveTextContent("paper");
+
+    // All other elements must have ZERO marks
+    expect(container.querySelector("h1 mark")).not.toBeInTheDocument();
+    expect(container.querySelector("ul mark")).not.toBeInTheDocument();
+    expect(container.querySelector("table mark")).not.toBeInTheDocument();
+
+    // No raw double asterisks displayed in the document
+    expect(container.textContent).not.toContain("**");
+  });
 });
