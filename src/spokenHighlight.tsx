@@ -45,12 +45,20 @@ export function getActiveWordIndex(
   if (seconds < 0) return -1;
   const words = exact.length ? exact : wordTimings(text, duration || Math.max(1, text.length / 15));
   if (!words.length) return -1;
-  const found = words.findIndex((word) => seconds >= word.start && seconds < word.end);
-  if (found >= 0) return found;
-  if (seconds > 0 && seconds >= (words[words.length - 1]?.end ?? 0)) {
+  if (seconds < words[0].start) {
+    return 0;
+  }
+  if (seconds >= words[words.length - 1].start) {
     return words.length - 1;
   }
-  return 0;
+  const found = words.findIndex((word) => seconds >= word.start && seconds < word.end);
+  if (found >= 0) return found;
+  for (let i = 0; i < words.length - 1; i++) {
+    if (seconds >= words[i].start && seconds < words[i + 1].start) {
+      return i;
+    }
+  }
+  return words.length - 1;
 }
 
 export function isWordToken(token: string): boolean {

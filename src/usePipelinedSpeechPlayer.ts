@@ -243,8 +243,10 @@ export function usePipelinedSpeechPlayer({
       const url = localSpeechMediaUrl(clip.relativePath);
       if (!url) throw new Error("Kestrel could not create a private URL for the generated passage.");
       clipUrlsRef.current.set(key, url);
-      clipTimingsRef.current.set(key, clip.words);
       clipPathsRef.current.set(key, clip.relativePath);
+      if (clip.words && clip.words.length > 0) {
+        clipTimingsRef.current.set(key, clip.words);
+      }
       return url;
     }).finally(() => {
       activeJobsRef.current.delete(activeJob);
@@ -333,7 +335,8 @@ export function usePipelinedSpeechPlayer({
       const url = await ensureClip(index, false, voiceOverride);
       if (!mountedRef.current || generation !== playbackGenerationRef.current) return;
       audio.src = url;
-      setSpeechTimings(clipTimingsRef.current.get(clipKey(index, voiceOverride)) ?? recording?.words ?? []);
+      const exactTimings = clipTimingsRef.current.get(clipKey(index, voiceOverride)) ?? recording?.words ?? [];
+      setSpeechTimings(exactTimings);
       audio.playbackRate = rateRef.current;
       await audio.play();
       if (!mountedRef.current || generation !== playbackGenerationRef.current) return;
@@ -345,7 +348,9 @@ export function usePipelinedSpeechPlayer({
       );
       void alignClip(index, voiceOverride);
       if (!recording && mountedRef.current && generation === playbackGenerationRef.current && index + 1 < passages.length) {
-        void ensureClip(index + 1, true, voiceOverride).catch(() => undefined);
+        void ensureClip(index + 1, true, voiceOverride).then(() => {
+          void alignClip(index + 1, voiceOverride);
+        }).catch(() => undefined);
       }
     } catch (cause) {
       if (!mountedRef.current || generation !== playbackGenerationRef.current) return;

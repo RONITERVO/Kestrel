@@ -1,11 +1,11 @@
 # Kestrel Speech Highlight & Timing Simulation Report
 
-**Generated:** 2026-08-21T12:49:10.869Z  
-**Total Passages:** 19  
-**Total Spoken Duration:** 247.04s  
-**Simulation Time Step:** 100ms  
-**Overall Accuracy:** 100% (2481/2481 frames)  
-**Total Anomalies:** 0
+- **Generated:** 2026-08-21T13:01:43.313Z
+- **Total Passages:** 19
+- **Total Spoken Duration:** 247.04s
+- **Simulation Time Step:** 100ms
+- **Overall Accuracy:** 100% (2481/2481 frames)
+- **Total Anomalies:** 0
 
 ---
 

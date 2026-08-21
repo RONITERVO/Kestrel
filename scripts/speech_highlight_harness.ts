@@ -498,12 +498,12 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
   // Markdown summary report
   const markdownReport = `# Kestrel Speech Highlight & Timing Simulation Report
 
-**Generated:** ${new Date().toISOString()}  
-**Total Passages:** ${passages.length}  
-**Total Spoken Duration:** ${totalDurationSec.toFixed(2)}s  
-**Simulation Time Step:** ${stepMs}ms  
-**Overall Accuracy:** ${auditOutput.summary.accuracyPercent}% (${totalSuccessfulMarks}/${totalFramesTested} frames)  
-**Total Anomalies:** ${anomalies.length}
+- **Generated:** ${new Date().toISOString()}
+- **Total Passages:** ${passages.length}
+- **Total Spoken Duration:** ${totalDurationSec.toFixed(2)}s
+- **Simulation Time Step:** ${stepMs}ms
+- **Overall Accuracy:** ${auditOutput.summary.accuracyPercent}% (${totalSuccessfulMarks}/${totalFramesTested} frames)
+- **Total Anomalies:** ${anomalies.length}
 
 ---
 

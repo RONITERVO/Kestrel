@@ -38,6 +38,27 @@ describe("spokenHighlight word-level alignment engine", () => {
     expect(getActiveWordIndex("The quick brown fox", 1.4, 1.6, exactTimings)).toBe(3);
   });
 
+  it("maintains current word highlight during natural speech pauses between words", () => {
+    const exactTimingsWithPauses = [
+      { value: "First", start: 0.1, end: 0.4 },
+      // 0.4s to 0.8s is a 400ms pause (e.g., comma or breath)
+      { value: "second", start: 0.8, end: 1.2 },
+      // 1.2s to 1.7s is a 500ms pause
+      { value: "third.", start: 1.7, end: 2.1 },
+    ];
+
+    // During the first word
+    expect(getActiveWordIndex("First second third.", 0.2, 2.1, exactTimingsWithPauses)).toBe(0);
+    // During the 400ms pause after "First", it MUST stay on "First" (index 0) and not reset or jump
+    expect(getActiveWordIndex("First second third.", 0.6, 2.1, exactTimingsWithPauses)).toBe(0);
+    // When "second" starts
+    expect(getActiveWordIndex("First second third.", 0.9, 2.1, exactTimingsWithPauses)).toBe(1);
+    // During the 500ms pause after "second", it MUST stay on "second" (index 1) and not flash back to index 0
+    expect(getActiveWordIndex("First second third.", 1.5, 2.1, exactTimingsWithPauses)).toBe(1);
+    // When "third" starts
+    expect(getActiveWordIndex("First second third.", 1.9, 2.1, exactTimingsWithPauses)).toBe(2);
+  });
+
   it("accurately isolates the active paragraph and does NOT highlight other paragraphs", () => {
     const p1 = "Founded by Sargon of Akkad, the Akkadian Empire is the first attested empire.";
     const p2 = "The Roman Empire, beginning with Augustus's principate, unified the Mediterranean world.";
