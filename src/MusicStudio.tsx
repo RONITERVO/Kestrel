@@ -15,6 +15,8 @@ import {
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "./ModelRuntimePolicy";
 import type { RuntimePolicyValue } from "./ModelRuntimePolicy";
+import { ExternalCollaborationExchange } from "./ExternalCollaborationExchange";
+import { buildExternalCollaborationRequest, parseExternalTextResult } from "./externalCollaboration";
 import { MusicMidiEditor } from "./MusicMidiEditor";
 import type {
   ControlSettings, ModelInfo, MusicGenerationEvent, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
@@ -493,6 +495,44 @@ export function MusicStudio({
             <select aria-label="Music collaborator mode" disabled={assistantBusy || busy} value={draftMode} onChange={(event) => setDraftMode(event.target.value as PromptDraftMode)}><option value="develop">Develop idea / notes</option><option value="continue">Continue exact draft</option></select>
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicCaption")}><Sparkles /> Develop description</button>
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicLyrics")}><ListMusic /> Write full lyrics</button>
+          </div>
+          <div className="music-external-collaborators">
+            <ExternalCollaborationExchange
+              title="Develop description in another chat or agent"
+              summary="Copy the song idea, section map, lyrics, and Music 3 writing contract; validate the returned description here."
+              disabled={assistantBusy || busy}
+              buildRequest={() => buildExternalCollaborationRequest({
+                target: "music-description",
+                role: "a senior music producer arranging for MiniMax Music 3",
+                instructions: [
+                  "Return a complete Music 3 production description in result.text with Global Metadata, Vocal Details, and Arrangement sections.",
+                  "Specify genre, subgenre, BPM, meter, key, emotional progression, voice/performance, instruments, groove, section evolution, production, and spatial treatment.",
+                  "Respect the producer's section map and current lyrics; do not add lyrics to the description or claim to render audio.",
+                ],
+                context: { songIdea: project.idea, currentDescription: project.caption, existingTextMeaning: project.caption.trim() ? draftMode : "empty-create-complete-description", instrumental: project.instrumental, sectionPlan: project.sections.map(({ name, tag, bars, direction }) => ({ name, tag, bars, direction })), currentLyrics: compiledLyrics(project), maximumCharacters: 65_536 },
+                resultTemplate: { text: "Complete editable Music 3 production description" },
+              })}
+              parseResponse={(text) => parseExternalTextResult(text, "music-description")}
+              onApply={(caption) => mutate((current) => ({ ...current, caption }))}
+            />
+            <ExternalCollaborationExchange
+              title="Write lyrics in another chat or agent"
+              summary="Copy the song context and tagged section contract; validate lyrics back into the arranger."
+              disabled={assistantBusy || busy || project.instrumental}
+              buildRequest={() => buildExternalCollaborationRequest({
+                target: "music-lyrics",
+                role: "a senior songwriter working to a locked producer arrangement",
+                instructions: [
+                  "Return only singable lyrics in result.text, organized with standalone tags such as [Verse], [Chorus], [Bridge], and [Outro].",
+                  "Match the supplied section order, concept, voice, rhyme density, phrasing, and production description; do not add commentary or chord notation.",
+                  "Treat current lyrics as notes or a draft according to existingTextMeaning and preserve exact wording when the producer marks it as an exact draft.",
+                ],
+                context: { songIdea: project.idea, musicDescription: project.caption, currentLyrics: compiledLyrics(project), existingTextMeaning: compiledLyrics(project).trim() ? draftMode : "empty-create-complete-lyrics", sectionPlan: project.sections.map(({ name, tag, bars, direction }) => ({ name, tag, bars, direction })), maximumCharacters: 65_536 },
+                resultTemplate: { text: "[Verse]\nComplete singable lyrics\n\n[Chorus]\nComplete chorus" },
+              })}
+              parseResponse={(text) => parseExternalTextResult(text, "music-lyrics")}
+              onApply={(lyrics) => mutate((current) => ({ ...current, sections: applyTaggedLyrics(current.sections, lyrics) }))}
+            />
           </div>
           <details className="workspace-runtime-policy"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} disabled={assistantBusy || busy} expert={advancedEnabled} scope="Music collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
         </section>

@@ -1,9 +1,10 @@
 import {
-  AudioLines, Check, ChevronDown, CircleStop, Clapperboard, Clock3, Copy, Download,
-  FileUp, Film, FolderOpen, ImageIcon, Library, LoaderCircle, Paperclip, Play, Plus,
+  AudioLines, Check, ChevronDown, CircleStop, Clapperboard, Clock3, Download,
+  Film, FolderOpen, ImageIcon, Library, LoaderCircle, Paperclip, Play, Plus,
   RotateCcw, Save, Send, Settings2, ShieldCheck, Sparkles, Video, X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   approveMoviePlan, cancelMovie, cancelMovieImageAsset, cancelMovieRender, checkpointMoviePlanning,
   cancelMovieCopilot, cancelMoviePromptDraft, directMoviePlanning, getMovie, getMovieCopilotReceipt, getMoviePlanExchangePrompt, getMoviePlanning, getMovieRenderState, listMovieImageAssets, listMovies, movieMediaUrl,
@@ -20,6 +21,8 @@ import { MarkdownContent } from "./MarkdownContent";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "./ModelRuntimePolicy";
 import type { RuntimePolicyValue } from "./ModelRuntimePolicy";
+import { ExternalCollaborationExchange } from "./ExternalCollaborationExchange";
+import { buildExternalCollaborationRequest, parseExternalTextResult } from "./externalCollaboration";
 import { effectiveThinkingLevelForModel, thinkingBudgetForLevel, thinkingLevelFromBudget } from "./types";
 import type {
   ControlSettings, MovieCopilotEvent, MovieCopilotProposal, MovieCopilotReceipt, MovieEdit, MoviePlan, MoviePlanningEvent, MoviePlanningSnapshot,
@@ -648,13 +651,31 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     <PromptAssistBar label="Movie brief" existing={prompt} mode={storyDraftMode} models={models} modelId={promptModelId} thinkingLevel={promptThinkingLevel} onThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings}
       active={storyWriting} disabled={busy || imageGenerating || (promptBusy && !storyWriting)} status={promptFieldMatches(statusField, { kind: "story" }) ? promptDraftStatus : ""}
       thinking={promptFieldMatches(statusField, { kind: "story" }) ? promptDraftReasoning : undefined}
-      onModel={onPromptModel} onMode={onStoryDraftMode} onGenerate={() => onGeneratePrompt({ kind: "story" }, storyDraftMode)} onStop={onStopPrompt} />
+      onModel={onPromptModel} onMode={onStoryDraftMode} onGenerate={() => onGeneratePrompt({ kind: "story" }, storyDraftMode)} onStop={onStopPrompt}
+      externalExchange={<ExternalCollaborationExchange
+        title="Use another chat or agent"
+        summary="Copy this visible story context out; validate its JSON draft back into the same producer field."
+        disabled={busy || imageGenerating || promptBusy}
+        buildRequest={() => buildExternalCollaborationRequest({
+          target: "movie-brief",
+          role: "a senior film development editor",
+          instructions: [
+            "Return a complete production brief in result.text, ready for a Director to turn into a coherent 5-15 second-per-shot film plan.",
+            "Preserve explicit characters, locations, events, tone, ending, reference intent, duration, dialogue, and constraints from the producer.",
+            "Resolve ambiguity conservatively; do not add renderer JSON, scene IDs, or implementation commentary.",
+          ],
+          context: { existingText: prompt, existingTextMeaning: prompt.trim() ? storyDraftMode : "empty-invent-a-story", maximumCharacters: 65_536 },
+          resultTemplate: { text: "Complete editable movie brief" },
+        })}
+        parseResponse={(text) => parseExternalTextResult(text, "movie-brief")}
+        onApply={onPrompt}
+      />} />
       <div className="studio-room-assurance"><ShieldCheck /><span><strong>The producer remains in control.</strong><small>Tokens stream into this brief. Stop keeps the current text as an editable checkpoint; no public network or tools are available to the writing model.</small></span></div>
     </section>}
     {workspace === "images" && <div className="launch-workspace-panel"><ImageAssetLab
       prompt={imagePrompt} width={imageWidth} height={imageHeight} steps={imageSteps} seed={imageSeed}
       stabilize={imageStabilize} generating={imageGenerating} status={imageStatus} generations={imageGenerations} preview={imagePreview}
-      references={references} advanced={advanced} expertEnabled={advancedEnabled} disabled={busy || promptBusy}
+      storyContext={prompt} references={references} advanced={advanced} expertEnabled={advancedEnabled} disabled={busy || promptBusy}
       models={models} modelId={promptModelId} draftThinkingLevel={promptThinkingLevel} onDraftThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings} draftMode={imageDraftMode} draftActive={imageWriting} draftStatus={promptFieldMatches(statusField, { kind: "imageAsset" }) ? promptDraftStatus : ""}
       draftThinking={promptFieldMatches(statusField, { kind: "imageAsset" }) ? promptDraftReasoning : undefined}
       onModel={onPromptModel} onDraftMode={onImageDraftMode} onDraft={() => onGeneratePrompt({ kind: "imageAsset" }, imageDraftMode)} onStopDraft={onStopPrompt}
@@ -676,14 +697,50 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
               status={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "description" }) ? promptDraftStatus : ""}
               thinking={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "description" }) ? promptDraftReasoning : undefined}
               onModel={onPromptModel} onMode={(mode) => onReferenceDraftMode(referenceDraftKey(reference.assetId, "description"), mode)}
-              onGenerate={() => onGeneratePrompt({ kind: "referenceDescription", assetId: reference.assetId, part: "description" }, referenceDraftModes[referenceDraftKey(reference.assetId, "description")] ?? "develop")} onStop={onStopPrompt} />
+              onGenerate={() => onGeneratePrompt({ kind: "referenceDescription", assetId: reference.assetId, part: "description" }, referenceDraftModes[referenceDraftKey(reference.assetId, "description")] ?? "develop")} onStop={onStopPrompt}
+              externalExchange={<ExternalCollaborationExchange
+                title="Use another chat or agent"
+                summary={`Draft the production description for ${reference.name} without sharing its media or local path.`}
+                disabled={busy || imageGenerating || promptBusy}
+                buildRequest={() => buildExternalCollaborationRequest({
+                  target: "movie-reference-description",
+                  role: "a film reference and continuity editor",
+                  instructions: [
+                    "Return only a precise description of how this reference should be used by the Director across relevant shots.",
+                    "Describe identity, wardrobe, appearance, motion, composition, style, sound, or timing only when applicable to the stated reference kind.",
+                    "Do not claim to see or hear media: only the producer-visible metadata and text below are available.",
+                  ],
+                  context: { storyPrompt: prompt, reference: { name: reference.name, kind: reference.kind, width: reference.width, height: reference.height, durationSeconds: reference.durationSeconds }, existingText: reference.description, existingTextMeaning: referenceDraftModes[referenceDraftKey(reference.assetId, "description")] ?? "develop", maximumCharacters: 4_000 },
+                  resultTemplate: { text: "Complete editable reference description" },
+                })}
+                parseResponse={(text) => parseExternalTextResult(text, "movie-reference-description", 4_000)}
+                onApply={(text) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, description: text } : item))}
+              />} />
             {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" disabled={promptBusy} checked={reference.useEmbeddedAudio} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Use the video's existing audio as native clip audio</label>{reference.useEmbeddedAudio && <><label>Where should this audio be used?<input aria-label={`Describe audio from ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })} value={reference.embeddedAudioDescription} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="The scenes or beats where this exact audio belongs…" /></label><PromptAssistBar compact label={`audio from ${reference.name}`} existing={reference.embeddedAudioDescription} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop"} models={models} modelId={promptModelId} thinkingLevel={promptThinkingLevel} onThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings}
               active={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })}
               disabled={busy || imageGenerating || (promptBusy && !promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }))}
               status={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }) ? promptDraftStatus : ""}
               thinking={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }) ? promptDraftReasoning : undefined}
               onModel={onPromptModel} onMode={(mode) => onReferenceDraftMode(referenceDraftKey(reference.assetId, "embeddedAudioDescription"), mode)}
-              onGenerate={() => onGeneratePrompt({ kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }, referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop")} onStop={onStopPrompt} /></>}</>}
+              onGenerate={() => onGeneratePrompt({ kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }, referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop")} onStop={onStopPrompt}
+              externalExchange={<ExternalCollaborationExchange
+                title="Use another chat or agent"
+                summary={`Draft where the existing audio from ${reference.name} belongs; no media or local path is shared.`}
+                disabled={busy || imageGenerating || promptBusy}
+                buildRequest={() => buildExternalCollaborationRequest({
+                  target: "movie-reference-description",
+                  role: "a film sound and continuity editor",
+                  instructions: [
+                    "Return a precise placement description for the reference's existing audio in result.text.",
+                    "Identify relevant scenes, beats, dialogue performance, music, ambience, rhythm, or effects from producer-provided text only.",
+                    "Do not claim to hear the media and do not invent technical file information.",
+                  ],
+                  context: { storyPrompt: prompt, reference: { name: reference.name, kind: reference.kind, durationSeconds: reference.durationSeconds }, visualReferenceDescription: reference.description, existingText: reference.embeddedAudioDescription, existingTextMeaning: referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop", maximumCharacters: 4_000 },
+                  resultTemplate: { text: "Complete editable embedded-audio description" },
+                })}
+                parseResponse={(text) => parseExternalTextResult(text, "movie-reference-description", 4_000)}
+                onApply={(text) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: text } : item))}
+              />} /></>}</>}
           </div>
         </article>;
       })}</div>}
@@ -839,10 +896,11 @@ function StudioModelRoles({ models, compatibility, directorModelId, reviewerMode
   </div>;
 }
 
-function PromptAssistBar({ label, existing, mode, models, modelId, active, disabled, status, thinking, compact = false, controlSettings, thinkingLevel, onModel, onMode, onThinkingLevel, onGenerate, onStop }: {
+function PromptAssistBar({ label, existing, mode, models, modelId, active, disabled, status, thinking, compact = false, controlSettings, thinkingLevel, onModel, onMode, onThinkingLevel, onGenerate, onStop, externalExchange }: {
   label: string; existing: string; mode: PromptDraftMode; models: ModelInfo[]; modelId: string; active: boolean; disabled: boolean; status: string; thinking?: string; compact?: boolean;
   controlSettings?: ControlSettings; thinkingLevel?: ThinkingLevel | "default";
   onModel: (value: string) => void; onMode: (value: PromptDraftMode) => void; onThinkingLevel?: (level: ThinkingLevel | "default") => void; onGenerate: () => void; onStop: () => void;
+  externalExchange?: ReactNode;
 }) {
   const hasText = Boolean(existing.trim());
   const effectiveMode = hasText ? mode : "develop";
@@ -873,6 +931,7 @@ function PromptAssistBar({ label, existing, mode, models, modelId, active, disab
       ? <button className="prompt-stop" onClick={onStop}><CircleStop /> Stop & keep text</button>
       : <button disabled={disabled || !modelId} onClick={onGenerate}><Sparkles /> {action}</button>}
     {thinking !== undefined && <ModelThinkingStream text={thinking} active={active} inferenceActive={active && (status.startsWith("Writing locally") || status.startsWith("The local model is thinking"))} modelName={models.find((model) => model.id === modelId)?.name} thinkingLevel={effectiveLevel} className="prompt-thinking-stream" />}
+    {externalExchange}
   </div>;
 }
 
@@ -925,8 +984,9 @@ export function previewProvenanceAvailable(generation: Pick<MovieImageAssetGener
   });
 }
 
-function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generating, status, generations, preview, references, advanced, expertEnabled, disabled, models, modelId, draftThinkingLevel, onDraftThinkingLevel, controlSettings, draftMode, draftActive, draftStatus, draftThinking, onModel, onDraftMode, onDraft, onStopDraft, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
+function ImageAssetLab({ prompt, storyContext, width, height, steps, seed, stabilize, generating, status, generations, preview, references, advanced, expertEnabled, disabled, models, modelId, draftThinkingLevel, onDraftThinkingLevel, controlSettings, draftMode, draftActive, draftStatus, draftThinking, onModel, onDraftMode, onDraft, onStopDraft, onPrompt, onCanvas, onSteps, onSeed, onStabilize, onGenerate, onStop, onUse }: {
   prompt: string; width: number; height: number; steps: number; seed: number; stabilize: boolean;
+  storyContext: string;
   generating: boolean; status: string; generations: MovieImageAssetGeneration[]; preview?: MovieRenderPreviewEvent; references: PendingMovieReference[];
   advanced: boolean; expertEnabled: boolean; disabled: boolean; models: ModelInfo[]; modelId: string; draftThinkingLevel?: ThinkingLevel | "default"; onDraftThinkingLevel?: (level: ThinkingLevel | "default") => void; controlSettings?: ControlSettings; draftMode: PromptDraftMode; draftActive: boolean; draftStatus: string; draftThinking?: string;
   onModel: (value: string) => void; onDraftMode: (value: PromptDraftMode) => void; onDraft: () => void; onStopDraft: () => void;
@@ -945,7 +1005,25 @@ function ImageAssetLab({ prompt, width, height, steps, seed, stabilize, generati
     <div className="image-asset-compose">
       <label>Describe the exact image asset<textarea aria-label="Image asset prompt" maxLength={65536} value={prompt} readOnly={draftActive} disabled={generating} onChange={(event) => onPrompt(event.target.value)} placeholder="A precise character identity portrait, recurring location, hero prop, title poster, texture plate, or visual style frame… Include composition, lighting, palette, materials, and any exact text." /></label>
       <PromptAssistBar compact label="Image description" existing={prompt} mode={draftMode} models={models} modelId={modelId} thinkingLevel={draftThinkingLevel} onThinkingLevel={onDraftThinkingLevel} controlSettings={controlSettings}
-        active={draftActive} disabled={disabled || generating} status={draftStatus} thinking={draftThinking} onModel={onModel} onMode={onDraftMode} onGenerate={onDraft} onStop={onStopDraft} />
+        active={draftActive} disabled={disabled || generating} status={draftStatus} thinking={draftThinking} onModel={onModel} onMode={onDraftMode} onGenerate={onDraft} onStop={onStopDraft}
+        externalExchange={<ExternalCollaborationExchange
+          title="Use another chat or agent"
+          summary="Create a complete image-generation description from the story and any existing idea or draft."
+          disabled={disabled || generating || draftActive}
+          buildRequest={() => buildExternalCollaborationRequest({
+            target: "movie-image-description",
+            role: "a film concept-art and image-prompt editor",
+            instructions: [
+              "Return a single complete visual asset description in result.text, not a movie scene plan.",
+              "Specify subject identity, composition, camera, lighting, palette, materials, setting, and exact visible text where relevant.",
+              "Make the image useful as a stable character, location, prop, poster, or style reference for the supplied story.",
+            ],
+            context: { storyPrompt: storyContext, existingText: prompt, existingTextMeaning: prompt.trim() ? draftMode : "empty-invent-a-useful-asset", canvas: { width, height }, maximumCharacters: 65_536 },
+            resultTemplate: { text: "Complete editable image description" },
+          })}
+          parseResponse={(text) => parseExternalTextResult(text, "movie-image-description")}
+          onApply={onPrompt}
+        />} />
       <div className="image-asset-controls">
         <label>Canvas<select aria-label="Image canvas" value={canvas} disabled={generating} onChange={(event) => {
           const [nextWidth, nextHeight] = event.target.value.split("x").map(Number);
@@ -1570,59 +1648,15 @@ export function ProducerPlanDesk({ project, plan, busy, onPlan, onSave, onRevise
 }
 
 function ExternalPlanExchange({ projectId, busy, onPlan }: { projectId: string; busy: boolean; onPlan: (plan: MoviePlan) => void }) {
-  const [brief, setBrief] = useState("");
-  const [response, setResponse] = useState("");
-  const [status, setStatus] = useState("");
-  const [requestBusy, setRequestBusy] = useState(false);
-  const disabled = busy || requestBusy;
-  const prepareBrief = async () => {
-    if (disabled) return;
-    setRequestBusy(true);
-    setStatus("Building a private, versioned plan brief…");
-    try {
-      const next = await getMoviePlanExchangePrompt(projectId);
-      setBrief(next);
-      try {
-        await navigator.clipboard.writeText(next);
-        setStatus("Copied. Paste it into any external LLM chat, then bring its JSON response back here.");
-      } catch {
-        setStatus("The brief is ready below. Select and copy it manually if clipboard access is unavailable.");
-      }
-    } catch (error) { setStatus(String(error)); } finally { setRequestBusy(false); }
-  };
-  const loadResponse = async () => {
-    if (disabled || !response.trim()) return;
-    setRequestBusy(true);
-    setStatus("Checking the exchange format, scene fields, durations, and reference handles…");
-    try {
-      const plan = await parseMoviePlanExchange(projectId, response);
-      onPlan(plan);
-      setStatus(`Loaded ${plan.clips.length} ${plan.clips.length === 1 ? "scene" : "scenes"} into the editable draft. Review it, then save or approve it yourself.`);
-    } catch (error) { setStatus(String(error)); } finally { setRequestBusy(false); }
-  };
-  const readFile = async (file: File | undefined) => {
-    if (disabled || !file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      setStatus("That response is larger than the 2 MiB plan-exchange limit.");
-      return;
-    }
-    try {
-      setResponse(await file.text());
-      setStatus(`Loaded ${file.name}. Validate it to place the plan into the editable draft.`);
-    } catch (error) { setStatus(`Kestrel could not read ${file.name}: ${String(error)}`); }
-  };
-  return <details className="external-plan-exchange" aria-busy={disabled}>
-    <summary><span><Copy /> External LLM plan exchange</span><small>Copy a complete brief to ChatGPT, Gemini, or another chat; paste or drop its JSON result back here.</small></summary>
-    <div className="external-plan-body">
-      <div className="external-plan-step"><span><b>1</b><strong>Give the external chat the exact Kestrel contract</strong><small>The copied text contains this story, current draft, reference names/descriptions, safe handles, H3 rules, and the JSON schema—but no media or local paths. Kestrel makes no network request; pasting it into a cloud chat shares that text under the provider’s privacy terms.</small></span><button disabled={disabled} onClick={() => void prepareBrief()}>{requestBusy ? <LoaderCircle className="spin" /> : <Copy />} Copy model brief</button></div>
-      {brief && <label>Copy fallback<textarea aria-label="External model brief" readOnly disabled={disabled} value={brief} onFocus={(event) => event.currentTarget.select()} /></label>}
-      <div className="external-plan-step"><span><b>2</b><strong>Bring back only the model’s plan response</strong><small>Plain JSON and fenced JSON are accepted. It is parsed as data, never executed, and only becomes an unsaved editable draft.</small></span><label className="external-plan-file"><FileUp /> Choose JSON or text<input disabled={disabled} aria-label="Choose external plan response" type="file" accept=".json,.txt,application/json,text/plain" onChange={(event) => void readFile(event.target.files?.[0])} /></label></div>
-      <div className="external-plan-drop" onDragOver={(event) => { if (!disabled) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (!disabled) void readFile(event.dataTransfer.files?.[0]); }}>
-        <textarea disabled={disabled} aria-label="External plan JSON" maxLength={2 * 1024 * 1024} value={response} onChange={(event) => setResponse(event.target.value)} placeholder="Paste the external model’s Kestrel JSON response here, or drop a .json/.txt file…" />
-      </div>
-      <div className="external-plan-actions"><span role="status">{status}</span><button className="accent" disabled={disabled || !response.trim()} onClick={() => void loadResponse()}>{requestBusy ? <LoaderCircle className="spin" /> : <Check />} Validate & load editable draft</button></div>
-    </div>
-  </details>;
+  return <ExternalCollaborationExchange
+    title="Use another chat or agent"
+    summary="Copy the complete plan contract out; validate its JSON plan back into this producer-owned draft."
+    disabled={busy}
+    buildRequest={() => getMoviePlanExchangePrompt(projectId)}
+    parseResponse={(text) => parseMoviePlanExchange(projectId, text)}
+    onApply={onPlan}
+    applyLabel="Validate & load editable plan"
+  />;
 }
 
 function PlannedClipFields({ clip, references, canUsePreviousFrame = true, disabled = false, onClip }: { clip: PlannedClip; references: MovieProject["references"]; canUsePreviousFrame?: boolean; disabled?: boolean; onClip: (clip: PlannedClip) => void }) {

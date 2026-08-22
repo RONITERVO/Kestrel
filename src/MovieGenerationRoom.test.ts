@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   boundedGenerationFrame, editWithSourceVersion, insertTimelineSourceAfter, insertTimelineSourceBefore,
-  generationRequestIsActive, mergeGenerationAgentEvents, parseGenerationTimecode, preferredFrameAnalystModelId,
+  generationRequestIsActive, mergeGenerationAgentEvents, parseExternalGenerationDirection, parseGenerationTimecode, preferredFrameAnalystModelId,
   replayGenerationAgentEvents, replacementRangeAnchors, transitionAnchorsForPosition,
 } from "./MovieGenerationRoom";
 import { timelineItems } from "./MovieTimeline";
@@ -148,5 +148,17 @@ describe("Generate audition decisions", () => {
     expect(generationRequestIsActive(false, true)).toBe(true);
     expect(generationRequestIsActive(true, false)).toBe(true);
     expect(generationRequestIsActive(false, false)).toBe(false);
+  });
+
+  it("accepts only a bounded, field-matched H3 direction from another collaborator", () => {
+    const direction = Array.from({ length: 120 }, (_, index) => index === 0 ? "[0s-2s]" : `word${index}`).join(" ");
+    const response = JSON.stringify({
+      format: "kestrel.external-collaboration.response",
+      version: 1,
+      target: "movie-generation-direction",
+      result: { text: direction },
+    });
+    expect(parseExternalGenerationDirection(response).split(/\s+/)).toHaveLength(120);
+    expect(() => parseExternalGenerationDirection(response.replace("word119", ""))).toThrow(/120-450/i);
   });
 });

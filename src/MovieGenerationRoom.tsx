@@ -10,6 +10,8 @@ import {
   renderMovieClipVersion, runMovieGenerationAgent, saveMovieEdits,
 } from "./api";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
+import { ExternalCollaborationExchange } from "./ExternalCollaborationExchange";
+import { buildExternalCollaborationRequest, parseExternalTextResult } from "./externalCollaboration";
 import { appendTimelineSource, formatTimecode, orderedMovieEdit, timelineItems, type TimelineItem } from "./MovieTimeline";
 import { effectiveThinkingLevelForModel } from "./types";
 import type {
@@ -117,6 +119,15 @@ export function replayGenerationAgentEvents(events: MovieGenerationAgentEvent[])
 
 export function generationRequestIsActive(snapshotActive: boolean | undefined, commandPending: boolean): boolean {
   return Boolean(snapshotActive) || commandPending;
+}
+
+export function parseExternalGenerationDirection(text: string): string {
+  const direction = parseExternalTextResult(text, "movie-generation-direction");
+  const words = direction.trim().split(/\s+/).length;
+  if (words < 120 || words > 450) {
+    throw new Error(`The H3 direction must contain 120-450 words; this response contains ${words}.`);
+  }
+  return direction;
 }
 
 function requestId(): string {
@@ -945,6 +956,42 @@ export function MovieGenerationRoom({ project, edit, disabled, advanced, models,
         })}
 
         {proposal && <section className="generation-review-result"><ShieldCheck /><span><strong>Fresh reviewer passed this candidate</strong><small>{proposal.reviewSummary}</small></span></section>}
+        <ExternalCollaborationExchange
+          title="Use another chat or agent"
+          summary="Copy the current story, shot, cut points, and any saved frame observations; validate one H3 direction back here."
+          disabled={disabled || h3Active || Boolean(activeRequestId)}
+          buildRequest={() => buildExternalCollaborationRequest({
+            target: "movie-generation-direction",
+            role: "a senior generative-video director writing for MiniMax H3",
+            instructions: [
+              "Return one complete 120-450 word H3 renderer direction in result.text for exactly the requested duration.",
+              "Use parseable local timed beats beginning at 0 seconds and ending exactly at durationSeconds; specify camera, framing, lighting or texture, visible action, and sound.",
+              "Preserve the supplied continuity endpoints and producer constraints. State exact quoted dialogue or explicitly direct no dialogue or narration.",
+              "Do not return a plan, edit decision, analysis, checklist, file path, or claim that the audition was generated.",
+              "Frame observations are text from a separate local analyst and may include uncertainty. Do not claim to see frames that are not described.",
+            ],
+            context: {
+              task: mode === "shot" ? "alternate version of the selected shot" : `${transitionPosition} story transition`,
+              storyPrompt: project.prompt,
+              movieContinuityBible: project.plan?.continuityBible ?? [],
+              selectedShot: selected ? { title: selected.clip.title, existingPrompt: selected.clip.prompt, durationSeconds: selected.clip.durationSeconds, editLabel: selected.edit.label, editNotes: selected.edit.notes } : null,
+              producerDirection: direction,
+              existingRendererDirection: renderPrompt,
+              existingTextMeaning: renderPrompt.trim() ? "producer material to improve or replace as needed" : "empty",
+              durationSeconds: mode === "transition" ? duration : shotDuration,
+              endpoints: {
+                first: firstAnchor ? { label: firstAnchor.label, timeSeconds: firstAnchor.timeSeconds } : null,
+                last: lastAnchor ? { label: lastAnchor.label, timeSeconds: lastAnchor.timeSeconds } : null,
+                localFrameAnalystOutput: roleStreams.frameAnalyst.text.trim() || "No verified frame observation is available; rely only on story and timeline text.",
+              },
+              visibleReferences: project.references.map(({ name, kind, description, embeddedAudioDescription }) => ({ name, kind, description, embeddedAudioDescription })),
+            },
+            resultTemplate: { text: "Complete 120-450 word timed H3 renderer direction" },
+          })}
+          parseResponse={parseExternalGenerationDirection}
+          onApply={setRenderPrompt}
+          applyLabel="Validate & load H3 direction"
+        />
         <label>H3 renderer direction <span className={wordCount >= 120 && wordCount <= 450 ? "valid" : ""}>{wordCount} / 120–450 words</span><textarea rows={10} maxLength={65536} disabled={h3Active || Boolean(activeRequestId)} value={renderPrompt} onChange={(event) => setRenderPrompt(event.target.value)} placeholder="You may write the complete H3 direction yourself, or ask the Director above." /></label>
         <div className="generation-render-settings"><label>Duration<input type="number" min={1} max={15} step={1} disabled={h3Active} value={mode === "transition" ? duration : shotDuration} onChange={(event) => { const value = Number(event.target.value); if (mode === "transition") { setDuration(value); setCheckpointRequestId(""); } else setShotDuration(value); }} /></label><label>Seed<input type="number" min={0} max={Number.MAX_SAFE_INTEGER} disabled={h3Active} value={seed} onChange={(event) => setSeed(Number(event.target.value))} /></label></div>
         {mode === "transition" && <fieldset disabled={h3Active}><legend>After generation</legend><label><input type="radio" name="transition-placement" checked={placement === "add_to_masters"} onChange={() => setPlacement("add_to_masters")} /> Keep as an audition in Masters</label>{!sameShotRange && <label><input type="radio" name="transition-placement" checked={placement === (transitionPosition === "before" ? "insert_before_right" : "insert_after_left")} onChange={() => setPlacement(transitionPosition === "before" ? "insert_before_right" : "insert_after_left")} /> {transitionPosition === "before" ? "Place before the story" : transitionPosition === "after" ? "Place after the story" : "Place at this cut"}</label>}{transitionPosition === "between" && <label><input type="radio" name="transition-placement" checked={placement === "replace_range"} onChange={() => setPlacement("replace_range")} /> Replace the selected endpoint range</label>}</fieldset>}

@@ -1357,6 +1357,15 @@ pre .speech-word-active, code .speech-word-active {
 .external-plan-drop textarea { min-height: 150px; border: 0; background: transparent; font: 8px/1.5 var(--mono); }
 .external-plan-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .external-plan-actions span { min-width: 0; color: #829086; font: 8px/1.45 var(--sans); }
+.prompt-assist-bar > .external-collaboration-exchange { grid-column: 1 / -1; width: 100%; margin: 2px 0 0; }
+.external-collaboration-exchange[aria-busy="true"] > summary { cursor: default; opacity: .68; }
+.image-inspector-body > .external-collaboration-exchange { margin: 0 0 9px; border-color: #4a4d52; background: #26282c; }
+.image-inspector-body > .external-collaboration-exchange > summary span { color: #d7d9dc; }
+.image-inspector-body > .external-collaboration-exchange > summary small { color: #a1a5ab; }
+.image-inspector-body > .external-collaboration-exchange .external-plan-body { border-color: #484b50; background: #202226; }
+.music-external-collaborators { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.music-external-collaborators .external-collaboration-exchange { min-width: 0; margin: 0; }
+.generation-inspector > .external-collaboration-exchange { margin: 8px 0; }
 .planned-clip-fields .previous-frame-toggle { align-content: end; text-transform: none; }
 .previous-frame-toggle span { min-height: 35px; display: flex; align-items: center; gap: 7px; color: #9aa9a0; font: 8px var(--sans); }
 .previous-frame-toggle small, .planned-clip-fields fieldset > small, .producer-feedback label > small { display: block; color: #6f7d74; font: 8px/1.45 var(--sans); text-transform: none; }
