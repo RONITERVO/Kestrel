@@ -430,10 +430,10 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByRole("button", { name: /Insert before/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Add scene at end/i })).toBeDisabled();
     expect(screen.getByPlaceholderText(/Keep the flashback isolated/i)).toBeDisabled();
-    fireEvent.click(screen.getByText(/External LLM plan exchange/i));
-    expect(screen.getByRole("button", { name: /Copy model brief/i })).toBeDisabled();
-    expect(screen.getByLabelText("Choose external plan response")).toBeDisabled();
-    expect(screen.getByLabelText("External plan JSON")).toBeDisabled();
+    fireEvent.click(screen.getByText(/Use another chat or agent/i));
+    expect(screen.getByRole("button", { name: /Copy request/i })).toBeDisabled();
+    expect(screen.getByLabelText("Choose Use another chat or agent response")).toBeDisabled();
+    expect(screen.getByLabelText("Use another chat or agent JSON response")).toBeDisabled();
   });
 
   it("creates scene IDs independently of insertion index and retries collisions", () => {

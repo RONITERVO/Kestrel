@@ -14,6 +14,8 @@ import {
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "./ModelRuntimePolicy";
 import type { RuntimePolicyValue } from "./ModelRuntimePolicy";
+import { ExternalCollaborationExchange } from "./ExternalCollaborationExchange";
+import { buildExternalCollaborationRequest, parseExternalCollaborationResult } from "./externalCollaboration";
 import type {
   ControlSettings, ImageElement, ImageGenerationEvent, ImageProject, ImageSummary, ImageTake, ModelInfo,
   PromptDraftReceipt, ThinkingLevel,
@@ -430,6 +432,32 @@ export function ImageStudio({
           </select>
           <button disabled={busy || !modelId} onClick={() => void startCollaboration()}><Sparkles /> Develop design</button>
         </div>
+        <ExternalCollaborationExchange
+          title="Use another chat or agent"
+          summary="Copy the visible art brief and exact layout schema out; validate a structured design back into this project."
+          disabled={busy || assistantBusy}
+          buildRequest={() => buildExternalCollaborationRequest({
+            target: "image-design",
+            role: "a senior image art director and layout designer",
+            instructions: [
+              "Return a complete image design object in result using the exact supplied field names and normalized 0-1000 bounding boxes.",
+              "Use at most 64 elements. Each element type must be obj or text; text elements need exact text; all palettes use #RRGGBB colors.",
+              "style_description must contain exactly one of photo or art_style, plus aesthetics, lighting, medium, and an optional palette of at most 16 colors.",
+              "Preserve intentional producer wording and layout constraints while replacing incomplete notes with a coherent production-ready design.",
+            ],
+            context: { producerBrief: project.idea, currentEditableDesign: compiledPrompt(project), canvas: { width: project.settings.width, height: project.settings.height } },
+            resultTemplate: {
+              high_level_description: "Complete image description",
+              style_description: { aesthetics: "Visual qualities", lighting: "Lighting", medium: "Medium", photo: "Photo treatment", color_palette: ["#112233"] },
+              compositional_deconstruction: { background: "Complete background", elements: [{ type: "obj", bbox: [100, 100, 900, 900], desc: "Visible object", color_palette: ["#112233"] }] },
+            },
+          })}
+          parseResponse={(text) => parseImageProposal(JSON.stringify(parseExternalCollaborationResult(text, "image-design")))}
+          onApply={(proposal) => {
+            mutate((current) => ({ ...current, ...proposal }));
+            setSelectedElementId(proposal.elements[0]?.id ?? "");
+          }}
+        />
         <details className="workspace-runtime-policy"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} disabled={busy} expert={advancedEnabled} scope="Image collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
         <label>High-level description<textarea disabled={busy} value={project.highLevelDescription} onChange={(event) => mutate((current) => ({ ...current, highLevelDescription: event.target.value }))} /></label>
         <div className="image-output-controls"><label>Canvas<select disabled={busy} value={`${project.settings.width}x${project.settings.height}`} onChange={(event) => { const [, width, height] = SIZE_PRESETS.find((item) => `${item[1]}x${item[2]}` === event.target.value) ?? SIZE_PRESETS[0]; mutate((current) => ({ ...current, settings: { ...current.settings, width, height } })); }}>{SIZE_PRESETS.map(([label, width, height]) => <option key={label} value={`${width}x${height}`}>{label}</option>)}</select></label><label>Variations<select disabled={busy} value={project.settings.batchSize} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, batchSize: Number(event.target.value) } }))}><option value={1}>1 image</option><option value={2}>2 images</option><option value={4}>4 images</option></select></label></div>

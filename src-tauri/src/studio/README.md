@@ -15,6 +15,12 @@ and must not acquire authority implicitly.
   `WorkspaceAction` contract. `generation_agent.rs` writes only a checked candidate workspace;
   rendering and storyline placement remain separate, explicit producer actions. Producer Copilot
   proposes edits but cannot apply them.
+- External collaboration is a manual data boundary, not a runtime provider. React workspaces may
+  copy a bounded, versioned request for a producer to use elsewhere and parse the matching JSON
+  response into an unsaved editable draft. Kestrel makes no network request, stores no external
+  credentials, never executes returned text, and applies the same field-specific validation used
+  for producer-authored content. External responses never receive Computer Tasks or movie-workspace
+  mutation authority.
 - `project.json`, immutable reference objects, raw masters, edit decisions, receipts, transcripts,
   and planning controls are durable user data. Interrupted work is surfaced, never silently resumed.
 - The model receives the original producer request and a fresh authoritative workspace snapshot on
