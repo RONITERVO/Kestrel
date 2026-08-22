@@ -612,7 +612,7 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
 .control-chat pre { max-height: 480px; overflow: auto; white-space: pre; }
 
 /* Markdown & Rich Content Formatting */
-.markdown-content { font: 13px/1.65 var(--sans); color: #dbe6de; word-break: break-word; }
+.markdown-content { font: 13px/1.65 var(--sans); color: #dbe6de; overflow-wrap: break-word; }
 .markdown-content.streaming .stream-cursor-pulse { display: inline-block; width: 7px; height: 14px; margin-left: 4px; vertical-align: -2px; background: #b7e866; border-radius: 2px; animation: cursor-pulse 0.9s infinite; }
 @keyframes cursor-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 

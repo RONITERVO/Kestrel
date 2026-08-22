@@ -110,6 +110,29 @@ export function cleanProseForSpeech(raw: string, stripCodeBlocks = true): string
 
   let text = raw;
 
+  // Replace compact scientific and dashboard notation with stable spoken phrases before table
+  // conversion or generic symbol stripping. These forms otherwise make local TTS models spell or
+  // repeat glyphs and make Whisper alignment diverge from the producer-visible source.
+  text = text
+    .replace(/`?\[(\d{2}):(\d{2})\]`?/g, "At $1 $2,")
+    .replace(/\be\.g\.,?/gi, "for example,")
+    .replace(/\bi\.e\.,?/gi, "that is,")
+    .replace(/CO₂/gi, "carbon dioxide")
+    .replace(/O₂/gi, "oxygen")
+    .replace(/Δ\s*/g, "change in ")
+    .replace(/≥/g, " at least ")
+    .replace(/≤/g, " at most ")
+    .replace(/↑/g, " rising ")
+    .replace(/↓/g, " falling ")
+    .replace(/→/g, " then ")
+    .replace(/(\d+(?:[.,]\d+)?)\s*\/\s*(\d+(?:[.,]\d+)?)/g, "$1 out of $2")
+    .replace(/\b(\d+)\.(\d+)\b/g, "$1 point $2");
+
+  // MediaWiki and similar excerpts can contain inline stylesheet rules that are not prose.
+  text = text
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/[.#][\w-]+(?:\s+[.#][\w-]+)*\s*\{[^{}]*\}/g, " ");
+
   // 1. Replace multi-line code blocks with a natural spoken cue
   if (stripCodeBlocks) {
     text = text.replace(/```[\s\S]*?```/g, " Code block on screen. ");
@@ -129,10 +152,10 @@ export function cleanProseForSpeech(raw: string, stripCodeBlocks = true): string
   text = convertTablesAndCharts(text);
 
   // 4. Natural pronunciation of numbers, ranges, and approximations
+  // ISO dates must be handled before generic numeric ranges and signed values.
+  text = text.replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, "$1 $2 $3");
   // Date ranges: 10,000-8,000 -> 10,000 to 8,000
   text = text.replace(/(\d+(?:,\d+)?)\s*[-–—]\s*(\d+(?:,\d+)?)/g, "$1 to $2");
-  // Negative dates / circa prefix: -10,000 -> c. 10,000
-  text = text.replace(/(?<=\s|^)-(\d+(?:,\d+)?)/g, "c. $1");
   // Approximation tildes: ~1,000 -> approximately 1,000
   text = text.replace(/~+(\d+(?:,\d+)?)/g, "approximately $1");
   // Mathematical plus: foragers + first farmers -> foragers plus first farmers
@@ -230,6 +253,30 @@ export function cleanProseForSpeech(raw: string, stripCodeBlocks = true): string
   return text.replace(/\s+/g, " ").trim();
 }
 
+function splitSpeechSentences(value: string): string[] {
+  const sentences: string[] = [];
+  let start = 0;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (character !== "." && character !== "!" && character !== "?") continue;
+    if (character === "." && /\d/.test(value[index - 1] ?? "") && /\d/.test(value[index + 1] ?? "")) {
+      continue;
+    }
+    let boundary = index;
+    while (/[.!?]/.test(value[boundary + 1] ?? "")) boundary += 1;
+    while (/["'’”)]/.test(value[boundary + 1] ?? "")) boundary += 1;
+    const following = value[boundary + 1];
+    if (following && !/\s/.test(following)) continue;
+    const sentence = normalizedSpeechText(value.slice(start, boundary + 1));
+    if (sentence) sentences.push(sentence);
+    start = boundary + 1;
+    index = boundary;
+  }
+  const tail = normalizedSpeechText(value.slice(start));
+  if (tail) sentences.push(tail);
+  return sentences;
+}
+
 export function splitForSpeech(
   text: string,
   maxChars = MAX_PASSAGE_CHARS,
@@ -239,7 +286,7 @@ export function splitForSpeech(
   if (!value) return [];
   if (value.length <= maxChars) return [value];
 
-  const sentences = value.match(/[^.!?]+(?:[.!?]+["'\u2019\u201d)]*|$)/g)?.map(normalizedSpeechText).filter(Boolean) ?? [value];
+  const sentences = splitSpeechSentences(value);
   const chunks: string[] = [];
   let pending = "";
   const flush = () => {

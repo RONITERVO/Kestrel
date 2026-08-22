@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   getActiveWordIndex,
   isPassageActiveForText,
+  mapSpeechTimingsToTextWords,
+  speechPlaybackEnd,
   SpokenText,
   wordTimings,
   type SpeechProgressState,
@@ -13,6 +15,36 @@ afterEach(() => {
 });
 
 describe("spokenHighlight word-level alignment engine", () => {
+  it("keeps source highlights aligned when Whisper expands and omits written tokens", () => {
+    const timings = [
+      "oxygen", "concentration", "nineteen", "point", "eight", "percent",
+      "is", "safe", "and", "power", "recovers",
+    ].map((value, index) => ({ value, start: index, end: index + 1 }));
+    const mapped = mapSpeechTimingsToTextWords(
+      "O concentration 19.8 percent is safe. Power recovers.",
+      timings,
+    );
+
+    expect(mapped).toHaveLength(timings.length);
+    expect(mapped.every((value, index) => index === 0 || value >= mapped[index - 1])).toBe(true);
+    expect(mapped[1]).toBe(1);
+    expect(mapped[5]).toBe(4);
+    expect(mapped[6]).toBe(5);
+    expect(mapped[9]).toBe(7);
+    expect(mapped[10]).toBe(8);
+  });
+
+  it("stops producer playback after the final aligned source word, not a hallucinated tail", () => {
+    const timings = [
+      { value: "Text", start: 0, end: 0.4 },
+      { value: "art", start: 0.4, end: 0.8 },
+      { value: "invented", start: 0.9, end: 1.3 },
+      { value: "ending", start: 1.3, end: 1.7 },
+    ];
+    expect(speechPlaybackEnd("Text art.", timings, 1.9)).toBeCloseTo(1.15);
+    expect(speechPlaybackEnd("Text art invented ending.", timings, 1.9)).toBe(1.9);
+  });
+
   it("calculates proportional word timings when exact Whisper timings are pending", () => {
     const text = "Hello world from Kestrel";
     const timings = wordTimings(text, 2.0);

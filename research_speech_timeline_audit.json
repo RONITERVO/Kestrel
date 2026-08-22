@@ -2,13 +2,13 @@
   "summary": {
     "reportId": "81b9e9dc-f22b-4596-8439-ab4591919368",
     "reportTitle": "How old was the first person to walk on the moon when the Berlin Wall fell?",
-    "totalPassages": 78,
-    "totalDurationSec": 774.08,
-    "totalFramesTested": 7786,
-    "successfulMarksCount": 7757,
-    "accuracyPercent": 99.63,
+    "totalPassages": 77,
+    "totalDurationSec": 765.76,
+    "totalFramesTested": 7704,
+    "successfulMarksCount": 7695,
+    "accuracyPercent": 99.88,
     "anomaliesCount": 0,
-    "timestamp": "2026-08-21T13:10:56.686Z"
+    "timestamp": "2026-08-22T19:36:30.987Z"
   },
   "passageAudits": [
     {
@@ -5544,242 +5544,227 @@
     {
       "passageId": "article:timeline-1",
       "index": 22,
-      "rawText": "1930 to 08minus 05. Armstrong's birth. Neil Armstrong was born",
-      "cleanedText": "1930 to 08minus 05. Armstrong's birth. Neil Armstrong was born",
-      "durationSec": 3.2,
-      "wordsCount": 10,
+      "rawText": "1930 08 05. Armstrong's birth. Neil Armstrong was born",
+      "cleanedText": "1930 08 05. Armstrong's birth. Neil Armstrong was born",
+      "durationSec": 2.88,
+      "wordsCount": 9,
       "timings": [
         {
           "value": "1930",
           "start": 0,
-          "end": 0.256
+          "end": 0.267906976744186
         },
         {
-          "value": "to",
-          "start": 0.256,
-          "end": 0.38400000000000006
-        },
-        {
-          "value": "08minus",
-          "start": 0.38400000000000006,
-          "end": 0.8320000000000001
+          "value": "08",
+          "start": 0.267906976744186,
+          "end": 0.4018604651162791
         },
         {
           "value": "05.",
-          "start": 0.8320000000000001,
-          "end": 0.96
+          "start": 0.4018604651162791,
+          "end": 0.535813953488372
         },
         {
           "value": "Armstrong's",
-          "start": 0.96,
-          "end": 1.6
+          "start": 0.535813953488372,
+          "end": 1.205581395348837
         },
         {
           "value": "birth.",
-          "start": 1.6,
-          "end": 1.92
+          "start": 1.205581395348837,
+          "end": 1.5404651162790697
         },
         {
           "value": "Neil",
-          "start": 1.92,
-          "end": 2.176
+          "start": 1.5404651162790697,
+          "end": 1.8083720930232556
         },
         {
           "value": "Armstrong",
-          "start": 2.176,
-          "end": 2.752
+          "start": 1.8083720930232556,
+          "end": 2.411162790697674
         },
         {
           "value": "was",
-          "start": 2.752,
-          "end": 2.9440000000000004
+          "start": 2.411162790697674,
+          "end": 2.612093023255814
         },
         {
           "value": "born",
-          "start": 2.9440000000000004,
-          "end": 3.2
+          "start": 2.612093023255814,
+          "end": 2.88
         }
       ],
-      "highlightCoveragePercent": 91,
+      "highlightCoveragePercent": 100,
       "anomaliesCount": 0
     },
     {
       "passageId": "article:timeline-2",
       "index": 23,
-      "rawText": "1969 to 07minus 20. First moon landing. Neil Armstrong walked on the moon during the Apollo 11 mission",
-      "cleanedText": "1969 to 07minus 20. First moon landing. Neil Armstrong walked on the moon during the Apollo 11 mission",
-      "durationSec": 5.76,
-      "wordsCount": 18,
+      "rawText": "1969 07 20. First moon landing. Neil Armstrong walked on the moon during the Apollo 11 mission",
+      "cleanedText": "1969 07 20. First moon landing. Neil Armstrong walked on the moon during the Apollo 11 mission",
+      "durationSec": 5.44,
+      "wordsCount": 17,
       "timings": [
         {
           "value": "1969",
           "start": 0,
-          "end": 0.27759036144578314
+          "end": 0.28631578947368425
         },
         {
-          "value": "to",
-          "start": 0.27759036144578314,
-          "end": 0.41638554216867474
-        },
-        {
-          "value": "07minus",
-          "start": 0.41638554216867474,
-          "end": 0.9021686746987951
+          "value": "07",
+          "start": 0.28631578947368425,
+          "end": 0.42947368421052634
         },
         {
           "value": "20.",
-          "start": 0.9021686746987951,
-          "end": 1.0409638554216867
+          "start": 0.42947368421052634,
+          "end": 0.5726315789473685
         },
         {
           "value": "First",
-          "start": 1.0409638554216867,
-          "end": 1.3879518072289154
+          "start": 0.5726315789473685,
+          "end": 0.9305263157894736
         },
         {
           "value": "moon",
-          "start": 1.3879518072289154,
-          "end": 1.665542168674699
+          "start": 0.9305263157894736,
+          "end": 1.216842105263158
         },
         {
           "value": "landing.",
-          "start": 1.665542168674699,
-          "end": 2.1513253012048192
+          "start": 1.216842105263158,
+          "end": 1.7178947368421054
         },
         {
           "value": "Neil",
-          "start": 2.1513253012048192,
-          "end": 2.4289156626506023
+          "start": 1.7178947368421054,
+          "end": 2.0042105263157897
         },
         {
           "value": "Armstrong",
-          "start": 2.4289156626506023,
-          "end": 3.0534939759036144
+          "start": 2.0042105263157897,
+          "end": 2.648421052631579
         },
         {
           "value": "walked",
-          "start": 3.0534939759036144,
-          "end": 3.4698795180722892
+          "start": 2.648421052631579,
+          "end": 3.0778947368421057
         },
         {
           "value": "on",
-          "start": 3.4698795180722892,
-          "end": 3.6086746987951805
+          "start": 3.0778947368421057,
+          "end": 3.2210526315789476
         },
         {
           "value": "the",
-          "start": 3.6086746987951805,
-          "end": 3.816867469879518
+          "start": 3.2210526315789476,
+          "end": 3.4357894736842107
         },
         {
           "value": "moon",
-          "start": 3.816867469879518,
-          "end": 4.094457831325301
+          "start": 3.4357894736842107,
+          "end": 3.7221052631578946
         },
         {
           "value": "during",
-          "start": 4.094457831325301,
-          "end": 4.510843373493976
+          "start": 3.7221052631578946,
+          "end": 4.151578947368422
         },
         {
           "value": "the",
-          "start": 4.510843373493976,
-          "end": 4.719036144578314
+          "start": 4.151578947368422,
+          "end": 4.366315789473685
         },
         {
           "value": "Apollo",
-          "start": 4.719036144578314,
-          "end": 5.135421686746988
+          "start": 4.366315789473685,
+          "end": 4.795789473684211
         },
         {
           "value": "11",
-          "start": 5.135421686746988,
-          "end": 5.274216867469879
+          "start": 4.795789473684211,
+          "end": 4.9389473684210525
         },
         {
           "value": "mission",
-          "start": 5.274216867469879,
-          "end": 5.76
+          "start": 4.9389473684210525,
+          "end": 5.44
         }
       ],
-      "highlightCoveragePercent": 92,
+      "highlightCoveragePercent": 96,
       "anomaliesCount": 0
     },
     {
       "passageId": "article:timeline-3",
       "index": 24,
-      "rawText": "1989 to 11minus 09. Berlin Wall fell. The Berlin Wall was taken down",
-      "cleanedText": "1989 to 11minus 09. Berlin Wall fell. The Berlin Wall was taken down",
-      "durationSec": 4.16,
-      "wordsCount": 13,
+      "rawText": "1989 11 09. Berlin Wall fell. The Berlin Wall was taken down",
+      "cleanedText": "1989 11 09. Berlin Wall fell. The Berlin Wall was taken down",
+      "durationSec": 3.84,
+      "wordsCount": 12,
       "timings": [
         {
           "value": "1989",
           "start": 0,
-          "end": 0.30814814814814817
+          "end": 0.32680851063829786
         },
         {
-          "value": "to",
-          "start": 0.30814814814814817,
-          "end": 0.46222222222222226
-        },
-        {
-          "value": "11minus",
-          "start": 0.46222222222222226,
-          "end": 1.0014814814814814
+          "value": "11",
+          "start": 0.32680851063829786,
+          "end": 0.4902127659574468
         },
         {
           "value": "09.",
-          "start": 1.0014814814814814,
-          "end": 1.1555555555555557
+          "start": 0.4902127659574468,
+          "end": 0.6536170212765957
         },
         {
           "value": "Berlin",
-          "start": 1.1555555555555557,
-          "end": 1.6177777777777778
+          "start": 0.6536170212765957,
+          "end": 1.1438297872340426
         },
         {
           "value": "Wall",
-          "start": 1.6177777777777778,
-          "end": 1.9259259259259258
+          "start": 1.1438297872340426,
+          "end": 1.4706382978723405
         },
         {
           "value": "fell.",
-          "start": 1.9259259259259258,
-          "end": 2.234074074074074
+          "start": 1.4706382978723405,
+          "end": 1.797446808510638
         },
         {
           "value": "The",
-          "start": 2.234074074074074,
-          "end": 2.4651851851851854
+          "start": 1.797446808510638,
+          "end": 2.0425531914893615
         },
         {
           "value": "Berlin",
-          "start": 2.4651851851851854,
-          "end": 2.9274074074074075
+          "start": 2.0425531914893615,
+          "end": 2.5327659574468084
         },
         {
           "value": "Wall",
-          "start": 2.9274074074074075,
-          "end": 3.2355555555555555
+          "start": 2.5327659574468084,
+          "end": 2.8595744680851065
         },
         {
           "value": "was",
-          "start": 3.2355555555555555,
-          "end": 3.466666666666667
+          "start": 2.8595744680851065,
+          "end": 3.1046808510638297
         },
         {
           "value": "taken",
-          "start": 3.466666666666667,
-          "end": 3.8518518518518516
+          "start": 3.1046808510638297,
+          "end": 3.5131914893617022
         },
         {
           "value": "down",
-          "start": 3.8518518518518516,
-          "end": 4.16
+          "start": 3.5131914893617022,
+          "end": 3.84
         }
       ],
-      "highlightCoveragePercent": 91,
+      "highlightCoveragePercent": 100,
       "anomaliesCount": 0
     },
     {
@@ -10272,242 +10257,227 @@
     {
       "passageId": "all:timeline-1",
       "index": 22,
-      "rawText": "1930 to 08minus 05. Armstrong's birth. Neil Armstrong was born",
-      "cleanedText": "1930 to 08minus 05. Armstrong's birth. Neil Armstrong was born",
-      "durationSec": 3.2,
-      "wordsCount": 10,
+      "rawText": "1930 08 05. Armstrong's birth. Neil Armstrong was born",
+      "cleanedText": "1930 08 05. Armstrong's birth. Neil Armstrong was born",
+      "durationSec": 2.88,
+      "wordsCount": 9,
       "timings": [
         {
           "value": "1930",
           "start": 0,
-          "end": 0.256
+          "end": 0.267906976744186
         },
         {
-          "value": "to",
-          "start": 0.256,
-          "end": 0.38400000000000006
-        },
-        {
-          "value": "08minus",
-          "start": 0.38400000000000006,
-          "end": 0.8320000000000001
+          "value": "08",
+          "start": 0.267906976744186,
+          "end": 0.4018604651162791
         },
         {
           "value": "05.",
-          "start": 0.8320000000000001,
-          "end": 0.96
+          "start": 0.4018604651162791,
+          "end": 0.535813953488372
         },
         {
           "value": "Armstrong's",
-          "start": 0.96,
-          "end": 1.6
+          "start": 0.535813953488372,
+          "end": 1.205581395348837
         },
         {
           "value": "birth.",
-          "start": 1.6,
-          "end": 1.92
+          "start": 1.205581395348837,
+          "end": 1.5404651162790697
         },
         {
           "value": "Neil",
-          "start": 1.92,
-          "end": 2.176
+          "start": 1.5404651162790697,
+          "end": 1.8083720930232556
         },
         {
           "value": "Armstrong",
-          "start": 2.176,
-          "end": 2.752
+          "start": 1.8083720930232556,
+          "end": 2.411162790697674
         },
         {
           "value": "was",
-          "start": 2.752,
-          "end": 2.9440000000000004
+          "start": 2.411162790697674,
+          "end": 2.612093023255814
         },
         {
           "value": "born",
-          "start": 2.9440000000000004,
-          "end": 3.2
+          "start": 2.612093023255814,
+          "end": 2.88
         }
       ],
-      "highlightCoveragePercent": 91,
+      "highlightCoveragePercent": 100,
       "anomaliesCount": 0
     },
     {
       "passageId": "all:timeline-2",
       "index": 23,
-      "rawText": "1969 to 07minus 20. First moon landing. Neil Armstrong walked on the moon during the Apollo 11 mission",
-      "cleanedText": "1969 to 07minus 20. First moon landing. Neil Armstrong walked on the moon during the Apollo 11 mission",
-      "durationSec": 5.76,
-      "wordsCount": 18,
+      "rawText": "1969 07 20. First moon landing. Neil Armstrong walked on the moon during the Apollo 11 mission",
+      "cleanedText": "1969 07 20. First moon landing. Neil Armstrong walked on the moon during the Apollo 11 mission",
+      "durationSec": 5.44,
+      "wordsCount": 17,
       "timings": [
         {
           "value": "1969",
           "start": 0,
-          "end": 0.27759036144578314
+          "end": 0.28631578947368425
         },
         {
-          "value": "to",
-          "start": 0.27759036144578314,
-          "end": 0.41638554216867474
-        },
-        {
-          "value": "07minus",
-          "start": 0.41638554216867474,
-          "end": 0.9021686746987951
+          "value": "07",
+          "start": 0.28631578947368425,
+          "end": 0.42947368421052634
         },
         {
           "value": "20.",
-          "start": 0.9021686746987951,
-          "end": 1.0409638554216867
+          "start": 0.42947368421052634,
+          "end": 0.5726315789473685
         },
         {
           "value": "First",
-          "start": 1.0409638554216867,
-          "end": 1.3879518072289154
+          "start": 0.5726315789473685,
+          "end": 0.9305263157894736
         },
         {
           "value": "moon",
-          "start": 1.3879518072289154,
-          "end": 1.665542168674699
+          "start": 0.9305263157894736,
+          "end": 1.216842105263158
         },
         {
           "value": "landing.",
-          "start": 1.665542168674699,
-          "end": 2.1513253012048192
+          "start": 1.216842105263158,
+          "end": 1.7178947368421054
         },
         {
           "value": "Neil",
-          "start": 2.1513253012048192,
-          "end": 2.4289156626506023
+          "start": 1.7178947368421054,
+          "end": 2.0042105263157897
         },
         {
           "value": "Armstrong",
-          "start": 2.4289156626506023,
-          "end": 3.0534939759036144
+          "start": 2.0042105263157897,
+          "end": 2.648421052631579
         },
         {
           "value": "walked",
-          "start": 3.0534939759036144,
-          "end": 3.4698795180722892
+          "start": 2.648421052631579,
+          "end": 3.0778947368421057
         },
         {
           "value": "on",
-          "start": 3.4698795180722892,
-          "end": 3.6086746987951805
+          "start": 3.0778947368421057,
+          "end": 3.2210526315789476
         },
         {
           "value": "the",
-          "start": 3.6086746987951805,
-          "end": 3.816867469879518
+          "start": 3.2210526315789476,
+          "end": 3.4357894736842107
         },
         {
           "value": "moon",
-          "start": 3.816867469879518,
-          "end": 4.094457831325301
+          "start": 3.4357894736842107,
+          "end": 3.7221052631578946
         },
         {
           "value": "during",
-          "start": 4.094457831325301,
-          "end": 4.510843373493976
+          "start": 3.7221052631578946,
+          "end": 4.151578947368422
         },
         {
           "value": "the",
-          "start": 4.510843373493976,
-          "end": 4.719036144578314
+          "start": 4.151578947368422,
+          "end": 4.366315789473685
         },
         {
           "value": "Apollo",
-          "start": 4.719036144578314,
-          "end": 5.135421686746988
+          "start": 4.366315789473685,
+          "end": 4.795789473684211
         },
         {
           "value": "11",
-          "start": 5.135421686746988,
-          "end": 5.274216867469879
+          "start": 4.795789473684211,
+          "end": 4.9389473684210525
         },
         {
           "value": "mission",
-          "start": 5.274216867469879,
-          "end": 5.76
+          "start": 4.9389473684210525,
+          "end": 5.44
         }
       ],
-      "highlightCoveragePercent": 92,
+      "highlightCoveragePercent": 99,
       "anomaliesCount": 0
     },
     {
       "passageId": "all:timeline-3",
       "index": 24,
-      "rawText": "1989 to 11minus 09. Berlin Wall fell. The Berlin Wall was taken down",
-      "cleanedText": "1989 to 11minus 09. Berlin Wall fell. The Berlin Wall was taken down",
-      "durationSec": 4.16,
-      "wordsCount": 13,
+      "rawText": "1989 11 09. Berlin Wall fell. The Berlin Wall was taken down",
+      "cleanedText": "1989 11 09. Berlin Wall fell. The Berlin Wall was taken down",
+      "durationSec": 3.84,
+      "wordsCount": 12,
       "timings": [
         {
           "value": "1989",
           "start": 0,
-          "end": 0.30814814814814817
+          "end": 0.32680851063829786
         },
         {
-          "value": "to",
-          "start": 0.30814814814814817,
-          "end": 0.46222222222222226
-        },
-        {
-          "value": "11minus",
-          "start": 0.46222222222222226,
-          "end": 1.0014814814814814
+          "value": "11",
+          "start": 0.32680851063829786,
+          "end": 0.4902127659574468
         },
         {
           "value": "09.",
-          "start": 1.0014814814814814,
-          "end": 1.1555555555555557
+          "start": 0.4902127659574468,
+          "end": 0.6536170212765957
         },
         {
           "value": "Berlin",
-          "start": 1.1555555555555557,
-          "end": 1.6177777777777778
+          "start": 0.6536170212765957,
+          "end": 1.1438297872340426
         },
         {
           "value": "Wall",
-          "start": 1.6177777777777778,
-          "end": 1.9259259259259258
+          "start": 1.1438297872340426,
+          "end": 1.4706382978723405
         },
         {
           "value": "fell.",
-          "start": 1.9259259259259258,
-          "end": 2.234074074074074
+          "start": 1.4706382978723405,
+          "end": 1.797446808510638
         },
         {
           "value": "The",
-          "start": 2.234074074074074,
-          "end": 2.4651851851851854
+          "start": 1.797446808510638,
+          "end": 2.0425531914893615
         },
         {
           "value": "Berlin",
-          "start": 2.4651851851851854,
-          "end": 2.9274074074074075
+          "start": 2.0425531914893615,
+          "end": 2.5327659574468084
         },
         {
           "value": "Wall",
-          "start": 2.9274074074074075,
-          "end": 3.2355555555555555
+          "start": 2.5327659574468084,
+          "end": 2.8595744680851065
         },
         {
           "value": "was",
-          "start": 3.2355555555555555,
-          "end": 3.466666666666667
+          "start": 2.8595744680851065,
+          "end": 3.1046808510638297
         },
         {
           "value": "taken",
-          "start": 3.466666666666667,
-          "end": 3.8518518518518516
+          "start": 3.1046808510638297,
+          "end": 3.5131914893617022
         },
         {
           "value": "down",
-          "start": 3.8518518518518516,
-          "end": 4.16
+          "start": 3.5131914893617022,
+          "end": 3.84
         }
       ],
-      "highlightCoveragePercent": 91,
+      "highlightCoveragePercent": 100,
       "anomaliesCount": 0
     },
     {
@@ -11879,150 +11849,90 @@
     {
       "passageId": "all:source-2-1",
       "index": 33,
-      "rawText": "Source S2. Neil Armstrong. Neil Armstrong Purdue University, B. S. University of Southern California, M. S. / start simple. wikipedia. org /. mw-parser-output. marriage-line-margin2px{line-height:0;margin-bottom:minus 2px}. mw-parser-output. marriage-line-margin3px{line-height:0;margin-bottom:minus 3px}.",
-      "cleanedText": "Source S2. Neil Armstrong. Neil Armstrong Purdue University, B. S. University of Southern California, M. S. / start simple. wikipedia. org /. mw-parser-output. marriage-line-margin2px{line-height:0;margin-bottom:minus 2px}. mw-parser-output. marriage-line-margin3px{line-height:0;margin-bottom:minus 3px}.",
-      "durationSec": 8.96,
-      "wordsCount": 28,
+      "rawText": "Source S2. Neil Armstrong. Neil Armstrong Purdue University, B. S. University of Southern California, M. S.",
+      "cleanedText": "Source S2. Neil Armstrong. Neil Armstrong Purdue University, B. S. University of Southern California, M. S.",
+      "durationSec": 5.12,
+      "wordsCount": 16,
       "timings": [
         {
           "value": "Source",
           "start": 0,
-          "end": 0.22307053941908717
+          "end": 0.3657142857142857
         },
         {
           "value": "S2.",
-          "start": 0.22307053941908717,
-          "end": 0.2974273858921162
+          "start": 0.3657142857142857,
+          "end": 0.4876190476190476
         },
         {
           "value": "Neil",
-          "start": 0.2974273858921162,
-          "end": 0.44614107883817433
+          "start": 0.4876190476190476,
+          "end": 0.7314285714285714
         },
         {
           "value": "Armstrong.",
-          "start": 0.44614107883817433,
-          "end": 0.7807468879668051
+          "start": 0.7314285714285714,
+          "end": 1.28
         },
         {
           "value": "Neil",
-          "start": 0.7807468879668051,
-          "end": 0.9294605809128632
+          "start": 1.28,
+          "end": 1.5238095238095237
         },
         {
           "value": "Armstrong",
-          "start": 0.9294605809128632,
-          "end": 1.264066390041494
+          "start": 1.5238095238095237,
+          "end": 2.0723809523809527
         },
         {
           "value": "Purdue",
-          "start": 1.264066390041494,
-          "end": 1.487136929460581
+          "start": 2.0723809523809527,
+          "end": 2.4380952380952383
         },
         {
           "value": "University,",
-          "start": 1.487136929460581,
-          "end": 1.8589211618257264
+          "start": 2.4380952380952383,
+          "end": 3.0476190476190474
         },
         {
           "value": "B.",
-          "start": 1.8589211618257264,
-          "end": 1.8960995850622409
+          "start": 3.0476190476190474,
+          "end": 3.1085714285714285
         },
         {
           "value": "S.",
-          "start": 1.8960995850622409,
-          "end": 1.9332780082987555
+          "start": 3.1085714285714285,
+          "end": 3.1695238095238096
         },
         {
           "value": "University",
-          "start": 1.9332780082987555,
-          "end": 2.3050622406639008
+          "start": 3.1695238095238096,
+          "end": 3.779047619047619
         },
         {
           "value": "of",
-          "start": 2.3050622406639008,
-          "end": 2.3794190871369296
+          "start": 3.779047619047619,
+          "end": 3.900952380952381
         },
         {
           "value": "Southern",
-          "start": 2.3794190871369296,
-          "end": 2.676846473029046
+          "start": 3.900952380952381,
+          "end": 4.388571428571429
         },
         {
           "value": "California,",
-          "start": 2.676846473029046,
-          "end": 3.048630705394191
+          "start": 4.388571428571429,
+          "end": 4.998095238095239
         },
         {
           "value": "M.",
-          "start": 3.048630705394191,
-          "end": 3.0858091286307054
+          "start": 4.998095238095239,
+          "end": 5.05904761904762
         },
         {
           "value": "S.",
-          "start": 3.0858091286307054,
-          "end": 3.1229875518672205
-        },
-        {
-          "value": "/",
-          "start": 3.1229875518672205,
-          "end": 3.1601659751037343
-        },
-        {
-          "value": "start",
-          "start": 3.1601659751037343,
-          "end": 3.3460580912863076
-        },
-        {
-          "value": "simple.",
-          "start": 3.3460580912863076,
-          "end": 3.5691286307053947
-        },
-        {
-          "value": "wikipedia.",
-          "start": 3.5691286307053947,
-          "end": 3.9037344398340252
-        },
-        {
-          "value": "org",
-          "start": 3.9037344398340252,
-          "end": 4.015269709543569
-        },
-        {
-          "value": "/.",
-          "start": 4.015269709543569,
-          "end": 4.052448132780083
-        },
-        {
-          "value": "mw-parser-output.",
-          "start": 4.052448132780083,
-          "end": 4.572946058091287
-        },
-        {
-          "value": "marriage-line-margin2px{line-height:0;margin-bottom:minus",
-          "start": 4.572946058091287,
-          "end": 6.394688796680499
-        },
-        {
-          "value": "2px}.",
-          "start": 6.394688796680499,
-          "end": 6.506224066390042
-        },
-        {
-          "value": "mw-parser-output.",
-          "start": 6.506224066390042,
-          "end": 7.026721991701245
-        },
-        {
-          "value": "marriage-line-margin3px{line-height:0;margin-bottom:minus",
-          "start": 7.026721991701245,
-          "end": 8.848464730290457
-        },
-        {
-          "value": "3px}.",
-          "start": 8.848464730290457,
-          "end": 8.96
+          "start": 5.05904761904762,
+          "end": 5.12
         }
       ],
       "highlightCoveragePercent": 100,
@@ -12031,40 +11941,265 @@
     {
       "passageId": "all:source-2-2",
       "index": 34,
-      "rawText": "mw-parser-output. marriage-display-ws{display:inline;white-space:nowrap} / end simple. wikipedia.",
-      "cleanedText": "mw-parser-output. marriage-display-ws{display:inline;white-space:nowrap} / end simple. wikipedia.",
-      "durationSec": 1.92,
-      "wordsCount": 6,
+      "rawText": "Presidential Medal of Freedom Congressional Space Medal of Honor Congressional Gold Medal NASA Distinguished Service Medal NASA Exceptional Service Medal Air Medal (3) 1958 USAF Man In Space Soonest 1960 USAF Dyna-Soar 1962 NASA Group 2 Gemini 8 Apollo 11 Neil Alden Armstrong (August 5, 1930 August 25, 2012) was an",
+      "cleanedText": "Presidential Medal of Freedom Congressional Space Medal of Honor Congressional Gold Medal NASA Distinguished Service Medal NASA Exceptional Service Medal Air Medal (3) 1958 USAF Man In Space Soonest 1960 USAF Dyna-Soar 1962 NASA Group 2 Gemini 8 Apollo 11 Neil Alden Armstrong (August 5, 1930 August 25, 2012) was an",
+      "durationSec": 16.32,
+      "wordsCount": 51,
       "timings": [
         {
-          "value": "mw-parser-output.",
+          "value": "Presidential",
           "start": 0,
-          "end": 0.34025316455696203
+          "end": 0.7561389961389962
         },
         {
-          "value": "marriage-display-ws{display:inline;white-space:nowrap}",
-          "start": 0.34025316455696203,
-          "end": 1.4582278481012656
+          "value": "Medal",
+          "start": 0.7561389961389962,
+          "end": 1.0711969111969113
         },
         {
-          "value": "/",
-          "start": 1.4582278481012656,
-          "end": 1.48253164556962
+          "value": "of",
+          "start": 1.0711969111969113,
+          "end": 1.1972200772200772
         },
         {
-          "value": "end",
-          "start": 1.48253164556962,
-          "end": 1.5554430379746835
+          "value": "Freedom",
+          "start": 1.1972200772200772,
+          "end": 1.6383011583011582
         },
         {
-          "value": "simple.",
-          "start": 1.5554430379746835,
-          "end": 1.70126582278481
+          "value": "Congressional",
+          "start": 1.6383011583011582,
+          "end": 2.4574517374517377
         },
         {
-          "value": "wikipedia.",
-          "start": 1.70126582278481,
-          "end": 1.9200000000000002
+          "value": "Space",
+          "start": 2.4574517374517377,
+          "end": 2.772509652509653
+        },
+        {
+          "value": "Medal",
+          "start": 2.772509652509653,
+          "end": 3.087567567567568
+        },
+        {
+          "value": "of",
+          "start": 3.087567567567568,
+          "end": 3.213590733590734
+        },
+        {
+          "value": "Honor",
+          "start": 3.213590733590734,
+          "end": 3.528648648648649
+        },
+        {
+          "value": "Congressional",
+          "start": 3.528648648648649,
+          "end": 4.347799227799228
+        },
+        {
+          "value": "Gold",
+          "start": 4.347799227799228,
+          "end": 4.59984555984556
+        },
+        {
+          "value": "Medal",
+          "start": 4.59984555984556,
+          "end": 4.9149034749034755
+        },
+        {
+          "value": "NASA",
+          "start": 4.9149034749034755,
+          "end": 5.166949806949807
+        },
+        {
+          "value": "Distinguished",
+          "start": 5.166949806949807,
+          "end": 5.986100386100387
+        },
+        {
+          "value": "Service",
+          "start": 5.986100386100387,
+          "end": 6.427181467181468
+        },
+        {
+          "value": "Medal",
+          "start": 6.427181467181468,
+          "end": 6.742239382239382
+        },
+        {
+          "value": "NASA",
+          "start": 6.742239382239382,
+          "end": 6.994285714285714
+        },
+        {
+          "value": "Exceptional",
+          "start": 6.994285714285714,
+          "end": 7.687413127413127
+        },
+        {
+          "value": "Service",
+          "start": 7.687413127413127,
+          "end": 8.128494208494208
+        },
+        {
+          "value": "Medal",
+          "start": 8.128494208494208,
+          "end": 8.443552123552124
+        },
+        {
+          "value": "Air",
+          "start": 8.443552123552124,
+          "end": 8.632586872586874
+        },
+        {
+          "value": "Medal",
+          "start": 8.632586872586874,
+          "end": 8.947644787644787
+        },
+        {
+          "value": "(3)",
+          "start": 8.947644787644787,
+          "end": 9.010656370656372
+        },
+        {
+          "value": "1958",
+          "start": 9.010656370656372,
+          "end": 9.262702702702702
+        },
+        {
+          "value": "USAF",
+          "start": 9.262702702702702,
+          "end": 9.514749034749036
+        },
+        {
+          "value": "Man",
+          "start": 9.514749034749036,
+          "end": 9.703783783783784
+        },
+        {
+          "value": "In",
+          "start": 9.703783783783784,
+          "end": 9.829806949806951
+        },
+        {
+          "value": "Space",
+          "start": 9.829806949806951,
+          "end": 10.144864864864864
+        },
+        {
+          "value": "Soonest",
+          "start": 10.144864864864864,
+          "end": 10.585945945945946
+        },
+        {
+          "value": "1960",
+          "start": 10.585945945945946,
+          "end": 10.837992277992278
+        },
+        {
+          "value": "USAF",
+          "start": 10.837992277992278,
+          "end": 11.090038610038611
+        },
+        {
+          "value": "Dyna-Soar",
+          "start": 11.090038610038611,
+          "end": 11.594131274131275
+        },
+        {
+          "value": "1962",
+          "start": 11.594131274131275,
+          "end": 11.846177606177605
+        },
+        {
+          "value": "NASA",
+          "start": 11.846177606177605,
+          "end": 12.098223938223938
+        },
+        {
+          "value": "Group",
+          "start": 12.098223938223938,
+          "end": 12.413281853281854
+        },
+        {
+          "value": "2",
+          "start": 12.413281853281854,
+          "end": 12.476293436293437
+        },
+        {
+          "value": "Gemini",
+          "start": 12.476293436293437,
+          "end": 12.854362934362936
+        },
+        {
+          "value": "8",
+          "start": 12.854362934362936,
+          "end": 12.917374517374517
+        },
+        {
+          "value": "Apollo",
+          "start": 12.917374517374517,
+          "end": 13.295444015444016
+        },
+        {
+          "value": "11",
+          "start": 13.295444015444016,
+          "end": 13.42146718146718
+        },
+        {
+          "value": "Neil",
+          "start": 13.42146718146718,
+          "end": 13.673513513513514
+        },
+        {
+          "value": "Alden",
+          "start": 13.673513513513514,
+          "end": 13.988571428571428
+        },
+        {
+          "value": "Armstrong",
+          "start": 13.988571428571428,
+          "end": 14.555675675675676
+        },
+        {
+          "value": "(August",
+          "start": 14.555675675675676,
+          "end": 14.933745173745175
+        },
+        {
+          "value": "5,",
+          "start": 14.933745173745175,
+          "end": 14.996756756756756
+        },
+        {
+          "value": "1930",
+          "start": 14.996756756756756,
+          "end": 15.24880308880309
+        },
+        {
+          "value": "August",
+          "start": 15.24880308880309,
+          "end": 15.626872586872587
+        },
+        {
+          "value": "25,",
+          "start": 15.626872586872587,
+          "end": 15.752895752895753
+        },
+        {
+          "value": "2012)",
+          "start": 15.752895752895753,
+          "end": 16.004942084942083
+        },
+        {
+          "value": "was",
+          "start": 16.004942084942083,
+          "end": 16.193976833976834
+        },
+        {
+          "value": "an",
+          "start": 16.193976833976834,
+          "end": 16.32
         }
       ],
       "highlightCoveragePercent": 100,
@@ -12073,270 +12208,90 @@
     {
       "passageId": "all:source-2-3",
       "index": 35,
-      "rawText": "org / Presidential Medal of Freedom Congressional Space Medal of Honor Congressional Gold Medal NASA Distinguished Service Medal NASA Exceptional Service Medal Air Medal (3) 1958 USAF Man In Space Soonest 1960 USAF Dyna-Soar 1962 NASA Group 2 Gemini 8 Apollo 11 Neil Alden Armstrong (August 5, 1930 August 25, 2012) was",
-      "cleanedText": "org / Presidential Medal of Freedom Congressional Space Medal of Honor Congressional Gold Medal NASA Distinguished Service Medal NASA Exceptional Service Medal Air Medal (3) 1958 USAF Man In Space Soonest 1960 USAF Dyna-Soar 1962 NASA Group 2 Gemini 8 Apollo 11 Neil Alden Armstrong (August 5, 1930 August 25, 2012) was",
-      "durationSec": 16.64,
-      "wordsCount": 52,
+      "rawText": "American astronaut, and engineer, and is known as the first person to walk on the moon.",
+      "cleanedText": "American astronaut, and engineer, and is known as the first person to walk on the moon.",
+      "durationSec": 5.12,
+      "wordsCount": 16,
       "timings": [
         {
-          "value": "org",
+          "value": "American",
           "start": 0,
-          "end": 0.19126436781609196
+          "end": 0.5936231884057971
         },
         {
-          "value": "/",
-          "start": 0.19126436781609196,
-          "end": 0.2550191570881226
+          "value": "astronaut,",
+          "start": 0.5936231884057971,
+          "end": 1.261449275362319
         },
         {
-          "value": "Presidential",
-          "start": 0.2550191570881226,
-          "end": 1.0200766283524905
+          "value": "and",
+          "start": 1.261449275362319,
+          "end": 1.4840579710144928
         },
         {
-          "value": "Medal",
-          "start": 1.0200766283524905,
-          "end": 1.3388505747126436
+          "value": "engineer,",
+          "start": 1.4840579710144928,
+          "end": 2.07768115942029
         },
         {
-          "value": "of",
-          "start": 1.3388505747126436,
-          "end": 1.466360153256705
+          "value": "and",
+          "start": 2.07768115942029,
+          "end": 2.3002898550724638
         },
         {
-          "value": "Freedom",
-          "start": 1.466360153256705,
-          "end": 1.9126436781609197
+          "value": "is",
+          "start": 2.3002898550724638,
+          "end": 2.448695652173913
         },
         {
-          "value": "Congressional",
-          "start": 1.9126436781609197,
-          "end": 2.741455938697318
+          "value": "known",
+          "start": 2.448695652173913,
+          "end": 2.8197101449275364
         },
         {
-          "value": "Space",
-          "start": 2.741455938697318,
-          "end": 3.0602298850574714
+          "value": "as",
+          "start": 2.8197101449275364,
+          "end": 2.9681159420289855
         },
         {
-          "value": "Medal",
-          "start": 3.0602298850574714,
-          "end": 3.379003831417625
+          "value": "the",
+          "start": 2.9681159420289855,
+          "end": 3.1907246376811593
         },
         {
-          "value": "of",
-          "start": 3.379003831417625,
-          "end": 3.506513409961686
+          "value": "first",
+          "start": 3.1907246376811593,
+          "end": 3.5617391304347823
         },
         {
-          "value": "Honor",
-          "start": 3.506513409961686,
-          "end": 3.8252873563218395
+          "value": "person",
+          "start": 3.5617391304347823,
+          "end": 4.006956521739131
         },
         {
-          "value": "Congressional",
-          "start": 3.8252873563218395,
-          "end": 4.654099616858238
+          "value": "to",
+          "start": 4.006956521739131,
+          "end": 4.15536231884058
         },
         {
-          "value": "Gold",
-          "start": 4.654099616858238,
-          "end": 4.90911877394636
+          "value": "walk",
+          "start": 4.15536231884058,
+          "end": 4.452173913043478
         },
         {
-          "value": "Medal",
-          "start": 4.90911877394636,
-          "end": 5.227892720306514
+          "value": "on",
+          "start": 4.452173913043478,
+          "end": 4.6005797101449275
         },
         {
-          "value": "NASA",
-          "start": 5.227892720306514,
-          "end": 5.482911877394636
+          "value": "the",
+          "start": 4.6005797101449275,
+          "end": 4.823188405797102
         },
         {
-          "value": "Distinguished",
-          "start": 5.482911877394636,
-          "end": 6.311724137931035
-        },
-        {
-          "value": "Service",
-          "start": 6.311724137931035,
-          "end": 6.75800766283525
-        },
-        {
-          "value": "Medal",
-          "start": 6.75800766283525,
-          "end": 7.076781609195402
-        },
-        {
-          "value": "NASA",
-          "start": 7.076781609195402,
-          "end": 7.331800766283526
-        },
-        {
-          "value": "Exceptional",
-          "start": 7.331800766283526,
-          "end": 8.033103448275861
-        },
-        {
-          "value": "Service",
-          "start": 8.033103448275861,
-          "end": 8.479386973180077
-        },
-        {
-          "value": "Medal",
-          "start": 8.479386973180077,
-          "end": 8.79816091954023
-        },
-        {
-          "value": "Air",
-          "start": 8.79816091954023,
-          "end": 8.989425287356323
-        },
-        {
-          "value": "Medal",
-          "start": 8.989425287356323,
-          "end": 9.308199233716476
-        },
-        {
-          "value": "(3)",
-          "start": 9.308199233716476,
-          "end": 9.371954022988506
-        },
-        {
-          "value": "1958",
-          "start": 9.371954022988506,
-          "end": 9.626973180076629
-        },
-        {
-          "value": "USAF",
-          "start": 9.626973180076629,
-          "end": 9.881992337164752
-        },
-        {
-          "value": "Man",
-          "start": 9.881992337164752,
-          "end": 10.073256704980842
-        },
-        {
-          "value": "In",
-          "start": 10.073256704980842,
-          "end": 10.200766283524905
-        },
-        {
-          "value": "Space",
-          "start": 10.200766283524905,
-          "end": 10.519540229885058
-        },
-        {
-          "value": "Soonest",
-          "start": 10.519540229885058,
-          "end": 10.965823754789271
-        },
-        {
-          "value": "1960",
-          "start": 10.965823754789271,
-          "end": 11.220842911877396
-        },
-        {
-          "value": "USAF",
-          "start": 11.220842911877396,
-          "end": 11.475862068965519
-        },
-        {
-          "value": "Dyna-Soar",
-          "start": 11.475862068965519,
-          "end": 11.985900383141763
-        },
-        {
-          "value": "1962",
-          "start": 11.985900383141763,
-          "end": 12.240919540229886
-        },
-        {
-          "value": "NASA",
-          "start": 12.240919540229886,
-          "end": 12.495938697318008
-        },
-        {
-          "value": "Group",
-          "start": 12.495938697318008,
-          "end": 12.814712643678162
-        },
-        {
-          "value": "2",
-          "start": 12.814712643678162,
-          "end": 12.878467432950192
-        },
-        {
-          "value": "Gemini",
-          "start": 12.878467432950192,
-          "end": 13.260996168582375
-        },
-        {
-          "value": "8",
-          "start": 13.260996168582375,
-          "end": 13.324750957854407
-        },
-        {
-          "value": "Apollo",
-          "start": 13.324750957854407,
-          "end": 13.707279693486589
-        },
-        {
-          "value": "11",
-          "start": 13.707279693486589,
-          "end": 13.834789272030651
-        },
-        {
-          "value": "Neil",
-          "start": 13.834789272030651,
-          "end": 14.089808429118774
-        },
-        {
-          "value": "Alden",
-          "start": 14.089808429118774,
-          "end": 14.408582375478929
-        },
-        {
-          "value": "Armstrong",
-          "start": 14.408582375478929,
-          "end": 14.982375478927203
-        },
-        {
-          "value": "(August",
-          "start": 14.982375478927203,
-          "end": 15.364904214559388
-        },
-        {
-          "value": "5,",
-          "start": 15.364904214559388,
-          "end": 15.428659003831418
-        },
-        {
-          "value": "1930",
-          "start": 15.428659003831418,
-          "end": 15.683678160919541
-        },
-        {
-          "value": "August",
-          "start": 15.683678160919541,
-          "end": 16.066206896551723
-        },
-        {
-          "value": "25,",
-          "start": 16.066206896551723,
-          "end": 16.193716475095787
-        },
-        {
-          "value": "2012)",
-          "start": 16.193716475095787,
-          "end": 16.448735632183908
-        },
-        {
-          "value": "was",
-          "start": 16.448735632183908,
-          "end": 16.64
+          "value": "moon.",
+          "start": 4.823188405797102,
+          "end": 5.12
         }
       ],
       "highlightCoveragePercent": 100,
@@ -12345,103 +12300,6 @@
     {
       "passageId": "all:source-2-4",
       "index": 36,
-      "rawText": "an American astronaut, and engineer, and is known as the first person to walk on the moon.",
-      "cleanedText": "an American astronaut, and engineer, and is known as the first person to walk on the moon.",
-      "durationSec": 5.44,
-      "wordsCount": 17,
-      "timings": [
-        {
-          "value": "an",
-          "start": 0,
-          "end": 0.1532394366197183
-        },
-        {
-          "value": "American",
-          "start": 0.1532394366197183,
-          "end": 0.7661971830985916
-        },
-        {
-          "value": "astronaut,",
-          "start": 0.7661971830985916,
-          "end": 1.4557746478873241
-        },
-        {
-          "value": "and",
-          "start": 1.4557746478873241,
-          "end": 1.6856338028169016
-        },
-        {
-          "value": "engineer,",
-          "start": 1.6856338028169016,
-          "end": 2.2985915492957747
-        },
-        {
-          "value": "and",
-          "start": 2.2985915492957747,
-          "end": 2.528450704225352
-        },
-        {
-          "value": "is",
-          "start": 2.528450704225352,
-          "end": 2.6816901408450704
-        },
-        {
-          "value": "known",
-          "start": 2.6816901408450704,
-          "end": 3.0647887323943666
-        },
-        {
-          "value": "as",
-          "start": 3.0647887323943666,
-          "end": 3.218028169014085
-        },
-        {
-          "value": "the",
-          "start": 3.218028169014085,
-          "end": 3.4478873239436623
-        },
-        {
-          "value": "first",
-          "start": 3.4478873239436623,
-          "end": 3.8309859154929575
-        },
-        {
-          "value": "person",
-          "start": 3.8309859154929575,
-          "end": 4.290704225352114
-        },
-        {
-          "value": "to",
-          "start": 4.290704225352114,
-          "end": 4.443943661971831
-        },
-        {
-          "value": "walk",
-          "start": 4.443943661971831,
-          "end": 4.750422535211268
-        },
-        {
-          "value": "on",
-          "start": 4.750422535211268,
-          "end": 4.903661971830986
-        },
-        {
-          "value": "the",
-          "start": 4.903661971830986,
-          "end": 5.133521126760564
-        },
-        {
-          "value": "moon.",
-          "start": 5.133521126760564,
-          "end": 5.44
-        }
-      ],
-      "highlightCoveragePercent": 100,
-      "anomaliesCount": 0
-    },
-    {
-      "passageId": "all:source-2-5",
-      "index": 37,
       "rawText": "On July 20, 1969, Neil Armstrong and Buzz Aldrin landed o…",
       "cleanedText": "On July 20, 1969, Neil Armstrong and Buzz Aldrin landed o…",
       "durationSec": 3.52,
@@ -12508,7 +12366,7 @@
     },
     {
       "passageId": "all:source-3-1",
-      "index": 38,
+      "index": 37,
       "rawText": "Source S3. Research Report: Football. Edition 1. Football is not a single sport but a family of codes that share a name but differ in rules, origins, and cultural roles.",
       "cleanedText": "Source S3. Research Report: Football. Edition 1. Football is not a single sport but a family of codes that share a name but differ in rules, origins, and cultural roles.",
       "durationSec": 9.6,
@@ -12670,7 +12528,7 @@
     },
     {
       "passageId": "all:source-3-2",
-      "index": 39,
+      "index": 38,
       "rawText": "Association football (soccer) dominates globally with continuous play and 11-a-side teams, while American and Canadian football use gridiron systems with downs and specialized units.",
       "cleanedText": "Association football (soccer) dominates globally with continuous play and 11-a-side teams, while American and Canadian football use gridiron systems with downs and specialized units.",
       "durationSec": 7.68,
@@ -12802,7 +12660,7 @@
     },
     {
       "passageId": "all:source-3-3",
-      "index": 40,
+      "index": 39,
       "rawText": "Australian rules football features 18 players on an oval field with unique marking rules, and Gaelic football is a strictly amateur Irish code with distinct scoring. Each code evolved from 19th-century European roots, adapted to local conditions, and now drives significant economic, social, and health-related dynamics.",
       "cleanedText": "Australian rules football features 18 players on an oval field with unique marking rules, and Gaelic football is a strictly amateur Irish code with distinct scoring. Each code evolved from 19th-century European roots, adapted to local conditions, and now drives significant economic, social, and health-related dynamics.",
       "durationSec": 14.72,

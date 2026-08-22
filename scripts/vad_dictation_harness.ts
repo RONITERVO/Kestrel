@@ -6,12 +6,13 @@
  * and MediaRecorder dictation checkpoints without requiring a desktop browser or microphone hardware.
  *
  * Usage:
- *   npx vite-node scripts/vad_dictation_harness.ts
- *   npx vite-node scripts/vad_dictation_harness.ts --scenario 1
+ *   npm run test:vad
+ *   npm run test:vad -- --silent
  */
 
 import * as fs from "fs";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import {
   DEFAULT_VAD_SETTINGS,
   normalizeVadSettings,
@@ -70,6 +71,7 @@ export interface VadHarnessReport {
   passedScenarios: number;
   totalFramesEvaluated: number;
   totalSimulatedDurationSec: number;
+  totalEvaluatedDurationSec: number;
   scenarios: VadScenarioResult[];
 }
 
@@ -227,108 +229,86 @@ export const VAD_TEST_SCENARIOS: VadScenario[] = [
 export function simulateVadScenario(scenario: VadScenario, onFrame?: (frame: VadFrameLog) => void): VadScenarioResult {
   const stepMs = 50;
   const stepSec = stepMs / 1000;
-
-  let currentSec = 0;
-  let hasSpoken = false;
-  let consecutiveSpeechMs = 0;
-  let consecutiveSilenceMs = 0;
-  let initialSilenceMs = 0;
+  let currentMs = 0;
+  let currentDb = -100;
+  let speechDetected = false;
   let stoppedAtSec: number | null = null;
   let totalFrames = 0;
-
-  // Flatten timeline into sequence of audio energy levels
   const totalTimelineDuration = scenario.timeline.reduce((sum, seg) => sum + seg.durationSec, 0);
+  let tick: (() => void) | null = null;
+  const analyser = {
+    fftSize: 512,
+    smoothingTimeConstant: 0.2,
+    disconnect: () => undefined,
+    getFloatTimeDomainData: (values: Float32Array) => {
+      values.fill(10 ** (currentDb / 20));
+    },
+  };
+  const source = { connect: () => undefined, disconnect: () => undefined };
+  class HarnessAudioContext {
+    state: AudioContextState = "running";
+    createAnalyser() { return analyser as unknown as AnalyserNode; }
+    createMediaStreamSource() { return source as unknown as MediaStreamAudioSourceNode; }
+    resume() { return Promise.resolve(); }
+    close() { this.state = "closed"; return Promise.resolve(); }
+  }
+  const originalWindow = globalThis.window;
+  const originalPerformance = globalThis.performance;
+  const harnessWindow = {
+    AudioContext: HarnessAudioContext,
+    setInterval: (callback: TimerHandler) => {
+      tick = callback as () => void;
+      return 1;
+    },
+    clearInterval: () => undefined,
+  } as unknown as Window & typeof globalThis;
+  Object.defineProperty(globalThis, "window", { configurable: true, value: harnessWindow });
+  Object.defineProperty(globalThis, "performance", {
+    configurable: true,
+    value: { now: () => currentMs },
+  });
 
-  for (let t = 0; t < totalTimelineDuration; t += stepSec) {
-    if (stoppedAtSec !== null) break;
-
-    totalFrames++;
-    currentSec = Math.round(t * 1000) / 1000;
-
-    // Find active segment db level
-    let cursor = 0;
-    let currentDb = -100;
-    for (const segment of scenario.timeline) {
-      if (currentSec >= cursor && currentSec < cursor + segment.durationSec) {
-        currentDb = segment.dbLevel;
-        break;
-      }
-      cursor += segment.durationSec;
-    }
-
-    const isSpeechFrame = currentDb >= scenario.settings.speechThresholdDb;
-    let state: VadFrameLog["state"] = "IDLE";
-    let silenceRatio = 0;
-
-    if (isSpeechFrame) {
-      consecutiveSpeechMs += stepMs;
-      consecutiveSilenceMs = 0;
-      state = "SPEECH";
-
-      if (consecutiveSpeechMs >= scenario.settings.minSpeechDurationMs) {
-        hasSpoken = true;
-      }
-
-      onFrame?.({
-        timestampSec: currentSec,
-        scenarioId: scenario.id,
-        inputDb: currentDb,
-        thresholdDb: scenario.settings.speechThresholdDb,
-        isSpeaking: true,
-        silenceRatio: 0,
-        state,
-      });
-    } else {
-      consecutiveSpeechMs = 0;
-
-      if (hasSpoken) {
-        consecutiveSilenceMs += stepMs;
-        const targetSilenceMs = scenario.settings.silenceTimeoutSec * 1000;
-        silenceRatio = Math.min(1, consecutiveSilenceMs / targetSilenceMs);
-        state = "SILENCE_COUNTDOWN";
-
+  let detector: VoiceActivityDetector | null = null;
+  try {
+    detector = new VoiceActivityDetector({} as MediaStream, scenario.settings, {
+      onSpeechStart: () => { speechDetected = true; },
+      onSilenceTimeout: () => { stoppedAtSec = currentMs / 1_000; },
+      onEnergyUpdate: (_db, isSpeaking, silenceRatio) => {
         onFrame?.({
-          timestampSec: currentSec,
+          timestampSec: currentMs / 1_000,
           scenarioId: scenario.id,
           inputDb: currentDb,
           thresholdDb: scenario.settings.speechThresholdDb,
-          isSpeaking: false,
+          isSpeaking,
           silenceRatio,
-          state,
+          state: isSpeaking ? "SPEECH" : speechDetected ? "SILENCE_COUNTDOWN" : "GRACE_COUNTDOWN",
         });
-
-        if (consecutiveSilenceMs >= targetSilenceMs) {
-          stoppedAtSec = currentSec;
+      },
+    });
+    for (let t = 0; t < totalTimelineDuration && stoppedAtSec === null; t += stepSec) {
+      totalFrames += 1;
+      currentMs += stepMs;
+      let cursor = 0;
+      currentDb = -100;
+      for (const segment of scenario.timeline) {
+        if (t >= cursor && t < cursor + segment.durationSec) {
+          currentDb = segment.dbLevel;
           break;
         }
-      } else {
-        initialSilenceMs += stepMs;
-        const targetGraceMs = scenario.settings.initialGraceTimeoutSec * 1000;
-        silenceRatio = Math.min(1, initialSilenceMs / targetGraceMs);
-        state = "GRACE_COUNTDOWN";
-
-        onFrame?.({
-          timestampSec: currentSec,
-          scenarioId: scenario.id,
-          inputDb: currentDb,
-          thresholdDb: scenario.settings.speechThresholdDb,
-          isSpeaking: false,
-          silenceRatio,
-          state,
-        });
-
-        if (initialSilenceMs >= targetGraceMs) {
-          stoppedAtSec = currentSec;
-          break;
-        }
+        cursor += segment.durationSec;
       }
+      tick?.();
     }
+  } finally {
+    detector?.destroy();
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    Object.defineProperty(globalThis, "performance", { configurable: true, value: originalPerformance });
   }
 
   // Validate results
   const [minExpected, maxExpected] = [scenario.expectedStopMinSec, scenario.expectedStopMaxSec];
   const passedTime = stoppedAtSec !== null && stoppedAtSec >= minExpected && stoppedAtSec <= maxExpected;
-  const passedSpeech = hasSpoken === scenario.expectSpeechDetected;
+  const passedSpeech = speechDetected === scenario.expectSpeechDetected;
   const passed = passedTime && passedSpeech;
 
   let anomaly: string | undefined;
@@ -337,7 +317,7 @@ export function simulateVadScenario(scenario: VadScenario, onFrame?: (frame: Vad
   } else if (!passedTime) {
     anomaly = `Auto-stop triggered at ${stoppedAtSec.toFixed(2)}s, expected between ${minExpected.toFixed(2)}s and ${maxExpected.toFixed(2)}s.`;
   } else if (!passedSpeech) {
-    anomaly = `Speech detection mismatch: detected=${hasSpoken}, expected=${scenario.expectSpeechDetected}.`;
+    anomaly = `Speech detection mismatch: detected=${speechDetected}, expected=${scenario.expectSpeechDetected}.`;
   }
 
   const timingErrorMs = stoppedAtSec !== null
@@ -351,7 +331,7 @@ export function simulateVadScenario(scenario: VadScenario, onFrame?: (frame: Vad
     actualStopSec: stoppedAtSec,
     expectedRangeSec: [minExpected, maxExpected],
     timingErrorMs,
-    speechDetected: hasSpoken,
+    speechDetected,
     anomaly,
     totalFrames,
   };
@@ -360,7 +340,7 @@ export function simulateVadScenario(scenario: VadScenario, onFrame?: (frame: Vad
 /**
  * Validates MediaRecorder WebM blob stream concatenation and checkpoint progression.
  */
-export function validateDictationPipeline(): { checkpointsPassed: boolean; blobIntegrityPassed: boolean } {
+export function validateDictationPipeline(): { checkpointsPassed: boolean; blobIntegrityPassed: boolean; alignedIntervals: number; expectedIntervals: number } {
   // Test checkpoint progression
   let nextIndex = 0;
   const checkpoints: number[] = [];
@@ -379,7 +359,12 @@ export function validateDictationPipeline(): { checkpointsPassed: boolean; blobI
   const blob2 = completeRecordingBlob([new Blob([webmHeader]), new Blob([audioChunk1]), new Blob([audioChunk2])], "audio/webm;codecs=opus");
   const blobIntegrityPassed = blob1.size === 6 && blob2.size === 8 && blob1.type === "audio/webm;codecs=opus";
 
-  return { checkpointsPassed, blobIntegrityPassed };
+  return {
+    checkpointsPassed,
+    blobIntegrityPassed,
+    alignedIntervals: checkpoints.length,
+    expectedIntervals: LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS.length,
+  };
 }
 
 /**
@@ -440,6 +425,7 @@ export async function runVadHarness(options: {
     passedScenarios,
     totalFramesEvaluated: allFrames.length,
     totalSimulatedDurationSec: Math.round(totalDurationSec * 100) / 100,
+    totalEvaluatedDurationSec: Math.round(allFrames.length * 5) / 100,
     scenarios: scenarioResults,
   };
 
@@ -448,9 +434,10 @@ export async function runVadHarness(options: {
 
   // Write Markdown Report
   let markdown = `# Kestrel Voice Activity Detection (VAD) & Dictation Audit Report\n\n`;
-  markdown += `**Execution Timestamp:** ${report.timestamp}  \n`;
-  markdown += `**Scenarios Evaluated:** ${report.passedScenarios} / ${report.totalScenarios} Passed (${((report.passedScenarios / report.totalScenarios) * 100).toFixed(1)}%)  \n`;
-  markdown += `**Total Simulated Audio:** ${report.totalSimulatedDurationSec}s (${report.totalFramesEvaluated} 50ms frames evaluated)  \n\n`;
+  markdown += `**Execution Timestamp:** ${report.timestamp}\n\n`;
+  markdown += `**Scenarios Evaluated:** ${report.passedScenarios} / ${report.totalScenarios} Passed (${((report.passedScenarios / report.totalScenarios) * 100).toFixed(1)}%)\n\n`;
+  markdown += `**Full Scenario Timelines:** ${report.totalSimulatedDurationSec}s\n\n`;
+  markdown += `**Audio Evaluated Until Auto-Stop:** ${report.totalEvaluatedDurationSec}s (${report.totalFramesEvaluated} 50ms frames evaluated)\n\n`;
   markdown += `## Scenario Audit Matrix\n\n`;
   markdown += `| # | Scenario Name | Status | Auto-Stop Time | Expected Window | Timing Delta | Speech Detected | Anomalies |\n`;
   markdown += `|---|---|---|---|---|---|---|---|\n`;
@@ -466,9 +453,10 @@ export async function runVadHarness(options: {
   });
 
   markdown += `\n## Dictation Pipeline Verification\n\n`;
-  markdown += `- **Live Checkpoint Advancement:** ✅ 8/8 intervals aligned to ${JSON.stringify(LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS)}\n`;
+  const maximumJitterMs = Math.max(0, ...scenarioResults.map((result) => result.timingErrorMs));
+  markdown += `- **Live Checkpoint Advancement:** ✅ ${pipeline.alignedIntervals}/${pipeline.expectedIntervals} intervals aligned to ${JSON.stringify(LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS)}\n`;
   markdown += `- **Provisional WebM Stream Concatenation:** ✅ Multi-pass header preservation verified\n`;
-  markdown += `- **VAD State Machine Latency:** Max jitter $\\le$ 50ms across all audio scenarios\n`;
+  markdown += `- **VAD Auto-Stop Timing Delta:** Maximum measured midpoint delta ${maximumJitterMs}ms across all audio scenarios\n`;
 
   fs.writeFileSync(reportPath, markdown, "utf-8");
 
@@ -487,30 +475,31 @@ export async function runVadHarness(options: {
   return { allPassed, report };
 }
 
-// Auto-run when executed
-const args = process.argv.slice(2);
-const options: { jsonOutputPath?: string; reportOutputPath?: string; silent?: boolean } = {};
-
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--json" && args[i + 1]) {
-    options.jsonOutputPath = args[++i];
-  } else if (args[i] === "--report" && args[i + 1]) {
-    options.reportOutputPath = args[++i];
-  } else if (args[i] === "--silent") {
-    options.silent = true;
+async function runCli() {
+  const args = process.argv.slice(2);
+  const options: { jsonOutputPath?: string; reportOutputPath?: string; silent?: boolean } = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--json" && args[i + 1]) {
+      options.jsonOutputPath = args[++i];
+    } else if (args[i] === "--report" && args[i + 1]) {
+      options.reportOutputPath = args[++i];
+    } else if (args[i] === "--silent") {
+      options.silent = true;
+    }
   }
+  const { allPassed } = await runVadHarness(options);
+  if (!allPassed) throw new Error("VAD simulation harness found failures.");
 }
 
-void runVadHarness(options)
-  .then(({ allPassed }) => {
-    if (!allPassed) {
-      console.error("\n❌ VAD simulation harness found failures.");
-      process.exit(1);
-    } else {
-      process.exit(0);
-    }
-  })
-  .catch((err) => {
+const thisModule = path.resolve(fileURLToPath(import.meta.url)).toLowerCase();
+const launchedDirectly = process.env.npm_lifecycle_event === "test:vad"
+  || process.argv.some((argument) => {
+    if (!/vad_dictation_harness\.ts$/i.test(argument)) return false;
+    return path.resolve(argument).toLowerCase() === thisModule;
+  });
+if (launchedDirectly) {
+  void runCli().catch((err) => {
     console.error("\n❌ Fatal harness error:", err);
     process.exit(1);
   });
+}

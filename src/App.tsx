@@ -449,14 +449,13 @@ function LibrarySidebar({
 
 function ResearchReader({ report, onStandalone }: { report: ResearchReport; onStandalone: () => void }) {
   const [sourceFocus, setSourceFocus] = useState<string | null>(null);
-  const [spokenAnchor, setSpokenAnchor] = useState<string | null>(null);
   const [spokenPassageId, setSpokenPassageId] = useState<string | null>(null);
   const [speechProgress, setSpeechProgress] = useState<SpeechProgressState | null>(null);
   const sourceMap = useMemo(() => new Map(report.sources.map((source) => [source.id, source])), [report.sources]);
-  const handleSpeechPassage = useCallback((anchorId: string | null, passageId?: string | null) => {
-    setSpokenAnchor(anchorId);
-    setSpokenPassageId(passageId ?? null);
-  }, []);
+  const handleSpeechPassage = useCallback(
+    (_: string | null, passageId?: string | null) => setSpokenPassageId(passageId ?? null),
+    [],
+  );
   const focusSource = (id: string) => {
     setSourceFocus(id);
     document.getElementById(`source-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });

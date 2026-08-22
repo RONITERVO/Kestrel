@@ -309,7 +309,7 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .speech-passage-active { background: #eef7de !important; border-left: 3px solid #6b933a !important; box-shadow: 0 0 8px rgba(107, 147, 58, 0.15); }
 .finding-card.speech-passage-active, .timeline-item.speech-passage-active, .term-card.speech-passage-active, .source-card.speech-passage-active { border-color: #6b933a !important; box-shadow: 3px 3px 0 #6b933a !important; }
 .control-chat article.speech-message-active { border-color: #6b933a !important; box-shadow: 3px 3px 0 #6b933a !important; }
-.speech-word-active { background: #789850 !important; color: #ffffff !important; font-weight: 700 !important; border-radius: 3px !important; padding: 1px 4px !important; box-shadow: 0 0 8px rgba(120, 152, 80, 0.5) !important; }
+.speech-word-active { background: #4f6b30 !important; color: #ffffff !important; font-weight: 700 !important; border-radius: 3px !important; padding: 1px 4px !important; box-shadow: 0 0 8px rgba(79, 107, 48, 0.5) !important; }
 .markdown-chart-body .speech-symbol-token { color: #5a7560; }
 .markdown-chart-body .speech-word-active { background: #5f803c !important; color: #ffffff !important; }
 .speech-word-spoken { color: #111; }

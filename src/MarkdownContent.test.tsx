@@ -72,6 +72,19 @@ interface User {
     expect(screen.getByText("Copied")).toBeInTheDocument();
   });
 
+  it("uses only the first trimmed code-fence info token as the language", () => {
+    render(<MarkdownContent value={'```  typescript title="sample"\nconst ready = true;\n```'} />);
+    expect(screen.getByText("typescript")).toBeInTheDocument();
+    expect(screen.queryByText(/title="sample"/)).not.toBeInTheDocument();
+  });
+
+  it("keeps indented list continuation text with its item", () => {
+    render(<MarkdownContent value={"- First line\n  continued detail\n- Second line"} />);
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("First line continued detail");
+  });
+
   it("detects and renders ASCII diagrams and text charts in chart cards", () => {
     const chartMarkdown = `
 Architecture Diagram:
