@@ -5,7 +5,7 @@
 //! for timestamped microphone transcription. Additional adapters belong here rather than in
 //! individual product UIs.
 
-use crate::store::default_research_root;
+use crate::{models::MAX_TRANSCRIPT_TIMINGS, store::default_research_root};
 use base64::Engine as _;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ use tokio::{process::Child, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
-const TTS_ADAPTER_REVISION: &str = "chatterbox-opus-v2";
+const TTS_ADAPTER_REVISION: &str = "chatterbox-opus-v4";
 const STT_ADAPTER_REVISION: &str = "kestrel-whisper-v1";
 const CHATTERBOX_NODE: &str = "custom_nodes/ComfyUI-Chatterbox/nodes.py";
 const CHATTERBOX_MODEL_ROOT: &str = "models/tts/chatterbox";
@@ -43,7 +43,6 @@ const MAX_TRANSCRIPTION_AUDIO_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TRANSCRIPTION_PROMPT_BYTES: usize = 4_096;
 const MAX_GENERATED_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_TRANSCRIPT_TIMINGS: usize = 100_000;
 const MAX_ID_BYTES: usize = 128;
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -247,9 +246,10 @@ impl LocalSpeech {
         comfy_root: &str,
         request: &SpeechAlignmentRequest,
     ) -> Result<Option<SpeechClip>, SpeechError> {
-        let target = self.validate_alignment_request(comfy_root, request)?;
-        Ok(read_alignment(&target, request)
-            .map(|(segments, words)| alignment_clip(request, segments, words, true)))
+        let request = spoken_alignment_request(request);
+        let target = self.validate_alignment_request(comfy_root, &request)?;
+        Ok(read_alignment(&target, &request)
+            .map(|(segments, words)| alignment_clip(&request, segments, words, true)))
     }
 
     pub async fn ensure_comfy(
@@ -597,13 +597,14 @@ impl LocalSpeech {
         cancel: &CancellationToken,
         app: Option<&AppHandle>,
     ) -> Result<SpeechClip, SpeechError> {
-        let target = self.validate_alignment_request(comfy_root, request)?;
-        if let Some((segments, words)) = read_alignment(&target, request) {
-            return Ok(alignment_clip(request, segments, words, true));
+        let request = spoken_alignment_request(request);
+        let target = self.validate_alignment_request(comfy_root, &request)?;
+        if let Some((segments, words)) = read_alignment(&target, &request) {
+            return Ok(alignment_clip(&request, segments, words, true));
         }
         let _generation = self.generation.lock().await;
-        if let Some((segments, words)) = read_alignment(&target, request) {
-            return Ok(alignment_clip(request, segments, words, true));
+        if let Some((segments, words)) = read_alignment(&target, &request) {
+            return Ok(alignment_clip(&request, segments, words, true));
         }
         if cancel.is_cancelled() {
             return Err(SpeechError::Cancelled);
@@ -614,7 +615,7 @@ impl LocalSpeech {
             .await?;
         emit_alignment_progress(
             app,
-            request,
+            &request,
             "aligning",
             "Whisper is aligning words to the unchanged local voice recording.",
         );
@@ -643,7 +644,7 @@ impl LocalSpeech {
         let (_text, segments, words) = result?;
         write_synthesis_receipt(
             &target,
-            request,
+            &request,
             &segments,
             &words,
             Some(&request.alignment_model_id),
@@ -651,11 +652,11 @@ impl LocalSpeech {
         )?;
         emit_alignment_progress(
             app,
-            request,
+            &request,
             "complete",
             "Exact local speech word timings are ready for click-to-seek.",
         );
-        Ok(alignment_clip(request, segments, words, false))
+        Ok(alignment_clip(&request, segments, words, false))
     }
 
     async fn execute_whisper_graph(
@@ -1339,7 +1340,7 @@ fn write_synthesis_receipt(
         "passageId": request.passage_id,
         "modelId": request.voice_model_id,
         "alignmentModelId": alignment_model_id,
-        "text": request.text,
+        "text": spoken_text(&request.text),
         "audioRelativePath": request.relative_path,
         "segments": segments,
         "words": words,
@@ -1371,11 +1372,43 @@ fn relative_cache_path(cache_root: &Path, target: &Path) -> Result<String, Speec
     Ok(value)
 }
 
+fn expand_decimal_points(raw: &str) -> String {
+    let characters = raw.chars().collect::<Vec<_>>();
+    let mut expanded = String::with_capacity(raw.len());
+    for (index, character) in characters.iter().enumerate() {
+        if *character == '.'
+            && index > 0
+            && index + 1 < characters.len()
+            && characters[index - 1].is_ascii_digit()
+            && characters[index + 1].is_ascii_digit()
+        {
+            expanded.push_str(" point ");
+        } else {
+            expanded.push(*character);
+        }
+    }
+    expanded
+}
+
 pub fn clean_speech_text(raw: &str) -> String {
     if raw.trim().is_empty() {
         return String::new();
     }
-    let mut text = raw.to_string();
+    let mut text = expand_decimal_points(raw)
+        .replace("e.g.", "for example")
+        .replace("E.g.", "For example")
+        .replace("i.e.", "that is")
+        .replace("I.e.", "That is")
+        .replace("CO₂", "carbon dioxide")
+        .replace("co₂", "carbon dioxide")
+        .replace("O₂", "oxygen")
+        .replace("o₂", "oxygen")
+        .replace('Δ', " change in ")
+        .replace('≥', " at least ")
+        .replace('≤', " at most ")
+        .replace('↑', " rising ")
+        .replace('↓', " falling ")
+        .replace('→', " then ");
 
     while let Some(start) = text.find("```") {
         if let Some(end) = text[start + 3..].find("```") {
@@ -1391,15 +1424,9 @@ pub fn clean_speech_text(raw: &str) -> String {
     for ch in text.chars() {
         match ch {
             '#' | '¤' | '*' | '+' | '^' | '~' | '\\' | '|' | '<' | '>' | '§' | '°' | '±' | '²'
-            | '³' | 'µ' | '¶' | '©' | '®' | '™' | '•' | '·' | '‣' | '⁃' | '✓' | '✔' | '✕'
-            | '✖' | '✗' | '★' | '☆' | '▲' | '▼' | '◄' | '►' | '◆' | '◇' | '●' | '○' | '■'
-            | '□' | '`' => {
-                if prev_char != ' ' {
-                    cleaned.push(' ');
-                    prev_char = ' ';
-                }
-            }
-            '_' => {
+            | '³' | 'µ' | '¶' | '©' | '®' | '™' | '•' | '·' | '‣' | '⁃' | '✓' | '✔' | '✕' | '✖'
+            | '✗' | '★' | '☆' | '▲' | '▼' | '◄' | '►' | '◆' | '◇' | '●' | '○' | '■' | '□' | '`'
+            | '_' => {
                 if prev_char != ' ' {
                     cleaned.push(' ');
                     prev_char = ' ';
@@ -1416,9 +1443,9 @@ pub fn clean_speech_text(raw: &str) -> String {
                 if (0x2500..=0x257F).contains(&u)
                     || (0x2580..=0x259F).contains(&u)
                     || (0x25A0..=0x25FF).contains(&u)
+                    || (0x2600..=0x27BF).contains(&u)
+                    || (0x2B00..=0x2BFF).contains(&u)
                     || (0x1F300..=0x1FAFF).contains(&u)
-                    || (0x1F600..=0x1F64F).contains(&u)
-                    || (0x1F680..=0x1F6FF).contains(&u)
                 {
                     if prev_char != ' ' {
                         cleaned.push(' ');
@@ -1435,17 +1462,28 @@ pub fn clean_speech_text(raw: &str) -> String {
     cleaned.trim().to_string()
 }
 
+fn spoken_text(raw: &str) -> String {
+    let cleaned = clean_speech_text(raw);
+    if cleaned.is_empty() {
+        raw.trim().to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn spoken_alignment_request(request: &SpeechAlignmentRequest) -> SpeechAlignmentRequest {
+    SpeechAlignmentRequest {
+        text: spoken_text(&request.text),
+        ..request.clone()
+    }
+}
+
 fn chatterbox_graph(request: &SpeechSynthesisRequest, prefix: &str) -> Value {
     let pack = request
         .model_id
         .strip_prefix("chatterbox:")
         .unwrap_or_default();
-    let clean_text = clean_speech_text(&request.text);
-    let speech_text = if clean_text.is_empty() {
-        request.text.trim().to_string()
-    } else {
-        clean_text
-    };
+    let speech_text = spoken_text(&request.text);
     let word_count = speech_text.split_whitespace().count() as u32;
     let max_new_tokens = (word_count.saturating_mul(18).saturating_add(96)).clamp(128, 1_600);
     let seed = deterministic_seed(request);
@@ -1589,7 +1627,8 @@ fn clip_receipt(
         return Err(SpeechError::Invalid("invalid speech cache path".into()));
     }
     let receipt_path = sidecar_path(target);
-    let (segments, words) = read_receipt_recoverable(&receipt_path)
+    let existing_receipt = read_receipt_recoverable(&receipt_path);
+    let (segments, words) = existing_receipt
         .as_ref()
         .and_then(receipt_timings)
         .unwrap_or_default();
@@ -1602,6 +1641,17 @@ fn clip_receipt(
         segments,
         words,
     };
+    let created_at = existing_receipt
+        .as_ref()
+        .and_then(|value| value.get("createdAt"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let alignment_model_id = existing_receipt
+        .as_ref()
+        .and_then(|value| value.get("alignmentModelId"))
+        .cloned()
+        .unwrap_or(Value::Null);
     write_json_atomic(
         &receipt_path,
         &json!({
@@ -1610,9 +1660,12 @@ fn clip_receipt(
             "sourceId": request.source_id,
             "passageId": request.passage_id,
             "modelId": request.model_id,
-            "text": request.text,
+            "text": spoken_text(&request.text),
             "audioRelativePath": clip.relative_path,
-            "createdAt": chrono::Utc::now().to_rfc3339(),
+            "segments": clip.segments,
+            "words": clip.words,
+            "alignmentModelId": alignment_model_id,
+            "createdAt": created_at,
         }),
     )?;
     Ok(clip)
@@ -2055,6 +2108,20 @@ mod tests {
         assert!(cleaned.contains("Speed"));
         assert!(cleaned.contains("Important note"));
         assert!(cleaned.contains("foo bar baz"));
+
+        let dashboard = clean_speech_text("O₂ ≥ 20%; CO₂ ≤ 0.45%; Δ O₂ → stable ↑ while reserve ↓");
+        assert!(dashboard.contains("oxygen at least 20%"));
+        assert!(dashboard.contains("carbon dioxide at most 0 point 45%"));
+        assert!(dashboard.contains("change in oxygen then stable rising"));
+        assert!(dashboard.ends_with("reserve falling"));
+        assert_eq!(
+            expand_decimal_points("19.8 and v1.2.3"),
+            "19 point 8 and v1 point 2 point 3"
+        );
+
+        let unterminated = clean_speech_text("Intro text\n```json\n{\"still_open\": true}");
+        assert!(unterminated.contains("Intro text"));
+        assert!(!unterminated.contains("```"));
     }
 
     #[tokio::test]
@@ -2157,5 +2224,124 @@ mod tests {
                 .cache_hit
         );
         speech.release_model_memory().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KESTREL_LIVE_COMFY_ROOT, KESTREL_LIVE_SPEECH_AUDIT, and KESTREL_LIVE_SPEECH_OUTPUT plus installed Chatterbox and Whisper models"]
+    async fn live_producer_passages_emit_replayable_highlight_timings() {
+        let comfy_root = PathBuf::from(
+            std::env::var_os("KESTREL_LIVE_COMFY_ROOT")
+                .expect("KESTREL_LIVE_COMFY_ROOT is required"),
+        );
+        let input_path = PathBuf::from(
+            std::env::var_os("KESTREL_LIVE_SPEECH_AUDIT")
+                .expect("KESTREL_LIVE_SPEECH_AUDIT is required"),
+        );
+        let output_root = PathBuf::from(
+            std::env::var_os("KESTREL_LIVE_SPEECH_OUTPUT")
+                .expect("KESTREL_LIVE_SPEECH_OUTPUT is required"),
+        );
+        assert!(comfy_root.is_absolute());
+        assert!(input_path.is_absolute() && input_path.is_file());
+        assert!(output_root.is_absolute());
+        fs::create_dir_all(&output_root).unwrap();
+
+        let input: Value = serde_json::from_slice(&fs::read(&input_path).unwrap()).unwrap();
+        let passage_audits = input
+            .get("passageAudits")
+            .and_then(Value::as_array)
+            .expect("speech audit must contain passageAudits");
+        assert!(!passage_audits.is_empty());
+
+        let speech = LocalSpeech::new(&output_root).unwrap();
+        let snapshot = speech.snapshot(&comfy_root.to_string_lossy()).await;
+        assert!(snapshot.narration_available, "{}", snapshot.detail);
+        assert!(snapshot.transcription_available, "{}", snapshot.detail);
+        let voice = snapshot.voices[0].id.clone();
+        let transcriber = snapshot.transcribers[0].id.clone();
+        let cancel = CancellationToken::new();
+        speech
+            .ensure_comfy(&comfy_root.to_string_lossy(), &cancel)
+            .await
+            .unwrap();
+
+        let mut generated = Vec::with_capacity(passage_audits.len());
+        for (index, passage) in passage_audits.iter().enumerate() {
+            let passage_id = passage
+                .get("passageId")
+                .and_then(Value::as_str)
+                .expect("passageId must be a string");
+            let text = passage
+                .get("cleanedText")
+                .and_then(Value::as_str)
+                .expect("cleanedText must be a string");
+            let synthesis = SpeechSynthesisRequest {
+                job_id: format!("aethelgard-tts-{index}"),
+                source_kind: "chat".into(),
+                source_id: "aethelgard-highlight-live".into(),
+                passage_id: passage_id.into(),
+                text: text.into(),
+                model_id: voice.clone(),
+            };
+            let clip = speech
+                .synthesize(&comfy_root.to_string_lossy(), &synthesis, &cancel, None)
+                .await
+                .unwrap();
+            generated.push((synthesis, clip));
+        }
+
+        let mut passages = Vec::with_capacity(generated.len());
+        for (index, (synthesis, clip)) in generated.into_iter().enumerate() {
+            let alignment = SpeechAlignmentRequest {
+                job_id: format!("aethelgard-align-{index}"),
+                source_kind: synthesis.source_kind.clone(),
+                source_id: synthesis.source_id.clone(),
+                passage_id: synthesis.passage_id.clone(),
+                text: synthesis.text.clone(),
+                relative_path: clip.relative_path.clone(),
+                voice_model_id: voice.clone(),
+                alignment_model_id: transcriber.clone(),
+            };
+            let aligned = speech
+                .align(&comfy_root.to_string_lossy(), &alignment, &cancel, None)
+                .await
+                .unwrap();
+            assert!(!aligned.words.is_empty());
+            assert!(aligned.words.windows(2).all(|pair| {
+                pair[0].start.is_finite()
+                    && pair[0].end.is_finite()
+                    && pair[0].start <= pair[0].end
+                    && pair[0].end <= pair[1].end
+            }));
+            let duration = aligned
+                .words
+                .last()
+                .map(|word| word.end)
+                .expect("aligned passage must have a duration");
+            passages.push(json!({
+                "passageId": synthesis.passage_id,
+                "text": synthesis.text,
+                "durationSec": duration,
+                "words": aligned.words,
+                "segments": aligned.segments,
+                "audioRelativePath": aligned.relative_path,
+                "voiceModelId": voice,
+                "alignmentModelId": transcriber,
+            }));
+        }
+
+        let output = json!({
+            "fixture": input_path,
+            "comfyRoot": comfy_root,
+            "passages": passages,
+            "generatedAt": chrono::Utc::now().to_rfc3339(),
+        });
+        write_json_atomic(
+            &output_root.join("aethelgard-live-highlight-timings.json"),
+            &output,
+        )
+        .unwrap();
+        speech.release_model_memory().await;
+        speech.stop_comfy().await;
     }
 }

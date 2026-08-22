@@ -132,6 +132,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   const pendingRedirectRef = useRef<{
     message: string;
     attachments: ContextAttachment[];
+    recording?: SpeechRecordingAttachment;
   } | null>(null);
   const chatTerminalRef = useRef<{ kind: string; content?: string } | null>(
     null,
@@ -303,7 +304,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
           const redirect = pendingRedirectRef.current;
           pendingRedirectRef.current = null;
           if (redirect)
-            await launchChat(redirect.message, next, redirect.attachments);
+            await launchChat(redirect.message, next, redirect.attachments, redirect.recording);
         } catch (cause) {
           setStream(null);
           chatRequestRef.current = null;
@@ -490,6 +491,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
               redirect.message,
               baseSession,
               redirect.attachments,
+              redirect.recording,
             );
         })
         .catch((cause) => onError(String(cause)));
@@ -505,7 +507,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     setDraft("");
     setChatAttachments([]);
     if (stream) {
-      pendingRedirectRef.current = { message, attachments };
+      pendingRedirectRef.current = { message, attachments, recording: recording ?? undefined };
       setStream((current) =>
         current ? { ...current, phase: "redirecting" } : current,
       );
@@ -516,6 +518,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
         pendingRedirectRef.current = null;
         setDraft(message);
         setChatAttachments(attachments);
+        pendingVoiceRecordingRef.current = recording;
         onError(String(cause));
       }
       return;

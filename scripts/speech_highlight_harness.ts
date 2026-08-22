@@ -13,9 +13,9 @@
  * - Generates comprehensive JSON timeline and Markdown audit reports
  * 
  * Usage:
- *   npx vite-node scripts/speech_highlight_harness.ts
- *   npx vite-node scripts/speech_highlight_harness.ts --file path/to/doc.md
- *   npx vite-node scripts/speech_highlight_harness.ts --text "Hello world # title"
+ *   npm run test:speech
+ *   npm run test:speech -- --file path/to/doc.md
+ *   npm run test:speech -- --research-dir path/to/report-bundle
  */
 
 import * as fs from "fs";
@@ -25,7 +25,7 @@ import {
   buildSpeechPassages,
   buildResearchSpeechPassages,
   cleanProseForSpeech,
-  splitSpeechText,
+  normalizedSpeechText,
   type ResearchSpeechScope,
   type ResearchSpeechPassage,
 } from "../src/researchSpeechContent";
@@ -39,15 +39,20 @@ import {
   wordTimings,
   getActiveWordIndex,
   resolveActiveBlockAndWord,
+  renderHighlightedTokens,
+  speechResolutionCacheKey,
   isPassageActiveForText,
   extractSpeechWords,
-  SpokenText,
+  mapSpeechTimingsToTextWords,
+  normalizeSpeechMatchingText,
+  speechPlaybackEnd,
+  type HighlightResolution,
   type SpeechProgressState,
 } from "../src/spokenHighlight";
 import type { ResearchReport, SpeechTiming } from "../src/types";
 
 export interface SimulationAnomaly {
-  type: "MISSING_HIGHLIGHT" | "MULTIPLE_HIGHLIGHTS" | "RAW_MARKDOWN_LEAK" | "UNEXPECTED_WORD" | "WATCHDOG_STALL";
+  type: "MISSING_HIGHLIGHT" | "MULTIPLE_HIGHLIGHTS" | "RAW_MARKDOWN_LEAK" | "UNEXPECTED_WORD" | "WATCHDOG_STALL" | "MANGLED_SPEECH_TEXT";
   timestamp: number;
   passageId: string;
   passageIndex: number;
@@ -87,10 +92,71 @@ export interface HarnessOptions {
   watchdogTimeoutMs?: number;
   jsonOutputPath?: string;
   reportOutputPath?: string;
+  realTimingsPath?: string;
   silent?: boolean;
 }
 
-const DEFAULT_REPORT_DIR = "C:\\Users\\ronit\\Kestrel Research\\reports\\2026\\08\\how-old-was-the-first-person-to-walk-on-the-moon-when-the-berlin-wall-fe--81b9e9dc";
+interface RealPassageTiming {
+  passageId: string;
+  text: string;
+  durationSec: number;
+  words: SpeechTiming[];
+}
+
+function readRealPassageTimings(filePath?: string): Map<string, RealPassageTiming> {
+  if (!filePath) return new Map();
+  const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as { passages?: RealPassageTiming[] };
+  if (!Array.isArray(parsed.passages)) {
+    throw new Error(`Real timing audit has no passages array: ${filePath}`);
+  }
+  return new Map(parsed.passages.map((passage) => [passage.passageId, passage]));
+}
+
+const HARNESS_OUTPUT_DIR = path.resolve(process.cwd(), ".artifacts", "speech-harness");
+
+function harnessOutput(name: string): string {
+  fs.mkdirSync(HARNESS_OUTPUT_DIR, { recursive: true });
+  return path.join(HARNESS_OUTPUT_DIR, name);
+}
+
+function appendSanitizationAnomalies(
+  anomalies: SimulationAnomaly[],
+  cleaned: string,
+  passageId: string,
+  passageIndex: number,
+  timestamp: number,
+) {
+  const problems: string[] = [];
+  if (/\b\d+\s+to\s+\d+\s*minus\s*\d+\b|\b\d+minus\s*\d+\b/i.test(cleaned)) {
+    problems.push("mangled numeric or date pronunciation");
+  }
+  if (/[{}]/.test(cleaned)) problems.push("brace-containing non-prose content");
+  for (const problem of problems) {
+    anomalies.push({
+      type: "MANGLED_SPEECH_TEXT",
+      timestamp,
+      passageId,
+      passageIndex,
+      message: `${problem}: ${JSON.stringify(cleaned.slice(0, 160))}`,
+    });
+  }
+}
+
+function simulatedSpokenText(
+  props: { text: string; passageId?: string; progress?: SpeechProgressState | null },
+  cache: Map<string, HighlightResolution>,
+): ReactNode {
+  const { text, passageId, progress } = props;
+  if (!text || !progress || !isPassageActiveForText(text, passageId, progress)) return text;
+  const key = speechResolutionCacheKey(progress);
+  const resolved = resolveActiveBlockAndWord(
+    [{ id: "spoken-target", text }],
+    progress,
+    cache.get(key),
+  );
+  if (resolved) cache.set(key, resolved);
+  return renderHighlightedTokens(text, resolved?.activeWordIndex ?? -1);
+}
 
 const DEFAULT_SAMPLE_DOC = `I've chosen the scope: **the Neolithic Revolution and the birth of civilization (c. 10,000–3000 BCE)** — a global arc that is genuinely "history of the world" in scope, and one I can chart cleanly. Below is a research-paper-style document.
 
@@ -237,6 +303,7 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
   const stepMs = options.stepMs ?? 100;
   const watchdogTimeoutMs = options.watchdogTimeoutMs ?? 5000;
   const silent = Boolean(options.silent);
+  const realTimings = readRealPassageTimings(options.realTimingsPath);
 
   if (!silent) {
     console.log("\n============================================================");
@@ -252,6 +319,7 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
   }
 
   const parsedBlocks = parseMarkdownBlocks(text);
+  const visibleWords = new Set(extractSpeechWords(text));
   const anomalies: SimulationAnomaly[] = [];
   const timelineFrames: TimelineFrame[] = [];
   const passageAudits: PassageAudit[] = [];
@@ -260,8 +328,19 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
   const passageTimingData = passages.map((passage, idx) => {
     const cleaned = cleanProseForSpeech(passage.text);
     const words = cleaned.match(/\S+/g) ?? [];
-    const duration = Math.max(1.2, words.length * 0.32); // ~185 WPM realistic speech speed
-    const timings = wordTimings(cleaned, duration);
+    const sourceWords = extractSpeechWords(cleaned);
+    const recorded = realTimings.get(passage.id);
+    if (recorded && normalizedSpeechText(recorded.text) !== normalizedSpeechText(cleaned)) {
+      throw new Error(`Real timing text does not match producer passage ${passage.id}`);
+    }
+    const recordedDuration = recorded?.durationSec ?? Math.max(1.2, words.length * 0.32); // ~185 WPM realistic speech speed
+    const timings = recorded?.words ?? wordTimings(cleaned, recordedDuration);
+    const duration = recorded
+      ? speechPlaybackEnd(cleaned, timings, recordedDuration)
+      : recordedDuration;
+    if (recorded && timings.length === 0) {
+      throw new Error(`Real timing audit has no words for producer passage ${passage.id}`);
+    }
     totalDurationSec += duration;
     return {
       passage,
@@ -269,6 +348,8 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
       words,
       duration,
       timings,
+      timingWordMap: mapSpeechTimingsToTextWords(cleaned, timings),
+      sourceWords,
     };
   });
 
@@ -280,9 +361,11 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
   let totalFramesTested = 0;
   let totalSuccessfulMarks = 0;
   let globalTimeCursor = 0;
+  const resolutionCache = new Map<string, HighlightResolution>();
 
   for (let pIdx = 0; pIdx < passageTimingData.length; pIdx++) {
-    const { passage, cleaned, words, duration, timings } = passageTimingData[pIdx];
+    const { passage, cleaned, words, duration, timings, timingWordMap, sourceWords } = passageTimingData[pIdx];
+    appendSanitizationAnomalies(anomalies, cleaned, passage.id, pIdx, globalTimeCursor);
     let passageMarksCount = 0;
     let lastAdvanceTimestamp = Date.now();
     let lastWordIndex = -1;
@@ -290,7 +373,7 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
     for (let sec = 0; sec <= duration; sec += stepMs / 1000) {
       totalFramesTested++;
       const currentWordIdx = getActiveWordIndex(cleaned, sec, duration, timings);
-      const expectedWord = words[currentWordIdx] ?? "";
+      const expectedWord = sourceWords[timingWordMap[currentWordIdx] ?? currentWordIdx] ?? "";
 
       // Watchdog check
       if (currentWordIdx !== lastWordIndex) {
@@ -322,7 +405,13 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
       let activePreview = "";
 
       const candidates = collectCandidateBlocks(parsedBlocks);
-      const activeHighlight = resolveActiveBlockAndWord(candidates, progressState);
+      const cacheKey = speechResolutionCacheKey(progressState);
+      const activeHighlight = resolveActiveBlockAndWord(
+        candidates,
+        progressState,
+        resolutionCache.get(cacheKey),
+      );
+      if (activeHighlight) resolutionCache.set(cacheKey, activeHighlight);
 
       for (let bIdx = 0; bIdx < parsedBlocks.length; bIdx++) {
         const block = parsedBlocks[bIdx];
@@ -418,6 +507,16 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
       } else {
         totalSuccessfulMarks++;
         passageMarksCount++;
+        const markedWord = normalizeSpeechMatchingText(docTotalMarks[0]);
+        if (visibleWords.has(expectedWord) && markedWord !== expectedWord) {
+          anomalies.push({
+            type: "UNEXPECTED_WORD",
+            timestamp: globalTimeCursor + sec,
+            passageId: passage.id,
+            passageIndex: pIdx,
+            message: `Highlighted ${JSON.stringify(docTotalMarks[0])} while the aligned source word was ${JSON.stringify(expectedWord)}.`,
+          });
+        }
       }
 
       // Check for raw markdown syntax leaks inside the highlighted text
@@ -483,8 +582,8 @@ export async function runSpeechSimulation(options: HarnessOptions = {}) {
   }
 
   // Save audit logs if paths are provided or defaults
-  const jsonOut = options.jsonOutputPath || path.resolve("speech_timeline_audit.json");
-  const reportOut = options.reportOutputPath || path.resolve("speech_highlight_report.md");
+  const jsonOut = options.jsonOutputPath || harnessOutput("speech_timeline_audit.json");
+  const reportOut = options.reportOutputPath || harnessOutput("speech_highlight_report.md");
 
   const auditOutput = {
     summary: {
@@ -597,6 +696,12 @@ export async function runResearchSpeechSimulation(
   let totalSuccessfulMarks = 0;
   let totalDurationSec = 0;
   let globalTimeCursor = 0;
+  const resolutionCache = new Map<string, HighlightResolution>();
+  const SpokenText = (props: {
+    text: string;
+    passageId?: string;
+    progress?: SpeechProgressState | null;
+  }) => simulatedSpokenText(props, resolutionCache);
 
   for (const scope of scopesToTest) {
     const passages = buildResearchSpeechPassages(report, scope);
@@ -621,6 +726,7 @@ export async function runResearchSpeechSimulation(
 
     for (let pIdx = 0; pIdx < passageTimingData.length; pIdx++) {
       const { passage, cleaned, words, duration, timings } = passageTimingData[pIdx];
+      appendSanitizationAnomalies(anomalies, cleaned, passage.id, pIdx, globalTimeCursor);
       let passageMarksCount = 0;
       let lastAdvanceTimestamp = Date.now();
       let lastWordIndex = -1;
@@ -786,8 +892,8 @@ export async function runResearchSpeechSimulation(
     console.log("============================================================\n");
   }
 
-  const jsonOut = options.jsonOutputPath || path.resolve("research_speech_timeline_audit.json");
-  const reportOut = options.reportOutputPath || path.resolve("research_speech_highlight_report.md");
+  const jsonOut = options.jsonOutputPath || harnessOutput("research_speech_timeline_audit.json");
+  const reportOut = options.reportOutputPath || harnessOutput("research_speech_highlight_report.md");
 
   const auditOutput = {
     summary: {
@@ -862,18 +968,29 @@ async function main() {
   const args = process.argv.slice(2);
   const options: HarnessOptions = {};
   let explicitReportPath: string | null = null;
+  let configuredReportDirectory = process.env.KESTREL_SPEECH_REPORT_DIR?.trim() || null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--file" && args[i + 1]) {
       options.filePath = args[++i];
     } else if (args[i] === "--report" && args[i + 1]) {
       explicitReportPath = args[++i];
+    } else if (args[i] === "--research-dir" && args[i + 1]) {
+      configuredReportDirectory = args[++i];
     } else if (args[i] === "--text" && args[i + 1]) {
       options.text = args[++i];
     } else if (args[i] === "--scope" && args[i + 1]) {
       options.scope = args[++i] as ResearchSpeechScope;
     } else if (args[i] === "--step" && args[i + 1]) {
       options.stepMs = parseInt(args[++i], 10);
+    } else if (args[i] === "--json-output" && args[i + 1]) {
+      options.jsonOutputPath = args[++i];
+    } else if (args[i] === "--report-output" && args[i + 1]) {
+      options.reportOutputPath = args[++i];
+    } else if (args[i] === "--real-timings" && args[i + 1]) {
+      options.realTimingsPath = args[++i];
+    } else if (args[i] === "--silent") {
+      options.silent = true;
     }
   }
 
@@ -895,13 +1012,17 @@ async function main() {
     return;
   }
 
-  // Default: Run standard markdown document simulation AND research report simulation if default report directory exists
+  // Default: always run the standard document; a durable research bundle is opt-in.
   const markdownRes = await runSpeechSimulation(options);
   if (markdownRes.summary.anomaliesCount > 0) process.exit(1);
 
-  if (fs.existsSync(DEFAULT_REPORT_DIR)) {
-    const researchRes = await runResearchSpeechSimulation(DEFAULT_REPORT_DIR, options);
+  if (configuredReportDirectory && fs.existsSync(configuredReportDirectory)) {
+    const researchRes = await runResearchSpeechSimulation(configuredReportDirectory, options);
     if (researchRes.summary.anomaliesCount > 0) process.exit(1);
+  } else if (configuredReportDirectory) {
+    console.log(`Research speech simulation skipped: configured directory does not exist: ${configuredReportDirectory}`);
+  } else {
+    console.log("Research speech simulation skipped: set KESTREL_SPEECH_REPORT_DIR or pass --research-dir with a report bundle.");
   }
 }
 

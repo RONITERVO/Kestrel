@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { advanceLiveTranscriptionCheckpoint, completeRecordingBlob, LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS, LocalSpeechProvider, SpeechDictationButton, SpeechLiveCaption, SpeechPlaybackButton, splitSpeechText } from "./LocalSpeechControls";
+import { advanceLiveTranscriptionCheckpoint, completeRecordingBlob, LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS, LocalSpeechProvider, mergeProvisionalTranscript, SpeechDictationButton, SpeechLiveCaption, SpeechPlaybackButton, splitSpeechText, VadSettingsModal } from "./LocalSpeechControls";
+import { DEFAULT_VAD_SETTINGS } from "./voiceActivityDetection";
 
 const speechApi = vi.hoisted(() => ({
   snapshot: vi.fn(),
@@ -32,6 +33,27 @@ const ready = {
   transcribers: [{ id: "whisper:turbo", name: "Whisper Turbo", provider: "ComfyUI Whisper" }],
   detail: "Ready",
 };
+
+class FakeRecorder {
+  static isTypeSupported() { return true; }
+  state: RecordingState = "inactive";
+  mimeType = "audio/webm;codecs=opus";
+  ondataavailable: ((event: BlobEvent) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onstop: (() => void) | null = null;
+  constructor(_stream: MediaStream, public options?: MediaRecorderOptions) {}
+  start() { this.state = "recording"; }
+  requestData() {
+    this.ondataavailable?.({
+      data: new Blob([new Uint8Array(256)], { type: this.mimeType }),
+    } as BlobEvent);
+  }
+  stop() {
+    this.requestData();
+    this.state = "inactive";
+    this.onstop?.();
+  }
+}
 
 beforeEach(() => {
   speechApi.snapshot.mockReset().mockResolvedValue(ready);
@@ -103,8 +125,24 @@ Here is the performance overview:
     expect(text).not.toContain("+");
     expect(text).not.toContain(":---");
     expect(text).toContain("Chatterbox: 400ms, 99 percent.");
-    expect(text).toContain("Whisper: 250ms, 98.5 percent.");
+    expect(text).toContain("Whisper: 250ms, 98 point 5 percent.");
     expect(text).toContain("Architecture Chart.");
+  });
+
+  it("speaks dashboard chemistry, thresholds, deltas, arrows, and ratios without glyph noise", () => {
+    const text = splitSpeechText("O₂ 19.8% ≥ 20.0%; CO₂ 0.52% ≤ 0.45%; expected Δ O₂ +0.4% → stable; 88/100 ↑").join(" ");
+    expect(text).toBe("oxygen 19 point 8 percent at least 20 point 0 percent; carbon dioxide 0 point 52 percent at most 0 point 45 percent; expected change in oxygen plus 0 point 4 percent then stable; 88 out of 100 rising");
+  });
+
+  it("does not split decimals or abbreviations across pipelined passages", () => {
+    const chunks = splitSpeechText(
+      `${"A long setup sentence keeps this passage near its boundary. ".repeat(5)}Oxygen remains at 20.0 percent in a different setting, e.g., a station. Final sentence.`,
+      120,
+    );
+    expect(chunks.join(" ")).toContain("20 point 0 percent");
+    expect(chunks.join(" ")).toContain("for example, a station");
+    expect(chunks).not.toContain("e.");
+    expect(chunks).not.toContain("g., a station. Final sentence.");
   });
 
   it("removes unpronounceable symbol clusters and stutter triggers like '#¤-_''*+' without breaking natural human words", () => {
@@ -129,6 +167,16 @@ Here is the performance overview:
     expect(text).toContain("Älä huoli, kaikki toimii loistavasti.");
     expect(text).toContain("Das ist großartig!");
     expect(text).toContain("東京は晴れです。");
+  });
+
+  it("speaks ISO dates and signed values coherently while dropping stylesheet fragments", () => {
+    const text = splitSpeechText(
+      ".mw-parser-output .marriage-display-ws{display:inline} Recorded 1930-08-05 at -12 degrees.",
+    ).join(" ");
+    expect(text).toContain("1930 08 05");
+    expect(text).toContain("minus 12 degrees");
+    expect(text).not.toContain("mw-parser-output");
+    expect(text).not.toMatch(/[{}]/);
   });
 
   it("marks the currently spoken word inside its sentence", () => {
@@ -172,6 +220,33 @@ Here is the performance overview:
     }
     expect(checkpoints).toEqual([...LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS]);
     expect(checkpoints.reduce((sum, seconds) => sum + seconds, 0)).toBeLessThan(30 * 60);
+  });
+
+  it("merges checkpoint transcripts without repeating the shared WebM header speech", () => {
+    expect(mergeProvisionalTranscript(
+      "The first spoken thought continues",
+      "The first new detail arrives",
+    )).toBe("The first spoken thought continues new detail arrives");
+  });
+
+  it("keeps VAD settings modal, labeled, focused, and dismissible from the keyboard", () => {
+    const onClose = vi.fn();
+    render(
+      <VadSettingsModal
+        settings={DEFAULT_VAD_SETTINGS}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        onClose={onClose}
+      />,
+    );
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByRole("slider", { name: "Silence duration" })).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "Microphone speech threshold" })).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "Minimum speech trigger duration" })).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "Initial grace period" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close VAD settings" })).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("speaks only after the user requests a saved model response", async () => {
@@ -238,22 +313,6 @@ Here is the performance overview:
   });
 
   it("streams a provisional draft and saves a final low-bitrate microphone pass", async () => {
-    class FakeRecorder {
-      static isTypeSupported() { return true; }
-      state: RecordingState = "inactive";
-      mimeType = "audio/webm;codecs=opus";
-      ondataavailable: ((event: BlobEvent) => void) | null = null;
-      onerror: (() => void) | null = null;
-      onstop: (() => void) | null = null;
-      constructor(_stream: MediaStream, public options?: MediaRecorderOptions) {}
-      start() { this.state = "recording"; }
-      requestData() { this.ondataavailable?.({ data: new Blob([new Uint8Array(256)], { type: this.mimeType }) } as BlobEvent); }
-      stop() {
-        this.requestData();
-        this.state = "inactive";
-        this.onstop?.();
-      }
-    }
     const stopTrack = vi.fn();
     Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) } });
     Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: FakeRecorder });
@@ -352,22 +411,6 @@ Here is the performance overview:
   });
 
   it("emits onRecordingComplete with audio path and whisper timings when dictation finishes", async () => {
-    class FakeRecorder {
-      static isTypeSupported() { return true; }
-      state: RecordingState = "inactive";
-      mimeType = "audio/webm;codecs=opus";
-      ondataavailable: ((event: BlobEvent) => void) | null = null;
-      onerror: (() => void) | null = null;
-      onstop: (() => void) | null = null;
-      constructor(_stream: MediaStream, public options?: MediaRecorderOptions) {}
-      start() { this.state = "recording"; }
-      requestData() { this.ondataavailable?.({ data: new Blob([new Uint8Array(256)], { type: this.mimeType }) } as BlobEvent); }
-      stop() {
-        this.requestData();
-        this.state = "inactive";
-        this.onstop?.();
-      }
-    }
     const stopTrack = vi.fn();
     Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) } });
     Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: FakeRecorder });

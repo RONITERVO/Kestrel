@@ -42,6 +42,7 @@ import {
 import {
   DEFAULT_VAD_SETTINGS,
   loadVadSettings,
+  normalizeVadSettings,
   saveVadSettings,
   VoiceActivityDetector,
   type VadSettings,
@@ -64,6 +65,7 @@ const SpeechContext = createContext<SpeechContextValue | null>(null);
 export function LocalSpeechProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<LocalSpeechSnapshot | null>(null);
   const [vadSettings, setVadSettingsState] = useState<VadSettings>(() => loadVadSettings());
+  const vadSettingsRef = useRef(vadSettings);
 
   const refresh = useCallback(async () => {
     const next = await getLocalSpeechSnapshot();
@@ -79,18 +81,22 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
 
   const updateVadSettings = useCallback(
     (updater: Partial<VadSettings> | ((prev: VadSettings) => VadSettings)) => {
-      setVadSettingsState((prev) => {
-        const next = typeof updater === "function" ? updater(prev) : { ...prev, ...updater };
-        saveVadSettings(next);
-        return next;
-      });
+      const previous = vadSettingsRef.current;
+      const next = normalizeVadSettings(
+        typeof updater === "function" ? updater(previous) : { ...previous, ...updater },
+      );
+      vadSettingsRef.current = next;
+      setVadSettingsState(next);
+      saveVadSettings(next);
     },
     [],
   );
 
   const resetVadSettings = useCallback(() => {
-    setVadSettingsState(DEFAULT_VAD_SETTINGS);
-    saveVadSettings(DEFAULT_VAD_SETTINGS);
+    const defaults = { ...DEFAULT_VAD_SETTINGS };
+    vadSettingsRef.current = defaults;
+    setVadSettingsState(defaults);
+    saveVadSettings(defaults);
   }, []);
 
   useEffect(() => {
@@ -391,6 +397,23 @@ export function completeRecordingBlob(chunks: Blob[], mimeType: string): Blob {
   return new Blob(chunks, { type: mimeType || "audio/webm" });
 }
 
+export function mergeProvisionalTranscript(existing: string, incoming: string): string {
+  const prior = existing.trim().split(/\s+/).filter(Boolean);
+  const next = incoming.trim().split(/\s+/).filter(Boolean);
+  if (!prior.length) return next.join(" ");
+  if (!next.length) return prior.join(" ");
+  const normalized = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  let repeatedPrefix = 0;
+  while (
+    repeatedPrefix < prior.length
+    && repeatedPrefix < next.length
+    && normalized(prior[repeatedPrefix]) === normalized(next[repeatedPrefix])
+  ) {
+    repeatedPrefix += 1;
+  }
+  return [...prior, ...next.slice(repeatedPrefix)].join(" ");
+}
+
 function utf8Tail(text: string, maxBytes: number): string {
   const bytes = new TextEncoder().encode(text);
   if (bytes.length <= maxBytes) return text;
@@ -412,11 +435,51 @@ export function VadSettingsModal({
   onReset: () => void;
   onClose: () => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const dialog = dialogRef.current;
+    const focusableSelector =
+      'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+    dialog?.querySelector<HTMLElement>(focusableSelector)?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(focusableSelector)];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, []);
+
   return (
     <div className="vad-settings-overlay" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="vad-settings-modal"
         role="dialog"
+        aria-modal="true"
         aria-labelledby="vad-settings-title"
         onClick={(e) => e.stopPropagation()}
       >
@@ -461,6 +524,7 @@ export function VadSettingsModal({
               </div>
               <input
                 type="range"
+                aria-label="Silence duration"
                 min={0.5}
                 max={10.0}
                 step={0.1}
@@ -480,6 +544,7 @@ export function VadSettingsModal({
               </div>
               <input
                 type="range"
+                aria-label="Microphone speech threshold"
                 min={-60}
                 max={-20}
                 step={1}
@@ -499,6 +564,7 @@ export function VadSettingsModal({
               </div>
               <input
                 type="range"
+                aria-label="Minimum speech trigger duration"
                 min={100}
                 max={2000}
                 step={50}
@@ -518,6 +584,7 @@ export function VadSettingsModal({
               </div>
               <input
                 type="range"
+                aria-label="Initial grace period"
                 min={3}
                 max={60}
                 step={1}
@@ -580,6 +647,7 @@ export function SpeechDictationButton({
   const streamRef = useRef<MediaStream | null>(null);
   const vadDetectorRef = useRef<VoiceActivityDetector | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const provisionalChunkStartRef = useRef(0);
   const provisionalTranscriptRef = useRef("");
   const initialRef = useRef("");
   const recordingIdRef = useRef("");
@@ -628,9 +696,18 @@ export function SpeechDictationButton({
               .finally(() => onActiveChange?.(false))
           : Promise.resolve();
 
-      const chunks = chunksRef.current;
+      const chunks = [...chunksRef.current];
       if (!chunks.length) return emptyFinal();
-      const blob = completeRecordingBlob(chunks, mimeRef.current);
+      const checkpointEnd = chunks.length;
+      if (!finalPass && provisionalChunkStartRef.current >= checkpointEnd) {
+        return Promise.resolve();
+      }
+      const checkpointChunks = finalPass
+        ? chunks
+        : provisionalChunkStartRef.current > 0
+          ? [chunks[0], ...chunks.slice(provisionalChunkStartRef.current, checkpointEnd)]
+          : chunks;
+      const blob = completeRecordingBlob(checkpointChunks, mimeRef.current);
       if (blob.size < 128) return emptyFinal();
 
       const task = (async () => {
@@ -651,7 +728,10 @@ export function SpeechDictationButton({
           prompt: utf8Tail(initialRef.current, 4_000),
           finalPass,
         });
-        provisionalTranscriptRef.current = result.text.trim();
+        provisionalTranscriptRef.current = finalPass
+          ? result.text.trim()
+          : mergeProvisionalTranscript(provisionalTranscriptRef.current, result.text);
+        if (!finalPass) provisionalChunkStartRef.current = checkpointEnd;
         applyTranscript(provisionalTranscriptRef.current);
         if (finalPass && result.audioRelativePath) {
           onRecordingComplete?.({
@@ -681,7 +761,7 @@ export function SpeechDictationButton({
       pendingRef.current = task;
       return task;
     },
-    [applyTranscript, onActiveChange, sourceId, sourceKind],
+    [applyTranscript, onActiveChange, onRecordingComplete, sourceId, sourceKind],
   );
 
   const stop = useCallback(() => {
@@ -732,6 +812,7 @@ export function SpeechDictationButton({
         audioBitsPerSecond: 32_000,
       });
       chunksRef.current = [];
+      provisionalChunkStartRef.current = 0;
       provisionalTranscriptRef.current = "";
       initialRef.current = value;
       recordingIdRef.current = id("recording");

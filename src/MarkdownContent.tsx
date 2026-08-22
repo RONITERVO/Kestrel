@@ -2,7 +2,7 @@ import { useState, useMemo, type ReactNode } from "react";
 import { Check, Copy, Code2, BarChart2 } from "lucide-react";
 import {
   SpokenText,
-  resolveActiveBlockAndWord,
+  useResolvedSpeechHighlight,
   renderHighlightedTokens,
   type CandidateBlock,
   type SpeechProgressState,
@@ -30,7 +30,6 @@ export interface CodeBlock {
   type: "code";
   language: string;
   code: string;
-  isChart?: boolean;
 }
 
 export interface ChartBlock {
@@ -174,7 +173,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
     const codeMatch = trimmed.match(/^[ \t]*(```|~~~)(.*)$/);
     if (codeMatch) {
       const fence = codeMatch[1];
-      const language = codeMatch[2]?.toLowerCase() || "text";
+      const language = codeMatch[2]?.trim().split(/\s+/, 1)[0]?.toLowerCase() || "text";
       const codeLines: string[] = [];
       i++;
       while (i < lines.length && !lines[i].trim().startsWith(fence)) {
@@ -186,7 +185,6 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
         type: "code",
         language,
         code: codeLines.join("\n"),
-        isChart: ["chart", "ascii", "mermaid"].includes(language),
       });
       continue;
     }
@@ -249,7 +247,7 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
         } else if (!ordered && uMatch) {
           items.push(uMatch[1]);
           i++;
-        } else if (cur.trim().startsWith("  ") || cur.trim().startsWith("\t")) {
+        } else if (cur.startsWith("  ") || cur.startsWith("\t")) {
           if (items.length > 0) {
             items[items.length - 1] += `\n${cur.trim()}`;
           }
@@ -646,10 +644,7 @@ export function MarkdownContent({
 }: MarkdownContentProps) {
   const blocks = useMemo(() => parseMarkdownBlocks(value), [value]);
   const candidates = useMemo(() => collectCandidateBlocks(blocks), [blocks]);
-  const activeHighlight = useMemo(
-    () => resolveActiveBlockAndWord(candidates, speechProgress),
-    [candidates, speechProgress?.text, speechProgress?.seconds, speechProgress?.active],
-  );
+  const activeHighlight = useResolvedSpeechHighlight(candidates, speechProgress);
 
   if (!value && streaming) {
     return (

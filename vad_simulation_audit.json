@@ -1,73 +1,74 @@
 {
   "summary": {
-    "timestamp": "2026-08-21T13:11:33.345Z",
+    "timestamp": "2026-08-22T19:38:06.201Z",
     "totalScenarios": 10,
     "passedScenarios": 10,
-    "totalFramesEvaluated": 1866,
+    "totalFramesEvaluated": 1873,
     "totalSimulatedDurationSec": 112.3,
+    "totalEvaluatedDurationSec": 93.65,
     "scenarios": [
       {
         "scenarioId": "scenario-1-standard-clean-pause",
         "name": "Standard Dictation with 2.0s Silence Auto-Stop",
         "passed": true,
-        "actualStopSec": 5.95,
+        "actualStopSec": 6.05,
         "expectedRangeSec": [
           5.9,
           6.2
         ],
-        "timingErrorMs": 100,
+        "timingErrorMs": 0,
         "speechDetected": true,
-        "totalFrames": 120
+        "totalFrames": 121
       },
       {
         "scenarioId": "scenario-2-mid-sentence-hesitation",
         "name": "Natural Mid-Sentence Thinking Pause (0.7s)",
         "passed": true,
-        "actualStopSec": 6.65,
+        "actualStopSec": 6.75,
         "expectedRangeSec": [
           6.6,
           6.9
         ],
-        "timingErrorMs": 100,
+        "timingErrorMs": 0,
         "speechDetected": true,
-        "totalFrames": 134
+        "totalFrames": 135
       },
       {
         "scenarioId": "scenario-3-noisy-ambient-room",
         "name": "Noisy Room Ambient Noise Floor (-48 dB)",
         "passed": true,
-        "actualStopSec": 5.45,
+        "actualStopSec": 5.55,
         "expectedRangeSec": [
           5.4,
           5.7
         ],
-        "timingErrorMs": 100,
+        "timingErrorMs": 0,
         "speechDetected": true,
-        "totalFrames": 110
+        "totalFrames": 111
       },
       {
         "scenarioId": "scenario-4-whisper-high-sensitivity",
         "name": "Whispered Dictation with High Sensitivity (-55 dB Threshold)",
         "passed": true,
-        "actualStopSec": 4.45,
+        "actualStopSec": 4.55,
         "expectedRangeSec": [
           4.4,
           4.7
         ],
-        "timingErrorMs": 100,
+        "timingErrorMs": 0,
         "speechDetected": true,
-        "totalFrames": 90
+        "totalFrames": 91
       },
       {
         "scenarioId": "scenario-5-short-impulse-cough",
         "name": "Short Breath / Impulse Noise Rejection (< 400ms)",
         "passed": true,
-        "actualStopSec": 8.05,
+        "actualStopSec": 8.1,
         "expectedRangeSec": [
           7.9,
           8.3
         ],
-        "timingErrorMs": 50,
+        "timingErrorMs": 0,
         "speechDetected": false,
         "totalFrames": 162
       },
@@ -75,25 +76,25 @@
         "scenarioId": "scenario-6-delayed-speech-grace-period",
         "name": "Delayed Speech Start (4.0s Initial Pause)",
         "passed": true,
-        "actualStopSec": 8.95,
+        "actualStopSec": 9.05,
         "expectedRangeSec": [
           8.9,
           9.2
         ],
-        "timingErrorMs": 100,
+        "timingErrorMs": 0,
         "speechDetected": true,
-        "totalFrames": 180
+        "totalFrames": 181
       },
       {
         "scenarioId": "scenario-7-abandoned-recording-timeout",
         "name": "Abandoned Dictation Initial Grace Timeout (10.0s)",
         "passed": true,
-        "actualStopSec": 9.95,
+        "actualStopSec": 10,
         "expectedRangeSec": [
           9.9,
           10.3
         ],
-        "timingErrorMs": 150,
+        "timingErrorMs": 100,
         "speechDetected": false,
         "totalFrames": 200
       },
@@ -101,53 +102,44 @@
         "scenarioId": "scenario-8-fast-response-aggressive-stop",
         "name": "Aggressive Fast Stop (0.5s Silence Timeout)",
         "passed": true,
-        "actualStopSec": 3.45,
+        "actualStopSec": 3.55,
         "expectedRangeSec": [
           3.4,
           3.7
         ],
-        "timingErrorMs": 100,
+        "timingErrorMs": 0,
         "speechDetected": true,
-        "totalFrames": 70
+        "totalFrames": 71
       },
       {
         "scenarioId": "scenario-9-relaxed-long-timeout",
         "name": "Relaxed Long Timeout (4.0s Silence Timeout)",
         "passed": true,
-        "actualStopSec": 11.95,
+        "actualStopSec": 12.05,
         "expectedRangeSec": [
           11.9,
           12.3
         ],
-        "timingErrorMs": 150,
+        "timingErrorMs": 50,
         "speechDetected": true,
-        "totalFrames": 240
+        "totalFrames": 241
       },
       {
         "scenarioId": "scenario-10-live-checkpoint-blob-integrity",
         "name": "Provisional Checkpoints & WebM Header Preservation",
         "passed": true,
-        "actualStopSec": 27.95,
+        "actualStopSec": 28,
         "expectedRangeSec": [
           27.9,
           28.3
         ],
-        "timingErrorMs": 150,
+        "timingErrorMs": 100,
         "speechDetected": true,
         "totalFrames": 560
       }
     ]
   },
   "sampleFrames": [
-    {
-      "timestampSec": 0,
-      "scenarioId": "scenario-1-standard-clean-pause",
-      "inputDb": -28,
-      "thresholdDb": -42,
-      "isSpeaking": true,
-      "silenceRatio": 0,
-      "state": "SPEECH"
-    },
     {
       "timestampSec": 0.05,
       "scenarioId": "scenario-1-standard-clean-pause",
@@ -862,20 +854,20 @@
     {
       "timestampSec": 4,
       "scenarioId": "scenario-1-standard-clean-pause",
-      "inputDb": -70,
+      "inputDb": -28,
       "thresholdDb": -42,
-      "isSpeaking": false,
-      "silenceRatio": 0.025,
-      "state": "SILENCE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 4.05,
       "scenarioId": "scenario-1-standard-clean-pause",
-      "inputDb": -70,
+      "inputDb": -28,
       "thresholdDb": -42,
-      "isSpeaking": false,
-      "silenceRatio": 0.05,
-      "state": "SILENCE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 4.1,
@@ -883,7 +875,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.075,
+      "silenceRatio": 0.025,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -892,7 +884,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.1,
+      "silenceRatio": 0.05,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -901,7 +893,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.125,
+      "silenceRatio": 0.075,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -910,7 +902,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.15,
+      "silenceRatio": 0.1,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -919,7 +911,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.175,
+      "silenceRatio": 0.125,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -928,7 +920,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.2,
+      "silenceRatio": 0.15,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -937,7 +929,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.225,
+      "silenceRatio": 0.175,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -946,7 +938,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.25,
+      "silenceRatio": 0.2,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -955,7 +947,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.275,
+      "silenceRatio": 0.225,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -964,7 +956,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.3,
+      "silenceRatio": 0.25,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -973,7 +965,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.325,
+      "silenceRatio": 0.275,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -982,7 +974,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.35,
+      "silenceRatio": 0.3,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -991,7 +983,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.375,
+      "silenceRatio": 0.325,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1000,7 +992,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.4,
+      "silenceRatio": 0.35,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1009,7 +1001,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.425,
+      "silenceRatio": 0.375,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1018,7 +1010,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.45,
+      "silenceRatio": 0.4,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1027,7 +1019,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.475,
+      "silenceRatio": 0.425,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1036,7 +1028,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.5,
+      "silenceRatio": 0.45,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1045,7 +1037,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.525,
+      "silenceRatio": 0.475,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1054,7 +1046,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.55,
+      "silenceRatio": 0.5,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1063,7 +1055,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.575,
+      "silenceRatio": 0.525,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1072,7 +1064,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.6,
+      "silenceRatio": 0.55,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1081,7 +1073,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.625,
+      "silenceRatio": 0.575,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1090,11 +1082,29 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.65,
+      "silenceRatio": 0.6,
       "state": "SILENCE_COUNTDOWN"
     },
     {
       "timestampSec": 5.3,
+      "scenarioId": "scenario-1-standard-clean-pause",
+      "inputDb": -70,
+      "thresholdDb": -42,
+      "isSpeaking": false,
+      "silenceRatio": 0.625,
+      "state": "SILENCE_COUNTDOWN"
+    },
+    {
+      "timestampSec": 5.35,
+      "scenarioId": "scenario-1-standard-clean-pause",
+      "inputDb": -70,
+      "thresholdDb": -42,
+      "isSpeaking": false,
+      "silenceRatio": 0.65,
+      "state": "SILENCE_COUNTDOWN"
+    },
+    {
+      "timestampSec": 5.4,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1103,7 +1113,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.35,
+      "timestampSec": 5.45,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1112,7 +1122,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.4,
+      "timestampSec": 5.5,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1121,7 +1131,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.45,
+      "timestampSec": 5.55,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1130,7 +1140,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.5,
+      "timestampSec": 5.6,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1139,7 +1149,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.55,
+      "timestampSec": 5.65,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1148,7 +1158,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.6,
+      "timestampSec": 5.7,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1157,7 +1167,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.65,
+      "timestampSec": 5.75,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1166,7 +1176,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.7,
+      "timestampSec": 5.8,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1175,7 +1185,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.75,
+      "timestampSec": 5.85,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1184,7 +1194,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.8,
+      "timestampSec": 5.9,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1193,7 +1203,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.85,
+      "timestampSec": 5.95,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1202,7 +1212,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.9,
+      "timestampSec": 6,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
@@ -1211,22 +1221,13 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.95,
+      "timestampSec": 6.05,
       "scenarioId": "scenario-1-standard-clean-pause",
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
       "silenceRatio": 1,
       "state": "SILENCE_COUNTDOWN"
-    },
-    {
-      "timestampSec": 0,
-      "scenarioId": "scenario-2-mid-sentence-hesitation",
-      "inputDb": -26,
-      "thresholdDb": -42,
-      "isSpeaking": true,
-      "silenceRatio": 0,
-      "state": "SPEECH"
     },
     {
       "timestampSec": 0.05,
@@ -1582,11 +1583,11 @@
     {
       "timestampSec": 2,
       "scenarioId": "scenario-2-mid-sentence-hesitation",
-      "inputDb": -68,
+      "inputDb": -26,
       "thresholdDb": -42,
-      "isSpeaking": false,
-      "silenceRatio": 0.025,
-      "state": "SILENCE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 2.05,
@@ -1594,7 +1595,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.05,
+      "silenceRatio": 0.025,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1603,7 +1604,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.075,
+      "silenceRatio": 0.05,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1612,7 +1613,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.1,
+      "silenceRatio": 0.075,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1621,7 +1622,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.125,
+      "silenceRatio": 0.1,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1630,7 +1631,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.15,
+      "silenceRatio": 0.125,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1639,7 +1640,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.175,
+      "silenceRatio": 0.15,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1648,7 +1649,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.2,
+      "silenceRatio": 0.175,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1657,7 +1658,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.225,
+      "silenceRatio": 0.2,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1666,7 +1667,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.25,
+      "silenceRatio": 0.225,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1675,7 +1676,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.275,
+      "silenceRatio": 0.25,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1684,7 +1685,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.3,
+      "silenceRatio": 0.275,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1693,7 +1694,7 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.325,
+      "silenceRatio": 0.3,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -1702,26 +1703,26 @@
       "inputDb": -68,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.35,
+      "silenceRatio": 0.325,
       "state": "SILENCE_COUNTDOWN"
     },
     {
       "timestampSec": 2.7,
       "scenarioId": "scenario-2-mid-sentence-hesitation",
-      "inputDb": -25,
+      "inputDb": -68,
       "thresholdDb": -42,
-      "isSpeaking": true,
-      "silenceRatio": 0,
-      "state": "SPEECH"
+      "isSpeaking": false,
+      "silenceRatio": 0.35,
+      "state": "SILENCE_COUNTDOWN"
     },
     {
       "timestampSec": 2.75,
       "scenarioId": "scenario-2-mid-sentence-hesitation",
-      "inputDb": -25,
+      "inputDb": -68,
       "thresholdDb": -42,
-      "isSpeaking": true,
-      "silenceRatio": 0,
-      "state": "SPEECH"
+      "isSpeaking": false,
+      "silenceRatio": 0.375,
+      "state": "SILENCE_COUNTDOWN"
     },
     {
       "timestampSec": 2.8,
@@ -2068,20 +2069,20 @@
     {
       "timestampSec": 4.7,
       "scenarioId": "scenario-2-mid-sentence-hesitation",
-      "inputDb": -70,
+      "inputDb": -25,
       "thresholdDb": -42,
-      "isSpeaking": false,
-      "silenceRatio": 0.025,
-      "state": "SILENCE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 4.75,
       "scenarioId": "scenario-2-mid-sentence-hesitation",
-      "inputDb": -70,
+      "inputDb": -25,
       "thresholdDb": -42,
-      "isSpeaking": false,
-      "silenceRatio": 0.05,
-      "state": "SILENCE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 4.8,
@@ -2089,7 +2090,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.075,
+      "silenceRatio": 0.025,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2098,7 +2099,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.1,
+      "silenceRatio": 0.05,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2107,7 +2108,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.125,
+      "silenceRatio": 0.075,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2116,7 +2117,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.15,
+      "silenceRatio": 0.1,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2125,7 +2126,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.175,
+      "silenceRatio": 0.125,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2134,7 +2135,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.2,
+      "silenceRatio": 0.15,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2143,7 +2144,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.225,
+      "silenceRatio": 0.175,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2152,7 +2153,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.25,
+      "silenceRatio": 0.2,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2161,7 +2162,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.275,
+      "silenceRatio": 0.225,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2170,7 +2171,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.3,
+      "silenceRatio": 0.25,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2179,7 +2180,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.325,
+      "silenceRatio": 0.275,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2188,7 +2189,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.35,
+      "silenceRatio": 0.3,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2197,7 +2198,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.375,
+      "silenceRatio": 0.325,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2206,7 +2207,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.4,
+      "silenceRatio": 0.35,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2215,7 +2216,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.425,
+      "silenceRatio": 0.375,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2224,7 +2225,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.45,
+      "silenceRatio": 0.4,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2233,7 +2234,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.475,
+      "silenceRatio": 0.425,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2242,7 +2243,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.5,
+      "silenceRatio": 0.45,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2251,7 +2252,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.525,
+      "silenceRatio": 0.475,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2260,7 +2261,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.55,
+      "silenceRatio": 0.5,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2269,7 +2270,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.575,
+      "silenceRatio": 0.525,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2278,7 +2279,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.6,
+      "silenceRatio": 0.55,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2287,7 +2288,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.625,
+      "silenceRatio": 0.575,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2296,7 +2297,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.65,
+      "silenceRatio": 0.6,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2305,7 +2306,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.675,
+      "silenceRatio": 0.625,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2314,7 +2315,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.7,
+      "silenceRatio": 0.65,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2323,7 +2324,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.725,
+      "silenceRatio": 0.675,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2332,7 +2333,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.75,
+      "silenceRatio": 0.7,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2341,7 +2342,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.775,
+      "silenceRatio": 0.725,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2350,7 +2351,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.8,
+      "silenceRatio": 0.75,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2359,7 +2360,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.825,
+      "silenceRatio": 0.775,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2368,7 +2369,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.85,
+      "silenceRatio": 0.8,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2377,7 +2378,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.875,
+      "silenceRatio": 0.825,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2386,7 +2387,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.9,
+      "silenceRatio": 0.85,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2395,7 +2396,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.925,
+      "silenceRatio": 0.875,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2404,7 +2405,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.95,
+      "silenceRatio": 0.9,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2413,7 +2414,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.975,
+      "silenceRatio": 0.925,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -2422,17 +2423,26 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 1,
+      "silenceRatio": 0.95,
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 0,
-      "scenarioId": "scenario-3-noisy-ambient-room",
-      "inputDb": -25,
-      "thresholdDb": -40,
-      "isSpeaking": true,
-      "silenceRatio": 0,
-      "state": "SPEECH"
+      "timestampSec": 6.7,
+      "scenarioId": "scenario-2-mid-sentence-hesitation",
+      "inputDb": -70,
+      "thresholdDb": -42,
+      "isSpeaking": false,
+      "silenceRatio": 0.975,
+      "state": "SILENCE_COUNTDOWN"
+    },
+    {
+      "timestampSec": 6.75,
+      "scenarioId": "scenario-2-mid-sentence-hesitation",
+      "inputDb": -70,
+      "thresholdDb": -42,
+      "isSpeaking": false,
+      "silenceRatio": 1,
+      "state": "SILENCE_COUNTDOWN"
     },
     {
       "timestampSec": 0.05,
@@ -3058,20 +3068,20 @@
     {
       "timestampSec": 3.5,
       "scenarioId": "scenario-3-noisy-ambient-room",
-      "inputDb": -48,
+      "inputDb": -25,
       "thresholdDb": -40,
-      "isSpeaking": false,
-      "silenceRatio": 0.025,
-      "state": "SILENCE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 3.55,
       "scenarioId": "scenario-3-noisy-ambient-room",
-      "inputDb": -48,
+      "inputDb": -25,
       "thresholdDb": -40,
-      "isSpeaking": false,
-      "silenceRatio": 0.05,
-      "state": "SILENCE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 3.6,
@@ -3079,7 +3089,7 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.075,
+      "silenceRatio": 0.025,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3088,7 +3098,7 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.1,
+      "silenceRatio": 0.05,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3097,7 +3107,7 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.125,
+      "silenceRatio": 0.075,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3106,7 +3116,7 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.15,
+      "silenceRatio": 0.1,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3115,7 +3125,7 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.175,
+      "silenceRatio": 0.125,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3124,7 +3134,7 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.2,
+      "silenceRatio": 0.15,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3133,7 +3143,7 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.225,
+      "silenceRatio": 0.175,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3142,7 +3152,7 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.25,
+      "silenceRatio": 0.2,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3151,7 +3161,7 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.275,
+      "silenceRatio": 0.225,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3160,11 +3170,29 @@
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
-      "silenceRatio": 0.3,
+      "silenceRatio": 0.25,
       "state": "SILENCE_COUNTDOWN"
     },
     {
       "timestampSec": 4.1,
+      "scenarioId": "scenario-3-noisy-ambient-room",
+      "inputDb": -48,
+      "thresholdDb": -40,
+      "isSpeaking": false,
+      "silenceRatio": 0.275,
+      "state": "SILENCE_COUNTDOWN"
+    },
+    {
+      "timestampSec": 4.15,
+      "scenarioId": "scenario-3-noisy-ambient-room",
+      "inputDb": -48,
+      "thresholdDb": -40,
+      "isSpeaking": false,
+      "silenceRatio": 0.3,
+      "state": "SILENCE_COUNTDOWN"
+    },
+    {
+      "timestampSec": 4.2,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3173,7 +3201,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.15,
+      "timestampSec": 4.25,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3182,7 +3210,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.2,
+      "timestampSec": 4.3,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3191,7 +3219,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.25,
+      "timestampSec": 4.35,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3200,7 +3228,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.3,
+      "timestampSec": 4.4,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3209,7 +3237,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.35,
+      "timestampSec": 4.45,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3218,7 +3246,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.4,
+      "timestampSec": 4.5,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3227,7 +3255,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.45,
+      "timestampSec": 4.55,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3236,7 +3264,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.5,
+      "timestampSec": 4.6,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3245,7 +3273,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.55,
+      "timestampSec": 4.65,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3254,7 +3282,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.6,
+      "timestampSec": 4.7,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3263,7 +3291,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.65,
+      "timestampSec": 4.75,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3272,7 +3300,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.7,
+      "timestampSec": 4.8,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3281,7 +3309,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.75,
+      "timestampSec": 4.85,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3290,7 +3318,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.8,
+      "timestampSec": 4.9,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3299,7 +3327,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.85,
+      "timestampSec": 4.95,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3308,7 +3336,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.9,
+      "timestampSec": 5,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3317,7 +3345,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 4.95,
+      "timestampSec": 5.05,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3326,7 +3354,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5,
+      "timestampSec": 5.1,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3335,7 +3363,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.05,
+      "timestampSec": 5.15,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3344,7 +3372,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.1,
+      "timestampSec": 5.2,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3353,7 +3381,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.15,
+      "timestampSec": 5.25,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3362,7 +3390,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.2,
+      "timestampSec": 5.3,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3371,7 +3399,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.25,
+      "timestampSec": 5.35,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3380,7 +3408,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.3,
+      "timestampSec": 5.4,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3389,7 +3417,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.35,
+      "timestampSec": 5.45,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3398,7 +3426,7 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.4,
+      "timestampSec": 5.5,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
@@ -3407,22 +3435,13 @@
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 5.45,
+      "timestampSec": 5.55,
       "scenarioId": "scenario-3-noisy-ambient-room",
       "inputDb": -48,
       "thresholdDb": -40,
       "isSpeaking": false,
       "silenceRatio": 1,
       "state": "SILENCE_COUNTDOWN"
-    },
-    {
-      "timestampSec": 0,
-      "scenarioId": "scenario-4-whisper-high-sensitivity",
-      "inputDb": -48,
-      "thresholdDb": -55,
-      "isSpeaking": true,
-      "silenceRatio": 0,
-      "state": "SPEECH"
     },
     {
       "timestampSec": 0.05,
@@ -3958,20 +3977,20 @@
     {
       "timestampSec": 3,
       "scenarioId": "scenario-4-whisper-high-sensitivity",
-      "inputDb": -75,
+      "inputDb": -48,
       "thresholdDb": -55,
-      "isSpeaking": false,
-      "silenceRatio": 0.03333333333333333,
-      "state": "SILENCE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 3.05,
       "scenarioId": "scenario-4-whisper-high-sensitivity",
-      "inputDb": -75,
+      "inputDb": -48,
       "thresholdDb": -55,
-      "isSpeaking": false,
-      "silenceRatio": 0.06666666666666667,
-      "state": "SILENCE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 3.1,
@@ -3979,7 +3998,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.1,
+      "silenceRatio": 0.03333333333333333,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3988,7 +4007,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.13333333333333333,
+      "silenceRatio": 0.06666666666666667,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -3997,7 +4016,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.16666666666666666,
+      "silenceRatio": 0.1,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4006,7 +4025,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.2,
+      "silenceRatio": 0.13333333333333333,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4015,7 +4034,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.23333333333333334,
+      "silenceRatio": 0.16666666666666666,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4024,7 +4043,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.26666666666666666,
+      "silenceRatio": 0.2,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4033,7 +4052,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.3,
+      "silenceRatio": 0.23333333333333334,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4042,7 +4061,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.3333333333333333,
+      "silenceRatio": 0.26666666666666666,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4051,7 +4070,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.36666666666666664,
+      "silenceRatio": 0.3,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4060,7 +4079,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.4,
+      "silenceRatio": 0.3333333333333333,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4069,7 +4088,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.43333333333333335,
+      "silenceRatio": 0.36666666666666664,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4078,7 +4097,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.4666666666666667,
+      "silenceRatio": 0.4,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4087,7 +4106,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.5,
+      "silenceRatio": 0.43333333333333335,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4096,7 +4115,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.5333333333333333,
+      "silenceRatio": 0.4666666666666667,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4105,7 +4124,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.5666666666666667,
+      "silenceRatio": 0.5,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4114,7 +4133,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.6,
+      "silenceRatio": 0.5333333333333333,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4123,7 +4142,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.6333333333333333,
+      "silenceRatio": 0.5666666666666667,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4132,7 +4151,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.6666666666666666,
+      "silenceRatio": 0.6,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4141,7 +4160,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.7,
+      "silenceRatio": 0.6333333333333333,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4150,7 +4169,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.7333333333333333,
+      "silenceRatio": 0.6666666666666666,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4159,7 +4178,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.7666666666666667,
+      "silenceRatio": 0.7,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4168,7 +4187,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.8,
+      "silenceRatio": 0.7333333333333333,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4177,7 +4196,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.8333333333333334,
+      "silenceRatio": 0.7666666666666667,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4186,7 +4205,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.8666666666666667,
+      "silenceRatio": 0.8,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4195,7 +4214,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.9,
+      "silenceRatio": 0.8333333333333334,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4204,7 +4223,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.9333333333333333,
+      "silenceRatio": 0.8666666666666667,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4213,7 +4232,7 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 0.9666666666666667,
+      "silenceRatio": 0.9,
       "state": "SILENCE_COUNTDOWN"
     },
     {
@@ -4222,17 +4241,26 @@
       "inputDb": -75,
       "thresholdDb": -55,
       "isSpeaking": false,
-      "silenceRatio": 1,
+      "silenceRatio": 0.9333333333333333,
       "state": "SILENCE_COUNTDOWN"
     },
     {
-      "timestampSec": 0,
-      "scenarioId": "scenario-5-short-impulse-cough",
-      "inputDb": -22,
-      "thresholdDb": -42,
-      "isSpeaking": true,
-      "silenceRatio": 0,
-      "state": "SPEECH"
+      "timestampSec": 4.5,
+      "scenarioId": "scenario-4-whisper-high-sensitivity",
+      "inputDb": -75,
+      "thresholdDb": -55,
+      "isSpeaking": false,
+      "silenceRatio": 0.9666666666666667,
+      "state": "SILENCE_COUNTDOWN"
+    },
+    {
+      "timestampSec": 4.55,
+      "scenarioId": "scenario-4-whisper-high-sensitivity",
+      "inputDb": -75,
+      "thresholdDb": -55,
+      "isSpeaking": false,
+      "silenceRatio": 1,
+      "state": "SILENCE_COUNTDOWN"
     },
     {
       "timestampSec": 0.05,
@@ -4246,11 +4274,11 @@
     {
       "timestampSec": 0.1,
       "scenarioId": "scenario-5-short-impulse-cough",
-      "inputDb": -70,
+      "inputDb": -22,
       "thresholdDb": -42,
-      "isSpeaking": false,
-      "silenceRatio": 0.00625,
-      "state": "GRACE_COUNTDOWN"
+      "isSpeaking": true,
+      "silenceRatio": 0,
+      "state": "SPEECH"
     },
     {
       "timestampSec": 0.15,
@@ -4258,7 +4286,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.0125,
+      "silenceRatio": 0.00625,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4267,7 +4295,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.01875,
+      "silenceRatio": 0.0125,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4276,7 +4304,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.025,
+      "silenceRatio": 0.01875,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4285,7 +4313,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.03125,
+      "silenceRatio": 0.025,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4294,7 +4322,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.0375,
+      "silenceRatio": 0.03125,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4303,7 +4331,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.04375,
+      "silenceRatio": 0.0375,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4312,7 +4340,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.05,
+      "silenceRatio": 0.04375,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4321,7 +4349,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.05625,
+      "silenceRatio": 0.05,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4330,7 +4358,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.0625,
+      "silenceRatio": 0.05625,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4339,7 +4367,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.06875,
+      "silenceRatio": 0.0625,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4348,7 +4376,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.075,
+      "silenceRatio": 0.06875,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4357,7 +4385,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.08125,
+      "silenceRatio": 0.075,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4366,7 +4394,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.0875,
+      "silenceRatio": 0.08125,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4375,7 +4403,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.09375,
+      "silenceRatio": 0.0875,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4384,7 +4412,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.1,
+      "silenceRatio": 0.09375,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4393,7 +4421,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.10625,
+      "silenceRatio": 0.1,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4402,7 +4430,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.1125,
+      "silenceRatio": 0.10625,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4411,7 +4439,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.11875,
+      "silenceRatio": 0.1125,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4420,7 +4448,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.125,
+      "silenceRatio": 0.11875,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4429,7 +4457,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.13125,
+      "silenceRatio": 0.125,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4438,7 +4466,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.1375,
+      "silenceRatio": 0.13125,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4447,7 +4475,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.14375,
+      "silenceRatio": 0.1375,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4456,7 +4484,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.15,
+      "silenceRatio": 0.14375,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4465,7 +4493,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.15625,
+      "silenceRatio": 0.15,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4474,7 +4502,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.1625,
+      "silenceRatio": 0.15625,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4483,7 +4511,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.16875,
+      "silenceRatio": 0.1625,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4492,7 +4520,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.175,
+      "silenceRatio": 0.16875,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4501,7 +4529,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.18125,
+      "silenceRatio": 0.175,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4510,7 +4538,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.1875,
+      "silenceRatio": 0.18125,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4519,7 +4547,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.19375,
+      "silenceRatio": 0.1875,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4528,7 +4556,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.2,
+      "silenceRatio": 0.19375,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4537,7 +4565,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.20625,
+      "silenceRatio": 0.2,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4546,7 +4574,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.2125,
+      "silenceRatio": 0.20625,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4555,7 +4583,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.21875,
+      "silenceRatio": 0.2125,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4564,7 +4592,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.225,
+      "silenceRatio": 0.21875,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4573,7 +4601,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.23125,
+      "silenceRatio": 0.225,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4582,7 +4610,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.2375,
+      "silenceRatio": 0.23125,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4591,7 +4619,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.24375,
+      "silenceRatio": 0.2375,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4600,7 +4628,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.25,
+      "silenceRatio": 0.24375,
       "state": "GRACE_COUNTDOWN"
     },
     {
@@ -4609,34 +4637,7 @@
       "inputDb": -70,
       "thresholdDb": -42,
       "isSpeaking": false,
-      "silenceRatio": 0.25625,
-      "state": "GRACE_COUNTDOWN"
-    },
-    {
-      "timestampSec": 2.15,
-      "scenarioId": "scenario-5-short-impulse-cough",
-      "inputDb": -70,
-      "thresholdDb": -42,
-      "isSpeaking": false,
-      "silenceRatio": 0.2625,
-      "state": "GRACE_COUNTDOWN"
-    },
-    {
-      "timestampSec": 2.2,
-      "scenarioId": "scenario-5-short-impulse-cough",
-      "inputDb": -70,
-      "thresholdDb": -42,
-      "isSpeaking": false,
-      "silenceRatio": 0.26875,
-      "state": "GRACE_COUNTDOWN"
-    },
-    {
-      "timestampSec": 2.25,
-      "scenarioId": "scenario-5-short-impulse-cough",
-      "inputDb": -70,
-      "thresholdDb": -42,
-      "isSpeaking": false,
-      "silenceRatio": 0.275,
+      "silenceRatio": 0.25,
       "state": "GRACE_COUNTDOWN"
     }
   ]

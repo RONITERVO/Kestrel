@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_VAD_SETTINGS,
   loadVadSettings,
@@ -24,6 +24,11 @@ describe("Voice Activity Detection (VAD)", () => {
       writable: true,
       configurable: true,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   describe("Settings normalization & storage", () => {
@@ -68,6 +73,30 @@ describe("Voice Activity Detection (VAD)", () => {
   });
 
   describe("VoiceActivityDetector state machine", () => {
+    function detectorFixture(settings: VadSettings) {
+      let db = -100;
+      const amplitude = () => 10 ** (db / 20);
+      const analyser = {
+        fftSize: 512,
+        smoothingTimeConstant: 0.2,
+        disconnect: vi.fn(),
+        getFloatTimeDomainData: vi.fn((values: Float32Array) => values.fill(amplitude())),
+      };
+      const source = { connect: vi.fn(), disconnect: vi.fn() };
+      class MockAudioContext {
+        state = "running";
+        createAnalyser() { return analyser; }
+        createMediaStreamSource() { return source; }
+        close = vi.fn().mockResolvedValue(undefined);
+      }
+      vi.stubGlobal("AudioContext", MockAudioContext);
+      const onSilenceTimeout = vi.fn();
+      const detector = new VoiceActivityDetector({} as MediaStream, settings, {
+        onSilenceTimeout,
+      });
+      return { detector, onSilenceTimeout, setDb: (value: number) => { db = value; } };
+    }
+
     it("initializes and cleans up Web Audio nodes cleanly", () => {
       const mockDisconnect = vi.fn();
       const mockClose = vi.fn().mockResolvedValue(undefined);
@@ -107,6 +136,40 @@ describe("Voice Activity Detection (VAD)", () => {
       detector.destroy();
       expect(mockDisconnect).toHaveBeenCalled();
       expect(mockClose).toHaveBeenCalled();
+    });
+
+    it("fires at the configured initial grace boundary when no speech begins", () => {
+      vi.useFakeTimers();
+      const fixture = detectorFixture({ ...DEFAULT_VAD_SETTINGS, initialGraceTimeoutSec: 3 });
+      vi.advanceTimersByTime(2_950);
+      expect(fixture.onSilenceTimeout).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(100);
+      expect(fixture.onSilenceTimeout).toHaveBeenCalledOnce();
+      fixture.detector.destroy();
+    });
+
+    it("arms only after minimum speech and then honors the silence boundary", () => {
+      vi.useFakeTimers();
+      const fixture = detectorFixture({
+        ...DEFAULT_VAD_SETTINGS,
+        minSpeechDurationMs: 400,
+        silenceTimeoutSec: 2,
+        initialGraceTimeoutSec: 10,
+      });
+      fixture.setDb(-20);
+      vi.advanceTimersByTime(350);
+      fixture.setDb(-80);
+      vi.advanceTimersByTime(2_100);
+      expect(fixture.onSilenceTimeout).not.toHaveBeenCalled();
+
+      fixture.setDb(-20);
+      vi.advanceTimersByTime(450);
+      fixture.setDb(-80);
+      vi.advanceTimersByTime(1_950);
+      expect(fixture.onSilenceTimeout).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(100);
+      expect(fixture.onSilenceTimeout).toHaveBeenCalledOnce();
+      fixture.detector.destroy();
     });
   });
 });

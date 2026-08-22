@@ -10,8 +10,8 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:speech": "npx vite-node scripts/speech_highlight_harness.ts",
-    "test:vad": "npx vite-node scripts/vad_dictation_harness.ts",
+    "test:speech": "vite-node scripts/speech_highlight_harness.ts",
+    "test:vad": "vite-node scripts/vad_dictation_harness.ts",
     "package:offline": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-offline.ps1",
     "launch": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/launch-from-shortcut.ps1"
   },
@@ -23,14 +23,15 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.5",
-    "@testing-library/jest-dom": "^6.6.3",
-    "@testing-library/react": "^16.1.0",
     "jsdom": "^29.0.1",
     "typescript": "~5.7.2",
     "vite": "^8.2.0",
+    "vite-node": "^6.0.0",
     "vitest": "^4.1.10"
   }
 }

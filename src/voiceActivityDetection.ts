@@ -90,6 +90,7 @@ export function saveVadSettings(settings: VadSettings): void {
 export interface VadCallbacks {
   onSilenceTimeout: () => void;
   onEnergyUpdate?: (db: number, isSpeaking: boolean, silenceProgressRatio: number) => void;
+  onSpeechStart?: () => void;
 }
 
 export class VoiceActivityDetector {
@@ -105,6 +106,7 @@ export class VoiceActivityDetector {
   private initialSilenceMs = 0;
   private destroyed = false;
   private readonly sampleIntervalMs = 50;
+  private previousSampleTimestampMs = 0;
 
   constructor(
     private readonly stream: MediaStream,
@@ -146,9 +148,13 @@ export class VoiceActivityDetector {
 
   private startLoop() {
     if (this.destroyed || this.timer !== null) return;
+    this.previousSampleTimestampMs = performance.now();
 
     this.timer = window.setInterval(() => {
       if (this.destroyed || !this.analyser || !this.dataArray) return;
+      const now = performance.now();
+      const deltaMs = Math.max(0, now - this.previousSampleTimestampMs);
+      this.previousSampleTimestampMs = now;
 
       this.analyser.getFloatTimeDomainData(this.dataArray);
 
@@ -164,10 +170,11 @@ export class VoiceActivityDetector {
       const isSpeechFrame = db >= this.settings.speechThresholdDb;
 
       if (isSpeechFrame) {
-        this.consecutiveSpeechMs += this.sampleIntervalMs;
+        this.consecutiveSpeechMs += deltaMs;
         this.consecutiveSilenceMs = 0;
 
         if (this.consecutiveSpeechMs >= this.settings.minSpeechDurationMs) {
+          if (!this.hasSpoken) this.callbacks.onSpeechStart?.();
           this.hasSpoken = true;
         }
 
@@ -176,7 +183,7 @@ export class VoiceActivityDetector {
         this.consecutiveSpeechMs = 0;
 
         if (this.hasSpoken) {
-          this.consecutiveSilenceMs += this.sampleIntervalMs;
+          this.consecutiveSilenceMs += deltaMs;
           const targetSilenceMs = this.settings.silenceTimeoutSec * 1000;
           const silenceRatio = Math.min(1, this.consecutiveSilenceMs / targetSilenceMs);
 
@@ -188,7 +195,7 @@ export class VoiceActivityDetector {
             return;
           }
         } else {
-          this.initialSilenceMs += this.sampleIntervalMs;
+          this.initialSilenceMs += deltaMs;
           const targetInitialGraceMs = this.settings.initialGraceTimeoutSec * 1000;
           const silenceRatio = Math.min(1, this.initialSilenceMs / targetInitialGraceMs);
 

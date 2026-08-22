@@ -8,6 +8,7 @@ import {
   synthesizeLocalSpeech,
 } from "./api";
 import type { SpeechPassage } from "./researchSpeechContent";
+import { speechPlaybackEnd } from "./spokenHighlight";
 import type { SpeechModel, SpeechTiming } from "./types";
 
 export type PlayerStatus = "ready" | "preparing" | "playing" | "paused" | "complete" | "error";
@@ -88,11 +89,34 @@ export function usePipelinedSpeechPlayer({
   const startAtRef = useRef<(index: number, voiceOverride?: SpeechModel | null) => Promise<void>>(async () => undefined);
   const onPassageChangeRef = useRef(onPassageChange);
   const onEndedRef = useRef(onEnded);
+  const recordingRef = useRef(recording);
+  const speechTimingsRef = useRef<SpeechTiming[]>([]);
+  const metadataRef = useRef({
+    sourceKind,
+    sourceId,
+    passages,
+    selectedVoiceModel,
+    alignmentModel,
+  });
+  const recordingPath = recording?.audioRelativePath ?? null;
+
+  recordingRef.current = recording;
+  metadataRef.current = {
+    sourceKind,
+    sourceId,
+    passages,
+    selectedVoiceModel,
+    alignmentModel,
+  };
 
   useEffect(() => {
     onPassageChangeRef.current = onPassageChange;
     onEndedRef.current = onEnded;
   }, [onEnded, onPassageChange]);
+
+  useEffect(() => {
+    speechTimingsRef.current = speechTimings;
+  }, [speechTimings]);
 
   useEffect(() => {
     currentIndexRef.current = currentIndex;
@@ -149,12 +173,12 @@ export function usePipelinedSpeechPlayer({
     setAudioProgress(0);
     setSpeechSeconds(0);
     setSpeechDuration(0);
-    setSpeechTimings(recording?.words ?? []);
+    setSpeechTimings(recordingRef.current?.words ?? []);
     setBufferingIndex(null);
     setStatus("ready");
     setError(null);
     onPassageChangeRef.current?.(null, -1);
-  }, [cancelActiveJobs, recording]);
+  }, [cancelActiveJobs]);
 
   const stopPlayback = useCallback(() => {
     const wasOwner = ownsPlaybackRef.current;
@@ -168,7 +192,7 @@ export function usePipelinedSpeechPlayer({
 
   useEffect(() => {
     resetPlayback();
-  }, [passages, resetPlayback, sourceId]);
+  }, [passages, recordingPath, resetPlayback, sourceId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -187,32 +211,36 @@ export function usePipelinedSpeechPlayer({
   }, [cancelActiveJobs, stopPlayback]);
 
   const clipKey = useCallback((index: number, voice?: SpeechModel | null) => {
-    const passage = passages[index];
+    const current = metadataRef.current;
+    const currentRecording = recordingRef.current;
+    const passage = current.passages[index];
     if (!passage) return "";
-    if (recording) {
-      return `${sourceKind}:${sourceId}:voice-recording:${passage.id}:${passage.text}`;
+    if (currentRecording) {
+      return `${current.sourceKind}:${current.sourceId}:voice-recording:${currentRecording.audioRelativePath}:${passage.id}:${passage.text}`;
     }
-    const activeVoice = voice ?? selectedVoiceModel;
+    const activeVoice = voice ?? current.selectedVoiceModel;
     return activeVoice
-      ? `${sourceKind}:${sourceId}:${activeVoice.id}:${passage.id}:${passage.text}`
+      ? `${current.sourceKind}:${current.sourceId}:${activeVoice.id}:${passage.id}:${passage.text}`
       : "";
-  }, [passages, recording, selectedVoiceModel, sourceId, sourceKind]);
+  }, []);
 
   const ensureClip = useCallback((index: number, background: boolean, voiceOverride?: SpeechModel | null): Promise<string> => {
-    const passage = passages[index];
+    const current = metadataRef.current;
+    const currentRecording = recordingRef.current;
+    const passage = current.passages[index];
     if (!passage) {
       return Promise.reject(new Error("Passage not found."));
     }
-    if (recording) {
-      const url = localSpeechMediaUrl(recording.audioRelativePath);
+    if (currentRecording) {
+      const url = localSpeechMediaUrl(currentRecording.audioRelativePath);
       if (!url) throw new Error("Kestrel could not create a private URL for your voice recording.");
       const key = clipKey(index);
       clipUrlsRef.current.set(key, url);
-      clipTimingsRef.current.set(key, recording.words);
-      clipPathsRef.current.set(key, recording.audioRelativePath);
+      clipTimingsRef.current.set(key, currentRecording.words);
+      clipPathsRef.current.set(key, currentRecording.audioRelativePath);
       return Promise.resolve(url);
     }
-    const activeVoice = voiceOverride ?? selectedVoiceModel;
+    const activeVoice = voiceOverride ?? current.selectedVoiceModel;
     if (!activeVoice) {
       return Promise.reject(new Error("No local ComfyUI voice model is selected."));
     }
@@ -234,8 +262,8 @@ export function usePipelinedSpeechPlayer({
 
     const promise = synthesizeLocalSpeech({
       jobId: activeJob,
-      sourceKind,
-      sourceId,
+      sourceKind: current.sourceKind,
+      sourceId: current.sourceId,
       passageId: passage.id,
       text: passage.text,
       modelId: activeVoice.id,
@@ -260,21 +288,23 @@ export function usePipelinedSpeechPlayer({
 
     pendingClipsRef.current.set(key, promise);
     return promise;
-  }, [clipKey, passages, recording, selectedVoiceModel, sourceId, sourceKind]);
+  }, [clipKey]);
 
   const alignClip = useCallback((index: number, voiceOverride?: SpeechModel | null): Promise<void> => {
-    const passage = passages[index];
+    const current = metadataRef.current;
+    const currentRecording = recordingRef.current;
+    const passage = current.passages[index];
     if (!passage) return Promise.resolve();
-    if (recording) {
+    if (currentRecording) {
       const key = clipKey(index);
-      clipTimingsRef.current.set(key, recording.words);
+      clipTimingsRef.current.set(key, currentRecording.words);
       if (mountedRef.current && clipKey(currentIndexRef.current) === key) {
-        setSpeechTimings(recording.words);
+        setSpeechTimings(currentRecording.words);
       }
       return Promise.resolve();
     }
-    const activeVoice = voiceOverride ?? selectedVoiceModel;
-    if (!activeVoice || !alignmentModel) return Promise.resolve();
+    const activeVoice = voiceOverride ?? current.selectedVoiceModel;
+    if (!activeVoice || !current.alignmentModel) return Promise.resolve();
     const key = clipKey(index, activeVoice);
     if (clipTimingsRef.current.get(key)?.length) return Promise.resolve();
     const pending = pendingAlignmentsRef.current.get(key);
@@ -288,13 +318,13 @@ export function usePipelinedSpeechPlayer({
 
     const task = alignLocalSpeech({
       jobId: alignmentJob,
-      sourceKind,
-      sourceId,
+      sourceKind: current.sourceKind,
+      sourceId: current.sourceId,
       passageId: passage.id,
       text: passage.text,
       relativePath,
       voiceModelId: activeVoice.id,
-      alignmentModelId: alignmentModel.id,
+      alignmentModelId: current.alignmentModel.id,
     }).then((aligned) => {
       clipTimingsRef.current.set(key, aligned.words);
       if (mountedRef.current && clipKey(currentIndexRef.current, activeVoice) === key) {
@@ -312,10 +342,12 @@ export function usePipelinedSpeechPlayer({
 
     pendingAlignmentsRef.current.set(key, task);
     return task;
-  }, [alignmentModel, clipKey, passages, recording, selectedVoiceModel, sourceId, sourceKind]);
+  }, [clipKey]);
 
   const startAt = useCallback(async (index: number, voiceOverride?: SpeechModel | null) => {
-    if (!passages[index]) return;
+    const current = metadataRef.current;
+    const currentRecording = recordingRef.current;
+    if (!current.passages[index]) return;
     const generation = playbackGenerationRef.current + 1;
     playbackGenerationRef.current = generation;
     const audio = audioRef.current;
@@ -326,28 +358,28 @@ export function usePipelinedSpeechPlayer({
     setAudioProgress(0);
     setSpeechSeconds(0);
     setSpeechDuration(0);
-    setSpeechTimings(recording?.words ?? []);
+    setSpeechTimings(currentRecording?.words ?? []);
     setError(null);
-    onPassageChangeRef.current?.(passages[index], index);
+    onPassageChangeRef.current?.(current.passages[index], index);
     ownsPlaybackRef.current = true;
     claimPlayback(stopPlayback);
     try {
       const url = await ensureClip(index, false, voiceOverride);
       if (!mountedRef.current || generation !== playbackGenerationRef.current) return;
       audio.src = url;
-      const exactTimings = clipTimingsRef.current.get(clipKey(index, voiceOverride)) ?? recording?.words ?? [];
+      const exactTimings = clipTimingsRef.current.get(clipKey(index, voiceOverride)) ?? currentRecording?.words ?? [];
       setSpeechTimings(exactTimings);
       audio.playbackRate = rateRef.current;
       await audio.play();
       if (!mountedRef.current || generation !== playbackGenerationRef.current) return;
       setStatus("playing");
       setDetail(
-        recording
+        currentRecording
           ? "Playing your voice recording."
-          : `Reading ${passages[index].label} with ${(voiceOverride ?? selectedVoiceModel)?.name ?? "voice"}.`,
+          : `Reading ${current.passages[index].label} with ${(voiceOverride ?? current.selectedVoiceModel)?.name ?? "voice"}.`,
       );
       void alignClip(index, voiceOverride);
-      if (!recording && mountedRef.current && generation === playbackGenerationRef.current && index + 1 < passages.length) {
+      if (!currentRecording && mountedRef.current && generation === playbackGenerationRef.current && index + 1 < current.passages.length) {
         void ensureClip(index + 1, true, voiceOverride).then(() => {
           void alignClip(index + 1, voiceOverride);
         }).catch(() => undefined);
@@ -366,7 +398,7 @@ export function usePipelinedSpeechPlayer({
       clearPlayback(stopPlayback);
       void releaseLocalSpeechMemory().catch(() => undefined);
     }
-  }, [alignClip, clipKey, ensureClip, passages, recording, selectedVoiceModel, stopPlayback]);
+  }, [alignClip, clipKey, ensureClip, stopPlayback]);
 
   useEffect(() => {
     startAtRef.current = startAt;
@@ -381,7 +413,8 @@ export function usePipelinedSpeechPlayer({
 
   const togglePlayback = useCallback(() => {
     const audio = audioRef.current;
-    if (!audio || (!selectedVoiceModel && !recording)) return;
+    const current = metadataRef.current;
+    if (!audio || (!current.selectedVoiceModel && !recordingRef.current)) return;
     if (status === "playing") {
       audio.pause();
       setStatus("paused");
@@ -396,7 +429,7 @@ export function usePipelinedSpeechPlayer({
     } else if (status !== "preparing") {
       void startAt(status === "complete" ? 0 : currentIndexRef.current);
     }
-  }, [status, stopPlayback, selectedVoiceModel, recording, startAt]);
+  }, [startAt, status, stopPlayback]);
 
   const seekSpeech = useCallback((nextSeconds: number) => {
     const audio = audioRef.current;
@@ -422,6 +455,20 @@ export function usePipelinedSpeechPlayer({
 
   const activePassage = passages[currentIndex] ?? null;
 
+  const completeCurrentPassage = useCallback(() => {
+    if (currentIndexRef.current + 1 < metadataRef.current.passages.length) {
+      startAtRef.current(currentIndexRef.current + 1);
+    } else {
+      setAudioProgress(1);
+      setStatus("complete");
+      onPassageChangeRef.current?.(null, -1);
+      onEndedRef.current?.();
+      ownsPlaybackRef.current = false;
+      clearPlayback(stopPlayback);
+      void releaseLocalSpeechMemory().catch(() => undefined);
+    }
+  }, [stopPlayback]);
+
   const audioProps = useMemo(() => ({
     preload: "auto" as const,
     onLoadedMetadata: (event: React.SyntheticEvent<HTMLAudioElement>) => {
@@ -430,9 +477,23 @@ export function usePipelinedSpeechPlayer({
     },
     onTimeUpdate: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       const audio = event.currentTarget;
+      const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+      const passage = metadataRef.current.passages[currentIndexRef.current];
+      const playbackEnd = passage
+        ? speechPlaybackEnd(passage.text, speechTimingsRef.current, duration)
+        : duration;
+      if (playbackEnd > 0 && playbackEnd < duration - 0.1 && audio.currentTime >= playbackEnd) {
+        audio.pause();
+        audio.currentTime = playbackEnd;
+        setSpeechSeconds(playbackEnd);
+        setSpeechDuration(playbackEnd);
+        setAudioProgress(1);
+        completeCurrentPassage();
+        return;
+      }
       setSpeechSeconds(audio.currentTime);
-      setSpeechDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
-      setAudioProgress(Number.isFinite(audio.duration) && audio.duration > 0 ? audio.currentTime / audio.duration : 0);
+      setSpeechDuration(playbackEnd);
+      setAudioProgress(playbackEnd > 0 ? audio.currentTime / playbackEnd : 0);
     },
     onError: (event: React.SyntheticEvent<HTMLAudioElement>) => {
       const audio = event.currentTarget;
@@ -444,20 +505,8 @@ export function usePipelinedSpeechPlayer({
       clearPlayback(stopPlayback);
       void releaseLocalSpeechMemory().catch(() => undefined);
     },
-    onEnded: () => {
-      if (currentIndexRef.current + 1 < passages.length) {
-        startAtRef.current(currentIndexRef.current + 1);
-      } else {
-        setAudioProgress(1);
-        setStatus("complete");
-        onPassageChangeRef.current?.(null, -1);
-        onEndedRef.current?.();
-        ownsPlaybackRef.current = false;
-        clearPlayback(stopPlayback);
-        void releaseLocalSpeechMemory().catch(() => undefined);
-      }
-    },
-  }), [passages.length, stopPlayback]);
+    onEnded: completeCurrentPassage,
+  }), [completeCurrentPassage, stopPlayback]);
 
   return {
     audioRef,

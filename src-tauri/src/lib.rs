@@ -3019,17 +3019,18 @@ async fn start_chat_stream(
             }
         },
     };
-    let session =
-        match state
-            .workspace
-            .add_user_message_with_attachments(&session.id, message, attachments, request.recording.clone())
-        {
-            Ok(session) => session,
-            Err(error) => {
-                state.work_active.store(false, Ordering::Release);
-                return Err(error);
-            }
-        };
+    let session = match state.workspace.add_user_message_with_attachments(
+        &session.id,
+        message,
+        attachments,
+        request.recording.clone(),
+    ) {
+        Ok(session) => session,
+        Err(error) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err(error);
+        }
+    };
     let request_id = uuid::Uuid::new_v4().to_string();
     let cancel = CancellationToken::new();
     match state.interactive_jobs.lock() {

@@ -622,12 +622,20 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
         let session = store.create_chat("model", "inspect evidence").unwrap();
+        let recording = SpeechRecordingAttachment {
+            audio_relative_path: "recordings/chat/session/voice.webm".into(),
+            words: vec![crate::models::SpeechTimingRecord {
+                value: "inspect".into(),
+                start: 0.0,
+                end: 0.4,
+            }],
+        };
         store
             .add_user_message_with_attachments(
                 &session.id,
                 "inspect".into(),
                 vec![attachment.clone()],
-                None,
+                Some(recording.clone()),
             )
             .unwrap();
         let task = store
@@ -644,6 +652,13 @@ mod tests {
         assert_eq!(
             reopened.get_chat(&session.id).unwrap().messages[0].attachments,
             vec![attachment.clone()]
+        );
+        assert_eq!(
+            reopened.get_chat(&session.id).unwrap().messages[0]
+                .recording
+                .as_ref()
+                .map(|value| value.audio_relative_path.as_str()),
+            Some(recording.audio_relative_path.as_str())
         );
         assert_eq!(
             reopened.get_task(&task.id).unwrap().attachments,

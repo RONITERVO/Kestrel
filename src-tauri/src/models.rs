@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 use crate::attachments::ContextAttachment;
 use crate::model::ModelInfo;
@@ -273,11 +273,38 @@ pub struct SpeechTimingRecord {
     pub end: f64,
 }
 
+pub const MAX_TRANSCRIPT_TIMINGS: usize = 100_000;
+
+fn deserialize_speech_timings<'de, D>(deserializer: D) -> Result<Vec<SpeechTimingRecord>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let timings = Vec::<SpeechTimingRecord>::deserialize(deserializer)?;
+    if timings.len() > MAX_TRANSCRIPT_TIMINGS {
+        return Err(D::Error::custom(format!(
+            "voice recording exceeds the {MAX_TRANSCRIPT_TIMINGS} word-timing limit"
+        )));
+    }
+    if !timings.iter().all(|timing| {
+        timing.value.len() <= 4_096
+            && timing.start.is_finite()
+            && timing.end.is_finite()
+            && timing.start >= 0.0
+            && timing.end >= timing.start
+            && timing.end <= 24.0 * 60.0 * 60.0
+    }) {
+        return Err(D::Error::custom(
+            "voice recording contains an invalid word timing",
+        ));
+    }
+    Ok(timings)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeechRecordingAttachment {
     pub audio_relative_path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_speech_timings")]
     pub words: Vec<SpeechTimingRecord>,
 }
 
@@ -734,5 +761,26 @@ mod tests {
             "maxOutputTokens": 1
         }));
         assert!(request.is_err());
+    }
+
+    #[test]
+    fn voice_recording_rejects_oversized_or_invalid_word_timings() {
+        let words = (0..=MAX_TRANSCRIPT_TIMINGS)
+            .map(|_| serde_json::json!({"value":"word","start":0.0,"end":0.1}))
+            .collect::<Vec<_>>();
+        assert!(
+            serde_json::from_value::<SpeechRecordingAttachment>(serde_json::json!({
+                "audioRelativePath": "recordings/chat/voice.webm",
+                "words": words,
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<SpeechRecordingAttachment>(serde_json::json!({
+                "audioRelativePath": "recordings/chat/voice.webm",
+                "words": [{"value":"word","start":2.0,"end":1.0}],
+            }))
+            .is_err()
+        );
     }
 }
