@@ -5,7 +5,11 @@
 //! for timestamped microphone transcription. Additional adapters belong here rather than in
 //! individual product UIs.
 
-use crate::{models::MAX_TRANSCRIPT_TIMINGS, store::default_research_root};
+use crate::{
+    models::MAX_TRANSCRIPT_TIMINGS,
+    store::default_research_root,
+    voice_library::{VoiceConditioning, VoiceProfile},
+};
 use base64::Engine as _;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -25,7 +29,7 @@ use tokio::{process::Child, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
-const TTS_ADAPTER_REVISION: &str = "chatterbox-opus-v4";
+const TTS_ADAPTER_REVISION: &str = "chatterbox-voice-profile-v1";
 const STT_ADAPTER_REVISION: &str = "kestrel-whisper-v1";
 const CHATTERBOX_NODE: &str = "custom_nodes/ComfyUI-Chatterbox/nodes.py";
 const CHATTERBOX_MODEL_ROOT: &str = "models/tts/chatterbox";
@@ -78,7 +82,13 @@ pub struct SpeechSnapshot {
     pub comfy_ready: bool,
     pub voices: Vec<SpeechModel>,
     pub transcribers: Vec<SpeechModel>,
+    pub voice_profiles: Vec<VoiceProfile>,
+    pub default_voice_profile_id: String,
     pub detail: String,
+}
+
+fn default_voice_profile_id() -> String {
+    "voice-default".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +100,8 @@ pub struct SpeechSynthesisRequest {
     pub passage_id: String,
     pub text: String,
     pub model_id: String,
+    #[serde(default = "default_voice_profile_id")]
+    pub voice_profile_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +114,8 @@ pub struct SpeechAlignmentRequest {
     pub text: String,
     pub relative_path: String,
     pub voice_model_id: String,
+    #[serde(default = "default_voice_profile_id")]
+    pub voice_profile_id: String,
     pub alignment_model_id: String,
 }
 
@@ -124,6 +138,7 @@ pub struct SpeechClip {
     pub passage_id: String,
     pub relative_path: String,
     pub model_id: String,
+    pub voice_profile_id: String,
     pub cache_hit: bool,
     pub segments: Vec<SpeechTiming>,
     pub words: Vec<SpeechTiming>,
@@ -219,6 +234,8 @@ impl LocalSpeech {
             comfy_ready,
             voices,
             transcribers,
+            voice_profiles: Vec::new(),
+            default_voice_profile_id: default_voice_profile_id(),
             detail,
         }
     }
@@ -227,13 +244,15 @@ impl LocalSpeech {
         &self,
         comfy_root: &str,
         request: &SpeechSynthesisRequest,
+        voice: &VoiceConditioning,
     ) -> Result<Option<SpeechClip>, SpeechError> {
-        validate_synthesis_request(comfy_root, request)?;
-        let target = self.cache_target(request)?;
+        validate_synthesis_request(comfy_root, request, voice)?;
+        let target = self.cache_target(request, voice)?;
         if valid_cached_audio(&target) {
             return Ok(Some(clip_receipt(
                 &self.cache_root,
                 request,
+                voice,
                 &target,
                 true,
             )?));
@@ -245,11 +264,12 @@ impl LocalSpeech {
         &self,
         comfy_root: &str,
         request: &SpeechAlignmentRequest,
+        voice: &VoiceConditioning,
     ) -> Result<Option<SpeechClip>, SpeechError> {
         let request = spoken_alignment_request(request);
-        let target = self.validate_alignment_request(comfy_root, &request)?;
-        Ok(read_alignment(&target, &request)
-            .map(|(segments, words)| alignment_clip(&request, segments, words, true)))
+        let target = self.validate_alignment_request(comfy_root, &request, voice)?;
+        Ok(read_alignment(&target, &request, voice)
+            .map(|(segments, words)| alignment_clip(&request, voice, segments, words, true)))
     }
 
     pub async fn ensure_comfy(
@@ -336,13 +356,14 @@ impl LocalSpeech {
         &self,
         comfy_root: &str,
         request: &SpeechSynthesisRequest,
+        voice: &VoiceConditioning,
         cancel: &CancellationToken,
         app: Option<&AppHandle>,
     ) -> Result<SpeechClip, SpeechError> {
-        validate_synthesis_request(comfy_root, request)?;
+        validate_synthesis_request(comfy_root, request, voice)?;
         self.verify_live_node("ChatterboxTTS", "ComfyUI-Chatterbox")
             .await?;
-        if let Some(cached) = self.cached_clip(comfy_root, request)? {
+        if let Some(cached) = self.cached_clip(comfy_root, request, voice)? {
             emit_progress(
                 app,
                 request,
@@ -352,7 +373,7 @@ impl LocalSpeech {
             return Ok(cached);
         }
         let _generation = self.generation.lock().await;
-        if let Some(cached) = self.cached_clip(comfy_root, request)? {
+        if let Some(cached) = self.cached_clip(comfy_root, request, voice)? {
             return Ok(cached);
         }
         if cancel.is_cancelled() {
@@ -364,9 +385,10 @@ impl LocalSpeech {
             "generating",
             "ComfyUI is generating this passage with the selected local voice model.",
         );
-        let target = self.cache_target(request)?;
-        let prefix = format!("kestrel_speech/{}", cache_key(request));
-        let graph = chatterbox_graph(request, &prefix);
+        let target = self.cache_target(request, voice)?;
+        let prefix = format!("kestrel_speech/{}", cache_key(request, voice));
+        let voice_input = prepare_voice_input(Path::new(comfy_root), voice)?;
+        let graph = chatterbox_graph(request, &prefix, voice, voice_input.as_deref());
         let client_id = format!("kestrel-local-tts-{}", uuid::Uuid::new_v4().simple());
         let response = self
             .http
@@ -463,7 +485,7 @@ impl LocalSpeech {
                         "complete",
                         "The next passage is ready locally.",
                     );
-                    return clip_receipt(&self.cache_root, request, &target, false);
+                    return clip_receipt(&self.cache_root, request, voice, &target, false);
                 }
             }
             tokio::select! {
@@ -594,17 +616,18 @@ impl LocalSpeech {
         &self,
         comfy_root: &str,
         request: &SpeechAlignmentRequest,
+        voice: &VoiceConditioning,
         cancel: &CancellationToken,
         app: Option<&AppHandle>,
     ) -> Result<SpeechClip, SpeechError> {
         let request = spoken_alignment_request(request);
-        let target = self.validate_alignment_request(comfy_root, &request)?;
-        if let Some((segments, words)) = read_alignment(&target, &request) {
-            return Ok(alignment_clip(&request, segments, words, true));
+        let target = self.validate_alignment_request(comfy_root, &request, voice)?;
+        if let Some((segments, words)) = read_alignment(&target, &request, voice) {
+            return Ok(alignment_clip(&request, voice, segments, words, true));
         }
         let _generation = self.generation.lock().await;
-        if let Some((segments, words)) = read_alignment(&target, &request) {
-            return Ok(alignment_clip(&request, segments, words, true));
+        if let Some((segments, words)) = read_alignment(&target, &request, voice) {
+            return Ok(alignment_clip(&request, voice, segments, words, true));
         }
         if cancel.is_cancelled() {
             return Err(SpeechError::Cancelled);
@@ -645,6 +668,7 @@ impl LocalSpeech {
         write_synthesis_receipt(
             &target,
             &request,
+            voice,
             &segments,
             &words,
             Some(&request.alignment_model_id),
@@ -656,7 +680,7 @@ impl LocalSpeech {
             "complete",
             "Exact local speech word timings are ready for click-to-seek.",
         );
-        Ok(alignment_clip(&request, segments, words, false))
+        Ok(alignment_clip(&request, voice, segments, words, false))
     }
 
     async fn execute_whisper_graph(
@@ -777,20 +801,25 @@ impl LocalSpeech {
         Ok(())
     }
 
-    fn cache_target(&self, request: &SpeechSynthesisRequest) -> Result<PathBuf, SpeechError> {
+    fn cache_target(
+        &self,
+        request: &SpeechSynthesisRequest,
+        voice: &VoiceConditioning,
+    ) -> Result<PathBuf, SpeechError> {
         safe_source(&request.source_kind, &request.source_id)?;
         Ok(self
             .cache_root
             .join("generated")
             .join(&request.source_kind)
             .join(&request.source_id)
-            .join(format!("{}.opus", cache_key(request))))
+            .join(format!("{}.opus", cache_key(request, voice))))
     }
 
     fn validate_alignment_request(
         &self,
         comfy_root: &str,
         request: &SpeechAlignmentRequest,
+        voice: &VoiceConditioning,
     ) -> Result<PathBuf, SpeechError> {
         let root = Path::new(comfy_root);
         if !root.is_absolute() || !root.join("main.py").is_file() {
@@ -801,6 +830,7 @@ impl LocalSpeech {
         safe_identifier(&request.job_id, "job ID")?;
         safe_source(&request.source_kind, &request.source_id)?;
         safe_identifier(&request.passage_id, "passage ID")?;
+        validate_voice_identity(&request.voice_profile_id, voice)?;
         if request.text.trim().is_empty() || request.text.len() > MAX_TEXT_BYTES {
             return Err(SpeechError::Invalid(format!(
                 "alignment text must contain 1 to {MAX_TEXT_BYTES} UTF-8 bytes"
@@ -1022,6 +1052,7 @@ fn discover_whisper_models(comfy_root: &Path) -> Vec<SpeechModel> {
 fn validate_synthesis_request(
     comfy_root: &str,
     request: &SpeechSynthesisRequest,
+    voice: &VoiceConditioning,
 ) -> Result<(), SpeechError> {
     let root = Path::new(comfy_root);
     if !root.is_absolute() || !root.join("main.py").is_file() {
@@ -1032,6 +1063,7 @@ fn validate_synthesis_request(
     safe_identifier(&request.job_id, "job ID")?;
     safe_source(&request.source_kind, &request.source_id)?;
     safe_identifier(&request.passage_id, "passage ID")?;
+    validate_voice_identity(&request.voice_profile_id, voice)?;
     let text = request.text.trim();
     if text.is_empty() || text.len() > MAX_TEXT_BYTES {
         return Err(SpeechError::Invalid(format!(
@@ -1046,6 +1078,26 @@ fn validate_synthesis_request(
             "{} is not a complete local ComfyUI voice pack",
             request.model_id
         )));
+    }
+    Ok(())
+}
+
+fn validate_voice_identity(
+    requested_profile_id: &str,
+    voice: &VoiceConditioning,
+) -> Result<(), SpeechError> {
+    safe_identifier(requested_profile_id, "voice profile ID")?;
+    if requested_profile_id != voice.profile_id {
+        return Err(SpeechError::Invalid(
+            "the resolved voice does not match the requested voice profile".into(),
+        ));
+    }
+    if let Some(path) = voice.reference_path.as_ref() {
+        if !path.is_absolute() || !path.is_file() || voice.reference_sha256.is_none() {
+            return Err(SpeechError::Invalid(
+                "the selected custom voice reference is incomplete".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1289,11 +1341,16 @@ fn validate_timings(timings: &[SpeechTiming]) -> bool {
 fn read_alignment(
     audio_path: &Path,
     request: &SpeechAlignmentRequest,
+    voice: &VoiceConditioning,
 ) -> Option<(Vec<SpeechTiming>, Vec<SpeechTiming>)> {
     let receipt = read_receipt_recoverable(&sidecar_path(audio_path))?;
     if receipt.get("alignmentModelId").and_then(Value::as_str)
         != Some(request.alignment_model_id.as_str())
         || receipt.get("modelId").and_then(Value::as_str) != Some(request.voice_model_id.as_str())
+        || receipt.get("voiceProfileId").and_then(Value::as_str)
+            != Some(request.voice_profile_id.as_str())
+        || receipt.get("voiceReferenceSha256").and_then(Value::as_str)
+            != voice.reference_sha256.as_deref()
         || receipt.get("text").and_then(Value::as_str) != Some(request.text.as_str())
     {
         return None;
@@ -1314,6 +1371,7 @@ fn receipt_timings(receipt: &Value) -> Option<(Vec<SpeechTiming>, Vec<SpeechTimi
 fn write_synthesis_receipt(
     audio_path: &Path,
     request: &SpeechAlignmentRequest,
+    voice: &VoiceConditioning,
     segments: &[SpeechTiming],
     words: &[SpeechTiming],
     alignment_model_id: Option<&str>,
@@ -1339,6 +1397,9 @@ fn write_synthesis_receipt(
         "sourceId": request.source_id,
         "passageId": request.passage_id,
         "modelId": request.voice_model_id,
+        "voiceProfileId": request.voice_profile_id,
+        "voiceReferenceSha256": voice.reference_sha256,
+        "performance": voice.performance,
         "alignmentModelId": alignment_model_id,
         "text": spoken_text(&request.text),
         "audioRelativePath": request.relative_path,
@@ -1478,7 +1539,12 @@ fn spoken_alignment_request(request: &SpeechAlignmentRequest) -> SpeechAlignment
     }
 }
 
-fn chatterbox_graph(request: &SpeechSynthesisRequest, prefix: &str) -> Value {
+fn chatterbox_graph(
+    request: &SpeechSynthesisRequest,
+    prefix: &str,
+    voice: &VoiceConditioning,
+    voice_input: Option<&str>,
+) -> Value {
     let pack = request
         .model_id
         .strip_prefix("chatterbox:")
@@ -1486,18 +1552,20 @@ fn chatterbox_graph(request: &SpeechSynthesisRequest, prefix: &str) -> Value {
     let speech_text = spoken_text(&request.text);
     let word_count = speech_text.split_whitespace().count() as u32;
     let max_new_tokens = (word_count.saturating_mul(18).saturating_add(96)).clamp(128, 1_600);
-    let seed = deterministic_seed(request);
-    json!({
+    let seed = deterministic_seed(request, voice);
+    let (flow_cfg_scale, exaggeration, temperature, cfg_weight) =
+        performance_parameters(&voice.performance);
+    let mut graph = json!({
         "1": {
             "class_type": "ChatterboxTTS",
             "inputs": {
                 "model_pack_name": pack,
                 "text": speech_text,
                 "max_new_tokens": max_new_tokens,
-                "flow_cfg_scale": 0.7,
-                "exaggeration": 0.5,
-                "temperature": 0.8,
-                "cfg_weight": 0.5,
+                "flow_cfg_scale": flow_cfg_scale,
+                "exaggeration": exaggeration,
+                "temperature": temperature,
+                "cfg_weight": cfg_weight,
                 "repetition_penalty": 1.2,
                 "min_p": 0.05,
                 "top_p": 1.0,
@@ -1513,7 +1581,81 @@ fn chatterbox_graph(request: &SpeechSynthesisRequest, prefix: &str) -> Value {
                 "quality": "64k"
             }
         }
-    })
+    });
+    if let Some(input) = voice_input {
+        graph["0"] = json!({"class_type":"LoadAudio","inputs":{"audio":input}});
+        graph["1"]["inputs"]["audio_prompt"] = json!(["0", 0]);
+    }
+    graph
+}
+
+fn performance_parameters(performance: &str) -> (f64, f64, f64, f64) {
+    match performance {
+        "restrained" => (0.75, 0.35, 0.65, 0.55),
+        "expressive" => (0.7, 0.8, 0.9, 0.5),
+        "dramatic" => (0.65, 1.15, 0.95, 0.45),
+        _ => (0.7, 0.5, 0.8, 0.5),
+    }
+}
+
+fn prepare_voice_input(
+    comfy_root: &Path,
+    voice: &VoiceConditioning,
+) -> Result<Option<String>, SpeechError> {
+    let Some(source) = voice.reference_path.as_ref() else {
+        return Ok(None);
+    };
+    let hash = voice.reference_sha256.as_deref().ok_or_else(|| {
+        SpeechError::Invalid("custom voice reference has no integrity hash".into())
+    })?;
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| value.len() <= 5 && value.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        .ok_or_else(|| {
+            SpeechError::Invalid("custom voice reference has no safe extension".into())
+        })?;
+    let input_directory = comfy_root.join("input/kestrel_speech/voices");
+    fs::create_dir_all(&input_directory)?;
+    let file_name = format!("{hash}.{extension}");
+    let target = input_directory.join(&file_name);
+    let reusable = target.is_file()
+        && target.metadata()?.len() == source.metadata()?.len()
+        && sha256_path(&target).is_ok_and(|actual| actual == hash);
+    if !reusable {
+        let temporary = target.with_extension(format!("{extension}.tmp"));
+        fs::copy(source, &temporary)?;
+        if sha256_path(&temporary)? != hash {
+            let _ = fs::remove_file(&temporary);
+            return Err(SpeechError::Invalid(
+                "custom voice reference changed while preparing it for ComfyUI".into(),
+            ));
+        }
+        if target.is_file() {
+            fs::remove_file(&target)?;
+        }
+        if let Err(error) = fs::rename(&temporary, &target) {
+            let _ = fs::remove_file(&temporary);
+            if !target.is_file() {
+                return Err(error.into());
+            }
+        }
+    }
+    Ok(Some(format!("kestrel_speech/voices/{file_name}")))
+}
+
+fn sha256_path(path: &Path) -> Result<String, SpeechError> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn whisper_graph(request: &SpeechTranscriptionRequest, input_relative: &str) -> Value {
@@ -1588,19 +1730,25 @@ fn parse_whisper_output(
     ))
 }
 
-fn deterministic_seed(request: &SpeechSynthesisRequest) -> u64 {
+fn deterministic_seed(request: &SpeechSynthesisRequest, voice: &VoiceConditioning) -> u64 {
     let digest = Sha256::digest(format!(
-        "{TTS_ADAPTER_REVISION}\0{}\0{}",
+        "{TTS_ADAPTER_REVISION}\0{}\0{}\0{}\0{}\0{}",
         request.model_id,
+        voice.profile_id,
+        voice.fingerprint(),
+        voice.performance,
         request.text.trim()
     ));
     u64::from_le_bytes(digest[..8].try_into().expect("eight-byte digest prefix")).max(1)
 }
 
-fn cache_key(request: &SpeechSynthesisRequest) -> String {
+fn cache_key(request: &SpeechSynthesisRequest, voice: &VoiceConditioning) -> String {
     let digest = Sha256::digest(format!(
-        "{TTS_ADAPTER_REVISION}\0{}\0{}",
+        "{TTS_ADAPTER_REVISION}\0{}\0{}\0{}\0{}\0{}",
         request.model_id,
+        voice.profile_id,
+        voice.fingerprint(),
+        voice.performance,
         request.text.trim()
     ));
     hex::encode(digest)
@@ -1609,6 +1757,7 @@ fn cache_key(request: &SpeechSynthesisRequest) -> String {
 fn clip_receipt(
     cache_root: &Path,
     request: &SpeechSynthesisRequest,
+    voice: &VoiceConditioning,
     target: &Path,
     cache_hit: bool,
 ) -> Result<SpeechClip, SpeechError> {
@@ -1637,6 +1786,7 @@ fn clip_receipt(
         passage_id: request.passage_id.clone(),
         relative_path,
         model_id: request.model_id.clone(),
+        voice_profile_id: request.voice_profile_id.clone(),
         cache_hit,
         segments,
         words,
@@ -1660,6 +1810,9 @@ fn clip_receipt(
             "sourceId": request.source_id,
             "passageId": request.passage_id,
             "modelId": request.model_id,
+            "voiceProfileId": request.voice_profile_id,
+            "voiceReferenceSha256": voice.reference_sha256,
+            "performance": voice.performance,
             "text": spoken_text(&request.text),
             "audioRelativePath": clip.relative_path,
             "segments": clip.segments,
@@ -1673,6 +1826,7 @@ fn clip_receipt(
 
 fn alignment_clip(
     request: &SpeechAlignmentRequest,
+    voice: &VoiceConditioning,
     segments: Vec<SpeechTiming>,
     words: Vec<SpeechTiming>,
     cache_hit: bool,
@@ -1682,6 +1836,7 @@ fn alignment_clip(
         passage_id: request.passage_id.clone(),
         relative_path: request.relative_path.clone(),
         model_id: request.voice_model_id.clone(),
+        voice_profile_id: voice.profile_id.clone(),
         cache_hit,
         segments,
         words,
@@ -1880,6 +2035,16 @@ mod tests {
             passage_id: "overview".into(),
             text: text.into(),
             model_id: "chatterbox:resembleai_default_voice".into(),
+            voice_profile_id: "voice-default".into(),
+        }
+    }
+
+    fn default_conditioning() -> VoiceConditioning {
+        VoiceConditioning {
+            profile_id: "voice-default".into(),
+            reference_path: None,
+            reference_sha256: None,
+            performance: "natural".into(),
         }
     }
 
@@ -1921,6 +2086,7 @@ mod tests {
             text: "A concise locally generated research passage.".into(),
             relative_path: clip.relative_path.clone(),
             voice_model_id: "chatterbox:resembleai_default_voice".into(),
+            voice_profile_id: "voice-default".into(),
             alignment_model_id: "whisper:large-v3-turbo".into(),
         }
     }
@@ -1946,7 +2112,8 @@ mod tests {
     #[test]
     fn graph_is_a_bounded_deterministic_chatterbox_workflow() {
         let request = request("A concise locally generated research passage.");
-        let graph = chatterbox_graph(&request, "kestrel_research/test");
+        let voice = default_conditioning();
+        let graph = chatterbox_graph(&request, "kestrel_research/test", &voice, None);
         assert_eq!(graph["1"]["class_type"], "ChatterboxTTS");
         assert_eq!(
             graph["1"]["inputs"]["model_pack_name"],
@@ -1956,10 +2123,44 @@ mod tests {
         assert_eq!(graph["2"]["class_type"], "SaveAudioOpus");
         assert_eq!(graph["2"]["inputs"]["audio"], json!(["1", 0]));
         assert_eq!(graph["2"]["inputs"]["quality"], "64k");
-        assert_eq!(cache_key(&request), cache_key(&request));
+        assert_eq!(cache_key(&request, &voice), cache_key(&request, &voice));
         assert_ne!(
-            cache_key(&request),
-            cache_key(&self::request("Different text."))
+            cache_key(&request, &voice),
+            cache_key(&self::request("Different text."), &voice)
+        );
+    }
+
+    #[test]
+    fn custom_voice_graph_is_conditioned_and_has_an_independent_cache_identity() {
+        let request = request("A concise locally generated research passage.");
+        let built_in = default_conditioning();
+        let custom = VoiceConditioning {
+            profile_id: "voice-evening-narrator".into(),
+            reference_path: Some(PathBuf::from("C:/private/voice-reference.wav")),
+            reference_sha256: Some("a".repeat(64)),
+            performance: "expressive".into(),
+        };
+        let graph = chatterbox_graph(
+            &request,
+            "kestrel_research/custom",
+            &custom,
+            Some("kestrel_speech/voices/reference.wav"),
+        );
+
+        assert_eq!(graph["0"]["class_type"], "LoadAudio");
+        assert_eq!(
+            graph["0"]["inputs"]["audio"],
+            "kestrel_speech/voices/reference.wav"
+        );
+        assert_eq!(graph["1"]["inputs"]["audio_prompt"], json!(["0", 0]));
+        assert_eq!(graph["1"]["inputs"]["exaggeration"], 0.8);
+        assert_ne!(cache_key(&request, &built_in), cache_key(&request, &custom));
+
+        let mut changed_reference = custom.clone();
+        changed_reference.reference_sha256 = Some("b".repeat(64));
+        assert_ne!(
+            cache_key(&request, &custom),
+            cache_key(&request, &changed_reference)
         );
     }
 
@@ -2017,11 +2218,12 @@ mod tests {
         complete_whisper(comfy.path(), "large-v3-turbo");
         let speech = LocalSpeech::new(library.path()).unwrap();
         let synthesis = request("A concise locally generated research passage.");
-        let target = speech.cache_target(&synthesis).unwrap();
+        let voice = default_conditioning();
+        let target = speech.cache_target(&synthesis, &voice).unwrap();
         let mut audio = vec![0_u8; 96];
         audio[..4].copy_from_slice(b"OggS");
         write_recording_atomic(&target, &audio).unwrap();
-        let clip = clip_receipt(&speech.cache_root, &synthesis, &target, false).unwrap();
+        let clip = clip_receipt(&speech.cache_root, &synthesis, &voice, &target, false).unwrap();
         let alignment = alignment_request(&clip);
         let segments = vec![SpeechTiming {
             value: synthesis.text.clone(),
@@ -2037,23 +2239,24 @@ mod tests {
         write_synthesis_receipt(
             &target,
             &alignment,
+            &voice,
             &segments,
             &words,
-            Some(&alignment.alignment_model_id),
+            Some(alignment.alignment_model_id.as_str()),
             true,
         )
         .unwrap();
 
         assert_eq!(fs::read(&target).unwrap(), audio);
         let cached = speech
-            .cached_alignment(&comfy.path().to_string_lossy(), &alignment)
+            .cached_alignment(&comfy.path().to_string_lossy(), &alignment, &voice)
             .unwrap()
             .unwrap();
         assert!(cached.cache_hit);
         assert_eq!(cached.words[0].start, 0.0);
         assert_eq!(
             speech
-                .cached_clip(&comfy.path().to_string_lossy(), &synthesis)
+                .cached_clip(&comfy.path().to_string_lossy(), &synthesis, &voice)
                 .unwrap()
                 .unwrap()
                 .words[0]
@@ -2066,7 +2269,7 @@ mod tests {
         fs::copy(&receipt, &recovery).unwrap();
         fs::remove_file(&receipt).unwrap();
         assert!(speech
-            .cached_alignment(&comfy.path().to_string_lossy(), &alignment)
+            .cached_alignment(&comfy.path().to_string_lossy(), &alignment, &voice)
             .unwrap()
             .is_some());
         assert!(receipt.is_file());
@@ -2139,12 +2342,19 @@ mod tests {
             ..request("Kestrel reads this short research passage entirely through local ComfyUI.")
         };
         let cancel = CancellationToken::new();
+        let voice = default_conditioning();
         speech
             .ensure_comfy(&comfy_root.to_string_lossy(), &cancel)
             .await
             .unwrap();
         let clip = speech
-            .synthesize(&comfy_root.to_string_lossy(), &request, &cancel, None)
+            .synthesize(
+                &comfy_root.to_string_lossy(),
+                &request,
+                &voice,
+                &cancel,
+                None,
+            )
             .await
             .unwrap();
         assert!(!clip.cache_hit);
@@ -2163,11 +2373,87 @@ mod tests {
         .is_file());
         assert!(
             speech
-                .cached_clip(&comfy_root.to_string_lossy(), &request)
+                .cached_clip(&comfy_root.to_string_lossy(), &request, &voice)
                 .unwrap()
                 .unwrap()
                 .cache_hit
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KESTREL_LIVE_COMFY_ROOT and an installed local ComfyUI-Chatterbox voice pack"]
+    async fn live_custom_voice_reference_conditions_chatterbox() {
+        let Some(comfy_root) = std::env::var_os("KESTREL_LIVE_COMFY_ROOT") else {
+            panic!("KESTREL_LIVE_COMFY_ROOT is required");
+        };
+        let library = tempfile::tempdir().unwrap();
+        let speech = LocalSpeech::new(library.path()).unwrap();
+        let snapshot = speech.snapshot(&comfy_root.to_string_lossy()).await;
+        assert!(snapshot.narration_available, "{}", snapshot.detail);
+        let cancel = CancellationToken::new();
+        speech
+            .ensure_comfy(&comfy_root.to_string_lossy(), &cancel)
+            .await
+            .unwrap();
+
+        let default_voice = default_conditioning();
+        let reference_request = SpeechSynthesisRequest {
+            model_id: snapshot.voices[0].id.clone(),
+            ..request("This clean reference establishes a calm and precise local narrator voice.")
+        };
+        let reference_clip = speech
+            .synthesize(
+                &comfy_root.to_string_lossy(),
+                &reference_request,
+                &default_voice,
+                &cancel,
+                None,
+            )
+            .await
+            .unwrap();
+        let reference_path = library
+            .path()
+            .join("speech-cache")
+            .join(reference_clip.relative_path);
+        let reference_hash = sha256_path(&reference_path).unwrap();
+        let custom_voice = VoiceConditioning {
+            profile_id: "voice-live-reference".into(),
+            reference_path: Some(reference_path),
+            reference_sha256: Some(reference_hash),
+            performance: "expressive".into(),
+        };
+        let custom_request = SpeechSynthesisRequest {
+            job_id: "live-custom-voice".into(),
+            passage_id: "custom-voice-result".into(),
+            text: "The same private voice now delivers a more expressive second passage.".into(),
+            model_id: snapshot.voices[0].id.clone(),
+            voice_profile_id: custom_voice.profile_id.clone(),
+            ..request("")
+        };
+        let custom_clip = speech
+            .synthesize(
+                &comfy_root.to_string_lossy(),
+                &custom_request,
+                &custom_voice,
+                &cancel,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(valid_cached_audio(
+            &library
+                .path()
+                .join("speech-cache")
+                .join(&custom_clip.relative_path)
+        ));
+        assert_eq!(custom_clip.voice_profile_id, custom_voice.profile_id);
+        assert_ne!(
+            cache_key(&reference_request, &default_voice),
+            cache_key(&custom_request, &custom_voice)
+        );
+        speech.release_model_memory().await;
+        speech.stop_comfy().await;
     }
 
     #[tokio::test]
@@ -2182,6 +2468,7 @@ mod tests {
         assert!(snapshot.narration_available, "{}", snapshot.detail);
         assert!(snapshot.transcription_available, "{}", snapshot.detail);
         let cancel = CancellationToken::new();
+        let voice = default_conditioning();
         speech
             .ensure_comfy(&comfy_root.to_string_lossy(), &cancel)
             .await
@@ -2191,7 +2478,13 @@ mod tests {
             ..request("Kestrel saves this private local voice recording with exact word timing.")
         };
         let clip = speech
-            .synthesize(&comfy_root.to_string_lossy(), &synthesis, &cancel, None)
+            .synthesize(
+                &comfy_root.to_string_lossy(),
+                &synthesis,
+                &voice,
+                &cancel,
+                None,
+            )
             .await
             .unwrap();
         let alignment = SpeechAlignmentRequest {
@@ -2202,10 +2495,17 @@ mod tests {
             text: synthesis.text.clone(),
             relative_path: clip.relative_path.clone(),
             voice_model_id: synthesis.model_id.clone(),
+            voice_profile_id: synthesis.voice_profile_id.clone(),
             alignment_model_id: snapshot.transcribers[0].id.clone(),
         };
         let aligned = speech
-            .align(&comfy_root.to_string_lossy(), &alignment, &cancel, None)
+            .align(
+                &comfy_root.to_string_lossy(),
+                &alignment,
+                &voice,
+                &cancel,
+                None,
+            )
             .await
             .unwrap();
         assert!(!aligned.segments.is_empty());
@@ -2218,7 +2518,7 @@ mod tests {
         assert!(sidecar_path(&recording).is_file());
         assert!(
             speech
-                .cached_alignment(&comfy_root.to_string_lossy(), &alignment)
+                .cached_alignment(&comfy_root.to_string_lossy(), &alignment, &voice)
                 .unwrap()
                 .unwrap()
                 .cache_hit
@@ -2257,7 +2557,8 @@ mod tests {
         let snapshot = speech.snapshot(&comfy_root.to_string_lossy()).await;
         assert!(snapshot.narration_available, "{}", snapshot.detail);
         assert!(snapshot.transcription_available, "{}", snapshot.detail);
-        let voice = snapshot.voices[0].id.clone();
+        let voice_model = snapshot.voices[0].id.clone();
+        let voice = default_conditioning();
         let transcriber = snapshot.transcribers[0].id.clone();
         let cancel = CancellationToken::new();
         speech
@@ -2281,10 +2582,17 @@ mod tests {
                 source_id: "aethelgard-highlight-live".into(),
                 passage_id: passage_id.into(),
                 text: text.into(),
-                model_id: voice.clone(),
+                model_id: voice_model.clone(),
+                voice_profile_id: voice.profile_id.clone(),
             };
             let clip = speech
-                .synthesize(&comfy_root.to_string_lossy(), &synthesis, &cancel, None)
+                .synthesize(
+                    &comfy_root.to_string_lossy(),
+                    &synthesis,
+                    &voice,
+                    &cancel,
+                    None,
+                )
                 .await
                 .unwrap();
             generated.push((synthesis, clip));
@@ -2299,11 +2607,18 @@ mod tests {
                 passage_id: synthesis.passage_id.clone(),
                 text: synthesis.text.clone(),
                 relative_path: clip.relative_path.clone(),
-                voice_model_id: voice.clone(),
+                voice_model_id: voice_model.clone(),
+                voice_profile_id: voice.profile_id.clone(),
                 alignment_model_id: transcriber.clone(),
             };
             let aligned = speech
-                .align(&comfy_root.to_string_lossy(), &alignment, &cancel, None)
+                .align(
+                    &comfy_root.to_string_lossy(),
+                    &alignment,
+                    &voice,
+                    &cancel,
+                    None,
+                )
                 .await
                 .unwrap();
             assert!(!aligned.words.is_empty());
@@ -2325,7 +2640,8 @@ mod tests {
                 "words": aligned.words,
                 "segments": aligned.segments,
                 "audioRelativePath": aligned.relative_path,
-                "voiceModelId": voice,
+                "voiceModelId": voice_model,
+                "voiceProfileId": voice.profile_id,
                 "alignmentModelId": transcriber,
             }));
         }

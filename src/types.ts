@@ -953,12 +953,59 @@ export interface SpeechModel {
   provider: string;
 }
 
+export type VoicePerformance = "restrained" | "natural" | "expressive" | "dramatic";
+
+export interface VoiceProfile {
+  id: string;
+  name: string;
+  language: string;
+  tags: string[];
+  source: "built-in" | "recorded" | "imported" | string;
+  consentConfirmed: boolean;
+  performance: VoicePerformance;
+  referenceRelativePath?: string;
+  referenceSha256?: string;
+  referenceSeconds?: number;
+  originalFileName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VoiceLibrarySnapshot {
+  profiles: VoiceProfile[];
+  defaultProfileId: string;
+}
+
+export interface CreateVoiceProfileRequest {
+  name: string;
+  language: string;
+  tags: string[];
+  source: "recorded" | "imported";
+  consentConfirmed: boolean;
+  performance: VoicePerformance;
+  audioBase64: string;
+  mimeType: string;
+  originalFileName: string;
+  durationSeconds: number;
+}
+
+export interface UpdateVoiceProfileRequest {
+  id: string;
+  name: string;
+  language: string;
+  tags: string[];
+  consentConfirmed: boolean;
+  performance: VoicePerformance;
+}
+
 export interface LocalSpeechSnapshot {
   narrationAvailable: boolean;
   transcriptionAvailable: boolean;
   comfyReady: boolean;
   voices: SpeechModel[];
   transcribers: SpeechModel[];
+  voiceProfiles: VoiceProfile[];
+  defaultVoiceProfileId: string;
   detail: string;
 }
 
@@ -969,6 +1016,7 @@ export interface SpeechSynthesisRequest {
   passageId: string;
   text: string;
   modelId: string;
+  voiceProfileId: string;
 }
 
 export interface SpeechAlignmentRequest {
@@ -979,6 +1027,7 @@ export interface SpeechAlignmentRequest {
   text: string;
   relativePath: string;
   voiceModelId: string;
+  voiceProfileId: string;
   alignmentModelId: string;
 }
 
@@ -993,6 +1042,7 @@ export interface SpeechClip {
   passageId: string;
   relativePath: string;
   modelId: string;
+  voiceProfileId: string;
   cacheHit: boolean;
   segments: SpeechTiming[];
   words: SpeechTiming[];

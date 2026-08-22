@@ -1,13 +1,13 @@
 import { Pause, Play, SkipBack, SkipForward, Square, Volume2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { getLocalSpeechSnapshot, prepareLocalSpeech } from "./api";
-import { SpeechLiveCaption } from "./LocalSpeechControls";
+import { SpeechLiveCaption, useSpeech } from "./LocalSpeechControls";
 import { buildResearchSpeechPassages, type ResearchSpeechScope } from "./researchSpeechContent";
 import { type SpeechProgressState } from "./spokenHighlight";
-import type { LocalSpeechSnapshot, ResearchReport } from "./types";
+import type { ResearchReport } from "./types";
 import { usePipelinedSpeechPlayer } from "./usePipelinedSpeechPlayer";
 
 const MODEL_KEY = "kestrel.researchSpeech.comfyModel";
+const VOICE_KEY = "kestrel.researchSpeech.voiceProfile";
 const RATE_KEY = "kestrel.researchSpeech.rate";
 const SCOPE_KEY = "kestrel.researchSpeech.scope";
 
@@ -45,13 +45,18 @@ interface ResearchSpeechPlayerProps {
 }
 
 export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress }: ResearchSpeechPlayerProps) {
-  const [snapshot, setSnapshot] = useState<LocalSpeechSnapshot | null>(null);
+  const { snapshot, refresh, prepare, openVoiceLibrary } = useSpeech();
   const [modelId, setModelId] = useState(() => readPreference(MODEL_KEY) ?? "");
+  const [voiceProfileId, setVoiceProfileId] = useState(() => readPreference(VOICE_KEY) ?? "");
   const [rate, setRate] = useState(initialRate);
   const [scope, setScope] = useState<ResearchSpeechScope>(initialScope);
 
   const passages = useMemo(() => buildResearchSpeechPassages(report, scope), [report, scope]);
   const selectedModel = snapshot?.voices.find((model) => model.id === modelId) ?? snapshot?.voices[0] ?? null;
+  const selectedVoiceProfile = snapshot?.voiceProfiles.find((profile) => profile.id === voiceProfileId)
+    ?? snapshot?.voiceProfiles.find((profile) => profile.id === snapshot.defaultVoiceProfileId)
+    ?? snapshot?.voiceProfiles[0]
+    ?? null;
   const alignmentModel = snapshot?.transcriptionAvailable ? snapshot.transcribers[0] : undefined;
 
   const player = usePipelinedSpeechPlayer({
@@ -59,6 +64,7 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
     sourceId: report.id,
     passages,
     selectedVoiceModel: selectedModel,
+    selectedVoiceProfile,
     alignmentModel,
     playbackRate: rate,
     initialDetail: "Checking local ComfyUI voice models...",
@@ -94,19 +100,22 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
 
   useEffect(() => {
     let active = true;
-    void getLocalSpeechSnapshot()
+    void refresh()
       .then((next) => {
         if (!active) return;
-        setSnapshot(next);
         player.setDetail(next.detail);
         const selected = next.voices.find((model) => model.id === modelId) ?? next.voices[0];
         setModelId(selected?.id ?? "");
         if (selected) savePreference(MODEL_KEY, selected.id);
+        const voice = next.voiceProfiles.find((profile) => profile.id === voiceProfileId)
+          ?? next.voiceProfiles.find((profile) => profile.id === next.defaultVoiceProfileId)
+          ?? next.voiceProfiles[0];
+        setVoiceProfileId(voice?.id ?? "");
+        if (voice) savePreference(VOICE_KEY, voice.id);
         if (next.narrationAvailable && !next.comfyReady) {
           player.setDetail("Starting the private ComfyUI voice engine in the background...");
-          void prepareLocalSpeech().then((ready) => {
+          void prepare().then((ready) => {
             if (!active) return;
-            setSnapshot(ready);
             player.setDetail(ready.detail);
           }).catch((cause) => {
             if (!active) return;
@@ -124,10 +133,10 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
     };
   }, []);
 
-  const chooseModel = (nextModelId: string) => {
+  const chooseVoice = (nextVoiceProfileId: string) => {
     player.clearModelCache();
-    setModelId(nextModelId);
-    savePreference(MODEL_KEY, nextModelId);
+    setVoiceProfileId(nextVoiceProfileId);
+    savePreference(VOICE_KEY, nextVoiceProfileId);
   };
 
   const chooseRate = (nextRate: number) => {
@@ -141,7 +150,7 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
     savePreference(SCOPE_KEY, nextScope);
   };
 
-  const unavailable = !snapshot?.narrationAvailable || !selectedModel;
+  const unavailable = !snapshot?.narrationAvailable || !selectedModel || !selectedVoiceProfile;
   const statusText = player.status === "error"
     ? `ComfyUI narration stopped: ${player.error ?? "Playback failed"}`
     : !snapshot
@@ -215,17 +224,18 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
             <option value="all">Article + sources</option>
           </select>
         </label>
-        <label>ComfyUI voice
+        <label>Voice
           <select
-            aria-label="ComfyUI voice model"
-            value={selectedModel?.id ?? ""}
+            aria-label="Narration voice"
+            value={selectedVoiceProfile?.id ?? ""}
             disabled={unavailable || ["preparing", "playing", "paused"].includes(player.status)}
-            onChange={(event) => chooseModel(event.target.value)}
+            onChange={(event) => chooseVoice(event.target.value)}
           >
-            {!snapshot?.voices.length && <option value="">No local TTS model</option>}
-            {snapshot?.voices.map((model) => <option value={model.id} key={model.id}>{model.name}</option>)}
+            {!snapshot?.voiceProfiles.length && <option value="">No local voice</option>}
+            {snapshot?.voiceProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}
           </select>
         </label>
+        <button type="button" className="speech-manage-voices" disabled={["preparing", "playing"].includes(player.status)} onClick={openVoiceLibrary}>Manage voices</button>
         <label>Playback speed
           <select
             aria-label="Playback speed"

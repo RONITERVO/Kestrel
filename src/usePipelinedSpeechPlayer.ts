@@ -9,7 +9,7 @@ import {
 } from "./api";
 import type { SpeechPassage } from "./researchSpeechContent";
 import { speechPlaybackEnd } from "./spokenHighlight";
-import type { SpeechModel, SpeechTiming } from "./types";
+import type { SpeechModel, SpeechTiming, VoiceProfile } from "./types";
 
 export type PlayerStatus = "ready" | "preparing" | "playing" | "paused" | "complete" | "error";
 export type SourceKind = "research" | "chat" | "task" | "copilot";
@@ -39,6 +39,7 @@ export interface UsePipelinedSpeechPlayerProps {
   sourceId: string;
   passages: SpeechPassage[];
   selectedVoiceModel: SpeechModel | null;
+  selectedVoiceProfile: VoiceProfile | null;
   alignmentModel?: SpeechModel | null;
   playbackRate?: number;
   initialDetail?: string;
@@ -55,6 +56,7 @@ export function usePipelinedSpeechPlayer({
   sourceId,
   passages,
   selectedVoiceModel,
+  selectedVoiceProfile,
   alignmentModel,
   playbackRate = 1,
   initialDetail = "Ready with local ComfyUI",
@@ -86,7 +88,7 @@ export function usePipelinedSpeechPlayer({
   const alignmentJobsRef = useRef(new Map<string, string>());
   const mountedRef = useRef(true);
   const ownsPlaybackRef = useRef(false);
-  const startAtRef = useRef<(index: number, voiceOverride?: SpeechModel | null) => Promise<void>>(async () => undefined);
+  const startAtRef = useRef<(index: number, voiceOverride?: SpeechModel | null, profileOverride?: VoiceProfile | null) => Promise<void>>(async () => undefined);
   const onPassageChangeRef = useRef(onPassageChange);
   const onEndedRef = useRef(onEnded);
   const recordingRef = useRef(recording);
@@ -96,6 +98,7 @@ export function usePipelinedSpeechPlayer({
     sourceId,
     passages,
     selectedVoiceModel,
+    selectedVoiceProfile,
     alignmentModel,
   });
   const recordingPath = recording?.audioRelativePath ?? null;
@@ -106,6 +109,7 @@ export function usePipelinedSpeechPlayer({
     sourceId,
     passages,
     selectedVoiceModel,
+    selectedVoiceProfile,
     alignmentModel,
   };
 
@@ -210,7 +214,7 @@ export function usePipelinedSpeechPlayer({
     };
   }, [cancelActiveJobs, stopPlayback]);
 
-  const clipKey = useCallback((index: number, voice?: SpeechModel | null) => {
+  const clipKey = useCallback((index: number, voice?: SpeechModel | null, profile?: VoiceProfile | null) => {
     const current = metadataRef.current;
     const currentRecording = recordingRef.current;
     const passage = current.passages[index];
@@ -219,12 +223,13 @@ export function usePipelinedSpeechPlayer({
       return `${current.sourceKind}:${current.sourceId}:voice-recording:${currentRecording.audioRelativePath}:${passage.id}:${passage.text}`;
     }
     const activeVoice = voice ?? current.selectedVoiceModel;
-    return activeVoice
-      ? `${current.sourceKind}:${current.sourceId}:${activeVoice.id}:${passage.id}:${passage.text}`
+    const activeProfile = profile ?? current.selectedVoiceProfile;
+    return activeVoice && activeProfile
+      ? `${current.sourceKind}:${current.sourceId}:${activeVoice.id}:${activeProfile.id}:${activeProfile.performance}:${passage.id}:${passage.text}`
       : "";
   }, []);
 
-  const ensureClip = useCallback((index: number, background: boolean, voiceOverride?: SpeechModel | null): Promise<string> => {
+  const ensureClip = useCallback((index: number, background: boolean, voiceOverride?: SpeechModel | null, profileOverride?: VoiceProfile | null): Promise<string> => {
     const current = metadataRef.current;
     const currentRecording = recordingRef.current;
     const passage = current.passages[index];
@@ -241,10 +246,11 @@ export function usePipelinedSpeechPlayer({
       return Promise.resolve(url);
     }
     const activeVoice = voiceOverride ?? current.selectedVoiceModel;
-    if (!activeVoice) {
-      return Promise.reject(new Error("No local ComfyUI voice model is selected."));
+    const activeProfile = profileOverride ?? current.selectedVoiceProfile;
+    if (!activeVoice || !activeProfile) {
+      return Promise.reject(new Error("No local ComfyUI speech engine and voice are selected."));
     }
-    const key = clipKey(index, activeVoice);
+    const key = clipKey(index, activeVoice, activeProfile);
     const cached = clipUrlsRef.current.get(key);
     if (cached) return Promise.resolve(cached);
     const pending = pendingClipsRef.current.get(key);
@@ -267,6 +273,7 @@ export function usePipelinedSpeechPlayer({
       passageId: passage.id,
       text: passage.text,
       modelId: activeVoice.id,
+      voiceProfileId: activeProfile.id,
     }).then((clip) => {
       const url = localSpeechMediaUrl(clip.relativePath);
       if (!url) throw new Error("Kestrel could not create a private URL for the generated passage.");
@@ -290,7 +297,7 @@ export function usePipelinedSpeechPlayer({
     return promise;
   }, [clipKey]);
 
-  const alignClip = useCallback((index: number, voiceOverride?: SpeechModel | null): Promise<void> => {
+  const alignClip = useCallback((index: number, voiceOverride?: SpeechModel | null, profileOverride?: VoiceProfile | null): Promise<void> => {
     const current = metadataRef.current;
     const currentRecording = recordingRef.current;
     const passage = current.passages[index];
@@ -304,8 +311,9 @@ export function usePipelinedSpeechPlayer({
       return Promise.resolve();
     }
     const activeVoice = voiceOverride ?? current.selectedVoiceModel;
-    if (!activeVoice || !current.alignmentModel) return Promise.resolve();
-    const key = clipKey(index, activeVoice);
+    const activeProfile = profileOverride ?? current.selectedVoiceProfile;
+    if (!activeVoice || !current.alignmentModel || !activeProfile) return Promise.resolve();
+    const key = clipKey(index, activeVoice, activeProfile);
     if (clipTimingsRef.current.get(key)?.length) return Promise.resolve();
     const pending = pendingAlignmentsRef.current.get(key);
     if (pending) return pending;
@@ -324,10 +332,11 @@ export function usePipelinedSpeechPlayer({
       text: passage.text,
       relativePath,
       voiceModelId: activeVoice.id,
+      voiceProfileId: activeProfile.id,
       alignmentModelId: current.alignmentModel.id,
     }).then((aligned) => {
       clipTimingsRef.current.set(key, aligned.words);
-      if (mountedRef.current && clipKey(currentIndexRef.current, activeVoice) === key) {
+      if (mountedRef.current && clipKey(currentIndexRef.current, activeVoice, activeProfile) === key) {
         setSpeechTimings(aligned.words);
       }
     }).catch(() => undefined).finally(() => {
@@ -344,7 +353,7 @@ export function usePipelinedSpeechPlayer({
     return task;
   }, [clipKey]);
 
-  const startAt = useCallback(async (index: number, voiceOverride?: SpeechModel | null) => {
+  const startAt = useCallback(async (index: number, voiceOverride?: SpeechModel | null, profileOverride?: VoiceProfile | null) => {
     const current = metadataRef.current;
     const currentRecording = recordingRef.current;
     if (!current.passages[index]) return;
@@ -364,10 +373,10 @@ export function usePipelinedSpeechPlayer({
     ownsPlaybackRef.current = true;
     claimPlayback(stopPlayback);
     try {
-      const url = await ensureClip(index, false, voiceOverride);
+      const url = await ensureClip(index, false, voiceOverride, profileOverride);
       if (!mountedRef.current || generation !== playbackGenerationRef.current) return;
       audio.src = url;
-      const exactTimings = clipTimingsRef.current.get(clipKey(index, voiceOverride)) ?? currentRecording?.words ?? [];
+      const exactTimings = clipTimingsRef.current.get(clipKey(index, voiceOverride, profileOverride)) ?? currentRecording?.words ?? [];
       setSpeechTimings(exactTimings);
       audio.playbackRate = rateRef.current;
       await audio.play();
@@ -376,12 +385,12 @@ export function usePipelinedSpeechPlayer({
       setDetail(
         currentRecording
           ? "Playing your voice recording."
-          : `Reading ${current.passages[index].label} with ${(voiceOverride ?? current.selectedVoiceModel)?.name ?? "voice"}.`,
+          : `Reading ${current.passages[index].label} with ${(profileOverride ?? current.selectedVoiceProfile)?.name ?? "voice"}.`,
       );
-      void alignClip(index, voiceOverride);
+      void alignClip(index, voiceOverride, profileOverride);
       if (!currentRecording && mountedRef.current && generation === playbackGenerationRef.current && index + 1 < current.passages.length) {
-        void ensureClip(index + 1, true, voiceOverride).then(() => {
-          void alignClip(index + 1, voiceOverride);
+        void ensureClip(index + 1, true, voiceOverride, profileOverride).then(() => {
+          void alignClip(index + 1, voiceOverride, profileOverride);
         }).catch(() => undefined);
       }
     } catch (cause) {
@@ -414,7 +423,7 @@ export function usePipelinedSpeechPlayer({
   const togglePlayback = useCallback(() => {
     const audio = audioRef.current;
     const current = metadataRef.current;
-    if (!audio || (!current.selectedVoiceModel && !recordingRef.current)) return;
+    if (!audio || ((!current.selectedVoiceModel || !current.selectedVoiceProfile) && !recordingRef.current)) return;
     if (status === "playing") {
       audio.pause();
       setStatus("paused");

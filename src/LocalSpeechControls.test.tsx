@@ -31,6 +31,8 @@ const ready = {
   comfyReady: true,
   voices: [{ id: "chatterbox:local", name: "Local", provider: "ComfyUI Chatterbox" }],
   transcribers: [{ id: "whisper:turbo", name: "Whisper Turbo", provider: "ComfyUI Whisper" }],
+  voiceProfiles: [{ id: "voice-default", name: "Chatterbox Default", language: "Auto", tags: ["Built in"], source: "built-in", consentConfirmed: true, performance: "natural", createdAt: "", updatedAt: "" }],
+  defaultVoiceProfileId: "voice-default",
   detail: "Ready",
 };
 
@@ -63,6 +65,7 @@ beforeEach(() => {
     passageId: request.passageId,
     relativePath: `generated/chat/chat-1/${request.passageId}.opus`,
     modelId: request.modelId,
+    voiceProfileId: "voice-default",
     cacheHit: false,
     segments: [{ value: "Spoken sentence.", start: 0, end: 1 }],
     words: [
@@ -76,6 +79,7 @@ beforeEach(() => {
     passageId: "answer-1",
     relativePath: "generated/chat/chat-1/answer.opus",
     modelId: "chatterbox:local",
+    voiceProfileId: "voice-default",
     cacheHit: false,
     segments: [{ value: "First sentence.", start: 0, end: 1 }],
     words: [{ value: "First", start: 0, end: .4 }, { value: "sentence.", start: .4, end: 1 }],
@@ -262,6 +266,25 @@ Here is the performance overview:
     expect(container.querySelector("audio")?.src).toContain("kestrel-speech.localhost");
   });
 
+  it("lets a producer cast an individual response without changing the app-wide default", async () => {
+    speechApi.snapshot.mockResolvedValueOnce({
+      ...ready,
+      voiceProfiles: [
+        ...ready.voiceProfiles,
+        { id: "voice-narrator", name: "Evening Narrator", language: "English", tags: ["Warm"], source: "imported", consentConfirmed: true, performance: "expressive", createdAt: "", updatedAt: "" },
+      ],
+    });
+    render(<LocalSpeechProvider><SpeechPlaybackButton sourceKind="chat" sourceId="chat-1" passageId="answer" text="First sentence." /></LocalSpeechProvider>);
+
+    const selector = await screen.findByRole("combobox", { name: "Voice for listen" });
+    fireEvent.change(selector, { target: { value: "voice-narrator" } });
+    fireEvent.click(screen.getByRole("button", { name: "Listen" }));
+
+    await waitFor(() => expect(speechApi.synthesize).toHaveBeenCalledWith(expect.objectContaining({
+      voiceProfileId: "voice-narrator",
+    })));
+  });
+
   it("pipelines and prebuffers multiple passages in inline speech responses", async () => {
     const sentence1 = "First important sentence that explains the initial context in full detail.".repeat(4);
     const sentence2 = "Second crucial paragraph that continues the explanation thoroughly.".repeat(4);
@@ -399,15 +422,17 @@ Here is the performance overview:
     });
     // TTS synthesis should NOT be called for user voice recording!
     expect(speechApi.synthesize).not.toHaveBeenCalled();
-    expect(onSpeechProgress).toHaveBeenCalledWith(
-      expect.objectContaining({
-        active: true,
-        sourceKind: "chat",
-        timings: expect.arrayContaining([
-          expect.objectContaining({ value: "spoken", start: 0.8, end: 1.2 }),
-        ]),
-      }),
-    );
+    await waitFor(() => {
+      expect(onSpeechProgress).toHaveBeenCalledWith(
+        expect.objectContaining({
+          active: true,
+          sourceKind: "chat",
+          timings: expect.arrayContaining([
+            expect.objectContaining({ value: "spoken", start: 0.8, end: 1.2 }),
+          ]),
+        }),
+      );
+    });
   });
 
   it("emits onRecordingComplete with audio path and whisper timings when dictation finishes", async () => {

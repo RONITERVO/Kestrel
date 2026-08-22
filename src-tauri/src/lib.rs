@@ -21,6 +21,7 @@ mod services;
 mod setup;
 mod store;
 mod studio;
+mod voice_library;
 mod workspace;
 
 use attachments::{AttachmentStore, ContextAttachment};
@@ -69,6 +70,9 @@ use studio::{
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tokio_util::sync::CancellationToken;
+use voice_library::{
+    CreateVoiceProfileRequest, UpdateVoiceProfileRequest, VoiceLibrary, VoiceLibrarySnapshot,
+};
 use workspace::WorkspaceStore;
 
 /// Shared native state. Keep authority visibly separated: research owns evidence/storage, runtime
@@ -91,6 +95,7 @@ struct AppState {
     work_active: AtomicBool,
     jobs: Mutex<HashMap<String, CancellationToken>>,
     speech: LocalSpeech,
+    voice_library: VoiceLibrary,
     speech_command_gate: AsyncMutex<()>,
     speech_jobs: Mutex<HashMap<String, CancellationToken>>,
     speech_restore_model: Mutex<Option<SpeechRuntimeRestore>>,
@@ -161,7 +166,73 @@ async fn get_local_speech_snapshot(state: State<'_, AppState>) -> Result<SpeechS
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
-    Ok(state.speech.snapshot(&settings.comfy_root).await)
+    merge_voice_library(
+        state.speech.snapshot(&settings.comfy_root).await,
+        &state.voice_library,
+    )
+}
+
+fn merge_voice_library(
+    mut snapshot: SpeechSnapshot,
+    library: &VoiceLibrary,
+) -> Result<SpeechSnapshot, String> {
+    let voices = library.snapshot().map_err(|error| error.to_string())?;
+    snapshot.voice_profiles = voices.profiles;
+    snapshot.default_voice_profile_id = voices.default_profile_id;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn get_voice_library(state: State<'_, AppState>) -> Result<VoiceLibrarySnapshot, String> {
+    state
+        .voice_library
+        .snapshot()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_voice_profile(
+    request: CreateVoiceProfileRequest,
+    state: State<'_, AppState>,
+) -> Result<VoiceLibrarySnapshot, String> {
+    let library = state.voice_library.clone();
+    tokio::task::spawn_blocking(move || library.create(request))
+        .await
+        .map_err(|error| format!("voice import worker stopped: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn update_voice_profile(
+    request: UpdateVoiceProfileRequest,
+    state: State<'_, AppState>,
+) -> Result<VoiceLibrarySnapshot, String> {
+    state
+        .voice_library
+        .update(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_default_voice_profile(
+    profile_id: String,
+    state: State<'_, AppState>,
+) -> Result<VoiceLibrarySnapshot, String> {
+    state
+        .voice_library
+        .set_default(&profile_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn delete_voice_profile(
+    profile_id: String,
+    state: State<'_, AppState>,
+) -> Result<VoiceLibrarySnapshot, String> {
+    state
+        .voice_library
+        .delete(&profile_id)
+        .map_err(|error| error.to_string())
 }
 
 async fn remember_runtime_for_speech(state: &AppState) {
@@ -273,7 +344,7 @@ async fn prepare_local_speech(state: State<'_, AppState>) -> Result<SpeechSnapsh
         .map_err(|error| error.to_string())?;
     let initial = state.speech.snapshot(&settings.comfy_root).await;
     if (!initial.narration_available && !initial.transcription_available) || initial.comfy_ready {
-        return Ok(initial);
+        return merge_voice_library(initial, &state.voice_library);
     }
     const JOB_ID: &str = "prepare-local-speech";
     let cancel = register_speech_job(&state, JOB_ID)?;
@@ -291,7 +362,10 @@ async fn prepare_local_speech(state: State<'_, AppState>) -> Result<SpeechSnapsh
             .ensure_comfy(&settings.comfy_root, &cancel)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(state.speech.snapshot(&settings.comfy_root).await)
+        merge_voice_library(
+            state.speech.snapshot(&settings.comfy_root).await,
+            &state.voice_library,
+        )
     }
     .await;
     finish_speech_job(&state, JOB_ID);
@@ -308,9 +382,13 @@ async fn synthesize_local_speech(
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
+    let voice = state
+        .voice_library
+        .resolve(&request.voice_profile_id)
+        .map_err(|error| error.to_string())?;
     if let Some(clip) = state
         .speech
-        .cached_clip(&settings.comfy_root, &request)
+        .cached_clip(&settings.comfy_root, &request, &voice)
         .map_err(|error| error.to_string())?
     {
         return Ok(clip);
@@ -320,7 +398,7 @@ async fn synthesize_local_speech(
         let _turn = wait_for_speech_turn(&state, &cancel).await?;
         if let Some(clip) = state
             .speech
-            .cached_clip(&settings.comfy_root, &request)
+            .cached_clip(&settings.comfy_root, &request, &voice)
             .map_err(|error| error.to_string())?
         {
             return Ok(clip);
@@ -339,7 +417,7 @@ async fn synthesize_local_speech(
             .map_err(|error| error.to_string())?;
         state
             .speech
-            .synthesize(&settings.comfy_root, &request, &cancel, Some(&app))
+            .synthesize(&settings.comfy_root, &request, &voice, &cancel, Some(&app))
             .await
             .map_err(|error| error.to_string())
     }
@@ -407,9 +485,13 @@ async fn align_local_speech(
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
+    let voice = state
+        .voice_library
+        .resolve(&request.voice_profile_id)
+        .map_err(|error| error.to_string())?;
     if let Some(clip) = state
         .speech
-        .cached_alignment(&settings.comfy_root, &request)
+        .cached_alignment(&settings.comfy_root, &request, &voice)
         .map_err(|error| error.to_string())?
     {
         return Ok(clip);
@@ -419,7 +501,7 @@ async fn align_local_speech(
         let _turn = wait_for_speech_turn(&state, &cancel).await?;
         if let Some(clip) = state
             .speech
-            .cached_alignment(&settings.comfy_root, &request)
+            .cached_alignment(&settings.comfy_root, &request, &voice)
             .map_err(|error| error.to_string())?
         {
             return Ok(clip);
@@ -438,7 +520,7 @@ async fn align_local_speech(
             .map_err(|error| error.to_string())?;
         state
             .speech
-            .align(&settings.comfy_root, &request, &cancel, Some(&app))
+            .align(&settings.comfy_root, &request, &voice, &cancel, Some(&app))
             .await
             .map_err(|error| error.to_string())
     }
@@ -3722,6 +3804,7 @@ pub fn run() {
             let music = MusicStudio::new(store.root()).map_err(|error| error.to_string())?;
             let images = ImageStudio::new(store.root()).map_err(|error| error.to_string())?;
             let speech = LocalSpeech::new(store.root()).map_err(|error| error.to_string())?;
+            let voice_library = VoiceLibrary::new(store.root()).map_err(|error| error.to_string())?;
             app.manage(AppState {
                 store,
                 harness,
@@ -3740,6 +3823,7 @@ pub fn run() {
                 work_active: AtomicBool::new(false),
                 jobs: Mutex::new(HashMap::new()),
                 speech,
+                voice_library,
                 speech_command_gate: AsyncMutex::new(()),
                 speech_jobs: Mutex::new(HashMap::new()),
                 speech_restore_model: Mutex::new(None),
@@ -3790,6 +3874,11 @@ pub fn run() {
             bootstrap,
             get_report,
             get_local_speech_snapshot,
+            get_voice_library,
+            create_voice_profile,
+            update_voice_profile,
+            set_default_voice_profile,
+            delete_voice_profile,
             prepare_local_speech,
             synthesize_local_speech,
             transcribe_local_speech,

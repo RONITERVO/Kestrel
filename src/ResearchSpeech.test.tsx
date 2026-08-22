@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { demoReport } from "./demo";
 import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { buildResearchSpeechPassages } from "./researchSpeechContent";
+import { LocalSpeechProvider } from "./LocalSpeechControls";
 
 const speechApi = vi.hoisted(() => ({
   snapshot: vi.fn(),
@@ -32,6 +33,8 @@ beforeEach(() => {
     comfyReady: true,
     voices: [{ id: "chatterbox:local_narrator", name: "Local Narrator", provider: "ComfyUI Chatterbox" }],
     transcribers: [{ id: "whisper:large-v3-turbo", name: "Whisper Large V3 Turbo", provider: "ComfyUI Whisper" }],
+    voiceProfiles: [{ id: "voice-default", name: "Chatterbox Default", language: "Auto", tags: ["Built in"], source: "built-in", consentConfirmed: true, performance: "natural", createdAt: "", updatedAt: "" }],
+    defaultVoiceProfileId: "voice-default",
     detail: "ComfyUI TTS is ready.",
   });
   speechApi.synthesize.mockReset().mockImplementation(async (request: { passageId: string; jobId: string; modelId: string }) => ({
@@ -39,6 +42,7 @@ beforeEach(() => {
     passageId: request.passageId,
     relativePath: `${demoReport.id}/${request.passageId}.flac`,
     modelId: request.modelId,
+    voiceProfileId: "voice-default",
     cacheHit: false,
     segments: [],
     words: [],
@@ -49,6 +53,7 @@ beforeEach(() => {
     passageId: request.passageId,
     relativePath: request.relativePath,
     modelId: request.voiceModelId,
+    voiceProfileId: "voice-default",
     cacheHit: false,
     segments: [{ value: "Aligned passage.", start: 0, end: 1 }],
     words: [{ value: "Aligned", start: 0, end: .5 }, { value: "passage.", start: .5, end: 1 }],
@@ -60,6 +65,8 @@ beforeEach(() => {
     comfyReady: true,
     voices: [{ id: "chatterbox:local_narrator", name: "Local Narrator", provider: "ComfyUI Chatterbox" }],
     transcribers: [{ id: "whisper:large-v3-turbo", name: "Whisper Large V3 Turbo", provider: "ComfyUI Whisper" }],
+    voiceProfiles: [{ id: "voice-default", name: "Chatterbox Default", language: "Auto", tags: ["Built in"], source: "built-in", consentConfirmed: true, performance: "natural", createdAt: "", updatedAt: "" }],
+    defaultVoiceProfileId: "voice-default",
     detail: "ComfyUI TTS is ready.",
   });
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
@@ -72,6 +79,10 @@ afterEach(() => {
 });
 
 describe("Research speech", () => {
+  const renderPlayer = (onPassageChange: (anchorId: string | null, passageId?: string | null) => void) => render(
+    <LocalSpeechProvider><ResearchSpeechPlayer report={demoReport} onPassageChange={onPassageChange} /></LocalSpeechProvider>,
+  );
+
   it("builds short buffered passages and offers explicit source narration", () => {
     const longReport = {
       ...demoReport,
@@ -96,11 +107,11 @@ describe("Research speech", () => {
 
   it("generates with the selected ComfyUI model, plays local audio, and buffers ahead", async () => {
     const onPassageChange = vi.fn();
-    const { container } = render(<ResearchSpeechPlayer report={demoReport} onPassageChange={onPassageChange} />);
+    const { container } = renderPlayer(onPassageChange);
 
     const play = await screen.findByRole("button", { name: "Play report" });
     await waitFor(() => expect(play).toBeEnabled());
-    expect(screen.getByRole("combobox", { name: "ComfyUI voice model" })).toHaveValue("chatterbox:local_narrator");
+    expect(screen.getByRole("combobox", { name: "Narration voice" })).toHaveValue("voice-default");
     fireEvent.click(play);
 
     await waitFor(() => expect(speechApi.synthesize).toHaveBeenCalled());
@@ -109,6 +120,7 @@ describe("Research speech", () => {
       sourceId: demoReport.id,
       passageId: "overview",
       modelId: "chatterbox:local_narrator",
+      voiceProfileId: "voice-default",
     });
     await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
     await waitFor(() => expect(speechApi.align).toHaveBeenCalledWith(expect.objectContaining({
@@ -138,7 +150,7 @@ describe("Research speech", () => {
       finishAlignment = resolve;
     }));
     const onPassageChange = vi.fn();
-    render(<ResearchSpeechPlayer report={demoReport} onPassageChange={onPassageChange} />);
+    renderPlayer(onPassageChange);
     fireEvent.click(await screen.findByRole("button", { name: "Play report" }));
     await waitFor(() => expect(speechApi.align).toHaveBeenCalled());
     const alignmentJob = speechApi.align.mock.calls[0][0].jobId;
@@ -165,13 +177,15 @@ describe("Research speech", () => {
       comfyReady: false,
       voices: [],
       transcribers: [],
+      voiceProfiles: [],
+      defaultVoiceProfileId: "voice-default",
       detail: "No complete local ComfyUI voice pack was found.",
     });
-    render(<ResearchSpeechPlayer report={demoReport} onPassageChange={() => undefined} />);
+    renderPlayer(() => undefined);
 
     expect(await screen.findByText("ComfyUI TTS unavailable")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play report" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "ComfyUI voice model" })).toHaveTextContent("No local TTS model");
+    expect(screen.getByRole("combobox", { name: "Narration voice" })).toHaveTextContent("No local voice");
     expect(screen.queryByLabelText(/system voice|offline voice/i)).not.toBeInTheDocument();
   });
 });
