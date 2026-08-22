@@ -7,6 +7,7 @@ import {
   RotateCcw,
   Sliders,
   Square,
+  UserRoundCog,
   Volume2,
   X,
 } from "lucide-react";
@@ -32,6 +33,8 @@ import {
   splitForSpeech,
 } from "./researchSpeechContent";
 import type { LocalSpeechSnapshot, SpeechTiming } from "./types";
+import type { VoiceLibrarySnapshot, VoiceProfile } from "./types";
+import { VoiceLibraryDialog } from "./VoiceLibrary";
 import { type SpeechProgressState } from "./spokenHighlight";
 import {
   claimPlayback,
@@ -55,6 +58,8 @@ type SpeechContextValue = {
   snapshot: LocalSpeechSnapshot | null;
   refresh: () => Promise<LocalSpeechSnapshot>;
   prepare: () => Promise<LocalSpeechSnapshot>;
+  selectedVoiceProfile: VoiceProfile | null;
+  openVoiceLibrary: () => void;
   vadSettings: VadSettings;
   updateVadSettings: (updater: Partial<VadSettings> | ((prev: VadSettings) => VadSettings)) => void;
   resetVadSettings: () => void;
@@ -64,6 +69,7 @@ const SpeechContext = createContext<SpeechContextValue | null>(null);
 
 export function LocalSpeechProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<LocalSpeechSnapshot | null>(null);
+  const [voiceLibraryOpen, setVoiceLibraryOpen] = useState(false);
   const [vadSettings, setVadSettingsState] = useState<VadSettings>(() => loadVadSettings());
   const vadSettingsRef = useRef(vadSettings);
 
@@ -108,6 +114,8 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
       snapshot,
       refresh,
       prepare,
+      selectedVoiceProfile: snapshot?.voiceProfiles.find((profile) => profile.id === snapshot.defaultVoiceProfileId) ?? snapshot?.voiceProfiles[0] ?? null,
+      openVoiceLibrary: () => setVoiceLibraryOpen(true),
       vadSettings,
       updateVadSettings,
       resetVadSettings,
@@ -115,7 +123,15 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
     [prepare, refresh, resetVadSettings, snapshot, updateVadSettings, vadSettings],
   );
 
-  return <SpeechContext.Provider value={value}>{children}</SpeechContext.Provider>;
+  const updateVoiceLibrary = useCallback((library: VoiceLibrarySnapshot) => {
+    setSnapshot((current) => current ? {
+      ...current,
+      voiceProfiles: library.profiles,
+      defaultVoiceProfileId: library.defaultProfileId,
+    } : current);
+  }, []);
+
+  return <SpeechContext.Provider value={value}>{children}{voiceLibraryOpen && snapshot && <VoiceLibraryDialog snapshot={{ profiles: snapshot.voiceProfiles, defaultProfileId: snapshot.defaultVoiceProfileId }} onSnapshot={updateVoiceLibrary} onClose={() => setVoiceLibraryOpen(false)} />}</SpeechContext.Provider>;
 }
 
 export function useSpeech() {
@@ -125,6 +141,8 @@ export function useSpeech() {
       snapshot: null,
       refresh: getLocalSpeechSnapshot,
       prepare: prepareLocalSpeech,
+      selectedVoiceProfile: null,
+      openVoiceLibrary: () => undefined,
       vadSettings: DEFAULT_VAD_SETTINGS,
       updateVadSettings: () => undefined,
       resetVadSettings: () => undefined,
@@ -231,12 +249,18 @@ export function SpeechPlaybackButton({
   onActiveChange?: (active: boolean) => void;
   onSpeechProgress?: (progress: SpeechProgressState | null) => void;
 }) {
-  const { snapshot, prepare } = useSpeech();
+  const { snapshot, prepare, selectedVoiceProfile, openVoiceLibrary } = useSpeech();
   const passages = useMemo(
     () => buildSpeechPassages(text, { stripCodeBlocks: true, basePassageId: passageId, label }),
     [label, passageId, text],
   );
+  const [voiceProfileId, setVoiceProfileId] = useState(selectedVoiceProfile?.id ?? "");
+  useEffect(() => {
+    setVoiceProfileId(selectedVoiceProfile?.id ?? "");
+  }, [selectedVoiceProfile?.id]);
   const voice = snapshot?.voices[0] ?? null;
+  const passageVoiceProfile = snapshot?.voiceProfiles.find((profile) => profile.id === voiceProfileId)
+    ?? selectedVoiceProfile;
   const alignmentModel = snapshot?.transcriptionAvailable ? snapshot.transcribers[0] : undefined;
 
   const player = usePipelinedSpeechPlayer({
@@ -244,6 +268,7 @@ export function SpeechPlaybackButton({
     sourceId,
     passages,
     selectedVoiceModel: voice,
+    selectedVoiceProfile: passageVoiceProfile,
     alignmentModel,
     playbackRate: 1,
     initialDetail: label,
@@ -292,13 +317,16 @@ export function SpeechPlaybackButton({
     }
     const start = async () => {
       if (recording) {
-        await player.startAt(player.status === "complete" ? 0 : player.currentIndex, null);
+        await player.startAt(player.status === "complete" ? 0 : player.currentIndex, null, null);
         return;
       }
       const ready = snapshot?.narrationAvailable ? snapshot : await prepare();
       const readyVoice = ready.voices[0];
-      if (!ready.narrationAvailable || !readyVoice) throw new Error(ready.detail);
-      await player.startAt(player.status === "complete" ? 0 : player.currentIndex, readyVoice);
+      const readyProfile = ready.voiceProfiles.find((profile) => profile.id === voiceProfileId)
+        ?? ready.voiceProfiles.find((profile) => profile.id === ready.defaultVoiceProfileId)
+        ?? ready.voiceProfiles[0];
+      if (!ready.narrationAvailable || !readyVoice || !readyProfile) throw new Error(ready.detail);
+      await player.startAt(player.status === "complete" ? 0 : player.currentIndex, readyVoice, readyProfile);
     };
     void start().catch((error) => {
       player.setStatus("error");
@@ -328,6 +356,8 @@ export function SpeechPlaybackButton({
           {state === "preparing" ? "Preparing…" : state === "paused" ? "Resume" : label}
         </span>
       </button>
+      {!recording && snapshot && snapshot.voiceProfiles.length > 1 && <select className="inline-voice-select" aria-label={`Voice for ${label.toLowerCase()}`} value={passageVoiceProfile?.id ?? ""} disabled={state === "preparing" || state === "playing"} onChange={(event) => { player.clearModelCache(); setVoiceProfileId(event.target.value); }}>{snapshot.voiceProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select>}
+      {!recording && <button type="button" className="inline-voice-button" title={`Voice: ${passageVoiceProfile?.name ?? "default"}`} aria-label="Open Voice Library" disabled={state === "preparing" || state === "playing"} onClick={openVoiceLibrary}><UserRoundCog /><span>{passageVoiceProfile?.name ?? "Voice"}</span></button>}
       {state !== "ready" && state !== "complete" && (
         <button
           type="button"

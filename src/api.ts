@@ -20,6 +20,9 @@ import type {
   ResearchProgress,
   ResearchReport,
   LocalSpeechSnapshot,
+  CreateVoiceProfileRequest,
+  UpdateVoiceProfileRequest,
+  VoiceLibrarySnapshot,
   SpeechAlignmentRequest,
   SpeechClip,
   SpeechProgress,
@@ -317,9 +320,39 @@ export async function getLocalSpeechSnapshot(): Promise<LocalSpeechSnapshot> {
     comfyReady: false,
     voices: [],
     transcribers: [],
+    voiceProfiles: [{ id: "voice-default", name: "Chatterbox Default", language: "Auto", tags: ["Built in", "Neutral"], source: "built-in", consentConfirmed: true, performance: "natural", createdAt: "", updatedAt: "" }],
+    defaultVoiceProfileId: "voice-default",
     detail: "Local speech uses the user's ComfyUI voice and Whisper models in the desktop app.",
   };
   return invoke<LocalSpeechSnapshot>("get_local_speech_snapshot");
+}
+
+export async function getVoiceLibrary(): Promise<VoiceLibrarySnapshot> {
+  if (!isTauri()) {
+    const snapshot = await getLocalSpeechSnapshot();
+    return { profiles: snapshot.voiceProfiles, defaultProfileId: snapshot.defaultVoiceProfileId };
+  }
+  return invoke<VoiceLibrarySnapshot>("get_voice_library");
+}
+
+export async function createVoiceProfile(request: CreateVoiceProfileRequest): Promise<VoiceLibrarySnapshot> {
+  if (!isTauri()) throw new Error("Custom voices require the desktop application.");
+  return invoke<VoiceLibrarySnapshot>("create_voice_profile", { request });
+}
+
+export async function updateVoiceProfile(request: UpdateVoiceProfileRequest): Promise<VoiceLibrarySnapshot> {
+  if (!isTauri()) throw new Error("Custom voices require the desktop application.");
+  return invoke<VoiceLibrarySnapshot>("update_voice_profile", { request });
+}
+
+export async function setDefaultVoiceProfile(profileId: string): Promise<VoiceLibrarySnapshot> {
+  if (!isTauri()) return getVoiceLibrary();
+  return invoke<VoiceLibrarySnapshot>("set_default_voice_profile", { profileId });
+}
+
+export async function deleteVoiceProfile(profileId: string): Promise<VoiceLibrarySnapshot> {
+  if (!isTauri()) throw new Error("Custom voices require the desktop application.");
+  return invoke<VoiceLibrarySnapshot>("delete_voice_profile", { profileId });
 }
 
 export async function prepareLocalSpeech(): Promise<LocalSpeechSnapshot> {
