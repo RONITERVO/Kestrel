@@ -29,6 +29,8 @@ import {
   ZapOff,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MarkdownContent } from "./MarkdownContent";
+import { type SpeechProgressState } from "./spokenHighlight";
 import { useInferenceTelemetryReporter } from "./InferenceTelemetry";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
 import {
@@ -66,6 +68,7 @@ import type {
   ComputerTaskSummary,
   ContextAttachment,
   ControlSnapshot,
+  SpeechRecordingAttachment,
   ThinkingLevel,
 } from "./types";
 
@@ -92,6 +95,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   const [chatAttachments, setChatAttachments] = useState<ContextAttachment[]>(
     [],
   );
+  const pendingVoiceRecordingRef = useRef<SpeechRecordingAttachment | null>(null);
   const [stream, setStream] = useState<{
     requestId: string;
     phase: string;
@@ -406,6 +410,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     message: string,
     baseSession: ChatSession | null,
     attachments: ContextAttachment[] = [],
+    recording?: SpeechRecordingAttachment,
   ) {
     const current = latestChatRef.current;
     if (!current.selected) return;
@@ -414,6 +419,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       role: "user",
       content: message || "Analyze the attached local context.",
       attachments,
+      recording,
       createdAt: new Date().toISOString(),
     };
     setSession(
@@ -427,6 +433,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
         modelId: current.selected.id,
         message,
         attachmentIds: attachments.map((item) => item.id),
+        recording,
         temperature: 0.2,
         topP: 0.9,
         topK: 40,
@@ -493,6 +500,8 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     if (!selected || (!draft.trim() && chatAttachments.length === 0)) return;
     const message = draft.trim();
     const attachments = chatAttachments;
+    const recording = pendingVoiceRecordingRef.current;
+    pendingVoiceRecordingRef.current = null;
     setDraft("");
     setChatAttachments([]);
     if (stream) {
@@ -511,7 +520,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       }
       return;
     }
-    await launchChat(message, session, attachments);
+    await launchChat(message, session, attachments, recording ?? undefined);
   };
 
   const cancelGeneration = async () => {
@@ -1136,13 +1145,14 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
                       <small style={{ color: "#8a948c", font: "8px var(--sans)" }}>Generating direct response without reasoning channel</small>
                     </div>
                   ) : null}
-                  <RichText
+                  <MarkdownContent
                     value={
                       stream.content ||
                       (stream.phase === "queued"
                         ? "Waiting for the inference slot…"
                         : "")
                     }
+                    streaming={stream.phase === "generating"}
                   />
                   <Metrics
                     data={stream.metrics}
@@ -1216,6 +1226,9 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
                   sourceId={session?.id ?? "chat-draft"}
                   value={draft}
                   onChange={setDraft}
+                  onRecordingComplete={(recording) => {
+                    pendingVoiceRecordingRef.current = recording;
+                  }}
                   onActiveChange={setChatDictating}
                   disabled={control.runtime.phase !== "ready" || !!taskRunRef.current || !!stream}
                   label="Dictate message"
@@ -1847,8 +1860,14 @@ function Message({
   model?: string;
   onError: (message: string) => void;
 }) {
+  const [speechProgress, setSpeechProgress] = useState<SpeechProgressState | null>(null);
+  const speaking = Boolean(speechProgress?.active);
+
   return (
-    <article className={message.role}>
+    <article
+      className={`${message.role} ${speaking ? "speech-message-active" : ""}`}
+      id={`chat-message-${message.id}`}
+    >
       <span>
         {message.role === "user" ? "YOU" : (model ?? "MODEL")}
         {message.status && (
@@ -1874,9 +1893,17 @@ function Message({
           <pre>{message.reasoning}</pre>
         </details>
       )}
-      <RichText value={message.content} />
-      {message.role === "assistant" && message.content.trim() && (
-        <SpeechPlaybackButton sourceKind="chat" sourceId={sessionId} passageId={message.id} text={message.content} label="Listen" />
+      <MarkdownContent value={message.content} speechProgress={speechProgress} />
+      {message.content.trim() && (message.role !== "user" || Boolean(message.recording)) && (
+        <SpeechPlaybackButton
+          sourceKind="chat"
+          sourceId={sessionId}
+          passageId={message.id}
+          text={message.content}
+          recording={message.recording}
+          label="Listen"
+          onSpeechProgress={setSpeechProgress}
+        />
       )}
     </article>
   );
@@ -1941,41 +1968,6 @@ function AttachmentIcon({ attachment }: { attachment: ContextAttachment }) {
   if (attachment.kind === "image") return <Image />;
   if (attachment.kind === "audio") return <AudioLines />;
   return <FileText />;
-}
-
-function RichText({ value }: { value: string }) {
-  if (!value) return <p className="stream-cursor">Thinking</p>;
-  const blocks = value.split(/```/g);
-  return (
-    <div className="rich-message">
-      {blocks.map((block, index) =>
-        index % 2 ? (
-          <pre key={index}>
-            <code>{block.replace(/^\w+\n/, "")}</code>
-          </pre>
-        ) : (
-          block
-            .split(/\n{2,}/)
-            .filter(Boolean)
-            .map((paragraph, child) => (
-              <p key={`${index}-${child}`}>{inlineCode(paragraph)}</p>
-            ))
-        ),
-      )}
-    </div>
-  );
-}
-
-function inlineCode(value: string) {
-  return value
-    .split(/(`[^`]+`)/g)
-    .map((part, index) =>
-      part.startsWith("`") && part.endsWith("`") ? (
-        <code key={index}>{part.slice(1, -1)}</code>
-      ) : (
-        <span key={index}>{part}</span>
-      ),
-    );
 }
 
 function Metrics({

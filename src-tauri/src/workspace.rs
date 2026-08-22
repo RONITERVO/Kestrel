@@ -6,7 +6,7 @@
 use crate::attachments::ContextAttachment;
 use crate::models::{
     ChatMessage, ChatSession, ChatSessionSummary, ComputerTaskAccess, ComputerTaskEvent,
-    ComputerTaskRun, ComputerTaskSummary,
+    ComputerTaskRun, ComputerTaskSummary, SpeechRecordingAttachment,
 };
 use std::{
     fs,
@@ -18,6 +18,15 @@ use std::{
 pub struct WorkspaceStore {
     root: PathBuf,
     write_lock: Arc<Mutex<()>>,
+}
+
+struct ChatMessageDraft {
+    role: String,
+    content: String,
+    reasoning: Option<String>,
+    status: Option<String>,
+    attachments: Vec<ContextAttachment>,
+    recording: Option<SpeechRecordingAttachment>,
 }
 
 impl WorkspaceStore {
@@ -80,7 +89,17 @@ impl WorkspaceStore {
         reasoning: Option<String>,
         status: Option<String>,
     ) -> Result<ChatSession, String> {
-        self.add_chat_message_record(id, role, content, reasoning, status, Vec::new())
+        self.append_chat_message(
+            id,
+            ChatMessageDraft {
+                role: role.to_string(),
+                content,
+                reasoning,
+                status,
+                attachments: Vec::new(),
+                recording: None,
+            },
+        )
     }
 
     pub fn add_user_message_with_attachments(
@@ -88,18 +107,25 @@ impl WorkspaceStore {
         id: &str,
         content: String,
         attachments: Vec<ContextAttachment>,
+        recording: Option<SpeechRecordingAttachment>,
     ) -> Result<ChatSession, String> {
-        self.add_chat_message_record(id, "user", content, None, None, attachments)
+        self.append_chat_message(
+            id,
+            ChatMessageDraft {
+                role: "user".to_string(),
+                content,
+                reasoning: None,
+                status: None,
+                attachments,
+                recording,
+            },
+        )
     }
 
-    fn add_chat_message_record(
+    fn append_chat_message(
         &self,
         id: &str,
-        role: &str,
-        content: String,
-        reasoning: Option<String>,
-        status: Option<String>,
-        attachments: Vec<ContextAttachment>,
+        draft: ChatMessageDraft,
     ) -> Result<ChatSession, String> {
         let _guard = self
             .write_lock
@@ -109,11 +135,12 @@ impl WorkspaceStore {
         let now = chrono::Utc::now().to_rfc3339();
         session.messages.push(ChatMessage {
             id: uuid::Uuid::new_v4().to_string(),
-            role: role.to_string(),
-            content,
-            reasoning,
-            status,
-            attachments,
+            role: draft.role,
+            content: draft.content,
+            reasoning: draft.reasoning,
+            status: draft.status,
+            attachments: draft.attachments,
+            recording: draft.recording,
             created_at: now.clone(),
         });
         session.updated_at = now;
@@ -600,6 +627,7 @@ mod tests {
                 &session.id,
                 "inspect".into(),
                 vec![attachment.clone()],
+                None,
             )
             .unwrap();
         let task = store

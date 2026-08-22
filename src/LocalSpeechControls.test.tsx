@@ -36,18 +36,18 @@ const ready = {
 beforeEach(() => {
   speechApi.snapshot.mockReset().mockResolvedValue(ready);
   speechApi.prepare.mockReset().mockResolvedValue(ready);
-  speechApi.synthesize.mockReset().mockResolvedValue({
-    jobId: "tts-1",
-    passageId: "answer-1",
-    relativePath: "generated/chat/chat-1/answer.opus",
-    modelId: "chatterbox:local",
+  speechApi.synthesize.mockReset().mockImplementation(async (request: { passageId: string; jobId: string; modelId: string }) => ({
+    jobId: request.jobId,
+    passageId: request.passageId,
+    relativePath: `generated/chat/chat-1/${request.passageId}.opus`,
+    modelId: request.modelId,
     cacheHit: false,
-    segments: [{ value: "First sentence.", start: 0, end: 1 }],
+    segments: [{ value: "Spoken sentence.", start: 0, end: 1 }],
     words: [
-      { value: "First", start: 0, end: .4 },
+      { value: "Spoken", start: 0, end: .4 },
       { value: "sentence.", start: .4, end: 1 },
     ],
-  });
+  }));
   speechApi.cancel.mockReset().mockResolvedValue(undefined);
   speechApi.align.mockReset().mockResolvedValue({
     jobId: "alignment-1",
@@ -83,6 +83,52 @@ describe("shared local speech controls", () => {
     expect(chunks.length).toBeGreaterThan(2);
     expect(chunks.every((chunk) => chunk.length <= 160)).toBe(true);
     expect(chunks.join(" ")).not.toContain("secret");
+  });
+
+  it("sanitizes text formatted charts and markdown tables into natural spoken sentences", () => {
+    const tableMarkdown = `
+Here is the performance overview:
+| Model | Latency | Accuracy |
+| :--- | :--- | :--- |
+| Chatterbox | 400ms | 99% |
+| Whisper | 250ms | 98.5% |
+
++--------------------+
+| Architecture Chart |
++--------------------+
+`;
+    const chunks = splitSpeechText(tableMarkdown);
+    const text = chunks.join(" ");
+    expect(text).not.toContain("|");
+    expect(text).not.toContain("+");
+    expect(text).not.toContain(":---");
+    expect(text).toContain("Chatterbox: 400ms, 99 percent.");
+    expect(text).toContain("Whisper: 250ms, 98.5 percent.");
+    expect(text).toContain("Architecture Chart.");
+  });
+
+  it("removes unpronounceable symbol clusters and stutter triggers like '#¤-_''*+' without breaking natural human words", () => {
+    const raw = `The latest update (#¤-_''*+) delivered $50M in savings and +15% performance! Check foo_bar_baz at https://kestrel.local/docs for details.`;
+    const chunks = splitSpeechText(raw);
+    const text = chunks.join(" ");
+    expect(text).not.toContain("#");
+    expect(text).not.toContain("¤");
+    expect(text).not.toContain("*");
+    expect(text).not.toContain("https://");
+    expect(text).toContain("50M dollars");
+    expect(text).toContain("plus 15 percent");
+    expect(text).toContain("foo bar baz");
+    expect(text).toContain("kestrel.local");
+  });
+
+  it("preserves multilingual sentences, natural contractions, and hyphenated terms", () => {
+    const multilingual = `Don't worry, it's a state-of-the-art system. Älä huoli, kaikki toimii loistavasti. Das ist großartig! 東京は晴れです。`;
+    const chunks = splitSpeechText(multilingual);
+    const text = chunks.join(" ");
+    expect(text).toContain("Don't worry, it's a state-of-the-art system.");
+    expect(text).toContain("Älä huoli, kaikki toimii loistavasti.");
+    expect(text).toContain("Das ist großartig!");
+    expect(text).toContain("東京は晴れです。");
   });
 
   it("marks the currently spoken word inside its sentence", () => {
@@ -139,6 +185,36 @@ describe("shared local speech controls", () => {
     })));
     await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
     expect(container.querySelector("audio")?.src).toContain("kestrel-speech.localhost");
+  });
+
+  it("pipelines and prebuffers multiple passages in inline speech responses", async () => {
+    const sentence1 = "First important sentence that explains the initial context in full detail.".repeat(4);
+    const sentence2 = "Second crucial paragraph that continues the explanation thoroughly.".repeat(4);
+    const longText = `${sentence1}\n\n${sentence2}`;
+    const { container } = render(
+      <LocalSpeechProvider>
+        <SpeechPlaybackButton sourceKind="chat" sourceId="chat-1" passageId="answer" text={longText} />
+      </LocalSpeechProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Listen" }));
+    await waitFor(() => expect(speechApi.synthesize).toHaveBeenCalled());
+    expect(speechApi.synthesize.mock.calls[0][0]).toMatchObject({
+      sourceKind: "chat",
+      sourceId: "chat-1",
+      passageId: "answer-1",
+    });
+
+    // Proactive background pre-buffering kicks off for passage 2
+    await waitFor(() => expect(speechApi.synthesize.mock.calls.some(([req]) => req.passageId === "answer-2")).toBe(true));
+
+    // When audio completes passage 1, it seamlessly transitions to passage 2
+    fireEvent.ended(container.querySelector("audio")!);
+    await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2));
+
+    // Stop resets and releases memory
+    fireEvent.click(screen.getByRole("button", { name: "Stop speaking" }));
+    expect(speechApi.release).toHaveBeenCalled();
   });
 
   it("aligns the unchanged cached recording in the background when timings are missing", async () => {
@@ -229,5 +305,99 @@ describe("shared local speech controls", () => {
 
     expect(await screen.findByRole("status")).toHaveTextContent(/Dictation unavailable.*recorder startup failed/i);
     expect(stopTrack).toHaveBeenCalledOnce();
+  });
+
+  it("plays back recorded user voice directly with word timestamps without synthesizing TTS", async () => {
+    const onSpeechProgress = vi.fn();
+    render(
+      <LocalSpeechProvider>
+        <SpeechPlaybackButton
+          sourceKind="chat"
+          sourceId="chat-1"
+          passageId="msg-user-1"
+          text="This is my spoken question."
+          recording={{
+            audioRelativePath: "recordings/chat/chat-1/voice.webm",
+            words: [
+              { value: "This", start: 0, end: 0.3 },
+              { value: "is", start: 0.3, end: 0.5 },
+              { value: "my", start: 0.5, end: 0.8 },
+              { value: "spoken", start: 0.8, end: 1.2 },
+              { value: "question.", start: 1.2, end: 1.6 },
+            ],
+          }}
+          label="Listen"
+          onSpeechProgress={onSpeechProgress}
+        />
+      </LocalSpeechProvider>,
+    );
+
+    const button = await screen.findByRole("button", { name: "Listen" });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+    });
+    // TTS synthesis should NOT be called for user voice recording!
+    expect(speechApi.synthesize).not.toHaveBeenCalled();
+    expect(onSpeechProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        active: true,
+        sourceKind: "chat",
+        timings: expect.arrayContaining([
+          expect.objectContaining({ value: "spoken", start: 0.8, end: 1.2 }),
+        ]),
+      }),
+    );
+  });
+
+  it("emits onRecordingComplete with audio path and whisper timings when dictation finishes", async () => {
+    class FakeRecorder {
+      static isTypeSupported() { return true; }
+      state: RecordingState = "inactive";
+      mimeType = "audio/webm;codecs=opus";
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onstop: (() => void) | null = null;
+      constructor(_stream: MediaStream, public options?: MediaRecorderOptions) {}
+      start() { this.state = "recording"; }
+      requestData() { this.ondataavailable?.({ data: new Blob([new Uint8Array(256)], { type: this.mimeType }) } as BlobEvent); }
+      stop() {
+        this.requestData();
+        this.state = "inactive";
+        this.onstop?.();
+      }
+    }
+    const stopTrack = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) } });
+    Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: FakeRecorder });
+    const onRecordingComplete = vi.fn();
+
+    render(
+      <LocalSpeechProvider>
+        <SpeechDictationButton
+          sourceKind="chat"
+          sourceId="chat-1"
+          value=""
+          onChange={vi.fn()}
+          onRecordingComplete={onRecordingComplete}
+        />
+      </LocalSpeechProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dictate" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop dictation" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
+
+    await waitFor(() => {
+      expect(onRecordingComplete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          audioRelativePath: "recordings/chat/chat-1/voice.webm",
+          words: expect.arrayContaining([
+            expect.objectContaining({ value: "clearer", start: 0.2, end: 0.5 }),
+          ]),
+        }),
+      );
+    });
   });
 });

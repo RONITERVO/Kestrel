@@ -16,6 +16,7 @@ import {
 import { MovieTimeline } from "./MovieTimeline";
 import { MovieGenerationRoom } from "./MovieGenerationRoom";
 import { SpeechDictationButton, SpeechPlaybackButton } from "./LocalSpeechControls";
+import { MarkdownContent } from "./MarkdownContent";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "./ModelRuntimePolicy";
 import type { RuntimePolicyValue } from "./ModelRuntimePolicy";
@@ -1337,7 +1338,7 @@ export function ProducerCopilot({ project, edit, workspace, models, selectedMode
 }
 
 function ProducerText({ text }: { text: string }) {
-  return <div className="producer-formatted-text">{text.split(/\n{2,}/).filter(Boolean).map((paragraph, index) => <p key={index}>{paragraph}</p>)}</div>;
+  return <MarkdownContent value={text} className="producer-formatted-text" />;
 }
 
 export function moviePlanningLive(project: Pick<MovieProject, "status" | "phase">): boolean {

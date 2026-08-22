@@ -523,6 +523,7 @@ mod tests {
             reasoning: None,
             status: None,
             attachments: Vec::new(),
+            recording: None,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }

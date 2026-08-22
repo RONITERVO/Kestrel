@@ -1320,6 +1320,11 @@ export interface RuntimeLog {
   at: string;
 }
 
+export interface SpeechRecordingAttachment {
+  audioRelativePath: string;
+  words: SpeechTiming[];
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -1327,6 +1332,7 @@ export interface ChatMessage {
   reasoning?: string;
   status?: "interrupted" | "limited";
   attachments?: ContextAttachment[];
+  recording?: SpeechRecordingAttachment;
   createdAt: string;
 }
 
@@ -1352,6 +1358,7 @@ export interface StartChatRequest {
   modelId: string;
   message: string;
   attachmentIds: string[];
+  recording?: SpeechRecordingAttachment;
   temperature: number;
   topP: number;
   topK: number;

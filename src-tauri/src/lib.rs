@@ -3022,7 +3022,7 @@ async fn start_chat_stream(
     let session =
         match state
             .workspace
-            .add_user_message_with_attachments(&session.id, message, attachments)
+            .add_user_message_with_attachments(&session.id, message, attachments, request.recording.clone())
         {
             Ok(session) => session,
             Err(error) => {

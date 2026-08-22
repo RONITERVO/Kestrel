@@ -117,7 +117,7 @@ describe("Research speech", () => {
       alignmentModelId: "whisper:large-v3-turbo",
     })));
     expect(screen.getByRole("slider", { name: "Current passage position" })).toBeInTheDocument();
-    expect(onPassageChange).toHaveBeenCalledWith("report-overview");
+    expect(onPassageChange).toHaveBeenCalledWith("report-overview", "overview");
     await waitFor(() => expect(speechApi.synthesize.mock.calls.some(([request]) => request.passageId === "short-answer")).toBe(true));
 
     fireEvent.click(await screen.findByRole("button", { name: "Pause report" }));
@@ -126,9 +126,9 @@ describe("Research speech", () => {
     await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2));
 
     fireEvent.ended(container.querySelector("audio")!);
-    await waitFor(() => expect(onPassageChange).toHaveBeenLastCalledWith("short-answer"));
+    await waitFor(() => expect(onPassageChange).toHaveBeenLastCalledWith("short-answer", "short-answer"));
     fireEvent.click(screen.getByRole("button", { name: "Stop report" }));
-    expect(onPassageChange).toHaveBeenLastCalledWith(null);
+    expect(onPassageChange).toHaveBeenLastCalledWith(null, null);
     expect(speechApi.release).toHaveBeenCalled();
   });
 
@@ -146,7 +146,7 @@ describe("Research speech", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next passage" }));
 
     expect(speechApi.cancel).toHaveBeenCalledWith(alignmentJob);
-    await waitFor(() => expect(onPassageChange).toHaveBeenLastCalledWith("short-answer"));
+    await waitFor(() => expect(onPassageChange).toHaveBeenLastCalledWith("short-answer", "short-answer"));
     finishAlignment?.({
       jobId: alignmentJob,
       passageId: "overview",

@@ -1371,12 +1371,82 @@ fn relative_cache_path(cache_root: &Path, target: &Path) -> Result<String, Speec
     Ok(value)
 }
 
+pub fn clean_speech_text(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        return String::new();
+    }
+    let mut text = raw.to_string();
+
+    while let Some(start) = text.find("```") {
+        if let Some(end) = text[start + 3..].find("```") {
+            text.replace_range(start..start + 3 + end + 3, " Code block on screen. ");
+        } else {
+            text.replace_range(start..start + 3, " ");
+        }
+    }
+
+    let mut cleaned = String::with_capacity(text.len());
+    let mut prev_char = ' ';
+
+    for ch in text.chars() {
+        match ch {
+            '#' | '¤' | '*' | '+' | '^' | '~' | '\\' | '|' | '<' | '>' | '§' | '°' | '±' | '²'
+            | '³' | 'µ' | '¶' | '©' | '®' | '™' | '•' | '·' | '‣' | '⁃' | '✓' | '✔' | '✕'
+            | '✖' | '✗' | '★' | '☆' | '▲' | '▼' | '◄' | '►' | '◆' | '◇' | '●' | '○' | '■'
+            | '□' | '`' => {
+                if prev_char != ' ' {
+                    cleaned.push(' ');
+                    prev_char = ' ';
+                }
+            }
+            '_' => {
+                if prev_char != ' ' {
+                    cleaned.push(' ');
+                    prev_char = ' ';
+                }
+            }
+            c if c.is_whitespace() => {
+                if prev_char != ' ' {
+                    cleaned.push(' ');
+                    prev_char = ' ';
+                }
+            }
+            c => {
+                let u = c as u32;
+                if (0x2500..=0x257F).contains(&u)
+                    || (0x2580..=0x259F).contains(&u)
+                    || (0x25A0..=0x25FF).contains(&u)
+                    || (0x1F300..=0x1FAFF).contains(&u)
+                    || (0x1F600..=0x1F64F).contains(&u)
+                    || (0x1F680..=0x1F6FF).contains(&u)
+                {
+                    if prev_char != ' ' {
+                        cleaned.push(' ');
+                        prev_char = ' ';
+                    }
+                } else {
+                    cleaned.push(c);
+                    prev_char = c;
+                }
+            }
+        }
+    }
+
+    cleaned.trim().to_string()
+}
+
 fn chatterbox_graph(request: &SpeechSynthesisRequest, prefix: &str) -> Value {
     let pack = request
         .model_id
         .strip_prefix("chatterbox:")
         .unwrap_or_default();
-    let word_count = request.text.split_whitespace().count() as u32;
+    let clean_text = clean_speech_text(&request.text);
+    let speech_text = if clean_text.is_empty() {
+        request.text.trim().to_string()
+    } else {
+        clean_text
+    };
+    let word_count = speech_text.split_whitespace().count() as u32;
     let max_new_tokens = (word_count.saturating_mul(18).saturating_add(96)).clamp(128, 1_600);
     let seed = deterministic_seed(request);
     json!({
@@ -1384,7 +1454,7 @@ fn chatterbox_graph(request: &SpeechSynthesisRequest, prefix: &str) -> Value {
             "class_type": "ChatterboxTTS",
             "inputs": {
                 "model_pack_name": pack,
-                "text": request.text.trim(),
+                "text": speech_text,
                 "max_new_tokens": max_new_tokens,
                 "flow_cfg_scale": 0.7,
                 "exaggeration": 0.5,
@@ -1962,6 +2032,29 @@ mod tests {
         assert!(!safe_relative_path("../report/hash.flac"));
         assert!(!safe_relative_path(r"report\hash.flac"));
         assert!(safe_identifier("chat:session", "speech source ID").is_err());
+    }
+
+    #[test]
+    fn speech_text_sanitizer_removes_markdown_and_symbol_stutter() {
+        let raw = r#"# 📊 Key Summary:
+| Metric | Value |
+|---|---|
+| Speed | 99% |
+```json
+{"hidden": true}
+```
+* Important note (#¤-_''*+) on foo_bar_baz!"#;
+        let cleaned = clean_speech_text(raw);
+        assert!(!cleaned.contains("```"));
+        assert!(!cleaned.contains("hidden"));
+        assert!(!cleaned.contains('#'));
+        assert!(!cleaned.contains('¤'));
+        assert!(!cleaned.contains('*'));
+        assert!(!cleaned.contains('|'));
+        assert!(cleaned.contains("Code block on screen."));
+        assert!(cleaned.contains("Speed"));
+        assert!(cleaned.contains("Important note"));
+        assert!(cleaned.contains("foo bar baz"));
     }
 
     #[tokio::test]
