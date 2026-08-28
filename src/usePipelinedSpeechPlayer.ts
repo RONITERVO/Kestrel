@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   alignLocalSpeech,
   cancelLocalSpeech,
+  getCachedLocalSpeechClip,
   localSpeechMediaUrl,
   onLocalSpeechProgress,
   releaseLocalSpeechMemory,
@@ -234,6 +235,44 @@ export function usePipelinedSpeechPlayer({
     clipTimingsRef.current.set(key, timings);
     if (mountedRef.current) setTimingsRevision((revision) => revision + 1);
   }, []);
+
+  useEffect(() => {
+    if (recordingPath || !selectedVoiceModel || !selectedVoiceProfile) return;
+    let active = true;
+    for (let index = 0; index < passages.length; index++) {
+      const passage = passages[index];
+      const key = clipKey(index, selectedVoiceModel, selectedVoiceProfile);
+      if (!key || clipUrlsRef.current.has(key)) continue;
+      void getCachedLocalSpeechClip({
+        jobId: speechJobId("speech-cache"),
+        sourceKind,
+        sourceId,
+        passageId: passage.id,
+        text: passage.text,
+        modelId: selectedVoiceModel.id,
+        voiceProfileId: selectedVoiceProfile.id,
+      }).then((clip) => {
+        if (!active || !clip) return;
+        const url = localSpeechMediaUrl(clip.relativePath);
+        if (!url) return;
+        clipUrlsRef.current.set(key, url);
+        clipPathsRef.current.set(key, clip.relativePath);
+        if (clip.words.length) publishClipTimings(key, clip.words);
+      }).catch(() => undefined);
+    }
+    return () => {
+      active = false;
+    };
+  }, [
+    clipKey,
+    passages,
+    publishClipTimings,
+    recordingPath,
+    selectedVoiceModel,
+    selectedVoiceProfile,
+    sourceId,
+    sourceKind,
+  ]);
 
   const ensureClip = useCallback((index: number, background: boolean, voiceOverride?: SpeechModel | null, profileOverride?: VoiceProfile | null): Promise<string> => {
     const current = metadataRef.current;

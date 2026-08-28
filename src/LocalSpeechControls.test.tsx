@@ -6,6 +6,7 @@ import { DEFAULT_VAD_SETTINGS } from "./voiceActivityDetection";
 const speechApi = vi.hoisted(() => ({
   snapshot: vi.fn(),
   prepare: vi.fn(),
+  cached: vi.fn(),
   synthesize: vi.fn(),
   align: vi.fn(),
   transcribe: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
   getLocalSpeechSnapshot: speechApi.snapshot,
   prepareLocalSpeech: speechApi.prepare,
+  getCachedLocalSpeechClip: speechApi.cached,
   synthesizeLocalSpeech: speechApi.synthesize,
   alignLocalSpeech: speechApi.align,
   transcribeLocalSpeech: speechApi.transcribe,
@@ -60,6 +62,7 @@ class FakeRecorder {
 beforeEach(() => {
   speechApi.snapshot.mockReset().mockResolvedValue(ready);
   speechApi.prepare.mockReset().mockResolvedValue(ready);
+  speechApi.cached.mockReset().mockResolvedValue(null);
   speechApi.synthesize.mockReset().mockImplementation(async (request: { passageId: string; jobId: string; modelId: string }) => ({
     jobId: request.jobId,
     passageId: request.passageId,
@@ -451,6 +454,60 @@ Here is the performance overview:
         }),
       );
     });
+  });
+
+  it("restores durable cached passage timings when a response remounts", async () => {
+    const first = "First durable passage has enough detail to remain independently cached.".repeat(5);
+    const second = "Second durable passage also has enough detail for a separate speech clip.".repeat(5);
+    const text = `${first}\n\n${second}`;
+    speechApi.cached.mockImplementation(async (request: { passageId: string; jobId: string; modelId: string }) => ({
+      jobId: request.jobId,
+      passageId: request.passageId,
+      relativePath: `generated/chat/chat-1/${request.passageId}.opus`,
+      modelId: request.modelId,
+      voiceProfileId: "voice-default",
+      cacheHit: true,
+      segments: [],
+      words: [
+        { value: request.passageId === "answer-1" ? "First" : "Second", start: 0, end: 0.4 },
+        { value: "durable", start: 0.4, end: 0.8 },
+      ],
+    }));
+    const onSpeechProgress = vi.fn();
+
+    render(
+      <LocalSpeechProvider>
+        <SpeechPlaybackButton
+          sourceKind="chat"
+          sourceId="chat-1"
+          passageId="answer"
+          text={text}
+          onSpeechProgress={onSpeechProgress}
+        />
+      </LocalSpeechProvider>,
+    );
+
+    await waitFor(() => expect(onSpeechProgress).toHaveBeenCalledWith(expect.objectContaining({
+      active: false,
+      seekablePassages: expect.arrayContaining([
+        expect.objectContaining({ passageId: "answer-1" }),
+        expect.objectContaining({ passageId: "answer-2" }),
+      ]),
+      onSeekPassage: expect.any(Function),
+    })));
+    expect(speechApi.synthesize).not.toHaveBeenCalled();
+    expect(speechApi.cached).toHaveBeenCalledWith(expect.objectContaining({
+      sourceId: "chat-1",
+      voiceProfileId: "voice-default",
+    }));
+    const restoredProgress = [...onSpeechProgress.mock.calls]
+      .reverse()
+      .map(([value]) => value as SpeechProgressState | null)
+      .find((value) => (value?.seekablePassages?.length ?? 0) >= 2);
+    await act(async () => restoredProgress?.onSeekPassage?.("answer-1", 0.4));
+    await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
+    expect(document.querySelector("audio")?.currentTime).toBe(0.4);
+    expect(speechApi.synthesize).not.toHaveBeenCalled();
   });
 
   it("starts a saved recording at a clicked word without requiring Listen first", async () => {

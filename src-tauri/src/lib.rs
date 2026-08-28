@@ -427,6 +427,25 @@ async fn synthesize_local_speech(
 }
 
 #[tauri::command]
+fn get_cached_local_speech_clip(
+    request: SpeechSynthesisRequest,
+    state: State<'_, AppState>,
+) -> Result<Option<SpeechClip>, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let voice = state
+        .voice_library
+        .resolve(&request.voice_profile_id)
+        .map_err(|error| error.to_string())?;
+    state
+        .speech
+        .cached_clip(&settings.comfy_root, &request, &voice)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn cancel_local_speech(job_id: String, state: State<'_, AppState>) -> Result<(), String> {
     if let Some(cancel) = state
         .speech_jobs
@@ -3880,6 +3899,7 @@ pub fn run() {
             set_default_voice_profile,
             delete_voice_profile,
             prepare_local_speech,
+            get_cached_local_speech_clip,
             synthesize_local_speech,
             transcribe_local_speech,
             align_local_speech,
