@@ -535,7 +535,10 @@ export function MusicStudio({
             <div><small>{activeTake ? "Now playing" : "Generated master"}</small><strong>{activeTake ? `Take ${project.takes.findIndex((take) => take.id === activeTake.id) + 1}` : "No take yet"}</strong><span>{activeTake?.resolvedModel || "MiniMax Music 3 · local ComfyUI"}</span></div>
           </div>
           <div className="music-waveform" aria-hidden="true">{Array.from({ length: 92 }, (_, index) => <i key={index} style={{ height: `${18 + ((index * 29) % 67)}%` }} />)}<span style={{ width: activeTake ? `${Math.min(100, currentTime / Math.max(.01, activeTake.durationSeconds) * 100)}%` : "0%" }} /></div>
-          <audio ref={audioRef} src={activeTake ? musicMediaUrl(activeTake.path) : undefined} preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} />
+          {/* The visualizer's MediaElementAudioSourceNode requires a CORS-enabled fetch.
+              Keep crossOrigin before src so WebView does not taint the local media stream and
+              replace both audible output and analyser samples with silence. */}
+          <audio ref={audioRef} crossOrigin="anonymous" src={activeTake ? musicMediaUrl(activeTake.path) : undefined} preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} />
         </section>
 
         {(project.status === "generating" || progress) && <section className={`music-render-strip ${progress?.kind ?? ""}`}>

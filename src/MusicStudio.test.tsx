@@ -3,7 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import { midiSecondsToTick, midiTickToSeconds, MusicMidiEditor, quantizeTick } from "./MusicMidiEditor";
 import { applyTaggedLyrics, managedMuscriptorPaths, MusicStudio } from "./MusicStudio";
 import { musicLyricSegmentAt, MusicLyricsProducer, wordProgress } from "./MusicLyricsProducer";
+import * as api from "./api";
 import type { MusicLyricsDocument, MusicMidiDocument, MusicProject, MusicSection, MusicTake } from "./types";
+
+vi.mock("./api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./api")>();
+  return {
+    ...actual,
+    getMusicProject: vi.fn(),
+    listMusicProjects: vi.fn(async () => []),
+    musicMediaUrl: vi.fn((path: string) => `http://kestrel-media.localhost/music/${encodeURIComponent(path)}`),
+  };
+});
 
 const sections: MusicSection[] = [
   { id: "11111111-1111-4111-8111-111111111111", tag: "Verse", name: "Verse 1", bars: 8, lyrics: "old one", direction: "piano" },
@@ -125,6 +136,68 @@ describe("MusicStudio", () => {
     expect(onSeek).toHaveBeenCalledWith(3);
     expect(onTogglePlay).toHaveBeenCalledTimes(1);
     canvas.mockRestore();
+  });
+
+  it("loads local music with the CORS mode required for audible Web Audio analysis", async () => {
+    const take = {
+      id: "take-1",
+      createdAt: "2026-08-28T00:00:00Z",
+      status: "complete",
+      detail: "Ready",
+      error: "",
+      path: "C:\\Kestrel Research\\music\\project-1\\take.wav",
+      bytes: 1,
+      sha256: "a".repeat(64),
+      durationSeconds: 10,
+      seed: 42,
+      resolvedModel: "Music 3",
+      caption: "Ambient pop, 96 BPM",
+      lyrics: "stay here",
+      promptId: "prompt-1",
+      exactGraph: {},
+      midiPath: "",
+      midiReceiptPath: "",
+      midiSourcePath: "",
+      midiDocumentPath: "",
+      midiRevision: 0,
+      lyricsDocumentPath: "",
+      lyricsReceiptPath: "",
+      lyricsRevision: 0,
+    } satisfies MusicTake;
+    const project = {
+      schemaVersion: 1,
+      id: "project-1",
+      title: "Night signal",
+      idea: "",
+      caption: take.caption,
+      instrumental: false,
+      sections,
+      settings: { maxDurationSeconds: 120, steps: 20, cfgScale: 4, topK: 50, seed: 42, tiledDecode: false, modelVariant: "auto", comfyRoot: "" },
+      midi: { executablePath: "", modelPath: "", instruments: "" },
+      takes: [take],
+      activeTakeId: take.id,
+      status: "ready",
+      phase: "complete",
+      detail: "Ready",
+      error: "",
+      createdAt: take.createdAt,
+      updatedAt: take.createdAt,
+    } satisfies MusicProject;
+    vi.mocked(api.listMusicProjects).mockResolvedValueOnce([{
+      id: project.id,
+      title: project.title,
+      status: project.status,
+      updatedAt: project.updatedAt,
+      takeCount: 1,
+      activeTakePath: take.path,
+    }]);
+    vi.mocked(api.getMusicProject).mockResolvedValueOnce(project);
+
+    const view = render(<MusicStudio advancedEnabled={false} models={[]} onError={vi.fn()} />);
+    await waitFor(() => expect(view.container.querySelector("audio")).toBeInTheDocument());
+    const player = view.container.querySelector("audio");
+    expect(player).toHaveAttribute("crossorigin", "anonymous");
+    expect(player?.crossOrigin).toBe("anonymous");
   });
 
   it("keeps source identity while producer edits become an explicit revision save", async () => {
