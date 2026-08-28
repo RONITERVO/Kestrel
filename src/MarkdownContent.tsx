@@ -1,10 +1,11 @@
 import { useState, useMemo, type ReactNode } from "react";
 import { Check, Copy, Code2, BarChart2 } from "lucide-react";
 import {
-  SpokenText,
   useResolvedSpeechHighlight,
   renderHighlightedTokens,
+  useSpeechSeekTargets,
   type CandidateBlock,
+  type SpeechSeekTargetMap,
   type SpeechProgressState,
   type WordOffsetTracker,
 } from "./spokenHighlight";
@@ -294,6 +295,8 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
 export interface BlockHighlightContext {
   activeWordIndex: number;
   tracker: WordOffsetTracker;
+  onWordClick?: (wordIndex: number) => void;
+  canSeekWord?: (wordIndex: number) => boolean;
 }
 
 export function collectCandidateBlocks(blocks: MarkdownBlock[]): CandidateBlock[] {
@@ -337,11 +340,27 @@ export function collectCandidateBlocks(blocks: MarkdownBlock[]): CandidateBlock[
 export function getBlockSpeechHighlight(
   elementId: string,
   activeHighlight: { activeId: string; activeWordIndex: number } | null,
+  progress?: SpeechProgressState | null,
+  seekTargets?: SpeechSeekTargetMap,
 ): BlockHighlightContext | null {
-  if (!activeHighlight || elementId !== activeHighlight.activeId) return null;
+  const isActiveBlock = activeHighlight?.activeId === elementId;
+  const wordTargets = seekTargets?.get(elementId);
+  if (!isActiveBlock && !wordTargets?.size) return null;
   return {
-    activeWordIndex: activeHighlight.activeWordIndex,
+    activeWordIndex: progress?.active && isActiveBlock ? activeHighlight.activeWordIndex : -1,
     tracker: { current: 0 },
+    onWordClick: wordTargets?.size && progress && (progress.onSeekPassage || progress.onSeek)
+      ? (wordIndex: number) => {
+          const target = wordTargets.get(wordIndex);
+          if (!target) return;
+          if (progress.onSeekPassage) {
+            progress.onSeekPassage(target.passageId, target.seconds);
+          } else if (target.passageId === progress.passageId) {
+            progress.onSeek?.(target.seconds);
+          }
+        }
+      : undefined,
+    canSeekWord: wordTargets?.size ? (wordIndex: number) => wordTargets.has(wordIndex) : undefined,
   };
 }
 
@@ -388,7 +407,7 @@ export function renderInlineMarkdown(
       return (
         <code key={index} className="markdown-inline-code">
           {highlight
-            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker, highlight.onWordClick, highlight.canSeekWord)
             : inner}
         </code>
       );
@@ -401,7 +420,7 @@ export function renderInlineMarkdown(
         <strong key={index}>
           <em>
             {highlight
-              ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+              ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker, highlight.onWordClick, highlight.canSeekWord)
               : inner}
           </em>
         </strong>
@@ -417,7 +436,7 @@ export function renderInlineMarkdown(
       return (
         <strong key={index}>
           {highlight
-            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker, highlight.onWordClick, highlight.canSeekWord)
             : inner}
         </strong>
       );
@@ -432,7 +451,7 @@ export function renderInlineMarkdown(
       return (
         <em key={index}>
           {highlight
-            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker, highlight.onWordClick, highlight.canSeekWord)
             : inner}
         </em>
       );
@@ -444,7 +463,7 @@ export function renderInlineMarkdown(
       return (
         <del key={index}>
           {highlight
-            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker)
+            ? renderHighlightedTokens(inner, highlight.activeWordIndex, highlight.tracker, highlight.onWordClick, highlight.canSeekWord)
             : inner}
         </del>
       );
@@ -452,7 +471,7 @@ export function renderInlineMarkdown(
 
     return highlight ? (
       <span key={index}>
-        {renderHighlightedTokens(part, highlight.activeWordIndex, highlight.tracker)}
+        {renderHighlightedTokens(part, highlight.activeWordIndex, highlight.tracker, highlight.onWordClick, highlight.canSeekWord)}
       </span>
     ) : (
       <span key={index}>{part}</span>
@@ -466,12 +485,14 @@ function CodeBlockView({
   language,
   code,
   speechProgress,
+  seekTargets,
 }: {
   elementId: string;
   activeHighlight: { activeId: string; activeWordIndex: number } | null;
   language: string;
   code: string;
   speechProgress?: SpeechProgressState | null;
+  seekTargets: SpeechSeekTargetMap;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -481,7 +502,7 @@ function CodeBlockView({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const isCodeActive = activeHighlight?.activeId === elementId && Boolean(speechProgress?.active);
+  const highlight = getBlockSpeechHighlight(elementId, activeHighlight, speechProgress, seekTargets);
 
   return (
     <div className="markdown-code-card">
@@ -512,8 +533,8 @@ function CodeBlockView({
       </div>
       <pre className="markdown-code-pre">
         <code>
-          {isCodeActive ? (
-            <SpokenText text={code} progress={speechProgress} />
+          {highlight ? (
+            renderHighlightedTokens(code, highlight.activeWordIndex, highlight.tracker, highlight.onWordClick, highlight.canSeekWord)
           ) : (
             code
           )}
@@ -528,11 +549,13 @@ function ChartCardView({
   activeHighlight,
   text,
   speechProgress,
+  seekTargets,
 }: {
   elementId: string;
   activeHighlight: { activeId: string; activeWordIndex: number } | null;
   text: string;
   speechProgress?: SpeechProgressState | null;
+  seekTargets: SpeechSeekTargetMap;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -542,7 +565,7 @@ function ChartCardView({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const isChartActive = activeHighlight?.activeId === elementId && Boolean(speechProgress?.active);
+  const highlight = getBlockSpeechHighlight(elementId, activeHighlight, speechProgress, seekTargets);
 
   return (
     <div className="markdown-chart-card">
@@ -573,8 +596,8 @@ function ChartCardView({
       </div>
       <pre className="markdown-chart-body">
         <code>
-          {isChartActive ? (
-            <SpokenText text={text} progress={speechProgress} />
+          {highlight ? (
+            renderHighlightedTokens(text, highlight.activeWordIndex, highlight.tracker, highlight.onWordClick, highlight.canSeekWord)
           ) : (
             text
           )}
@@ -590,13 +613,16 @@ function TableView({
   headers,
   alignments,
   rows,
+  speechProgress,
+  seekTargets,
 }: TableBlock & {
   blockIndex: number;
   activeHighlight: { activeId: string; activeWordIndex: number } | null;
   speechProgress?: SpeechProgressState | null;
+  seekTargets: SpeechSeekTargetMap;
 }) {
   const headerId = `table-${blockIndex}-hdr`;
-  const headerHighlight = getBlockSpeechHighlight(headerId, activeHighlight);
+  const headerHighlight = getBlockSpeechHighlight(headerId, activeHighlight, speechProgress, seekTargets);
 
   return (
     <div className="markdown-table-wrapper">
@@ -616,7 +642,7 @@ function TableView({
         <tbody>
           {rows.map((row, rowIndex) => {
             const rowId = `table-${blockIndex}-row-${rowIndex}`;
-            const rowHighlight = getBlockSpeechHighlight(rowId, activeHighlight);
+            const rowHighlight = getBlockSpeechHighlight(rowId, activeHighlight, speechProgress, seekTargets);
             return (
               <tr key={rowIndex}>
                 {row.map((cell, colIndex) => (
@@ -645,6 +671,7 @@ export function MarkdownContent({
   const blocks = useMemo(() => parseMarkdownBlocks(value), [value]);
   const candidates = useMemo(() => collectCandidateBlocks(blocks), [blocks]);
   const activeHighlight = useResolvedSpeechHighlight(candidates, speechProgress);
+  const seekTargets = useSpeechSeekTargets(candidates, speechProgress);
 
   if (!value && streaming) {
     return (
@@ -670,6 +697,7 @@ export function MarkdownContent({
                 activeHighlight={activeHighlight}
                 {...block}
                 speechProgress={speechProgress}
+                seekTargets={seekTargets}
               />
             );
           case "code":
@@ -681,6 +709,7 @@ export function MarkdownContent({
                 language={block.language}
                 code={block.code}
                 speechProgress={speechProgress}
+                seekTargets={seekTargets}
               />
             );
           case "chart":
@@ -691,10 +720,11 @@ export function MarkdownContent({
                 activeHighlight={activeHighlight}
                 text={block.text}
                 speechProgress={speechProgress}
+                seekTargets={seekTargets}
               />
             );
           case "heading": {
-            const highlight = getBlockSpeechHighlight(`heading-${index}`, activeHighlight);
+            const highlight = getBlockSpeechHighlight(`heading-${index}`, activeHighlight, speechProgress, seekTargets);
             const children = renderInlineMarkdown(block.text, highlight);
             switch (block.level) {
               case 1: return <h1 key={index} className="markdown-h1">{children}</h1>;
@@ -711,7 +741,7 @@ export function MarkdownContent({
             return (
               <ListTag key={index} start={block.start} className="markdown-list">
                 {block.items.map((item, itemIdx) => {
-                  const highlight = getBlockSpeechHighlight(`list-${index}-${itemIdx}`, activeHighlight);
+                  const highlight = getBlockSpeechHighlight(`list-${index}-${itemIdx}`, activeHighlight, speechProgress, seekTargets);
                   return (
                     <li key={itemIdx}>
                       {renderInlineMarkdown(item, highlight)}
@@ -725,7 +755,7 @@ export function MarkdownContent({
             return (
               <blockquote key={index} className="markdown-blockquote">
                 {block.text.split("\n").map((line, lineIdx) => {
-                  const highlight = getBlockSpeechHighlight(`quote-${index}-${lineIdx}`, activeHighlight);
+                  const highlight = getBlockSpeechHighlight(`quote-${index}-${lineIdx}`, activeHighlight, speechProgress, seekTargets);
                   return (
                     <p key={lineIdx}>
                       {renderInlineMarkdown(line, highlight)}
@@ -738,7 +768,7 @@ export function MarkdownContent({
             return <hr key={index} className="markdown-hr" />;
           case "paragraph":
           default: {
-            const highlight = getBlockSpeechHighlight(`para-${index}`, activeHighlight);
+            const highlight = getBlockSpeechHighlight(`para-${index}`, activeHighlight, speechProgress, seekTargets);
             return (
               <p key={index} className="markdown-paragraph">
                 {renderInlineMarkdown(block.text, highlight)}

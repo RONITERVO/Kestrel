@@ -719,6 +719,23 @@ kbd { padding: 2px 5px; border: 1px solid #d8d3c9; border-radius: 4px; backgroun
   transition: color 0.15s ease;
 }
 
+.speech-word-seekable {
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.speech-word-idle {
+  color: inherit;
+}
+
+.speech-word-seekable:hover,
+.speech-word-seekable:focus-visible {
+  color: #08110a;
+  background: #d8f3a9;
+  outline: 1px solid #b7e866;
+  outline-offset: 1px;
+}
+
 pre .speech-word-active, code .speech-word-active {
   font-family: inherit !important;
   font-size: inherit !important;

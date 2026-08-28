@@ -1,11 +1,12 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { advanceLiveTranscriptionCheckpoint, completeRecordingBlob, LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS, LocalSpeechProvider, mergeProvisionalTranscript, SpeechDictationButton, SpeechLiveCaption, SpeechPlaybackButton, splitSpeechText, VadSettingsModal } from "./LocalSpeechControls";
+import { advanceLiveTranscriptionCheckpoint, completeRecordingBlob, LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS, LocalSpeechProvider, mergeProvisionalTranscript, SpeechDictationButton, SpeechLiveCaption, SpeechPlaybackButton, splitSpeechText, VadSettingsModal, type SpeechProgressState } from "./LocalSpeechControls";
 import { DEFAULT_VAD_SETTINGS } from "./voiceActivityDetection";
 
 const speechApi = vi.hoisted(() => ({
   snapshot: vi.fn(),
   prepare: vi.fn(),
+  cached: vi.fn(),
   synthesize: vi.fn(),
   align: vi.fn(),
   transcribe: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
   getLocalSpeechSnapshot: speechApi.snapshot,
   prepareLocalSpeech: speechApi.prepare,
+  getCachedLocalSpeechClip: speechApi.cached,
   synthesizeLocalSpeech: speechApi.synthesize,
   alignLocalSpeech: speechApi.align,
   transcribeLocalSpeech: speechApi.transcribe,
@@ -60,6 +62,7 @@ class FakeRecorder {
 beforeEach(() => {
   speechApi.snapshot.mockReset().mockResolvedValue(ready);
   speechApi.prepare.mockReset().mockResolvedValue(ready);
+  speechApi.cached.mockReset().mockResolvedValue(null);
   speechApi.synthesize.mockReset().mockImplementation(async (request: { passageId: string; jobId: string; modelId: string }) => ({
     jobId: request.jobId,
     passageId: request.passageId,
@@ -289,9 +292,10 @@ Here is the performance overview:
     const sentence1 = "First important sentence that explains the initial context in full detail.".repeat(4);
     const sentence2 = "Second crucial paragraph that continues the explanation thoroughly.".repeat(4);
     const longText = `${sentence1}\n\n${sentence2}`;
+    const onSpeechProgress = vi.fn();
     const { container } = render(
       <LocalSpeechProvider>
-        <SpeechPlaybackButton sourceKind="chat" sourceId="chat-1" passageId="answer" text={longText} />
+        <SpeechPlaybackButton sourceKind="chat" sourceId="chat-1" passageId="answer" text={longText} onSpeechProgress={onSpeechProgress} />
       </LocalSpeechProvider>,
     );
 
@@ -305,10 +309,27 @@ Here is the performance overview:
 
     // Proactive background pre-buffering kicks off for passage 2
     await waitFor(() => expect(speechApi.synthesize.mock.calls.some(([req]) => req.passageId === "answer-2")).toBe(true));
+    await waitFor(() => expect(onSpeechProgress).toHaveBeenCalledWith(expect.objectContaining({
+      seekablePassages: expect.arrayContaining([
+        expect.objectContaining({ passageId: "answer-1" }),
+        expect.objectContaining({ passageId: "answer-2" }),
+      ]),
+      onSeekPassage: expect.any(Function),
+    })));
 
     // When audio completes passage 1, it seamlessly transitions to passage 2
     fireEvent.ended(container.querySelector("audio")!);
     await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2));
+
+    // Any earlier generated passage remains directly seekable while passage 2 is active.
+    const cachedProgress = [...onSpeechProgress.mock.calls]
+      .reverse()
+      .map(([value]) => value as SpeechProgressState | null)
+      .find((value) => (value?.seekablePassages?.length ?? 0) >= 2);
+    await act(async () => cachedProgress?.onSeekPassage?.("answer-1", 0.25));
+    await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(3));
+    expect(container.querySelector("audio")?.currentTime).toBe(0.25);
+    expect(speechApi.synthesize.mock.calls.filter(([request]) => request.passageId === "answer-1")).toHaveLength(1);
 
     // Stop resets and releases memory
     fireEvent.click(screen.getByRole("button", { name: "Stop speaking" }));
@@ -433,6 +454,102 @@ Here is the performance overview:
         }),
       );
     });
+  });
+
+  it("restores durable cached passage timings when a response remounts", async () => {
+    const first = "First durable passage has enough detail to remain independently cached.".repeat(5);
+    const second = "Second durable passage also has enough detail for a separate speech clip.".repeat(5);
+    const text = `${first}\n\n${second}`;
+    speechApi.cached.mockImplementation(async (request: { passageId: string; jobId: string; modelId: string }) => ({
+      jobId: request.jobId,
+      passageId: request.passageId,
+      relativePath: `generated/chat/chat-1/${request.passageId}.opus`,
+      modelId: request.modelId,
+      voiceProfileId: "voice-default",
+      cacheHit: true,
+      segments: [],
+      words: [
+        { value: request.passageId === "answer-1" ? "First" : "Second", start: 0, end: 0.4 },
+        { value: "durable", start: 0.4, end: 0.8 },
+      ],
+    }));
+    const onSpeechProgress = vi.fn();
+
+    render(
+      <LocalSpeechProvider>
+        <SpeechPlaybackButton
+          sourceKind="chat"
+          sourceId="chat-1"
+          passageId="answer"
+          text={text}
+          onSpeechProgress={onSpeechProgress}
+        />
+      </LocalSpeechProvider>,
+    );
+
+    await waitFor(() => expect(onSpeechProgress).toHaveBeenCalledWith(expect.objectContaining({
+      active: false,
+      seekablePassages: expect.arrayContaining([
+        expect.objectContaining({ passageId: "answer-1" }),
+        expect.objectContaining({ passageId: "answer-2" }),
+      ]),
+      onSeekPassage: expect.any(Function),
+    })));
+    expect(speechApi.synthesize).not.toHaveBeenCalled();
+    expect(speechApi.cached).toHaveBeenCalledWith(expect.objectContaining({
+      sourceId: "chat-1",
+      voiceProfileId: "voice-default",
+    }));
+    const restoredProgress = [...onSpeechProgress.mock.calls]
+      .reverse()
+      .map(([value]) => value as SpeechProgressState | null)
+      .find((value) => (value?.seekablePassages?.length ?? 0) >= 2);
+    await act(async () => restoredProgress?.onSeekPassage?.("answer-1", 0.4));
+    await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
+    expect(document.querySelector("audio")?.currentTime).toBe(0.4);
+    expect(speechApi.synthesize).not.toHaveBeenCalled();
+  });
+
+  it("starts a saved recording at a clicked word without requiring Listen first", async () => {
+    const onSpeechProgress = vi.fn();
+    render(
+      <LocalSpeechProvider>
+        <SpeechPlaybackButton
+          sourceKind="chat"
+          sourceId="chat-1"
+          passageId="msg-user-1"
+          text="This is my spoken question."
+          recording={{
+            audioRelativePath: "recordings/chat/chat-1/voice.webm",
+            words: [
+              { value: "This", start: 0, end: 0.3 },
+              { value: "is", start: 0.3, end: 0.5 },
+              { value: "my", start: 0.5, end: 0.8 },
+              { value: "spoken", start: 0.8, end: 1.2 },
+              { value: "question", start: 1.2, end: 1.6 },
+            ],
+          }}
+          label="Listen"
+          onSpeechProgress={onSpeechProgress}
+        />
+      </LocalSpeechProvider>,
+    );
+
+    await waitFor(() => expect(onSpeechProgress).toHaveBeenCalledWith(expect.objectContaining({
+      active: false,
+      timings: expect.arrayContaining([expect.objectContaining({ value: "spoken", start: 0.8 })]),
+      onSeek: expect.any(Function),
+    })));
+    const progress = [...onSpeechProgress.mock.calls]
+      .reverse()
+      .map(([value]) => value as SpeechProgressState | null)
+      .find((value) => value?.timings.length);
+
+    await act(async () => progress?.onSeek?.(0.8));
+
+    await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
+    expect(document.querySelector("audio")?.currentTime).toBe(0.8);
+    expect(speechApi.synthesize).not.toHaveBeenCalled();
   });
 
   it("emits onRecordingComplete with audio path and whisper timings when dictation finishes", async () => {

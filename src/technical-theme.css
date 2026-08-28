@@ -314,6 +314,7 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .markdown-chart-body .speech-word-active { background: #5f803c !important; color: #ffffff !important; }
 .speech-word-spoken { color: #111; }
 .speech-word-pending { color: #5a645d; }
+.speech-word-seekable:hover, .speech-word-seekable:focus-visible { color: #fff; background: #5f803c; outline-color: #111; }
 .generation-metrics span, .context-notice { color: #3f474b; border: 1px solid #111; background: #fff; }
 .runtime-feed { color: #111; border: var(--tech-rule); background: var(--tech-yellow-soft); box-shadow: 2px 2px 0 #111; }
 .runtime-feed svg, .runtime-feed strong { color: #111; }

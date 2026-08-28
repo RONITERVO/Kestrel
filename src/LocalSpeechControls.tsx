@@ -35,7 +35,7 @@ import {
 import type { LocalSpeechSnapshot, SpeechTiming } from "./types";
 import type { VoiceLibrarySnapshot, VoiceProfile } from "./types";
 import { VoiceLibraryDialog } from "./VoiceLibrary";
-import { type SpeechProgressState } from "./spokenHighlight";
+import { type SpeechProgressState, type SpeechSeekPassage } from "./spokenHighlight";
 import {
   claimPlayback,
   clearPlayback,
@@ -277,20 +277,41 @@ export function SpeechPlaybackButton({
 
   const state = player.status;
   const currentPassage = player.currentPassage;
+  const recordingSeekablePassages = useMemo<SpeechSeekPassage[]>(() => (
+    recording?.words.length
+      ? [{ passageId, text, timings: recording.words }]
+      : []
+  ), [passageId, recording, text]);
+  const seekablePassages = recording ? recordingSeekablePassages : player.seekablePassages;
+  const seekPassage = useCallback((targetPassageId: string, seconds: number) => {
+    if (recording) {
+      const firstPassageId = passages[0]?.id;
+      if (firstPassageId) player.playPassageFrom(firstPassageId, seconds);
+      return;
+    }
+    player.playPassageFrom(targetPassageId, seconds);
+  }, [passages, player.playPassageFrom, recording]);
+  const seekCurrentPassage = useCallback((seconds: number) => {
+    seekPassage(currentPassage?.id ?? passageId, seconds);
+  }, [currentPassage?.id, passageId, seekPassage]);
 
   useEffect(() => {
     const active = state === "playing" || state === "paused";
     onActiveChange?.(active);
-    if (active) {
+    const canSeekCachedAudio = seekablePassages.length > 0 && state !== "error";
+    if (active || canSeekCachedAudio) {
       onSpeechProgress?.({
-        active: true,
+        active,
         sourceKind,
         sourceId,
         passageId: currentPassage?.id ?? passageId,
         text: currentPassage?.text ?? text,
         seconds: player.speechSeconds,
-        duration: player.speechDuration,
+        duration: player.speechDuration || recording?.words[recording.words.length - 1]?.end || 0,
         timings: player.speechTimings,
+        onSeek: seekCurrentPassage,
+        seekablePassages,
+        onSeekPassage: seekPassage,
       });
     } else {
       onSpeechProgress?.(null);
@@ -304,6 +325,10 @@ export function SpeechPlaybackButton({
     player.speechDuration,
     player.speechSeconds,
     player.speechTimings,
+    recording,
+    seekCurrentPassage,
+    seekPassage,
+    seekablePassages,
     sourceId,
     sourceKind,
     state,

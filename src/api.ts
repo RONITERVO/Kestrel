@@ -365,6 +365,11 @@ export async function synthesizeLocalSpeech(request: SpeechSynthesisRequest): Pr
   return invoke<SpeechClip>("synthesize_local_speech", { request });
 }
 
+export async function getCachedLocalSpeechClip(request: SpeechSynthesisRequest): Promise<SpeechClip | null> {
+  if (!isTauri()) return null;
+  return invoke<SpeechClip | null>("get_cached_local_speech_clip", { request });
+}
+
 export async function alignLocalSpeech(request: SpeechAlignmentRequest): Promise<SpeechClip> {
   if (!isTauri()) throw new Error("ComfyUI local speech alignment requires the desktop application.");
   return invoke<SpeechClip>("align_local_speech", { request });

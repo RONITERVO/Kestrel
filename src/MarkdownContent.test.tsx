@@ -195,6 +195,108 @@ Architecture Diagram:
     expect(mark).toHaveTextContent("fast");
   });
 
+  it("starts from the exact timestamp when a timed word is clicked", () => {
+    const onSeek = vi.fn();
+    const text = "Kestrel provides fast local inference.";
+    render(
+      <MarkdownContent
+        value={text}
+        speechProgress={{
+          active: true,
+          passageId: "p1",
+          text,
+          seconds: 0.1,
+          duration: 2.0,
+          timings: [
+            { value: "Kestrel", start: 0, end: 0.4 },
+            { value: "provides", start: 0.4, end: 0.8 },
+            { value: "fast", start: 0.8, end: 1.2 },
+            { value: "local", start: 1.2, end: 1.6 },
+            { value: "inference", start: 1.6, end: 2.0 },
+          ],
+          onSeek,
+        }}
+      />,
+    );
+
+    screen.getByRole("button", { name: "Play from local" }).click();
+    expect(onSeek).toHaveBeenCalledOnce();
+    expect(onSeek).toHaveBeenCalledWith(1.2);
+  });
+
+  it("keeps cached timed words clickable while playback is idle", () => {
+    const onSeek = vi.fn();
+    const text = "Click any saved word.";
+    render(
+      <MarkdownContent
+        value={text}
+        speechProgress={{
+          active: false,
+          passageId: "recording-1",
+          text,
+          seconds: 0,
+          duration: 1.4,
+          timings: [
+            { value: "Click", start: 0, end: 0.3 },
+            { value: "any", start: 0.3, end: 0.6 },
+            { value: "saved", start: 0.6, end: 1.0 },
+            { value: "word", start: 1.0, end: 1.4 },
+          ],
+          onSeek,
+        }}
+      />,
+    );
+
+    screen.getByRole("button", { name: "Play from saved" }).click();
+    expect(onSeek).toHaveBeenCalledWith(0.6);
+    expect(screen.queryByText("Click", { selector: "mark" })).not.toBeInTheDocument();
+  });
+
+  it("can restart from words in earlier cached passages while another passage is active", () => {
+    const onSeekPassage = vi.fn();
+    const first = "Photon energy is lower for red light.";
+    const second = "Hot objects begin by glowing red.";
+    const third = "Cultural association links red with heat.";
+    const timingPassage = (passageId: string, text: string, offset: number) => ({
+      passageId,
+      text,
+      timings: text.match(/[\p{L}\p{N}]+/gu)!.map((value, index) => ({
+        value,
+        start: offset + index * 0.25,
+        end: offset + (index + 1) * 0.25,
+      })),
+    });
+    const passages = [
+      timingPassage("answer-1", first, 0),
+      timingPassage("answer-2", second, 0),
+      timingPassage("answer-3", third, 0),
+    ];
+
+    render(
+      <MarkdownContent
+        value={`${first}\n\n${second}\n\n${third}`}
+        speechProgress={{
+          active: true,
+          passageId: "answer-3",
+          text: third,
+          seconds: 0.1,
+          duration: 1.75,
+          timings: passages[2].timings,
+          onSeek: vi.fn(),
+          seekablePassages: passages,
+          onSeekPassage,
+        }}
+      />,
+    );
+
+    screen.getByRole("button", { name: "Play from lower" }).click();
+    expect(onSeekPassage).toHaveBeenLastCalledWith("answer-1", 0.75);
+    screen.getByRole("button", { name: "Play from glowing" }).click();
+    expect(onSeekPassage).toHaveBeenLastCalledWith("answer-2", 1);
+    screen.getByRole("button", { name: "Play from association" }).click();
+    expect(onSeekPassage).toHaveBeenLastCalledWith("answer-3", 0.25);
+  });
+
   it("renders live word-level highlight inside ASCII diagram / text charts", () => {
     const chartMarkdown = "+-------------------+\n| Chatterbox TTS    |\n+-------------------+\n";
     const { container } = render(
