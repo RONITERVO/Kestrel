@@ -1,5 +1,5 @@
 import { Pause, Play, SkipBack, SkipForward, Square, Volume2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { SpeechLiveCaption, useSpeech } from "./LocalSpeechControls";
 import { buildResearchSpeechPassages, type ResearchSpeechScope } from "./researchSpeechContent";
 import { type SpeechProgressState } from "./spokenHighlight";
@@ -72,11 +72,15 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
   });
 
   const activePassage = player.currentPassage;
+  const seekCurrentPassage = useCallback((seconds: number) => {
+    if (activePassage) player.playPassageFrom(activePassage.id, seconds);
+  }, [activePassage, player.playPassageFrom]);
 
   useEffect(() => {
-    if (["playing", "paused"].includes(player.status) && activePassage) {
+    const active = ["playing", "paused"].includes(player.status);
+    if ((active || player.seekablePassages.length > 0) && activePassage) {
       onSpeechProgress?.({
-        active: true,
+        active,
         sourceKind: "research",
         sourceId: report.id,
         passageId: activePassage.id,
@@ -84,6 +88,9 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
         seconds: player.speechSeconds,
         duration: player.speechDuration,
         timings: player.speechTimings,
+        onSeek: seekCurrentPassage,
+        seekablePassages: player.seekablePassages,
+        onSeekPassage: player.playPassageFrom,
       });
     } else {
       onSpeechProgress?.(null);
@@ -94,8 +101,11 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
     player.speechDuration,
     player.speechSeconds,
     player.speechTimings,
+    player.playPassageFrom,
+    player.seekablePassages,
     player.status,
     report.id,
+    seekCurrentPassage,
   ]);
 
   useEffect(() => {

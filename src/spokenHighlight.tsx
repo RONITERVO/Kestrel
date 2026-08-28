@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { SpeechTiming } from "./types";
 
 export interface SpeechProgressState {
@@ -10,7 +10,25 @@ export interface SpeechProgressState {
   seconds: number;
   duration: number;
   timings: SpeechTiming[];
+  /** Seeks the loaded private audio to an exact word timestamp and starts playback. */
+  onSeek?: (seconds: number) => void;
+  /** Every passage whose private audio and exact word timings are already available. */
+  seekablePassages?: SpeechSeekPassage[];
+  onSeekPassage?: (passageId: string, seconds: number) => void;
 }
+
+export interface SpeechSeekPassage {
+  passageId: string;
+  text: string;
+  timings: SpeechTiming[];
+}
+
+export interface SpeechWordSeekTarget {
+  passageId: string;
+  seconds: number;
+}
+
+export type SpeechSeekTargetMap = Map<string, Map<number, SpeechWordSeekTarget>>;
 
 export function normalizeSpeechMatchingText(str: string): string {
   return str.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
@@ -134,6 +152,65 @@ export function mapSpeechTimingsToTextWords(text: string, timings: SpeechTiming[
   return speechTimingAlignment(text, timings).indices;
 }
 
+/**
+ * Resolves a producer-visible word back to its exact aligned audio timestamp. The rendered text
+ * may be one Markdown block inside the larger spoken passage, so nearby words and the current
+ * playback position disambiguate repeated words without inventing an estimated timestamp.
+ */
+export function speechWordStart(
+  passageText: string,
+  renderedText: string,
+  renderedWordIndex: number,
+  timings: SpeechTiming[],
+  referenceSeconds = 0,
+): number | null {
+  if (!timings.length || !Number.isInteger(renderedWordIndex) || renderedWordIndex < 0) return null;
+  const passageWords = extractSpeechWords(passageText);
+  const renderedWords = extractSpeechWords(renderedText);
+  const clickedWord = renderedWords[renderedWordIndex];
+  if (!clickedWord || !passageWords.length) return null;
+
+  const alignment = speechTimingAlignment(passageText, timings);
+  const referenceTimingIndex = getActiveWordIndex(passageText, referenceSeconds, 0, timings);
+  const referenceSourceIndex = alignment.indices[referenceTimingIndex] ?? 0;
+  let bestSourceIndex = -1;
+  let bestContextScore = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let sourceIndex = 0; sourceIndex < passageWords.length; sourceIndex++) {
+    if (passageWords[sourceIndex] !== clickedWord) continue;
+    let contextScore = 0;
+    for (let delta = -4; delta <= 4; delta++) {
+      const renderedIndex = renderedWordIndex + delta;
+      const passageIndex = sourceIndex + delta;
+      if (
+        renderedIndex >= 0
+        && renderedIndex < renderedWords.length
+        && passageIndex >= 0
+        && passageIndex < passageWords.length
+        && renderedWords[renderedIndex] === passageWords[passageIndex]
+      ) {
+        contextScore += 5 - Math.abs(delta);
+      }
+    }
+    const distance = Math.abs(sourceIndex - referenceSourceIndex);
+    if (contextScore > bestContextScore || (contextScore === bestContextScore && distance < bestDistance)) {
+      bestSourceIndex = sourceIndex;
+      bestContextScore = contextScore;
+      bestDistance = distance;
+    }
+  }
+
+  if (bestSourceIndex < 0) return null;
+  let exactStart = Number.POSITIVE_INFINITY;
+  for (let timingIndex = 0; timingIndex < timings.length; timingIndex++) {
+    if (alignment.indices[timingIndex] !== bestSourceIndex) continue;
+    const start = timings[timingIndex].start;
+    if (Number.isFinite(start)) exactStart = Math.min(exactStart, start);
+  }
+  return Number.isFinite(exactStart) ? exactStart : null;
+}
+
 /** Returns the producer-visible end of a clip, excluding a model-generated tail after the final
  * exact source word. The preserved Opus master remains unchanged and seekable. */
 export function speechPlaybackEnd(text: string, timings: SpeechTiming[], duration: number): number {
@@ -206,11 +283,6 @@ export function isWordToken(token: string): boolean {
   return /[\p{L}\p{N}]/u.test(token);
 }
 
-export interface BlockHighlightContext {
-  activeWordIndex: number;
-  tracker: WordOffsetTracker;
-}
-
 export interface CandidateBlock {
   id: string;
   text: string;
@@ -232,7 +304,8 @@ export function resolveActiveBlockAndWord(
   progress?: SpeechProgressState | null,
   previous?: HighlightResolution | null,
 ): HighlightResolution | null {
-  if (!progress || !progress.active || !progress.text || candidates.length === 0) {
+  const canResolve = Boolean(progress?.active || (progress?.onSeek && progress.timings.length));
+  if (!progress || !canResolve || !progress.text || candidates.length === 0) {
     return null;
   }
 
@@ -335,6 +408,111 @@ export function resolveActiveBlockAndWord(
   return null;
 }
 
+/** Maps every exact cached timing onto its visible Markdown block and word. */
+export function buildSpeechSeekTargets(
+  candidates: CandidateBlock[],
+  passages: SpeechSeekPassage[],
+): SpeechSeekTargetMap {
+  const targets: SpeechSeekTargetMap = new Map();
+  const candidateWords = candidates.map((candidate) => ({
+    id: candidate.id,
+    words: extractSpeechWords(candidate.text),
+  }));
+
+  for (const passage of passages) {
+    if (!passage.text || !passage.timings.length) continue;
+    const passageWords = extractSpeechWords(passage.text);
+    const timingMap = mapSpeechTimingsToTextWords(passage.text, passage.timings);
+    const sourceTargets = new Map<number, { blockId: string; wordIndex: number }>();
+
+    for (let timingIndex = 0; timingIndex < passage.timings.length; timingIndex++) {
+      const timing = passage.timings[timingIndex];
+      if (!Number.isFinite(timing.start)) continue;
+      const sourceIndex = timingMap[timingIndex] ?? -1;
+      const sourceWord = passageWords[sourceIndex];
+      if (!sourceWord) continue;
+      let resolved = sourceTargets.get(sourceIndex);
+      if (!resolved) {
+        let bestScore = Number.NEGATIVE_INFINITY;
+        for (const candidate of candidateWords) {
+          for (let wordIndex = 0; wordIndex < candidate.words.length; wordIndex++) {
+            if (candidate.words[wordIndex] !== sourceWord) continue;
+            let score = 10;
+            let left = 1;
+            while (
+              sourceIndex - left >= 0
+              && wordIndex - left >= 0
+              && passageWords[sourceIndex - left] === candidate.words[wordIndex - left]
+            ) {
+              score += 10;
+              left += 1;
+            }
+            let right = 1;
+            while (
+              sourceIndex + right < passageWords.length
+              && wordIndex + right < candidate.words.length
+              && passageWords[sourceIndex + right] === candidate.words[wordIndex + right]
+            ) {
+              score += 10;
+              right += 1;
+            }
+            if (targets.get(candidate.id)?.has(wordIndex)) score -= 1;
+            if (score > bestScore) {
+              bestScore = score;
+              resolved = { blockId: candidate.id, wordIndex };
+            }
+          }
+        }
+        if (bestScore <= 10 && passageWords.length > 1) resolved = undefined;
+        if (!resolved) continue;
+        sourceTargets.set(sourceIndex, resolved);
+      }
+      let blockTargets = targets.get(resolved.blockId);
+      if (!blockTargets) {
+        blockTargets = new Map();
+        targets.set(resolved.blockId, blockTargets);
+      }
+      const existing = blockTargets.get(resolved.wordIndex);
+      if (!existing) {
+        blockTargets.set(resolved.wordIndex, {
+          passageId: passage.passageId,
+          seconds: timing.start,
+        });
+      }
+    }
+  }
+
+  return targets;
+}
+
+export function useSpeechSeekTargets(
+  candidates: CandidateBlock[],
+  progress?: SpeechProgressState | null,
+  passageIdPrefix?: string,
+): SpeechSeekTargetMap {
+  return useMemo(() => {
+    if (!progress) return new Map();
+    const cached = (progress.seekablePassages ?? []).filter((passage) => (
+      !passageIdPrefix
+      || passage.passageId === passageIdPrefix
+      || passage.passageId.startsWith(`${passageIdPrefix}-`)
+    ));
+    const passages = [...cached];
+    if (
+      progress.onSeek
+      && progress.timings.length
+      && !passages.some((passage) => passage.passageId === progress.passageId)
+    ) {
+      passages.push({
+        passageId: progress.passageId,
+        text: progress.text,
+        timings: progress.timings,
+      });
+    }
+    return buildSpeechSeekTargets(candidates, passages);
+  }, [candidates, passageIdPrefix, progress?.onSeek, progress?.passageId, progress?.seekablePassages, progress?.text, progress?.timings]);
+}
+
 export function useResolvedSpeechHighlight(
   candidates: CandidateBlock[],
   progress?: SpeechProgressState | null,
@@ -351,6 +529,7 @@ export function useResolvedSpeechHighlight(
       progress?.seconds,
       progress?.text,
       progress?.timings,
+      progress?.onSeek,
     ],
   );
   useEffect(() => {
@@ -397,6 +576,8 @@ export function renderHighlightedTokens(
   text: string,
   activeWordIndex: number,
   tracker?: WordOffsetTracker,
+  onWordClick?: (wordIndex: number) => void,
+  canSeekWord?: (wordIndex: number) => boolean,
 ): ReactNode[] {
   if (!text) return [];
   const tokens = text.split(/([^\p{L}\p{N}]+)/gu);
@@ -416,10 +597,31 @@ export function renderHighlightedTokens(
     const currentWordIndex = offset.current++;
     const isWordActive = currentWordIndex === activeWordIndex;
     const isPast = currentWordIndex < activeWordIndex;
+    const wordStateClass = activeWordIndex < 0
+      ? "speech-word-idle"
+      : isPast ? "speech-word-spoken" : "speech-word-pending";
+    const isSeekable = Boolean(onWordClick && (!canSeekWord || canSeekWord(currentWordIndex)));
+    const seekProps = isSeekable ? {
+      role: "button",
+      tabIndex: 0,
+      title: `Play from “${token}”`,
+      "aria-label": `Play from ${token}`,
+      onClick: (event: MouseEvent<HTMLElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onWordClick?.(currentWordIndex);
+      },
+      onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onWordClick?.(currentWordIndex);
+      },
+    } : {};
 
     if (isWordActive) {
       return (
-        <mark key={index} className="speech-word-active">
+        <mark key={index} className={`speech-word-active${isSeekable ? " speech-word-seekable" : ""}`} {...seekProps}>
           {token}
         </mark>
       );
@@ -428,7 +630,8 @@ export function renderHighlightedTokens(
     return (
       <span
         key={index}
-        className={isPast ? "speech-word-spoken" : "speech-word-pending"}
+        className={`${wordStateClass}${isSeekable ? " speech-word-seekable" : ""}`}
+        {...seekProps}
       >
         {token}
       </span>
@@ -449,18 +652,32 @@ export function SpokenText({
 }) {
   const candidates = useMemo(() => [{ id: "spoken-target", text }], [text]);
   const resolved = useResolvedSpeechHighlight(candidates, progress);
+  const seekTargets = useSpeechSeekTargets(candidates, progress, passageId);
   if (!text) return null;
 
   const isActive = isPassageActiveForText(text, passageId, progress);
-  if (!isActive || !progress) {
+  const wordTargets = seekTargets.get("spoken-target");
+  const isSeekable = Boolean(wordTargets?.size && (progress?.onSeekPassage || progress?.onSeek));
+  if ((!isActive && !isSeekable) || !progress) {
     return <span className={className}>{text}</span>;
   }
 
-  const activeIndex = resolved ? resolved.activeWordIndex : -1;
+  const activeIndex = isActive && resolved ? resolved.activeWordIndex : -1;
+  const onWordClick = isSeekable
+    ? (wordIndex: number) => {
+        const target = wordTargets?.get(wordIndex);
+        if (!target) return;
+        if (progress.onSeekPassage) {
+          progress.onSeekPassage(target.passageId, target.seconds);
+        } else if (target.passageId === progress.passageId) {
+          progress.onSeek?.(target.seconds);
+        }
+      }
+    : undefined;
 
   return (
     <span className={`speech-passage-speaking ${className}`}>
-      {renderHighlightedTokens(text, activeIndex)}
+      {renderHighlightedTokens(text, activeIndex, undefined, onWordClick, (wordIndex) => wordTargets?.has(wordIndex) ?? false)}
     </span>
   );
 }

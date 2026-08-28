@@ -5,6 +5,7 @@ import {
   isPassageActiveForText,
   mapSpeechTimingsToTextWords,
   speechPlaybackEnd,
+  speechWordStart,
   SpokenText,
   wordTimings,
   type SpeechProgressState,
@@ -68,6 +69,21 @@ describe("spokenHighlight word-level alignment engine", () => {
     expect(getActiveWordIndex("The quick brown fox", 0.5, 1.6, exactTimings)).toBe(1);
     expect(getActiveWordIndex("The quick brown fox", 1.0, 1.6, exactTimings)).toBe(2);
     expect(getActiveWordIndex("The quick brown fox", 1.4, 1.6, exactTimings)).toBe(3);
+  });
+
+  it("resolves a clicked visible word to its exact aligned audio start", () => {
+    const timings = [
+      { value: "Read", start: 0.1, end: 0.3 },
+      { value: "this", start: 0.3, end: 0.5 },
+      { value: "word", start: 0.5, end: 0.8 },
+      { value: "then", start: 0.8, end: 1.0 },
+      { value: "this", start: 1.0, end: 1.2 },
+      { value: "word", start: 1.2, end: 1.5 },
+    ];
+
+    expect(speechWordStart("Read this word, then this word.", "then this word", 2, timings, 0.9)).toBe(1.2);
+    expect(speechWordStart("Read this word, then this word.", "missing", 0, timings, 0.9)).toBeNull();
+    expect(speechWordStart("Read this word, then this word.", "this word", 0, [], 0.9)).toBeNull();
   });
 
   it("maintains current word highlight during natural speech pauses between words", () => {
