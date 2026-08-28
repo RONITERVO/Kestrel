@@ -3055,12 +3055,21 @@ pre .speech-word-active, code .speech-word-active {
 .voice-source-actions { display: flex; gap: 8px; }
 .voice-source-actions > button, .voice-source-actions .button-like { min-height: 36px; flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 2px solid var(--ink); border-radius: 8px; background: var(--canvas); font-size: 10px; font-weight: 800; cursor: pointer; }
 .voice-source-actions > button.recording { background: #ffe4df; color: #9d2819; }
+.voice-source-actions .button-like.disabled { cursor: not-allowed; opacity: .55; }
 .voice-source-actions .button-like input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.voice-source-help { margin: -5px 0 0; color: var(--muted); font-size: 9px; font-weight: 600; line-height: 1.4; }
 .voice-reference-review { display: grid; grid-template-columns: minmax(220px,.7fr) minmax(0,1fr); gap: 12px; align-items: center; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
+.voice-reference-info { display: flex; flex-direction: column; gap: 6px; }
 .voice-reference-review span { font-size: 9px; }
 .voice-reference-review .good { color: #087236; }
 .voice-reference-review .warn { color: #875400; }
 .voice-reference-review .bad { color: var(--red); }
+.voice-excerpt-action { display: flex; flex-wrap: wrap; gap: 6px 9px; align-items: center; }
+.voice-excerpt-action small { max-width: 340px; color: var(--muted); font-size: 8.5px; line-height: 1.35; }
+.voice-excerpt-notice { padding: 6px 8px; border: 1px solid #78b990; border-radius: 6px; background: #e8f8ee; color: #075b2a; font-size: 8.5px; line-height: 1.4; }
+.voice-excerpt-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; width: fit-content; padding: 4px 8px; border: 1.5px solid var(--ink); border-radius: 6px; background: var(--voice-yellow, #fff078); color: var(--ink); font-size: 9px; font-weight: 800; cursor: pointer; }
+.voice-excerpt-button:hover:not(:disabled) { filter: brightness(0.95); }
+.voice-excerpt-button svg { width: 12px; height: 12px; }
 .voice-fields { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px; }
 .voice-fields label { display: grid; gap: 4px; color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; }
 .voice-fields input, .voice-fields select { min-width: 0; height: 34px; }
