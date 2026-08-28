@@ -1,4 +1,4 @@
-import { Check, FolderOpen, Library, Mic, Pause, Play, Plus, Trash2, X } from "lucide-react";
+import { Check, FolderOpen, Library, Mic, Pause, Play, Plus, Scissors, Trash2, Wand2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   createVoiceProfile,
@@ -7,6 +7,11 @@ import {
   setDefaultVoiceProfile,
   updateVoiceProfile,
 } from "./api";
+import {
+  createVoiceReferenceExcerpt,
+  MAX_EXCERPT_ANALYSIS_SECONDS,
+  VOICE_EXCERPT_SECONDS,
+} from "./voiceReferenceProcessing";
 import type {
   CreateVoiceProfileRequest,
   VoiceLibrarySnapshot,
@@ -27,6 +32,36 @@ interface PendingReference {
   previewUrl: string;
 }
 
+export function formatErrorMessage(cause: unknown): string {
+  const raw = cause instanceof Error ? cause.message : String(cause ?? "");
+  return raw
+    .replace(/^(?:Error:\s*)+/i, "")
+    .replace(/^voice library request is invalid:\s*/i, "")
+    .trim() || "An unknown error occurred.";
+}
+
+export function diagnoseAudioDecodeError(fileOrBlob?: Blob | File): string {
+  const name = fileOrBlob && "name" in fileOrBlob ? (fileOrBlob as File).name.toLowerCase() : "";
+  const type = fileOrBlob?.type?.toLowerCase() || "";
+
+  if (name.endsWith(".m4a") || type.includes("mp4") || type.includes("m4a")) {
+    return "Could not decode this M4A file. M4A is a container and its audio codec may not be supported by this desktop WebView; convert it to PCM WAV or MP3.";
+  }
+  if (name.endsWith(".opus") || type.includes("opus")) {
+    return "Could not decode this .opus file. Ensure it is formatted as Ogg Opus or WebM Opus, or convert it to WAV, MP3, or FLAC.";
+  }
+  if (name.endsWith(".flac") || type.includes("flac")) {
+    return "Could not decode this FLAC file. Check that it is not damaged, or convert it to PCM WAV or MP3.";
+  }
+  if (name.endsWith(".wav") || type.includes("wav") || type.includes("wave")) {
+    return "Could not decode this WAV file. Ensure it is a standard PCM WAV recording.";
+  }
+  if (name.endsWith(".mp3") || type.includes("mpeg") || type.includes("mp3")) {
+    return "Could not decode this .mp3 file. The file may be damaged or protected. Try converting it to standard WAV or MP3.";
+  }
+  return "This audio file could not be decoded. Use a clean WAV, MP3, FLAC, Ogg/Opus, WebM, or AAC M4A recording.";
+}
+
 function blobAsBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -45,19 +80,30 @@ function audioDuration(blob: Blob): Promise<number> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
     const audio = new Audio();
-    const finish = () => URL.revokeObjectURL(url);
+    let settled = false;
+    let timeout: number | null = null;
+    const finish = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== null) window.clearTimeout(timeout);
+      audio.onloadedmetadata = null;
+      audio.onerror = null;
+      URL.revokeObjectURL(url);
+      complete();
+    };
+    timeout = window.setTimeout(() => {
+      finish(() => reject(new Error("Kestrel timed out while reading this recording. The file may be damaged or use an unsupported audio codec.")));
+    }, 15_000);
     audio.onloadedmetadata = () => {
       const duration = audio.duration;
-      finish();
       if (!Number.isFinite(duration) || duration <= 0) {
-        reject(new Error("Kestrel could not measure this recording."));
+        finish(() => reject(new Error("Kestrel could not measure the duration of this recording. The file may be empty or corrupted.")));
       } else {
-        resolve(duration);
+        finish(() => resolve(duration));
       }
     };
     audio.onerror = () => {
-      finish();
-      reject(new Error("This audio file could not be decoded."));
+      finish(() => reject(new Error(diagnoseAudioDecodeError(blob))));
     };
     audio.preload = "metadata";
     audio.src = url;
@@ -66,10 +112,13 @@ function audioDuration(blob: Blob): Promise<number> {
 
 export function assessVoiceReference(duration: number): { tone: string; text: string } {
   if (duration < MIN_REFERENCE_SECONDS) {
-    return { tone: "bad", text: `Record at least ${MIN_REFERENCE_SECONDS} seconds of clear speech.` };
+    return { tone: "bad", text: `Too short (${duration.toFixed(1)}s). Record or import at least ${MIN_REFERENCE_SECONDS} seconds of clear speech.` };
   }
   if (duration > MAX_REFERENCE_SECONDS) {
-    return { tone: "bad", text: `Trim the reference to ${MAX_REFERENCE_SECONDS} seconds or less.` };
+    const nextStep = duration <= MAX_EXCERPT_ANALYSIS_SECONDS
+      ? "Use the excerpt controls below."
+      : "Use an audio editor to extract one clean 8–20 second passage.";
+    return { tone: "bad", text: `Too long (${duration.toFixed(1)}s). ${nextStep}` };
   }
   if (duration < IDEAL_MIN_SECONDS) {
     return { tone: "warn", text: "Usable, but 8–20 seconds usually preserves the voice more reliably." };
@@ -95,6 +144,9 @@ export function VoiceLibraryDialog({
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const startedRef = useRef(0);
+  const operationRef = useRef(0);
+  const pendingRef = useRef<PendingReference | null>(null);
+  const pendingAudioRef = useRef<HTMLAudioElement | null>(null);
   const [adding, setAdding] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -104,6 +156,8 @@ export function VoiceLibraryDialog({
   const [tags, setTags] = useState("");
   const [performance, setPerformance] = useState<VoicePerformance>("natural");
   const [consent, setConsent] = useState(false);
+  const [findingExcerpt, setFindingExcerpt] = useState(false);
+  const [excerptNotice, setExcerptNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -122,27 +176,45 @@ export function VoiceLibraryDialog({
   };
 
   useEffect(() => () => {
-    if (pending) URL.revokeObjectURL(pending.previewUrl);
-    if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+    operationRef.current++;
+    if (pendingRef.current) URL.revokeObjectURL(pendingRef.current.previewUrl);
+    pendingRef.current = null;
+    const recorder = recorderRef.current;
+    if (recorder?.state === "recording") {
+      recorder.ondataavailable = null;
+      recorder.onerror = null;
+      recorder.onstop = null;
+      recorder.stop();
+    }
+    recorderRef.current = null;
     stopTracks();
-  }, [pending]);
+  }, []);
 
   const replacePending = (next: PendingReference | null) => {
-    setPending((previous) => {
-      if (previous) URL.revokeObjectURL(previous.previewUrl);
-      return next;
-    });
+    const previous = pendingRef.current;
+    if (previous && previous.previewUrl !== next?.previewUrl) {
+      URL.revokeObjectURL(previous.previewUrl);
+    }
+    pendingRef.current = next;
+    setPending(next);
   };
 
   const importFile = async (file: File | undefined) => {
     if (!file) return;
+    const operation = ++operationRef.current;
     setError(null);
+    setExcerptNotice(null);
+    if (!file.size) {
+      setError("The selected voice recording is empty.");
+      return;
+    }
     if (file.size > 32 * 1024 * 1024) {
       setError("Choose a voice reference smaller than 32 MiB.");
       return;
     }
     try {
       const durationSeconds = await audioDuration(file);
+      if (operation !== operationRef.current) return;
       replacePending({
         blob: file,
         source: "imported",
@@ -152,7 +224,46 @@ export function VoiceLibraryDialog({
       });
       if (!name.trim()) setName(file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " "));
     } catch (cause) {
-      setError(String(cause));
+      if (operation === operationRef.current) setError(formatErrorMessage(cause));
+    }
+  };
+
+  const handleCreateExcerpt = async (startSeconds?: number) => {
+    if (
+      !pending
+      || pending.durationSeconds <= IDEAL_MAX_SECONDS
+      || pending.durationSeconds > MAX_EXCERPT_ANALYSIS_SECONDS
+    ) return;
+    const operation = ++operationRef.current;
+    setFindingExcerpt(true);
+    setError(null);
+    setExcerptNotice(null);
+    try {
+      const result = await createVoiceReferenceExcerpt(pending.blob, {
+        knownDurationSeconds: pending.durationSeconds,
+        startSeconds,
+      });
+      if (operation !== operationRef.current) return;
+      replacePending({
+        blob: result.blob,
+        source: pending.source,
+        fileName: `${pending.fileName.replace(/(?:-excerpt)?\.[^.]+$/i, "")}-excerpt.wav`,
+        durationSeconds: result.durationSeconds,
+        previewUrl: URL.createObjectURL(result.blob),
+      });
+      setExcerptNotice(
+        `Created one continuous ${result.durationSeconds.toFixed(1)}-second excerpt from ${formatTimestamp(result.startSeconds)}–${formatTimestamp(result.endSeconds)}. Listen once before saving; activity analysis cannot identify the speaker.`,
+      );
+    } catch (cause) {
+      if (operation === operationRef.current) {
+        const message = formatErrorMessage(cause);
+        const guidance = message.includes("could not decode the recording")
+          ? ` ${diagnoseAudioDecodeError(pending.blob)}`
+          : "";
+        setError(`Could not create a voice excerpt: ${message}${guidance}`);
+      }
+    } finally {
+      if (operation === operationRef.current) setFindingExcerpt(false);
     }
   };
 
@@ -162,11 +273,17 @@ export function VoiceLibraryDialog({
   };
 
   const startRecording = async () => {
+    const operation = ++operationRef.current;
     setError(null);
+    setExcerptNotice(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
+      if (operation !== operationRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       const preferred = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
         .find((type) => MediaRecorder.isTypeSupported(type));
@@ -183,6 +300,7 @@ export function VoiceLibraryDialog({
         stopTracks();
       };
       recorder.onstop = () => {
+        if (recorderRef.current === recorder) recorderRef.current = null;
         const durationSeconds = Math.max(0, (performanceNow() - startedRef.current) / 1000);
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
         chunksRef.current = [];
@@ -210,8 +328,10 @@ export function VoiceLibraryDialog({
         if (seconds >= MAX_REFERENCE_SECONDS) stopRecording();
       }, 100);
     } catch (cause) {
-      stopTracks();
-      setError(`Microphone unavailable: ${String(cause)}`);
+      if (operation === operationRef.current) {
+        stopTracks();
+        setError(`Microphone unavailable: ${formatErrorMessage(cause)}`);
+      }
     }
   };
 
@@ -235,12 +355,13 @@ export function VoiceLibraryDialog({
       const next = await createVoiceProfile(request);
       onSnapshot(next);
       replacePending(null);
+      setExcerptNotice(null);
       setAdding(false);
       setName("");
       setTags("");
       setConsent(false);
     } catch (cause) {
-      setError(String(cause));
+      setError(formatErrorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -252,7 +373,7 @@ export function VoiceLibraryDialog({
     try {
       onSnapshot(await setDefaultVoiceProfile(profile.id));
     } catch (cause) {
-      setError(String(cause));
+      setError(formatErrorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -272,7 +393,7 @@ export function VoiceLibraryDialog({
         performance: nextPerformance,
       }));
     } catch (cause) {
-      setError(String(cause));
+      setError(formatErrorMessage(cause));
     } finally {
       setBusy(null);
     }
@@ -285,13 +406,14 @@ export function VoiceLibraryDialog({
     try {
       onSnapshot(await deleteVoiceProfile(profile.id));
     } catch (cause) {
-      setError(String(cause));
+      setError(formatErrorMessage(cause));
     } finally {
       setBusy(null);
     }
   };
 
   const assessment = pending ? assessVoiceReference(pending.durationSeconds) : null;
+  const interactionBusy = !!busy || findingExcerpt;
 
   return (
     <dialog
@@ -324,7 +446,7 @@ export function VoiceLibraryDialog({
                   <select
                     aria-label={`${profile.name} performance`}
                     value={profile.performance}
-                    disabled={profile.source === "built-in" || !!busy}
+                    disabled={profile.source === "built-in" || interactionBusy}
                     onChange={(event) => void changePerformance(profile, event.target.value as VoicePerformance)}
                   >
                     <option value="restrained">Restrained</option>
@@ -334,8 +456,8 @@ export function VoiceLibraryDialog({
                   </select>
                 </label>
                 <footer>
-                  <button type="button" disabled={selected || !!busy} onClick={() => void makeDefault(profile)}>{selected ? <Check /> : <Play />} {selected ? "Current default" : "Use across Kestrel"}</button>
-                  {profile.source !== "built-in" && <button type="button" className="danger" aria-label={`Delete ${profile.name}`} disabled={!!busy} onClick={() => void removeVoice(profile)}><Trash2 /></button>}
+                  <button type="button" disabled={selected || interactionBusy} onClick={() => void makeDefault(profile)}>{selected ? <Check /> : <Play />} {selected ? "Current default" : "Use across Kestrel"}</button>
+                  {profile.source !== "built-in" && <button type="button" className="danger" aria-label={`Delete ${profile.name}`} disabled={interactionBusy} onClick={() => void removeVoice(profile)}><Trash2 /></button>}
                 </footer>
               </article>
             );
@@ -343,23 +465,76 @@ export function VoiceLibraryDialog({
         </section>
 
         {!adding ? (
-          <button type="button" className="voice-add-button" disabled={!!busy} onClick={() => setAdding(true)}><Plus /> Add a custom voice</button>
+          <button type="button" className="voice-add-button" disabled={interactionBusy} onClick={() => setAdding(true)}><Plus /> Add a custom voice</button>
         ) : (
           <section className="voice-create-panel" aria-labelledby="voice-create-title">
-            <div><span className="eyebrow">New custom voice</span><h3 id="voice-create-title">Record or import one clean speaker</h3><p>Speak naturally without music or another voice. Kestrel preserves this reference unchanged and uses it only on this PC.</p></div>
+            <div><span className="eyebrow">New custom voice</span><h3 id="voice-create-title">Record or import one clean speaker</h3><p>Speak naturally without music or another voice. Kestrel saves only the reference you review and uses it only on this PC.</p></div>
             <div className="voice-source-actions">
-              <button type="button" className={recording ? "recording" : ""} disabled={!!busy} onClick={() => recording ? stopRecording() : void startRecording()}>{recording ? <Pause /> : <Mic />} {recording ? `Stop · ${recordingSeconds.toFixed(1)}s` : "Record voice"}</button>
-              <label className="button-like"><FolderOpen /> Import audio<input type="file" accept="audio/wav,audio/flac,audio/mpeg,audio/ogg,audio/webm,audio/mp4,.wav,.flac,.mp3,.ogg,.opus,.webm,.m4a" disabled={recording || !!busy} onChange={(event) => void importFile(event.target.files?.[0])} /></label>
+              <button type="button" className={recording ? "recording" : ""} disabled={interactionBusy} onClick={() => recording ? stopRecording() : void startRecording()}>{recording ? <Pause /> : <Mic />} {recording ? `Stop · ${recordingSeconds.toFixed(1)}s` : "Record voice"}</button>
+              <label className={`button-like ${recording || interactionBusy ? "disabled" : ""}`} aria-disabled={recording || interactionBusy}><FolderOpen /> Import audio<input type="file" accept="audio/wav,audio/flac,audio/mpeg,audio/ogg,audio/webm,audio/mp4,.wav,.flac,.mp3,.ogg,.opus,.webm,.m4a" disabled={recording || interactionBusy} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void importFile(file); }} /></label>
             </div>
-            {pending && <div className="voice-reference-review"><audio controls src={pending.previewUrl} /><span className={assessment?.tone}>{pending.durationSeconds.toFixed(1)} seconds · {assessment?.text}</span></div>}
+            <p className="voice-source-help">WAV, MP3, FLAC, Ogg/Opus, WebM, or M4A · 3–45 seconds · Max 32 MiB</p>
+            {pending && (
+              <div className="voice-reference-review">
+                <audio ref={pendingAudioRef} controls src={pending.previewUrl} />
+                <div className="voice-reference-info">
+                  <span className={assessment?.tone}>{assessment?.text}</span>
+                  {pending.durationSeconds > IDEAL_MAX_SECONDS && pending.durationSeconds <= MAX_EXCERPT_ANALYSIS_SECONDS && (
+                    <div className="voice-excerpt-action">
+                      <button
+                        type="button"
+                        className="voice-excerpt-button"
+                        disabled={interactionBusy}
+                        title="Use one continuous passage beginning at the player's current position"
+                        onClick={() => void handleCreateExcerpt(pendingAudioRef.current?.currentTime ?? 0)}
+                      >
+                        <Scissors /> {findingExcerpt ? "Creating excerpt…" : `Use ${VOICE_EXCERPT_SECONDS}s from playhead`}
+                      </button>
+                      <button
+                        type="button"
+                        className="voice-excerpt-button"
+                        disabled={interactionBusy}
+                        title="Find one continuous high-activity passage; this does not identify speakers"
+                        onClick={() => void handleCreateExcerpt()}
+                      >
+                        <Wand2 /> {findingExcerpt ? "Creating excerpt…" : `Find active ${VOICE_EXCERPT_SECONDS}s`}
+                      </button>
+                      <small>Scrub the player to choose a start, or let Kestrel find a high-activity passage. Listen for music or another speaker before saving.</small>
+                    </div>
+                  )}
+                  {excerptNotice && <small className="voice-excerpt-notice" role="status">{excerptNotice}</small>}
+                </div>
+              </div>
+            )}
             <div className="voice-fields">
-              <label>Voice name<input value={name} maxLength={80} disabled={!!busy} onChange={(event) => setName(event.target.value)} placeholder="Evening narrator" /></label>
-              <label>Language or accent<input value={language} maxLength={40} disabled={!!busy} onChange={(event) => setLanguage(event.target.value)} placeholder="Auto" /></label>
-              <label>Character tags<input value={tags} disabled={!!busy} onChange={(event) => setTags(event.target.value)} placeholder="warm, mature, documentary" /></label>
-              <label>Default performance<select value={performance} disabled={!!busy} onChange={(event) => setPerformance(event.target.value as VoicePerformance)}><option value="restrained">Restrained</option><option value="natural">Natural</option><option value="expressive">Expressive</option><option value="dramatic">Dramatic</option></select></label>
+              <label>Voice name<input value={name} maxLength={80} disabled={interactionBusy} onChange={(event) => setName(event.target.value)} placeholder="Evening narrator" /></label>
+              <label>Language or accent<input value={language} maxLength={40} disabled={interactionBusy} onChange={(event) => setLanguage(event.target.value)} placeholder="Auto" /></label>
+              <label>Character tags<input value={tags} disabled={interactionBusy} onChange={(event) => setTags(event.target.value)} placeholder="warm, mature, documentary" /></label>
+              <label>Default performance<select value={performance} disabled={interactionBusy} onChange={(event) => setPerformance(event.target.value as VoicePerformance)}><option value="restrained">Restrained</option><option value="natural">Natural</option><option value="expressive">Expressive</option><option value="dramatic">Dramatic</option></select></label>
             </div>
-            <label className="voice-consent"><input type="checkbox" checked={consent} disabled={!!busy} onChange={(event) => setConsent(event.target.checked)} /> I own this recording or have permission to create and use this voice.</label>
-            <footer><button type="button" disabled={recording || !!busy} onClick={() => { replacePending(null); setAdding(false); }}>Cancel</button><button type="button" className="primary-button" disabled={!pending || assessment?.tone === "bad" || !name.trim() || !consent || !!busy} onClick={() => void saveVoice()}><Check /> {busy === "create" ? "Saving locally…" : "Save voice"}</button></footer>
+            <label className="voice-consent"><input type="checkbox" checked={consent} disabled={interactionBusy} onChange={(event) => setConsent(event.target.checked)} /> I own this recording or have permission to create and use this voice.</label>
+            <footer>
+              <button type="button" disabled={recording || !!busy} onClick={() => { operationRef.current++; setFindingExcerpt(false); replacePending(null); setExcerptNotice(null); setAdding(false); }}>Cancel</button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!pending || assessment?.tone === "bad" || !name.trim() || !consent || interactionBusy}
+                title={
+                  !pending
+                    ? "Record or import a voice reference first"
+                    : assessment?.tone === "bad"
+                      ? assessment.text
+                      : !name.trim()
+                        ? "Enter a voice name"
+                        : !consent
+                          ? "Confirm permission checkbox"
+                          : undefined
+                }
+                onClick={() => void saveVoice()}
+              >
+                <Check /> {busy === "create" ? "Saving locally…" : "Save voice"}
+              </button>
+            </footer>
           </section>
         )}
         {error && <p className="voice-library-error" role="alert">{error}</p>}
@@ -370,4 +545,11 @@ export function VoiceLibraryDialog({
 
 function performanceNow(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function formatTimestamp(seconds: number): string {
+  const bounded = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(bounded / 60);
+  const remainder = bounded % 60;
+  return `${minutes}:${remainder.toString().padStart(2, "0")}`;
 }

@@ -248,7 +248,8 @@ impl VoiceLibrary {
             || !(MIN_REFERENCE_SECONDS..=MAX_REFERENCE_SECONDS).contains(&request.duration_seconds)
         {
             return Err(VoiceLibraryError::Invalid(format!(
-                "voice references must be {MIN_REFERENCE_SECONDS:.0}-{MAX_REFERENCE_SECONDS:.0} seconds long"
+                "voice references must be {MIN_REFERENCE_SECONDS:.0}-{MAX_REFERENCE_SECONDS:.0} seconds long (received {:.1}s)",
+                request.duration_seconds
             )));
         }
         if request.audio_base64.len() > MAX_REFERENCE_BYTES * 4 / 3 + 16 {
@@ -675,5 +676,20 @@ mod tests {
         let path = library.resolve(&custom.id).unwrap().reference_path.unwrap();
         fs::write(path, b"changed").unwrap();
         assert!(library.resolve(&custom.id).is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_range_durations_with_explicit_received_length() {
+        let directory = tempfile::tempdir().unwrap();
+        let library = VoiceLibrary::new(directory.path()).unwrap();
+        let mut too_short = request("Too Short");
+        too_short.duration_seconds = 2.5;
+        let short_err = library.create(too_short).unwrap_err().to_string();
+        assert!(short_err.contains("voice references must be 3-45 seconds long (received 2.5s)"));
+
+        let mut too_long = request("Too Long");
+        too_long.duration_seconds = 63.4;
+        let long_err = library.create(too_long).unwrap_err().to_string();
+        assert!(long_err.contains("voice references must be 3-45 seconds long (received 63.4s)"));
     }
 }

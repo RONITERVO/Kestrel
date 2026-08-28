@@ -1,6 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assessVoiceReference, VoiceLibraryDialog } from "./VoiceLibrary";
+import {
+  assessVoiceReference,
+  diagnoseAudioDecodeError,
+  formatErrorMessage,
+  VoiceLibraryDialog,
+} from "./VoiceLibrary";
 import type { VoiceLibrarySnapshot } from "./types";
 
 const api = vi.hoisted(() => ({
@@ -10,6 +15,10 @@ const api = vi.hoisted(() => ({
   create: vi.fn(),
 }));
 
+const processing = vi.hoisted(() => ({
+  createExcerpt: vi.fn(),
+}));
+
 vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
   setDefaultVoiceProfile: api.setDefault,
@@ -17,6 +26,11 @@ vi.mock("./api", async (importOriginal) => ({
   deleteVoiceProfile: api.remove,
   createVoiceProfile: api.create,
   localSpeechMediaUrl: (path: string) => `http://kestrel-speech.localhost/${path}`,
+}));
+
+vi.mock("./voiceReferenceProcessing", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./voiceReferenceProcessing")>(),
+  createVoiceReferenceExcerpt: processing.createExcerpt,
 }));
 
 const snapshot: VoiceLibrarySnapshot = {
@@ -32,20 +46,61 @@ beforeEach(() => {
   api.update.mockReset().mockResolvedValue(snapshot);
   api.remove.mockReset().mockResolvedValue({ profiles: [snapshot.profiles[0]], defaultProfileId: "voice-default" });
   api.create.mockReset().mockResolvedValue(snapshot);
+  processing.createExcerpt.mockReset().mockResolvedValue({
+    blob: new Blob(["trimmed"], { type: "audio/wav" }),
+    durationSeconds: 20,
+    originalDurationSeconds: 60,
+    startSeconds: 18,
+    endSeconds: 38,
+  });
 });
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("Voice Library", () => {
   it("classifies producer reference length without accepting unsafe extremes", () => {
-    expect(assessVoiceReference(2.9).tone).toBe("bad");
+    const tooShort = assessVoiceReference(2.9);
+    expect(tooShort.tone).toBe("bad");
+    expect(tooShort.text).toContain("Too short (2.9s)");
+
     expect(assessVoiceReference(8).tone).toBe("good");
     expect(assessVoiceReference(20).tone).toBe("good");
     expect(assessVoiceReference(30).tone).toBe("warn");
-    expect(assessVoiceReference(46).tone).toBe("bad");
+
+    const tooLong = assessVoiceReference(46);
+    expect(tooLong.tone).toBe("bad");
+    expect(tooLong.text).toContain("Too long (46.0s)");
+  });
+
+  it("diagnoses audio decoding failures with format-specific guidance", () => {
+    const m4aFile = new File(["dummy"], "speaker.m4a", { type: "audio/mp4" });
+    expect(diagnoseAudioDecodeError(m4aFile)).toContain("audio codec may not be supported");
+
+    const opusFile = new File(["dummy"], "voice.opus", { type: "audio/ogg" });
+    expect(diagnoseAudioDecodeError(opusFile)).toContain("Ogg Opus or WebM Opus");
+
+    const flacFile = new File(["dummy"], "sample.flac", { type: "audio/flac" });
+    expect(diagnoseAudioDecodeError(flacFile)).toContain("FLAC file");
+
+    const wavFile = new File(["dummy"], "recording.wav", { type: "audio/wav" });
+    expect(diagnoseAudioDecodeError(wavFile)).toContain("standard PCM WAV");
+
+    const unknownFile = new File(["dummy"], "audio.raw", { type: "" });
+    expect(diagnoseAudioDecodeError(unknownFile)).toContain("WAV, MP3, FLAC, Ogg/Opus, WebM, or AAC M4A");
+  });
+
+  it("formats error messages cleanly without redundant Error prefixes", () => {
+    expect(formatErrorMessage(new Error("This is a failure."))).toBe("This is a failure.");
+    expect(formatErrorMessage(new Error("Error: Nested prefix"))).toBe("Nested prefix");
+    expect(formatErrorMessage("Error: raw string failure")).toBe("raw string failure");
+    expect(formatErrorMessage("voice library request is invalid: choose a shorter clip")).toBe("choose a shorter clip");
+    expect(formatErrorMessage(null)).toBe("An unknown error occurred.");
+    expect(formatErrorMessage(undefined)).toBe("An unknown error occurred.");
+    expect(formatErrorMessage("")).toBe("An unknown error occurred.");
   });
 
   it("shows voice provenance and changes the app-wide default", async () => {
@@ -70,5 +125,60 @@ describe("Voice Library", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete Evening Narrator" }));
     await waitFor(() => expect(api.remove).toHaveBeenCalledWith("voice-narrator"));
     expect(onSnapshot).toHaveBeenCalled();
+  });
+
+  it("renders format guidance helper in the custom voice creation panel", () => {
+    render(<VoiceLibraryDialog snapshot={snapshot} onSnapshot={vi.fn()} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add a custom voice" }));
+    expect(screen.getByText(/WAV, MP3, FLAC, Ogg\/Opus, WebM, or M4A/i)).toBeInTheDocument();
+  });
+
+  it("offers and applies a bounded continuous excerpt for a long import", async () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn()
+      .mockReturnValueOnce("blob:source-audio")
+      .mockReturnValueOnce("blob:excerpt-audio");
+    URL.revokeObjectURL = vi.fn();
+    const originalAudio = globalThis.Audio;
+
+    try {
+      render(<VoiceLibraryDialog snapshot={snapshot} onSnapshot={vi.fn()} onClose={() => undefined} />);
+      fireEvent.click(screen.getByRole("button", { name: "Add a custom voice" }));
+
+      const file = new File(["dummy-audio-content"], "long-recording.wav", { type: "audio/wav" });
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+      class MockAudio {
+        src = "";
+        duration = 60.0;
+        preload = "";
+        onloadedmetadata: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        constructor() {
+          setTimeout(() => this.onloadedmetadata?.(), 10);
+        }
+      }
+      globalThis.Audio = MockAudio as unknown as typeof Audio;
+
+      fireEvent.change(input, { target: { files: [file] } });
+
+      await waitFor(() => {
+        expect(screen.getByText(/Too long \(60.0s\)/i)).toBeInTheDocument();
+      });
+
+      expect(screen.getByRole("button", { name: "Use 20s from playhead" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Find active 20s" }));
+      await waitFor(() => expect(processing.createExcerpt).toHaveBeenCalledWith(file, {
+        knownDurationSeconds: 60,
+        startSeconds: undefined,
+      }));
+      expect(await screen.findByRole("status")).toHaveTextContent("one continuous 20.0-second excerpt from 0:18–0:38");
+      expect(screen.getByText(/Good reference length/i)).toBeInTheDocument();
+    } finally {
+      globalThis.Audio = originalAudio;
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    }
   });
 });
