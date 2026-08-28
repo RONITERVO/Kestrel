@@ -1,16 +1,16 @@
 import {
-  AudioLines, Bot, ChevronDown, ChevronLeft, ChevronRight, CircleStop, Copy,
+  AudioLines, Bot, Captions, ChevronDown, ChevronLeft, ChevronRight, CircleStop, Copy,
   Disc3, Download, FileMusic, FolderOpen, Gauge, ListMusic, LoaderCircle, Music,
   PanelLeft, Pause, Play, Plus, Save, SlidersHorizontal, Sparkles, Square, Trash2,
   WandSparkles,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  cancelMoviePromptDraft, cancelMusicGeneration, createMusicProject, getMusicProject,
+  cancelLocalSpeech, cancelMoviePromptDraft, cancelMusicGeneration, createMusicLyricsDraft, createMusicProject, getMusicLyricsDocument, getMusicProject,
   exportMusicMidi, getMusicMidiDocument, listMusicProjects, musicMediaUrl, onMoviePromptDraft, onMusicGeneration,
-  onMusicProjectUpdated, pickSetupFile, revealMusicProject, saveMusicProject,
+  onLocalSpeechProgress, onMusicProjectUpdated, pickSetupFile, revealMusicProject, saveMusicLyricsDocument, saveMusicProject,
   revealMusicMidi, saveMusicMidiDocument, startMoviePromptDraft, startMusicGeneration,
-  transcribeMusicMidi,
+  transcribeMusicLyrics, transcribeMusicMidi,
 } from "./api";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "./ModelRuntimePolicy";
@@ -18,8 +18,9 @@ import type { RuntimePolicyValue } from "./ModelRuntimePolicy";
 import { ExternalCollaborationExchange } from "./ExternalCollaborationExchange";
 import { buildExternalCollaborationRequest, parseExternalTextResult } from "./externalCollaboration";
 import { MusicMidiEditor } from "./MusicMidiEditor";
+import { MusicLyricsProducer } from "./MusicLyricsProducer";
 import type {
-  ControlSettings, ModelInfo, MusicGenerationEvent, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
+  ControlSettings, ModelInfo, MusicGenerationEvent, MusicLyricsDocument, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
   PromptDraftMode, PromptDraftReceipt, PromptDraftTarget, ThinkingLevel,
 } from "./types";
 import { effectiveThinkingLevelForModel } from "./types";
@@ -83,7 +84,12 @@ export function MusicStudio({
   const [midiBusy, setMidiBusy] = useState(false);
   const [midiOpen, setMidiOpen] = useState(false);
   const [midiDocument, setMidiDocument] = useState<MusicMidiDocument>();
+  const [lyricsOpen, setLyricsOpen] = useState(false);
+  const [lyricsDocument, setLyricsDocument] = useState<MusicLyricsDocument>();
+  const [lyricsBusy, setLyricsBusy] = useState(false);
+  const [lyricsStatus, setLyricsStatus] = useState("");
   const audioRef = useRef<HTMLAudioElement>(null);
+  const lyricsJobId = useRef("");
   const activeProjectId = useRef("");
 
   const refresh = async (preferredId?: string) => {
@@ -114,6 +120,9 @@ export function MusicStudio({
       if (["complete", "error", "cancelled"].includes(event.kind)) {
         void refresh(event.projectId).catch((error) => onError(String(error)));
       }
+    }).then((cleanup) => disposed ? cleanup() : cleanups.push(cleanup));
+    void onLocalSpeechProgress((event) => {
+      if (event.jobId === lyricsJobId.current) setLyricsStatus(event.detail);
     }).then((cleanup) => disposed ? cleanup() : cleanups.push(cleanup));
     void onMoviePromptDraft((event) => {
       if (event.kind === "error") onError(event.content ?? "The local music collaborator stopped.");
@@ -146,7 +155,8 @@ export function MusicStudio({
     ?? [...(project?.takes ?? [])].reverse().find((take) => take.status === "complete");
   const midiTake = midiDocument ? project?.takes.find((take) => take.id === midiDocument.takeId) : undefined;
   const midiTargetTake = midiOpen ? midiTake : activeTake;
-  const busy = project?.status === "generating" || saving || creating || midiBusy;
+  const lyricsTake = lyricsDocument ? project?.takes.find((take) => take.id === lyricsDocument.takeId) : undefined;
+  const busy = project?.status === "generating" || saving || creating || midiBusy || lyricsBusy;
   const assistantBusy = !!collaboration && ["queued", "thinking", "writing"].includes(collaboration.status);
   const totalBars = Math.max(1, project?.sections.reduce((sum, section) => sum + section.bars, 0) ?? 1);
 
@@ -205,6 +215,7 @@ export function MusicStudio({
   };
 
   const chooseProject = async (id: string) => {
+    if (lyricsBusy) return;
     if (id === project?.id) return;
     if (dirty && await save() === undefined) return;
     try {
@@ -215,6 +226,8 @@ export function MusicStudio({
       setProgress(undefined);
       setMidiOpen(false);
       setMidiDocument(undefined);
+      setLyricsOpen(false);
+      setLyricsDocument(undefined);
       setDirty(false);
     } catch (error) {
       onError(String(error));
@@ -400,6 +413,70 @@ export function MusicStudio({
     }
   };
 
+  const openLyrics = async (take: MusicTake) => {
+    if (!project) return;
+    const saved = dirty ? await save() : project;
+    if (!saved) return;
+    setLyricsBusy(true);
+    setLyricsStatus(take.lyricsDocumentPath ? "Opening saved lyric cues…" : "Preparing a timing draft from this take…");
+    try {
+      audioRef.current?.pause();
+      const loaded = take.lyricsDocumentPath
+        ? await getMusicLyricsDocument(saved.id, take.id)
+        : await createMusicLyricsDraft(saved.id, take.id);
+      setProject(loaded.project);
+      setLyricsDocument(loaded.document);
+      setLyricsOpen(true);
+      setLyricsStatus(loaded.document.source === "producer-timing-draft"
+        ? "Timing draft ready. Edit it now or sync exact sung words with local Whisper."
+        : "Saved local lyric sync ready.");
+      setDirty(false);
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setLyricsBusy(false);
+    }
+  };
+
+  const saveLyrics = async (document: MusicLyricsDocument): Promise<MusicLyricsDocument | undefined> => {
+    if (!project) return undefined;
+    setLyricsBusy(true);
+    setLyricsStatus("Saving a new immutable lyric revision…");
+    try {
+      const saved = await saveMusicLyricsDocument(project.id, document.takeId, document);
+      setProject(saved.project);
+      setLyricsDocument(saved.document);
+      setLyricsStatus(`Lyric revision ${saved.document.revision} saved.`);
+      return saved.document;
+    } catch (error) {
+      onError(String(error));
+      return undefined;
+    } finally {
+      setLyricsBusy(false);
+    }
+  };
+
+  const syncLyrics = async (modelId: string, language: string) => {
+    if (!project || !lyricsTake) return;
+    const jobId = stableId();
+    lyricsJobId.current = jobId;
+    setLyricsBusy(true);
+    setLyricsStatus("Opening the offline speech service and syncing the preserved take…");
+    try {
+      const synced = await transcribeMusicLyrics({ projectId: project.id, takeId: lyricsTake.id, jobId, modelId, language });
+      setProject(synced.project);
+      setLyricsDocument(synced.document);
+      setLyricsStatus(`Local sync saved with ${synced.document.segments.length} cues and word timestamps.`);
+    } catch (error) {
+      const message = String(error);
+      if (!message.toLocaleLowerCase().includes("stopped")) onError(message);
+      setLyricsStatus(message.toLocaleLowerCase().includes("stopped") ? "Local lyric sync stopped safely." : "Local lyric sync failed; the previous lyric revision is unchanged.");
+    } finally {
+      lyricsJobId.current = "";
+      setLyricsBusy(false);
+    }
+  };
+
   if (loading) return <div className="music-studio-loading"><LoaderCircle className="spin" /><span>Opening private music projects…</span></div>;
 
   if (!project) return (
@@ -430,6 +507,7 @@ export function MusicStudio({
           <div className="music-key"><strong>{readKey(project.caption) ?? "—"}</strong><small>Key</small></div>
         </div>
         <div className="music-transport-right">
+          <button disabled={!activeTake || busy || lyricsBusy} onClick={() => activeTake && void openLyrics(activeTake)}><Captions /> Visual lyrics</button>
           <button disabled={!dirty || busy} onClick={() => void save()}>{saving ? <LoaderCircle className="spin" /> : <Save />} Save</button>
           {project.status === "generating"
             ? <button className="danger-button" onClick={() => void cancelMusicGeneration(project.id)}><CircleStop /> Stop safely</button>
@@ -438,13 +516,13 @@ export function MusicStudio({
       </header>
 
       {showLibrary && <aside className="music-library">
-        <div className="music-pane-heading"><span><small>Library</small><strong>Projects</strong></span><button aria-label="New song" onClick={() => setNewOpen(true)}><Plus /></button></div>
+        <div className="music-pane-heading"><span><small>Library</small><strong>Projects</strong></span><button aria-label="New song" disabled={busy} onClick={() => setNewOpen(true)}><Plus /></button></div>
         <div className="music-project-list">
-          {summaries.map((summary) => <button key={summary.id} className={summary.id === project.id ? "active" : ""} onClick={() => void chooseProject(summary.id)}><Disc3 /><span><strong>{summary.title}</strong><small>{summary.takeCount} {summary.takeCount === 1 ? "take" : "takes"} · {summary.status}</small></span></button>)}
+          {summaries.map((summary) => <button key={summary.id} className={summary.id === project.id ? "active" : ""} disabled={lyricsBusy} onClick={() => void chooseProject(summary.id)}><Disc3 /><span><strong>{summary.title}</strong><small>{summary.takeCount} {summary.takeCount === 1 ? "take" : "takes"} · {summary.status}</small></span></button>)}
         </div>
         <div className="music-pane-heading takes"><span><small>Project audio</small><strong>Preserved takes</strong></span><button aria-label="Reveal project files" onClick={() => void revealMusicProject(project.id)}><FolderOpen /></button></div>
         <div className="music-take-list">
-          {[...project.takes].reverse().map((take, reverseIndex) => <button key={take.id} className={take.id === project.activeTakeId ? "active" : ""} disabled={take.status !== "complete"} onClick={() => mutate((current) => ({ ...current, activeTakeId: take.id }))}><FileMusic /><span><strong>Take {project.takes.length - reverseIndex}</strong><small>{take.status === "complete" ? `${formatTime(take.durationSeconds)} · seed ${take.seed}${take.midiPath ? ` · MIDI r${take.midiRevision ?? 0}` : ""}` : take.status}</small></span>{take.status === "complete" && <Play />}</button>)}
+          {[...project.takes].reverse().map((take, reverseIndex) => <button key={take.id} className={take.id === project.activeTakeId ? "active" : ""} disabled={take.status !== "complete" || lyricsBusy} onClick={() => mutate((current) => ({ ...current, activeTakeId: take.id }))}><FileMusic /><span><strong>Take {project.takes.length - reverseIndex}</strong><small>{take.status === "complete" ? `${formatTime(take.durationSeconds)} · seed ${take.seed}${take.midiPath ? ` · MIDI r${take.midiRevision ?? 0}` : ""}${take.lyricsDocumentPath ? ` · Lyrics r${take.lyricsRevision ?? 0}` : ""}` : take.status}</small></span>{take.status === "complete" && <Play />}</button>)}
           {!project.takes.length && <div className="music-list-empty"><AudioLines /><span>Your generated takes will stay here.</span></div>}
         </div>
         <div className="music-library-footer"><span>Offline project</span><small>Masters and receipts stay in your private library.</small></div>
@@ -582,6 +660,28 @@ export function MusicStudio({
       </section>}
 
       {midiOpen && midiDocument && midiTake && <MusicMidiEditor document={midiDocument} takeLabel={`Take ${project.takes.findIndex((take) => take.id === midiTake.id) + 1}`} currentTime={currentTime} playing={playing} busy={midiBusy} onTogglePlay={togglePlay} onSeek={(seconds) => { if (audioRef.current) { audioRef.current.currentTime = Math.min(midiTake.durationSeconds, Math.max(0, seconds)); setCurrentTime(audioRef.current.currentTime); } }} onSave={saveMidi} onExport={exportMidi} onReveal={revealMidi} onClose={() => { setMidiOpen(false); setMidiDocument(undefined); }} />}
+
+      {lyricsOpen && lyricsDocument && lyricsTake && <MusicLyricsProducer
+        project={project}
+        take={lyricsTake}
+        document={lyricsDocument}
+        audio={audioRef.current}
+        currentTime={currentTime}
+        playing={playing}
+        busy={lyricsBusy}
+        status={lyricsStatus}
+        onTogglePlay={togglePlay}
+        onSeek={(seconds) => {
+          if (!audioRef.current) return;
+          audioRef.current.currentTime = Math.min(lyricsTake.durationSeconds, Math.max(0, seconds));
+          setCurrentTime(audioRef.current.currentTime);
+        }}
+        onChange={setLyricsDocument}
+        onSave={saveLyrics}
+        onSync={syncLyrics}
+        onCancelSync={() => { if (lyricsJobId.current) void cancelLocalSpeech(lyricsJobId.current); }}
+        onClose={() => { setLyricsOpen(false); setLyricsDocument(undefined); }}
+      />}
 
       {newOpen && <NewSongDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
     </div>

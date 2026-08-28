@@ -13,6 +13,7 @@ use super::{
     comfy_execution_error, find_output_media, hash_file, truncate, MovieStudio, StudioError,
     MUSIC_COMFY_BASE,
 };
+use crate::local_speech::{SpeechFileTranscription, SpeechTiming};
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -35,6 +36,9 @@ const MUSCRIPTOR_MODEL_BYTES: u64 = 5_465_642_136;
 const MAX_MUSIC_TEXT_BYTES: usize = 64 * 1024;
 const MAX_SECTIONS: usize = 64;
 const MAX_TAKES: usize = 128;
+const MAX_LYRIC_SEGMENTS: usize = 4_096;
+const MAX_LYRIC_WORDS: usize = 65_536;
+const MAX_LYRIC_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MUSIC_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const MUSIC_DIT_INT8: &str = "minimax_music3_dit_int8_convrot.safetensors";
 const MUSIC_DIT_FP16: &str = "minimax_music3_dit_fp16.safetensors";
@@ -114,6 +118,12 @@ pub struct MusicTake {
     pub midi_document_path: String,
     #[serde(default)]
     pub midi_revision: u32,
+    #[serde(default)]
+    pub lyrics_document_path: String,
+    #[serde(default)]
+    pub lyrics_receipt_path: String,
+    #[serde(default)]
+    pub lyrics_revision: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +212,77 @@ pub struct SaveMusicMidiDocumentRequest {
 pub struct MusicMidiSaveResult {
     pub project: MusicProject,
     pub document: MusicMidiDocument,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricWord {
+    pub value: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricSegment {
+    pub id: String,
+    pub start: f64,
+    pub end: f64,
+    pub primary: String,
+    #[serde(default)]
+    pub translation: String,
+    #[serde(default)]
+    pub words: Vec<MusicLyricWord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricsDocument {
+    pub schema_version: u32,
+    pub take_id: String,
+    pub source_sha256: String,
+    pub revision: u32,
+    pub language: String,
+    pub source: String,
+    pub transcript: String,
+    pub theme: String,
+    pub show_translation: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub segments: Vec<MusicLyricSegment>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricsRequest {
+    pub project_id: String,
+    pub take_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscribeMusicLyricsRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub job_id: String,
+    pub model_id: String,
+    #[serde(default = "default_lyrics_language")]
+    pub language: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveMusicLyricsDocumentRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub document: MusicLyricsDocument,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricsSaveResult {
+    pub project: MusicProject,
+    pub document: MusicLyricsDocument,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -421,6 +502,9 @@ impl MusicStudio {
             midi_source_path: String::new(),
             midi_document_path: String::new(),
             midi_revision: 0,
+            lyrics_document_path: String::new(),
+            lyrics_receipt_path: String::new(),
+            lyrics_revision: 0,
         });
         project.active_take_id = take_id.clone();
         project.status = "generating".into();
@@ -709,6 +793,311 @@ impl MusicStudio {
                 if cancelled { project.detail } else { error },
             ),
         );
+    }
+
+    pub fn lyrics_audio_source(
+        &self,
+        request: &MusicLyricsRequest,
+    ) -> Result<(PathBuf, String, String), StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| take.id == request.take_id && take.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("choose a completed music take for lyric syncing".into())
+            })?;
+        let root = fs::canonicalize(self.project_dir(&project.id).join("takes"))?;
+        let source = fs::canonicalize(Path::new(&take.path)).map_err(|_| {
+            StudioError::Invalid("the selected preserved master is missing from disk".into())
+        })?;
+        if !source.starts_with(root) || !source.is_file() {
+            return Err(StudioError::Invalid(
+                "the lyric-sync audio is outside this private music project".into(),
+            ));
+        }
+        let (_, actual_sha256) = hash_file(&source)?;
+        if actual_sha256 != take.sha256 {
+            return Err(StudioError::Invalid(
+                "the preserved master changed after generation; Kestrel will not attach lyric timings to altered audio".into(),
+            ));
+        }
+        Ok((source, take.lyrics.clone(), take.sha256.clone()))
+    }
+
+    pub fn create_lyrics_draft(
+        &self,
+        request: MusicLyricsRequest,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| take.id == request.take_id && take.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("choose a completed music take for the lyric stage".into())
+            })?;
+        if !take.lyrics_document_path.trim().is_empty() {
+            return self.load_lyrics_document(request);
+        }
+        let take_id = take.id.clone();
+        let take_sha256 = take.sha256.clone();
+        let take_lyrics = take.lyrics.clone();
+        let duration_seconds = take.duration_seconds;
+        let now = Utc::now().to_rfc3339();
+        let document = normalize_lyrics_document(
+            MusicLyricsDocument {
+                schema_version: 1,
+                take_id,
+                source_sha256: take_sha256.clone(),
+                revision: 0,
+                language: "auto".into(),
+                source: "producer-timing-draft".into(),
+                transcript: take_lyrics.clone(),
+                theme: "sketchbook".into(),
+                show_translation: true,
+                created_at: now.clone(),
+                updated_at: now,
+                segments: estimated_lyric_segments(&take_lyrics, duration_seconds),
+            },
+            duration_seconds,
+        )?;
+        self.persist_new_lyrics_session(
+            project,
+            &request.take_id,
+            document,
+            json!({
+                "schemaVersion": 1,
+                "createdAt": Utc::now().to_rfc3339(),
+                "takeId": request.take_id,
+                "sourceSha256": take_sha256,
+                "source": "producer-timing-draft",
+                "detail": "Initial cue positions were estimated from the immutable generated lyrics and can be edited or replaced by local Whisper sync."
+            }),
+        )
+    }
+
+    pub fn persist_lyrics_transcription(
+        &self,
+        request: &TranscribeMusicLyricsRequest,
+        transcription: SpeechFileTranscription,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| take.id == request.take_id && take.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("the lyric-sync music take no longer exists".into())
+            })?;
+        let take_id = take.id.clone();
+        let take_sha256 = take.sha256.clone();
+        let duration_seconds = take.duration_seconds;
+        let segment_count = transcription.segments.len();
+        let word_count = transcription.words.len();
+        let now = Utc::now().to_rfc3339();
+        let document = normalize_lyrics_document(
+            MusicLyricsDocument {
+                schema_version: 1,
+                take_id,
+                source_sha256: take_sha256.clone(),
+                revision: 0,
+                language: request.language.clone(),
+                source: request.model_id.clone(),
+                transcript: transcription.text.clone(),
+                theme: "sketchbook".into(),
+                show_translation: true,
+                created_at: now.clone(),
+                updated_at: now,
+                segments: lyric_segments_from_speech(transcription.segments, &transcription.words),
+            },
+            duration_seconds,
+        )?;
+        self.persist_new_lyrics_session(
+            project,
+            &request.take_id,
+            document,
+            json!({
+                "schemaVersion": 1,
+                "createdAt": Utc::now().to_rfc3339(),
+                "takeId": request.take_id,
+                "sourceSha256": take_sha256,
+                "tool": "Kestrel Whisper",
+                "modelId": request.model_id,
+                "language": request.language,
+                "transcript": transcription.text,
+                "segmentCount": segment_count,
+                "wordCount": word_count,
+                "network": "disabled"
+            }),
+        )
+    }
+
+    pub fn load_lyrics_document(
+        &self,
+        request: MusicLyricsRequest,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| {
+                take.id == request.take_id
+                    && take.status == "complete"
+                    && !take.lyrics_document_path.trim().is_empty()
+            })
+            .ok_or_else(|| {
+                StudioError::Invalid(
+                    "this take has no lyric document yet; prepare the lyric stage first".into(),
+                )
+            })?;
+        let path = self.validated_lyrics_artifact(&project.id, &take.lyrics_document_path)?;
+        let document = read_lyrics_document(&path)?;
+        if document.take_id != request.take_id
+            || document.source_sha256 != take.sha256
+            || document.revision != take.lyrics_revision
+        {
+            return Err(StudioError::Invalid(
+                "the lyric document no longer matches its immutable music take; resync instead of overwriting provenance".into(),
+            ));
+        }
+        validate_lyrics_document(&document, take.duration_seconds)?;
+        Ok(MusicLyricsSaveResult { project, document })
+    }
+
+    pub fn save_lyrics_document(
+        &self,
+        request: SaveMusicLyricsDocumentRequest,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let loaded = self.load_lyrics_document(MusicLyricsRequest {
+            project_id: request.project_id.clone(),
+            take_id: request.take_id.clone(),
+        })?;
+        let mut project = loaded.project;
+        let take_index = project
+            .takes
+            .iter()
+            .position(|take| take.id == request.take_id)
+            .ok_or_else(|| StudioError::Invalid("the lyric take no longer exists".into()))?;
+        if request.document.take_id != request.take_id
+            || request.document.source_sha256 != loaded.document.source_sha256
+            || request.document.revision != loaded.document.revision
+        {
+            return Err(StudioError::Invalid(
+                "the lyric edit is stale or belongs to another take; reopen the lyric stage before saving".into(),
+            ));
+        }
+        let revision = loaded.document.revision.checked_add(1).ok_or_else(|| {
+            StudioError::Invalid("the lyric revision counter is exhausted".into())
+        })?;
+        let mut document = request.document;
+        document.revision = revision;
+        document.schema_version = loaded.document.schema_version;
+        document.take_id = loaded.document.take_id;
+        document.source_sha256 = loaded.document.source_sha256;
+        document.language = loaded.document.language;
+        document.source = loaded.document.source;
+        document.transcript = loaded.document.transcript;
+        document.theme = loaded.document.theme;
+        document.created_at = loaded.document.created_at;
+        document.updated_at = Utc::now().to_rfc3339();
+        document = normalize_lyrics_document(document, project.takes[take_index].duration_seconds)?;
+        let previous = self.validated_lyrics_artifact(
+            &project.id,
+            &project.takes[take_index].lyrics_document_path,
+        )?;
+        let revisions = previous.parent().ok_or_else(|| {
+            StudioError::Invalid("the lyric revision folder is unavailable".into())
+        })?;
+        let document_path = revisions.join(format!("{revision:03}.json"));
+        let receipt_path = revisions.join(format!("{revision:03}.receipt.json"));
+        if document_path.exists() || receipt_path.exists() {
+            return Err(StudioError::Invalid(
+                "the next immutable lyric revision already exists; reopen the project before saving"
+                    .into(),
+            ));
+        }
+        write_json_recoverable(&document_path, &document)?;
+        write_json_recoverable(
+            &receipt_path,
+            &json!({
+                "schemaVersion": 1,
+                "createdAt": document.updated_at,
+                "takeId": request.take_id,
+                "revision": revision,
+                "sourceSha256": document.source_sha256,
+                "segmentCount": document.segments.len(),
+                "wordCount": document.segments.iter().map(|segment| segment.words.len()).sum::<usize>(),
+                "operation": "producer lyric timing edit"
+            }),
+        )?;
+        project.takes[take_index].lyrics_document_path =
+            document_path.to_string_lossy().into_owned();
+        project.takes[take_index].lyrics_revision = revision;
+        project.phase = "lyrics-ready".into();
+        project.detail = format!(
+            "Lyric revision {revision} is saved. The master, transcription receipt, and every earlier cue revision remain unchanged."
+        );
+        project.updated_at = Utc::now().to_rfc3339();
+        self.persist(&project)?;
+        Ok(MusicLyricsSaveResult { project, document })
+    }
+
+    fn persist_new_lyrics_session(
+        &self,
+        mut project: MusicProject,
+        take_id: &str,
+        document: MusicLyricsDocument,
+        receipt: Value,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let take_index = project
+            .takes
+            .iter()
+            .position(|take| take.id == take_id && take.status == "complete")
+            .ok_or_else(|| StudioError::Invalid("the lyric take no longer exists".into()))?;
+        validate_lyrics_document(&document, project.takes[take_index].duration_seconds)?;
+        let session = self
+            .project_dir(&project.id)
+            .join("lyrics")
+            .join(take_id)
+            .join(uuid::Uuid::new_v4().to_string());
+        let revisions = session.join("revisions");
+        fs::create_dir_all(&revisions)?;
+        let document_path = revisions.join("000.json");
+        let receipt_path = session.join("transcription.receipt.json");
+        write_json_recoverable(&document_path, &document)?;
+        write_json_recoverable(&receipt_path, &receipt)?;
+        project.takes[take_index].lyrics_document_path =
+            document_path.to_string_lossy().into_owned();
+        project.takes[take_index].lyrics_receipt_path = receipt_path.to_string_lossy().into_owned();
+        project.takes[take_index].lyrics_revision = 0;
+        project.phase = "lyrics-ready".into();
+        project.detail = if document.source == "producer-timing-draft" {
+            "A durable lyric timing draft is ready. Refine cues by hand or sync the preserved take with local Whisper."
+        } else {
+            "Local Whisper synced durable lyric segments and word timings to the preserved take."
+        }
+        .into();
+        project.updated_at = Utc::now().to_rfc3339();
+        self.persist(&project)?;
+        Ok(MusicLyricsSaveResult { project, document })
+    }
+
+    fn validated_lyrics_artifact(
+        &self,
+        project_id: &str,
+        value: &str,
+    ) -> Result<PathBuf, StudioError> {
+        let root = fs::canonicalize(self.project_dir(project_id).join("lyrics"))?;
+        let path = fs::canonicalize(Path::new(value)).map_err(|_| {
+            StudioError::Invalid(format!("the lyric project file is unavailable at {value}"))
+        })?;
+        if !path.starts_with(root) || !path.is_file() {
+            return Err(StudioError::Invalid(
+                "the lyric path is outside this private music project".into(),
+            ));
+        }
+        Ok(path)
     }
 
     pub async fn transcribe_midi(
@@ -1248,6 +1637,290 @@ fn default_sections() -> Vec<MusicSection> {
     .collect()
 }
 
+fn default_lyrics_language() -> String {
+    "auto".into()
+}
+
+fn estimated_lyric_segments(lyrics: &str, duration_seconds: f64) -> Vec<MusicLyricSegment> {
+    let lines = lyrics
+        .lines()
+        .map(str::trim)
+        .filter(|line| !(line.is_empty() || line.starts_with('[') && line.ends_with(']')))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if lines.is_empty() || !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return Vec::new();
+    }
+    let padding = (duration_seconds * 0.025).min(2.0);
+    let usable = (duration_seconds - padding * 2.0).max(duration_seconds * 0.5);
+    let weights = lines
+        .iter()
+        .map(|line| line.split_whitespace().count().max(1) as f64)
+        .collect::<Vec<_>>();
+    let total_weight = weights.iter().sum::<f64>().max(1.0);
+    let mut cursor = padding;
+    lines
+        .into_iter()
+        .zip(weights)
+        .map(|(primary, weight)| {
+            let start = cursor;
+            let end = (start + usable * weight / total_weight).min(duration_seconds);
+            cursor = end;
+            MusicLyricSegment {
+                id: uuid::Uuid::new_v4().to_string(),
+                start,
+                end,
+                words: estimated_words(&primary, start, end),
+                primary,
+                translation: String::new(),
+            }
+        })
+        .collect()
+}
+
+fn lyric_segments_from_speech(
+    segments: Vec<SpeechTiming>,
+    words: &[SpeechTiming],
+) -> Vec<MusicLyricSegment> {
+    let mut output = segments
+        .into_iter()
+        .filter(|segment| !segment.value.trim().is_empty())
+        .map(|segment| MusicLyricSegment {
+            id: uuid::Uuid::new_v4().to_string(),
+            start: segment.start,
+            end: segment.end,
+            primary: segment.value,
+            translation: String::new(),
+            words: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    for word in words {
+        let midpoint = (word.start + word.end) / 2.0;
+        let target = output
+            .iter()
+            .position(|segment| midpoint >= segment.start && midpoint <= segment.end)
+            .or_else(|| {
+                output
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, segment)| {
+                        let overlap = word.end.min(segment.end) - word.start.max(segment.start);
+                        (overlap > 0.0).then_some((index, overlap))
+                    })
+                    .max_by(|left, right| left.1.total_cmp(&right.1))
+                    .map(|(index, _)| index)
+            });
+        if let Some(index) = target {
+            let segment = &mut output[index];
+            let start = word.start.max(segment.start);
+            segment.words.push(MusicLyricWord {
+                value: word.value.clone(),
+                start,
+                end: word.end.min(segment.end).max(start),
+            });
+        }
+    }
+    output
+}
+
+fn estimated_words(primary: &str, start: f64, end: f64) -> Vec<MusicLyricWord> {
+    let words = primary.split_whitespace().collect::<Vec<_>>();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let step = (end - start).max(0.01) / words.len() as f64;
+    words
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| MusicLyricWord {
+            value: value.into(),
+            start: start + step * index as f64,
+            end: start + step * (index + 1) as f64,
+        })
+        .collect()
+}
+
+fn normalized_words(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|character| character.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_lyrics_document(
+    mut document: MusicLyricsDocument,
+    duration_seconds: f64,
+) -> Result<MusicLyricsDocument, StudioError> {
+    document.schema_version = 1;
+    document.language = document.language.trim().to_string();
+    document.source = document.source.trim().to_string();
+    document.theme = document.theme.trim().to_ascii_lowercase();
+    if document.theme.is_empty() {
+        document.theme = "sketchbook".into();
+    }
+    document
+        .segments
+        .retain(|segment| !segment.primary.trim().is_empty());
+    document
+        .segments
+        .sort_by(|left, right| left.start.total_cmp(&right.start));
+    let mut ids = HashSet::new();
+    for segment in &mut document.segments {
+        if uuid::Uuid::parse_str(&segment.id).is_err() || !ids.insert(segment.id.clone()) {
+            segment.id = uuid::Uuid::new_v4().to_string();
+            ids.insert(segment.id.clone());
+        }
+        segment.primary = segment.primary.trim().to_string();
+        segment.translation = segment.translation.trim().to_string();
+        if !segment.start.is_finite() || !segment.end.is_finite() {
+            return Err(StudioError::Invalid(
+                "lyric cue times must be finite numbers".into(),
+            ));
+        }
+        segment.start = segment.start.max(0.0).min(duration_seconds);
+        segment.end = segment.end.max(segment.start + 0.01).min(duration_seconds);
+        if segment.end <= segment.start {
+            return Err(StudioError::Invalid(
+                "every lyric cue must have time to appear before the take ends".into(),
+            ));
+        }
+        segment.words.retain(|word| {
+            !word.value.trim().is_empty()
+                && word.start.is_finite()
+                && word.end.is_finite()
+                && word.end >= word.start
+        });
+        segment
+            .words
+            .sort_by(|left, right| left.start.total_cmp(&right.start));
+        let timed_text = segment
+            .words
+            .iter()
+            .map(|word| word.value.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if segment.words.is_empty()
+            || normalized_words(&timed_text) != normalized_words(&segment.primary)
+        {
+            segment.words = estimated_words(&segment.primary, segment.start, segment.end);
+        } else {
+            for word in &mut segment.words {
+                word.value = word.value.trim().to_string();
+                word.start = word.start.max(segment.start).min(segment.end);
+                word.end = word.end.max(word.start).min(segment.end);
+            }
+        }
+    }
+    validate_lyrics_document(&document, duration_seconds)?;
+    Ok(document)
+}
+
+fn validate_lyrics_document(
+    document: &MusicLyricsDocument,
+    duration_seconds: f64,
+) -> Result<(), StudioError> {
+    if document.schema_version != 1 {
+        return Err(StudioError::Invalid(
+            "unsupported music lyric document version".into(),
+        ));
+    }
+    if uuid::Uuid::parse_str(&document.take_id).is_err()
+        || document.source_sha256.len() != 64
+        || !document
+            .source_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(StudioError::Invalid(
+            "the lyric document has no valid immutable take identity".into(),
+        ));
+    }
+    if document.language.is_empty()
+        || document.language.len() > 64
+        || !document
+            .language
+            .bytes()
+            .all(|byte| byte.is_ascii_alphabetic() || matches!(byte, b' ' | b'-'))
+    {
+        return Err(StudioError::Invalid("unsafe lyric language".into()));
+    }
+    if document.source.is_empty() || document.source.len() > 256 || document.theme != "sketchbook" {
+        return Err(StudioError::Invalid(
+            "the lyric source or visual theme is unsupported".into(),
+        ));
+    }
+    if document.segments.len() > MAX_LYRIC_SEGMENTS
+        || document
+            .segments
+            .iter()
+            .map(|segment| segment.words.len())
+            .sum::<usize>()
+            > MAX_LYRIC_WORDS
+    {
+        return Err(StudioError::Invalid(
+            "the lyric document exceeds its bounded cue or word count".into(),
+        ));
+    }
+    let text_bytes = document.transcript.len()
+        + document
+            .segments
+            .iter()
+            .map(|segment| {
+                segment.primary.len()
+                    + segment.translation.len()
+                    + segment
+                        .words
+                        .iter()
+                        .map(|word| word.value.len())
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+    if text_bytes > MAX_LYRIC_TEXT_BYTES {
+        return Err(StudioError::Invalid(
+            "the lyric document exceeds the 2 MiB text boundary".into(),
+        ));
+    }
+    let mut ids = HashSet::new();
+    for segment in &document.segments {
+        if uuid::Uuid::parse_str(&segment.id).is_err()
+            || !ids.insert(&segment.id)
+            || segment.primary.is_empty()
+            || segment.primary.len() > 16 * 1024
+            || segment.translation.len() > 16 * 1024
+            || !segment.start.is_finite()
+            || !segment.end.is_finite()
+            || segment.start < 0.0
+            || segment.end <= segment.start
+            || segment.end > duration_seconds + 0.05
+        {
+            return Err(StudioError::Invalid(
+                "the lyric document contains an invalid cue".into(),
+            ));
+        }
+        if segment.words.iter().any(|word| {
+            word.value.is_empty()
+                || word.value.len() > 1_024
+                || !word.start.is_finite()
+                || !word.end.is_finite()
+                || word.start < segment.start
+                || word.end < word.start
+                || word.end > segment.end + 0.05
+        }) {
+            return Err(StudioError::Invalid(
+                "the lyric document contains an invalid word timing".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn render_lyrics(project: &MusicProject) -> String {
     project
         .sections
@@ -1733,6 +2406,16 @@ fn read_midi_document(path: &Path) -> Result<MusicMidiDocument, StudioError> {
     Ok(document)
 }
 
+fn read_lyrics_document(path: &Path) -> Result<MusicLyricsDocument, StudioError> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 16 * 1024 * 1024 {
+        return Err(StudioError::Invalid(
+            "the lyric edit document is missing or exceeds 16 MiB".into(),
+        ));
+    }
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
 fn validate_music_id(id: &str) -> Result<(), StudioError> {
     if uuid::Uuid::parse_str(id).is_err() {
         Err(StudioError::Invalid("invalid music project ID".into()))
@@ -1805,6 +2488,154 @@ mod tests {
         project.caption = "Global Metadata: synth-pop, 112 BPM.\n\nVocal Details: intimate alto.\n\nArrangement: analog drums and wide pads.".into();
         project.sections[1].lyrics = "The streetlights answer me".into();
         studio.save_editable(project).unwrap()
+    }
+
+    fn completed_take(studio: &MusicStudio, project: &MusicProject) -> (MusicProject, String) {
+        let (_, take_id) = studio.begin_generation(&project.id, None).unwrap();
+        let mut stored = studio.get(&project.id).unwrap();
+        let master = studio
+            .project_dir(&project.id)
+            .join("takes")
+            .join(format!("{take_id}.flac"));
+        fs::write(&master, b"immutable generated music master").unwrap();
+        let (bytes, sha256) = hash_file(&master).unwrap();
+        let take = stored
+            .takes
+            .iter_mut()
+            .find(|take| take.id == take_id)
+            .unwrap();
+        take.status = "complete".into();
+        take.path = master.to_string_lossy().into_owned();
+        take.bytes = bytes;
+        take.sha256 = sha256;
+        take.duration_seconds = 42.0;
+        stored.status = "ready".into();
+        stored.phase = "take-ready".into();
+        studio.persist(&stored).unwrap();
+        (stored, take_id)
+    }
+
+    #[test]
+    fn lyric_drafts_and_producer_edits_are_durable_immutable_revisions() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, take_id) = completed_take(&studio, &project);
+        let draft = studio
+            .create_lyrics_draft(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(draft.document.source, "producer-timing-draft");
+        assert!(!draft.document.segments.is_empty());
+        assert!(!draft.document.segments[0].words.is_empty());
+        let original_path = PathBuf::from(&draft.project.takes[0].lyrics_document_path);
+        assert!(original_path.is_file());
+
+        let mut edited = draft.document.clone();
+        edited.segments[0].primary = "A producer rewrote this cue".into();
+        edited.segments[0].translation = "Tuottaja muokkasi tämän rivin".into();
+        edited.source = "forged-remote-service".into();
+        let saved = studio
+            .save_lyrics_document(SaveMusicLyricsDocumentRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+                document: edited,
+            })
+            .unwrap();
+        assert_eq!(saved.document.revision, 1);
+        assert_eq!(saved.document.source, "producer-timing-draft");
+        assert_eq!(saved.document.segments[0].words[0].value, "A");
+        assert!(original_path.is_file());
+        assert_ne!(
+            saved.project.takes[0].lyrics_document_path,
+            original_path.to_string_lossy()
+        );
+
+        assert!(studio
+            .save_lyrics_document(SaveMusicLyricsDocumentRequest {
+                project_id: project.id,
+                take_id,
+                document: draft.document,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn speech_segments_keep_word_timestamps_inside_their_cues() {
+        let segments = lyric_segments_from_speech(
+            vec![SpeechTiming {
+                value: "sing it now".into(),
+                start: 3.0,
+                end: 5.0,
+            }],
+            &[
+                SpeechTiming {
+                    value: "sing".into(),
+                    start: 3.0,
+                    end: 3.5,
+                },
+                SpeechTiming {
+                    value: "it".into(),
+                    start: 3.6,
+                    end: 4.0,
+                },
+                SpeechTiming {
+                    value: "outside".into(),
+                    start: 8.0,
+                    end: 8.5,
+                },
+            ],
+        );
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].words.len(), 2);
+        assert!(segments[0]
+            .words
+            .iter()
+            .all(|word| word.start >= 3.0 && word.end <= 5.0));
+
+        let boundary = lyric_segments_from_speech(
+            vec![
+                SpeechTiming {
+                    value: "first".into(),
+                    start: 0.0,
+                    end: 2.0,
+                },
+                SpeechTiming {
+                    value: "second".into(),
+                    start: 2.0,
+                    end: 4.0,
+                },
+            ],
+            &[SpeechTiming {
+                value: "boundary".into(),
+                start: 1.9,
+                end: 2.1,
+            }],
+        );
+        assert_eq!(
+            boundary
+                .iter()
+                .map(|segment| segment.words.len())
+                .sum::<usize>(),
+            1
+        );
+    }
+
+    #[test]
+    fn lyric_sync_refuses_a_master_that_changed_after_generation() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, take_id) = completed_take(&studio, &project);
+        fs::write(&project.takes[0].path, b"altered after preservation").unwrap();
+        assert!(studio
+            .lyrics_audio_source(&MusicLyricsRequest {
+                project_id: project.id,
+                take_id,
+            })
+            .is_err());
     }
 
     #[test]

@@ -70,8 +70,9 @@ use live_preview::{
 };
 use movie_agent::MovieAgentWorkspace;
 pub use music::{
-    CreateMusicProjectRequest, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
-    MusicSummary, SaveMusicMidiDocumentRequest,
+    CreateMusicProjectRequest, MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest,
+    MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, SaveMusicLyricsDocumentRequest,
+    SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest,
 };
 pub use planning::{
     MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningModelRole, PlanningStage,

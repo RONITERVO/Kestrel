@@ -29,8 +29,8 @@ use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
 use local_speech::{
-    LocalSpeech, SpeechAlignmentRequest, SpeechClip, SpeechSnapshot, SpeechSynthesisRequest,
-    SpeechTranscription, SpeechTranscriptionRequest,
+    LocalSpeech, SpeechAlignmentRequest, SpeechClip, SpeechFileTranscriptionRequest,
+    SpeechSnapshot, SpeechSynthesisRequest, SpeechTranscription, SpeechTranscriptionRequest,
 };
 use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
 use model_download::{
@@ -63,9 +63,10 @@ use studio::{
     MovieGenerationProposal, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
     MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
     MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieRenderState,
-    MovieRuntimePolicyRequest, MovieStudio, MovieSummary, MusicMidiRequest, MusicMidiSaveResult,
-    MusicProject, MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest,
-    SaveMusicMidiDocumentRequest, StartMovieRequest,
+    MovieRuntimePolicyRequest, MovieStudio, MovieSummary, MusicLyricsRequest,
+    MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
+    MusicSummary, PromptDraftJob, PromptDraftRequest, SaveMusicLyricsDocumentRequest,
+    SaveMusicMidiDocumentRequest, StartMovieRequest, TranscribeMusicLyricsRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -1965,6 +1966,102 @@ fn save_music_project(
         .music
         .save_editable(project)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_music_lyrics_draft(
+    request: MusicLyricsRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .create_lyrics_draft(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_music_lyrics_document(
+    request: MusicLyricsRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    state
+        .music
+        .load_lyrics_document(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_music_lyrics_document(
+    request: SaveMusicLyricsDocumentRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .save_lyrics_document(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn transcribe_music_lyrics(
+    request: TranscribeMusicLyricsRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let source_request = MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let (audio_path, prompt, _) = state
+        .music
+        .lyrics_audio_source(&source_request)
+        .map_err(|error| error.to_string())?;
+    let cancel = register_speech_job(&state, &request.job_id)?;
+    let result: Result<MusicLyricsSaveResult, String> = async {
+        let _turn = wait_for_speech_turn(&state, &cancel).await?;
+        let _guard = claim_workspace(&state)?;
+        release_all_comfy_memory(&state).await;
+        remember_runtime_for_speech(&state).await;
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .ensure_comfy(&settings.comfy_root, &cancel)
+            .await
+            .map_err(|error| error.to_string())?;
+        let transcription = state
+            .speech
+            .transcribe_file(
+                &settings.comfy_root,
+                &SpeechFileTranscriptionRequest {
+                    job_id: request.job_id.clone(),
+                    recording_id: request.take_id.clone(),
+                    audio_path,
+                    model_id: request.model_id.clone(),
+                    language: request.language.clone(),
+                    prompt,
+                },
+                &cancel,
+                Some(&app),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .music
+            .persist_lyrics_transcription(&request, transcription)
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    finish_speech_job(&state, &request.job_id);
+    result
 }
 
 #[tauri::command]
@@ -3951,6 +4048,10 @@ pub fn run() {
             get_music_project,
             create_music_project,
             save_music_project,
+            create_music_lyrics_draft,
+            get_music_lyrics_document,
+            save_music_lyrics_document,
+            transcribe_music_lyrics,
             start_music_generation,
             cancel_music_generation,
             transcribe_music_midi,

@@ -856,6 +856,44 @@ export interface MusicTake {
   midiSourcePath: string;
   midiDocumentPath: string;
   midiRevision: number;
+  lyricsDocumentPath: string;
+  lyricsReceiptPath: string;
+  lyricsRevision: number;
+}
+
+export interface MusicLyricWord {
+  value: string;
+  start: number;
+  end: number;
+}
+
+export interface MusicLyricSegment {
+  id: string;
+  start: number;
+  end: number;
+  primary: string;
+  translation: string;
+  words: MusicLyricWord[];
+}
+
+export interface MusicLyricsDocument {
+  schemaVersion: number;
+  takeId: string;
+  sourceSha256: string;
+  revision: number;
+  language: string;
+  source: string;
+  transcript: string;
+  theme: "sketchbook";
+  showTranslation: boolean;
+  createdAt: string;
+  updatedAt: string;
+  segments: MusicLyricSegment[];
+}
+
+export interface MusicLyricsSaveResult {
+  project: MusicProject;
+  document: MusicLyricsDocument;
 }
 
 export interface MusicMidiTempo {

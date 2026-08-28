@@ -44,6 +44,8 @@ const CHATTERBOX_FILES: [&str; 5] = [
 ];
 const MAX_TEXT_BYTES: usize = 8_192;
 const MAX_TRANSCRIPTION_AUDIO_BYTES: usize = 32 * 1024 * 1024;
+const MAX_TRANSCRIPTION_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_FILE_TRANSCRIPTION_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_TRANSCRIPTION_PROMPT_BYTES: usize = 4_096;
 const MAX_GENERATED_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
@@ -171,6 +173,23 @@ pub struct SpeechTranscription {
     pub words: Vec<SpeechTiming>,
     pub audio_relative_path: Option<String>,
     pub final_pass: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SpeechFileTranscriptionRequest {
+    pub job_id: String,
+    pub recording_id: String,
+    pub audio_path: PathBuf,
+    pub model_id: String,
+    pub language: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SpeechFileTranscription {
+    pub text: String,
+    pub segments: Vec<SpeechTiming>,
+    pub words: Vec<SpeechTiming>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -610,6 +629,80 @@ impl LocalSpeech {
             write_json_atomic(&sidecar_path(audio_path), &receipt)?;
         }
         Ok(transcription)
+    }
+
+    /// Transcribe a backend-validated durable audio artifact without routing it through the
+    /// browser or duplicating it in the dictation cache. Callers remain responsible for proving
+    /// that `audio_path` belongs to their durable data boundary before invoking this method.
+    pub(crate) async fn transcribe_file(
+        &self,
+        comfy_root: &str,
+        request: &SpeechFileTranscriptionRequest,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<SpeechFileTranscription, SpeechError> {
+        validate_file_transcription_request(comfy_root, request)?;
+        let _generation = self.generation.lock().await;
+        if cancel.is_cancelled() {
+            return Err(SpeechError::Cancelled);
+        }
+        self.verify_live_node("KestrelWhisper", "Kestrel's Whisper adapter")
+            .await?;
+        self.verify_live_node("PreviewAny", "the ComfyUI Preview as Text node")
+            .await?;
+
+        emit_file_transcription_progress(
+            app,
+            request,
+            "transcribing",
+            "ComfyUI Whisper is syncing the preserved music take locally.",
+        );
+        let root = Path::new(comfy_root);
+        let input_directory = root.join("input/kestrel_speech");
+        fs::create_dir_all(&input_directory)?;
+        let extension = request
+            .audio_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("audio")
+            .to_ascii_lowercase();
+        let input_name = format!(
+            "{}-music-{}.{}",
+            request.job_id,
+            uuid::Uuid::new_v4().simple(),
+            extension
+        );
+        let input_path = input_directory.join(&input_name);
+        tokio::fs::copy(&request.audio_path, &input_path).await?;
+        let graph_request = SpeechTranscriptionRequest {
+            job_id: request.job_id.clone(),
+            source_kind: "copilot".into(),
+            source_id: request.recording_id.clone(),
+            recording_id: request.recording_id.clone(),
+            audio_base64: String::new(),
+            mime_type: String::new(),
+            model_id: request.model_id.clone(),
+            language: request.language.clone(),
+            prompt: bounded_prefix(&request.prompt, MAX_TRANSCRIPTION_PROMPT_BYTES),
+            final_pass: true,
+        };
+        let graph = whisper_graph(&graph_request, &format!("kestrel_speech/{input_name}"));
+        let result = self
+            .execute_whisper_graph(&request.job_id, graph, cancel)
+            .await;
+        let _ = tokio::fs::remove_file(&input_path).await;
+        let (text, segments, words) = result?;
+        emit_file_transcription_progress(
+            app,
+            request,
+            "complete",
+            "Local lyric segments and word timings are ready.",
+        );
+        Ok(SpeechFileTranscription {
+            text,
+            segments,
+            words,
+        })
     }
 
     pub async fn align(
@@ -1151,6 +1244,67 @@ fn validate_transcription_request(
             request.mime_type
         ))
     })?;
+    Ok(())
+}
+
+fn validate_file_transcription_request(
+    comfy_root: &str,
+    request: &SpeechFileTranscriptionRequest,
+) -> Result<(), SpeechError> {
+    let root = Path::new(comfy_root);
+    if !root.is_absolute() || !root.join("main.py").is_file() {
+        return Err(SpeechError::Invalid(
+            "ComfyUI root must be an absolute local installation path".into(),
+        ));
+    }
+    safe_identifier(&request.job_id, "job ID")?;
+    safe_identifier(&request.recording_id, "recording ID")?;
+    let metadata = fs::metadata(&request.audio_path)?;
+    if !request.audio_path.is_absolute()
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_TRANSCRIPTION_FILE_BYTES
+    {
+        return Err(SpeechError::Invalid(
+            "music transcription audio is missing, empty, or exceeds 512 MiB".into(),
+        ));
+    }
+    let extension = request
+        .audio_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "wav" | "flac" | "mp3" | "ogg" | "opus" | "webm" | "m4a" | "mp4"
+    ) {
+        return Err(SpeechError::Invalid(
+            "music transcription requires WAV, FLAC, MP3, Ogg/Opus, WebM, M4A, or MP4 audio".into(),
+        ));
+    }
+    if request.prompt.len() > MAX_FILE_TRANSCRIPTION_PROMPT_BYTES {
+        return Err(SpeechError::Invalid(format!(
+            "music lyric guidance exceeds {MAX_FILE_TRANSCRIPTION_PROMPT_BYTES} UTF-8 bytes"
+        )));
+    }
+    if request.language.is_empty()
+        || request.language.len() > 64
+        || !request
+            .language
+            .bytes()
+            .all(|byte| byte.is_ascii_alphabetic() || matches!(byte, b' ' | b'-'))
+    {
+        return Err(SpeechError::Invalid("unsafe transcription language".into()));
+    }
+    if !discover_whisper_models(root)
+        .iter()
+        .any(|model| model.id == request.model_id)
+    {
+        return Err(SpeechError::Invalid(format!(
+            "{} is not a complete local ComfyUI Whisper model",
+            request.model_id
+        )));
+    }
     Ok(())
 }
 
@@ -1967,6 +2121,25 @@ fn emit_transcription_progress(
     }
 }
 
+fn emit_file_transcription_progress(
+    app: Option<&AppHandle>,
+    request: &SpeechFileTranscriptionRequest,
+    stage: &str,
+    detail: &str,
+) {
+    if let Some(app) = app {
+        let _ = app.emit(
+            "local-speech-progress",
+            SpeechProgress {
+                job_id: request.job_id.clone(),
+                passage_id: request.recording_id.clone(),
+                stage: stage.into(),
+                detail: detail.into(),
+            },
+        );
+    }
+}
+
 fn emit_alignment_progress(
     app: Option<&AppHandle>,
     request: &SpeechAlignmentRequest,
@@ -2075,6 +2248,35 @@ mod tests {
             prompt: "Existing draft".into(),
             final_pass: true,
         }
+    }
+
+    #[test]
+    fn durable_file_transcription_accepts_only_bounded_local_audio_and_installed_whisper() {
+        let comfy = tempfile::tempdir().unwrap();
+        fs::write(comfy.path().join("main.py"), b"# local comfy").unwrap();
+        complete_whisper(comfy.path(), "large-v3-turbo");
+        let audio_root = tempfile::tempdir().unwrap();
+        let audio = audio_root.path().join("take.flac");
+        fs::write(&audio, b"fLaC local music").unwrap();
+        let request = SpeechFileTranscriptionRequest {
+            job_id: "music-sync-1".into(),
+            recording_id: "take-1".into(),
+            audio_path: audio.clone(),
+            model_id: "whisper:large-v3-turbo".into(),
+            language: "auto".into(),
+            prompt: "Known producer lyrics".into(),
+        };
+        assert!(
+            validate_file_transcription_request(&comfy.path().to_string_lossy(), &request).is_ok()
+        );
+
+        let mut unsafe_request = request;
+        unsafe_request.audio_path = PathBuf::from("relative.flac");
+        assert!(validate_file_transcription_request(
+            &comfy.path().to_string_lossy(),
+            &unsafe_request
+        )
+        .is_err());
     }
 
     fn alignment_request(clip: &SpeechClip) -> SpeechAlignmentRequest {

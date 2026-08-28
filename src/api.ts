@@ -68,6 +68,8 @@ import type {
   ModelDownloadInspection,
   MovieSummary,
   MusicGenerationEvent,
+  MusicLyricsDocument,
+  MusicLyricsSaveResult,
   MusicMidiDocument,
   MusicMidiSaveResult,
   MusicProject,
@@ -258,6 +260,26 @@ export async function transcribeMusicMidi(projectId: string, takeId: string): Pr
 
 export async function revealMusicProject(id: string): Promise<void> {
   if (isTauri()) await invoke("reveal_music_project", { id });
+}
+
+export async function createMusicLyricsDraft(projectId: string, takeId: string): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("The visual lyric producer requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("create_music_lyrics_draft", { request: { projectId, takeId } });
+}
+
+export async function getMusicLyricsDocument(projectId: string, takeId: string): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("The visual lyric producer requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("get_music_lyrics_document", { request: { projectId, takeId } });
+}
+
+export async function saveMusicLyricsDocument(projectId: string, takeId: string, document: MusicLyricsDocument): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("Saving lyric cues requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("save_music_lyrics_document", { request: { projectId, takeId, document } });
+}
+
+export async function transcribeMusicLyrics(request: { projectId: string; takeId: string; jobId: string; modelId: string; language: string }): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("Local lyric syncing requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("transcribe_music_lyrics", { request });
 }
 
 export async function onMusicGeneration(callback: (event: MusicGenerationEvent) => void): Promise<UnlistenFn> {

@@ -2,7 +2,8 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { describe, expect, it, vi } from "vitest";
 import { midiSecondsToTick, midiTickToSeconds, MusicMidiEditor, quantizeTick } from "./MusicMidiEditor";
 import { applyTaggedLyrics, managedMuscriptorPaths, MusicStudio } from "./MusicStudio";
-import type { MusicMidiDocument, MusicSection } from "./types";
+import { musicLyricSegmentAt, MusicLyricsProducer, wordProgress } from "./MusicLyricsProducer";
+import type { MusicLyricsDocument, MusicMidiDocument, MusicProject, MusicSection, MusicTake } from "./types";
 
 const sections: MusicSection[] = [
   { id: "11111111-1111-4111-8111-111111111111", tag: "Verse", name: "Verse 1", bars: 8, lyrics: "old one", direction: "piano" },
@@ -80,6 +81,50 @@ describe("MusicStudio", () => {
     expect(midiSecondsToTick(2, midiDocument)).toBeCloseTo(1440);
     expect(quantizeTick(358, 120)).toBe(360);
     expect(quantizeTick(-20, 120)).toBe(0);
+  });
+
+  it("selects the timed lyric cue and computes exact word reveal progress", () => {
+    const cue = { id: "cue-1", start: 2, end: 5, primary: "stay here", translation: "", words: [] };
+    expect(musicLyricSegmentAt([cue], 1.99)).toBeUndefined();
+    expect(musicLyricSegmentAt([cue], 2)).toBe(cue);
+    expect(musicLyricSegmentAt([cue], 5)).toBe(cue);
+    expect(wordProgress(3, 4, 2.5)).toBe(0);
+    expect(wordProgress(3, 4, 3.5)).toBe(0.5);
+    expect(wordProgress(3, 4, 5)).toBe(1);
+  });
+
+  it("starts playback at the exact clicked lyric word", () => {
+    const take = {
+      id: "take-1",
+      durationSeconds: 10,
+      resolvedModel: "Music 3",
+    } as MusicTake;
+    const project = { id: "project-1", title: "Night signal", takes: [take] } as MusicProject;
+    const lyricDocument = {
+      revision: 0,
+      source: "producer-timing-draft",
+      language: "auto",
+      showTranslation: true,
+      segments: [{
+        id: "cue-1",
+        start: 2,
+        end: 5,
+        primary: "stay here",
+        translation: "",
+        words: [
+          { value: "stay", start: 2, end: 3 },
+          { value: "here", start: 3, end: 4 },
+        ],
+      }],
+    } as MusicLyricsDocument;
+    const onSeek = vi.fn();
+    const onTogglePlay = vi.fn();
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    render(<MusicLyricsProducer project={project} take={take} document={lyricDocument} audio={null} currentTime={2.2} playing={false} busy={false} status="" onTogglePlay={onTogglePlay} onSeek={onSeek} onChange={vi.fn()} onSave={vi.fn()} onSync={vi.fn()} onCancelSync={vi.fn()} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Play from here" }));
+    expect(onSeek).toHaveBeenCalledWith(3);
+    expect(onTogglePlay).toHaveBeenCalledTimes(1);
+    canvas.mockRestore();
   });
 
   it("keeps source identity while producer edits become an explicit revision save", async () => {
