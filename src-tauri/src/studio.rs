@@ -43,6 +43,7 @@ mod live_preview;
 mod model_stream;
 mod movie_agent;
 mod music;
+mod music_lyrics_model;
 mod music_midi;
 mod planning;
 mod prompt_collaboration;
@@ -70,8 +71,16 @@ use live_preview::{
 };
 use movie_agent::MovieAgentWorkspace;
 pub use music::{
-    CreateMusicProjectRequest, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
-    MusicSummary, SaveMusicMidiDocumentRequest,
+    CreateMusicProjectRequest, DraftLyricsFromAudioRangeRequest, DraftLyricsFromAudioRangeResult,
+    MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject,
+    MusicStudio, MusicSummary, RepairMusicLyricsRangeRequest, SaveMusicLyricsDocumentRequest,
+    SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest, TranslateMusicLyricsRequest,
+    TranslateMusicLyricsResult,
+};
+pub(crate) use music_lyrics_model::{
+    draft_from_audio as draft_music_lyrics_from_audio,
+    translate as translate_music_lyrics_with_model,
+    validate_translation_request as validate_music_lyrics_translation,
 };
 pub use planning::{
     MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningModelRole, PlanningStage,
@@ -221,6 +230,25 @@ pub fn media_response(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Re
 fn read_media_response(
     request: &tauri::http::Request<Vec<u8>>,
 ) -> Result<tauri::http::Response<Vec<u8>>, (u16, String)> {
+    let library = directories::UserDirs::new()
+        .map(|dirs| dirs.home_dir().join("Kestrel Research"))
+        .ok_or_else(|| (500, "local media library is unavailable".to_string()))?;
+    read_media_response_from_library(request, &library)
+}
+
+fn read_media_response_from_library(
+    request: &tauri::http::Request<Vec<u8>>,
+    library: &Path,
+) -> Result<tauri::http::Response<Vec<u8>>, (u16, String)> {
+    if !matches!(
+        *request.method(),
+        tauri::http::Method::GET | tauri::http::Method::HEAD
+    ) {
+        return Err((
+            405,
+            "local media supports only GET and HEAD requests".into(),
+        ));
+    }
     let relative =
         percent_encoding::percent_decode_str(request.uri().path().trim_start_matches('/'))
             .decode_utf8()
@@ -231,9 +259,6 @@ fn read_media_response(
     {
         return Err((403, "unsafe movie media path".into()));
     }
-    let library = directories::UserDirs::new()
-        .map(|dirs| dirs.home_dir().join("Kestrel Research"))
-        .ok_or_else(|| (500, "local media library is unavailable".to_string()))?;
     let (root, relative) = if let Some(relative) = relative.strip_prefix("music/") {
         (library.join("music"), relative)
     } else if let Some(relative) = relative.strip_prefix("images/") {
@@ -320,8 +345,19 @@ fn read_media_response(
             return Err((416, "media byte range starts beyond the file".into()));
         }
         const MAX_CHUNK: u64 = 4 * 1024 * 1024;
-        let requested_end = end_text.parse::<u64>().unwrap_or(length.saturating_sub(1));
-        let end = requested_end.min(length - 1).min(start + MAX_CHUNK - 1);
+        let requested_end = if end_text.is_empty() {
+            length - 1
+        } else {
+            end_text
+                .parse::<u64>()
+                .map_err(|_| (416, "invalid media byte range end".to_string()))?
+        };
+        if requested_end < start {
+            return Err((416, "media byte range ends before it starts".into()));
+        }
+        let end = requested_end
+            .min(length - 1)
+            .min(start.saturating_add(MAX_CHUNK - 1));
         let count = end - start + 1;
         file.seek(SeekFrom::Start(start))
             .map_err(|error| (500, error.to_string()))?;
@@ -335,7 +371,15 @@ fn read_media_response(
             .header("Content-Length", count);
         builder.body(body).map_err(|error| (500, error.to_string()))
     } else {
-        let mut body = Vec::with_capacity(length.min(16 * 1024 * 1024) as usize);
+        const MAX_UNRANGED_MEDIA_BYTES: u64 = 64 * 1024 * 1024;
+        if length > MAX_UNRANGED_MEDIA_BYTES {
+            return Err((
+                413,
+                "local media is too large for one in-memory response; retry playback so the WebView requests byte ranges, or reveal the project files"
+                    .into(),
+            ));
+        }
+        let mut body = Vec::with_capacity(length as usize);
         file.read_to_end(&mut body)
             .map_err(|error| (500, error.to_string()))?;
         builder
@@ -6679,6 +6723,48 @@ mod tests {
     use super::*;
     use crate::runtime::RuntimeManager;
     use std::sync::Arc;
+
+    fn media_request(uri: &str, range: Option<&str>) -> tauri::http::Request<Vec<u8>> {
+        let mut request = tauri::http::Request::builder()
+            .method(tauri::http::Method::GET)
+            .uri(uri);
+        if let Some(range) = range {
+            request = request.header("Range", range);
+        }
+        request.body(Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn local_media_rejects_reversed_ranges_without_panicking() {
+        let library = tempfile::tempdir().unwrap();
+        let music = library.path().join("music");
+        fs::create_dir_all(&music).unwrap();
+        fs::write(music.join("take.wav"), [0_u8; 128]).unwrap();
+        let request = media_request(
+            "http://kestrel-media.localhost/music/take.wav",
+            Some("bytes=100-50"),
+        );
+
+        let error = read_media_response_from_library(&request, library.path()).unwrap_err();
+
+        assert_eq!(error.0, 416);
+        assert!(error.1.contains("ends before"));
+    }
+
+    #[test]
+    fn local_media_never_reads_an_unbounded_large_file_into_memory() {
+        let library = tempfile::tempdir().unwrap();
+        let music = library.path().join("music");
+        fs::create_dir_all(&music).unwrap();
+        let file = fs::File::create(music.join("take.wav")).unwrap();
+        file.set_len(64 * 1024 * 1024 + 1).unwrap();
+        let request = media_request("http://kestrel-media.localhost/music/take.wav", None);
+
+        let error = read_media_response_from_library(&request, library.path()).unwrap_err();
+
+        assert_eq!(error.0, 413);
+        assert!(error.1.contains("byte ranges"));
+    }
 
     #[test]
     fn comfy_workload_derives_ports_from_its_base_url() {

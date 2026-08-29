@@ -856,6 +856,87 @@ export interface MusicTake {
   midiSourcePath: string;
   midiDocumentPath: string;
   midiRevision: number;
+  lyricsDocumentPath: string;
+  lyricsReceiptPath: string;
+  lyricsRevision: number;
+}
+
+export interface MusicLyricWord {
+  value: string;
+  start: number;
+  end: number;
+}
+
+export interface MusicLyricSegment {
+  id: string;
+  start: number;
+  end: number;
+  primary: string;
+  translation: string;
+  words: MusicLyricWord[];
+}
+
+export type MusicLyricTheme = "sketchbook" | "signal-bloom";
+
+export interface MusicLyricsDocument {
+  schemaVersion: number;
+  takeId: string;
+  sourceSha256: string;
+  revision: number;
+  language: string;
+  source: string;
+  transcript: string;
+  theme: MusicLyricTheme;
+  showTranslation: boolean;
+  translationLanguage: string;
+  translationModelId: string;
+  createdAt: string;
+  updatedAt: string;
+  segments: MusicLyricSegment[];
+}
+
+export interface MusicLyricsSaveResult {
+  project: MusicProject;
+  document: MusicLyricsDocument;
+}
+
+export interface RepairMusicLyricsRangeRequest {
+  projectId: string;
+  takeId: string;
+  jobId: string;
+  modelId: string;
+  language: string;
+  startSeconds: number;
+  endSeconds: number;
+  prompt: string;
+}
+
+export interface DraftLyricsFromAudioRangeRequest {
+  projectId: string;
+  takeId: string;
+  modelId: string;
+  startSeconds: number;
+  endSeconds: number;
+}
+
+export interface DraftLyricsFromAudioRangeResult {
+  transcription: string;
+  modelId: string;
+  modelName: string;
+}
+
+export interface TranslateMusicLyricsRequest {
+  projectId: string;
+  takeId: string;
+  modelId: string;
+  targetLanguage: string;
+  lines: string[];
+}
+
+export interface TranslateMusicLyricsResult {
+  translations: string[];
+  modelId: string;
+  modelName: string;
 }
 
 export interface MusicMidiTempo {

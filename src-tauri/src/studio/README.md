@@ -55,11 +55,20 @@ and must not acquire authority implicitly.
 | `image_assets.rs` | Durable H3 pseudo-image generations, graph/receipt provenance, imported candidates | Planning authority |
 | `image_studio.rs` | Recoverable image projects, structured compositions, native Ideogram 4 graphs, immutable PNG takes, and progress | LLM process ownership, arbitrary imported workflows, bundled license rights, or public-network fallback |
 | `live_preview.rs` | TAE preview graph nodes, bounded project-level reconnect state, and producer-visible preview events | Final-render truth or durable base64 preview storage |
-| `music.rs` | Recoverable song projects, producer arrangement, native Music 3 graphs, immutable takes, progress, and optional MuScriptor adapter | LLM process ownership, fake stem separation, bundled gated weights, or public-network fallback |
+| `music.rs` | Recoverable song projects, producer arrangement, native Music 3 graphs, immutable takes, durable lyric cue revisions, progress, and optional MuScriptor adapter | LLM process ownership, fake stem separation, bundled gated weights, or public-network fallback |
+| `music_lyrics_model.rs` | Bounded audio-listening and translation suggestions through a caller-owned local-model lease | Durable lyric mutation, runtime ownership, remote fallback, or arbitrary tools |
 | `music_midi.rs` | Bounded Standard MIDI parsing/writing, typed piano-roll documents, and recoverable binary replacement | MuScriptor execution, project path selection, source mutation, or UI state |
 
 If a change appears to belong to two rows, introduce a typed boundary instead of importing private
 implementation details across both modules.
+
+The current lyric-sync path has strong extended producer results and should not acquire another
+runtime speculatively. If a repeatable acceptance failure appears, follow the dormant, license-aware
+plan in [`MUSIC_LYRIC_ALIGNMENT_CONTINGENCY.md`](MUSIC_LYRIC_ALIGNMENT_CONTINGENCY.md) rather than
+adding an ad-hoc separator or remote service.
+
+Visual lyric renderer ownership, source parity, audio-band semantics, fixed pool limits, and
+interaction requirements are recorded in [`MUSIC_LYRIC_VISUALS.md`](MUSIC_LYRIC_VISUALS.md).
 
 ## Studio planning lifecycle
 
@@ -192,12 +201,24 @@ open recoverable song project
   -> stream node phase, sample step, percentage, and ETA
   -> copy and hash the completed lossless stereo master inside the project
   -> append an immutable take and exact generation receipt, then call `/free` on both ComfyUI services
+  -> optionally open the take in the visual lyric stage with an immediate producer-editable cue draft
+  -> preview Living sketchbook or Signal bloom and preserve the chosen allowlisted visual theme
+  -> optionally unload competing runtimes and use Kestrel Whisper on 8188 for local word timestamps
+  -> preserve the sync receipt and each later timing/translation edit as an immutable JSON revision
 ```
 
 `music/<uuid>/project.json` is recoverable truth. `takes/<uuid>.flac` and its graph receipt are immutable;
 editing the arrangement never rewrites an older take. Startup changes active generations to
 `interrupted` and never submits them again. MiniMax Music 3 produces a stereo master, so the arranger
 may show semantic lanes for structure and lyrics but must not label generated audio as separate stems.
+The visual lyric stage never sends the master or lyrics to another application or service. Draft cue
+positions derive from the immutable take lyrics; local Whisper may replace them with sung transcript
+segments and word timestamps only after the master SHA-256 is rechecked. Each sync creates a new
+`lyrics/<take>/<sync>` session, and each producer edit appends a numbered JSON revision while the take
+continues to point at the newest document. The audio-reactive canvas is presentation only and cannot
+modify or masquerade as the preserved master. Visual themes share one 1024-point analyser and one
+multi-band/transient/adaptive-beat frame with the lyric typography, live in separate bounded renderer modules,
+and enter durable JSON only through the native theme allowlist; a theme is never downloaded code.
 The shared H3/speech service remains on port 8188 with its conservative low-VRAM profile. Music uses
 port 8189 with async weight offload disabled, dynamic VRAM as an OOM fallback, and one GiB reserved
 for the desktop. The installed INT8 text encoder, INT8 DiT, and VAE run one stage at a time; Kestrel

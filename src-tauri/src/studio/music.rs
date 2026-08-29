@@ -13,6 +13,7 @@ use super::{
     comfy_execution_error, find_output_media, hash_file, truncate, MovieStudio, StudioError,
     MUSIC_COMFY_BASE,
 };
+use crate::local_speech::{SpeechFileTranscription, SpeechTiming};
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -35,6 +36,11 @@ const MUSCRIPTOR_MODEL_BYTES: u64 = 5_465_642_136;
 const MAX_MUSIC_TEXT_BYTES: usize = 64 * 1024;
 const MAX_SECTIONS: usize = 64;
 const MAX_TAKES: usize = 128;
+const MAX_LYRIC_SEGMENTS: usize = 4_096;
+const MAX_LYRIC_WORDS: usize = 65_536;
+const MAX_LYRIC_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const DEFAULT_LYRIC_THEME: &str = "sketchbook";
+const SIGNAL_BLOOM_LYRIC_THEME: &str = "signal-bloom";
 const MUSIC_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const MUSIC_DIT_INT8: &str = "minimax_music3_dit_int8_convrot.safetensors";
 const MUSIC_DIT_FP16: &str = "minimax_music3_dit_fp16.safetensors";
@@ -114,6 +120,12 @@ pub struct MusicTake {
     pub midi_document_path: String,
     #[serde(default)]
     pub midi_revision: u32,
+    #[serde(default)]
+    pub lyrics_document_path: String,
+    #[serde(default)]
+    pub lyrics_receipt_path: String,
+    #[serde(default)]
+    pub lyrics_revision: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +214,289 @@ pub struct SaveMusicMidiDocumentRequest {
 pub struct MusicMidiSaveResult {
     pub project: MusicProject,
     pub document: MusicMidiDocument,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricWord {
+    pub value: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricSegment {
+    pub id: String,
+    pub start: f64,
+    pub end: f64,
+    pub primary: String,
+    #[serde(default)]
+    pub translation: String,
+    #[serde(default)]
+    pub words: Vec<MusicLyricWord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricsDocument {
+    pub schema_version: u32,
+    pub take_id: String,
+    pub source_sha256: String,
+    pub revision: u32,
+    pub language: String,
+    pub source: String,
+    pub transcript: String,
+    pub theme: String,
+    pub show_translation: bool,
+    #[serde(default)]
+    pub translation_language: String,
+    #[serde(default)]
+    pub translation_model_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub segments: Vec<MusicLyricSegment>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricsRequest {
+    pub project_id: String,
+    pub take_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscribeMusicLyricsRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub job_id: String,
+    pub model_id: String,
+    #[serde(default = "default_lyrics_language")]
+    pub language: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairMusicLyricsRangeRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub job_id: String,
+    pub model_id: String,
+    #[serde(default = "default_lyrics_language")]
+    pub language: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    #[serde(default)]
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftLyricsFromAudioRangeRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub model_id: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftLyricsFromAudioRangeResult {
+    pub transcription: String,
+    pub model_id: String,
+    pub model_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateMusicLyricsRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub model_id: String,
+    pub target_language: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateMusicLyricsResult {
+    pub translations: Vec<String>,
+    pub model_id: String,
+    pub model_name: String,
+}
+
+pub(crate) struct MusicLyricsAudioSource {
+    pub path: PathBuf,
+    pub lyrics: String,
+    pub duration_seconds: f64,
+}
+
+pub fn clean_lyric_line(raw: &str) -> String {
+    let mut text = raw.trim();
+    text = text.trim_start_matches(['*', '_', '#', '-', '•']).trim();
+    text = text.trim_end_matches(['*', '_', '#']).trim();
+
+    text = text
+        .trim_matches(['"', '\'', '`', '“', '”', '‘', '’', '«', '»'])
+        .trim();
+
+    text = text.trim_start_matches(['*', '_', '#', '-', '•']).trim();
+    text = text.trim_end_matches(['*', '_', '#']).trim();
+    text = text
+        .trim_matches(['"', '\'', '`', '“', '”', '‘', '’', '«', '»'])
+        .trim();
+
+    let mut cleaned = text.to_string();
+    if let Some(idx) = cleaned
+        .find("(Note:")
+        .or_else(|| cleaned.find("(note:"))
+        .or_else(|| cleaned.find("[Note:"))
+        .or_else(|| cleaned.find("[note:"))
+        .or_else(|| cleaned.find("(Literal:"))
+        .or_else(|| cleaned.find("(literal:"))
+        .or_else(|| cleaned.find("(Meaning:"))
+        .or_else(|| cleaned.find("(meaning:"))
+        .or_else(|| cleaned.find("(Explanation:"))
+        .or_else(|| cleaned.find("(explanation:"))
+        .or_else(|| cleaned.find("(Context:"))
+        .or_else(|| cleaned.find("(context:"))
+    {
+        cleaned.truncate(idx);
+    }
+
+    cleaned.trim().to_string()
+}
+
+pub fn parse_lyrical_translations(raw_text: &str, expected_count: usize) -> Vec<String> {
+    if expected_count == 0 {
+        return Vec::new();
+    }
+
+    // 1. Try JSON extraction
+    let json_candidate = if let Some(start) = raw_text.find("```json") {
+        if let Some(end) = raw_text[start + 7..].find("```") {
+            &raw_text[start + 7..start + 7 + end]
+        } else {
+            &raw_text[start + 7..]
+        }
+    } else if let Some(start) = raw_text.find('[') {
+        if let Some(end) = raw_text.rfind(']') {
+            if end > start {
+                &raw_text[start..=end]
+            } else {
+                raw_text
+            }
+        } else {
+            raw_text
+        }
+    } else {
+        raw_text
+    };
+
+    if let Ok(arr) = serde_json::from_str::<Vec<String>>(json_candidate.trim()) {
+        if !arr.is_empty() {
+            let mut results: Vec<String> = arr.into_iter().map(|s| clean_lyric_line(&s)).collect();
+            results.resize(expected_count, String::new());
+            return results;
+        }
+    }
+
+    // 2. Parse strictly numbered lines (e.g. "1. ...", "1) ...", "1: ...")
+    let mut numbered_map = std::collections::HashMap::new();
+    let mut fallback_lines = Vec::new();
+
+    for line in raw_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("*target:")
+            || lower.starts_with("target:")
+            || lower.starts_with("*style:")
+            || lower.starts_with("style:")
+            || lower.starts_with("*language:")
+            || lower.starts_with("language:")
+            || lower.starts_with("here is")
+            || lower.starts_with("here are")
+            || lower.starts_with("sure,")
+            || lower.starts_with("certainly")
+            || lower.starts_with("###")
+            || lower.starts_with("##")
+            || lower.starts_with("#")
+            || lower.starts_with("note:")
+            || lower.starts_with("(note")
+        {
+            continue;
+        }
+
+        let line_content = trimmed.trim_start_matches(['*', '_', '#']).trim();
+        let mut digits_end = 0;
+        for (idx, ch) in line_content.char_indices() {
+            if ch.is_ascii_digit() {
+                digits_end = idx + 1;
+            } else {
+                break;
+            }
+        }
+
+        if digits_end > 0 {
+            if let Ok(num) = line_content[..digits_end].parse::<usize>() {
+                let rest = line_content[digits_end..].trim_start();
+                let stripped = if rest.starts_with('.')
+                    || rest.starts_with(')')
+                    || rest.starts_with(':')
+                    || rest.starts_with('-')
+                {
+                    rest[1..].trim()
+                } else {
+                    rest
+                };
+                let cleaned = clean_lyric_line(stripped);
+                if num >= 1 && num <= expected_count && !cleaned.is_empty() {
+                    numbered_map.insert(num, cleaned);
+                }
+            }
+        }
+
+        let cleaned_fallback = clean_lyric_line(trimmed);
+        if !cleaned_fallback.is_empty() {
+            fallback_lines.push(cleaned_fallback);
+        }
+    }
+
+    if !numbered_map.is_empty() {
+        let mut results = Vec::with_capacity(expected_count);
+        for i in 1..=expected_count {
+            if let Some(val) = numbered_map.get(&i) {
+                results.push(val.clone());
+            } else {
+                results.push(String::new());
+            }
+        }
+        results
+    } else {
+        fallback_lines.resize(expected_count, String::new());
+        fallback_lines
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveMusicLyricsDocumentRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub document: MusicLyricsDocument,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricsSaveResult {
+    pub project: MusicProject,
+    pub document: MusicLyricsDocument,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -421,6 +716,9 @@ impl MusicStudio {
             midi_source_path: String::new(),
             midi_document_path: String::new(),
             midi_revision: 0,
+            lyrics_document_path: String::new(),
+            lyrics_receipt_path: String::new(),
+            lyrics_revision: 0,
         });
         project.active_take_id = take_id.clone();
         project.status = "generating".into();
@@ -709,6 +1007,591 @@ impl MusicStudio {
                 if cancelled { project.detail } else { error },
             ),
         );
+    }
+
+    pub fn lyrics_audio_source(
+        &self,
+        request: &MusicLyricsRequest,
+    ) -> Result<MusicLyricsAudioSource, StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| take.id == request.take_id && take.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("choose a completed music take for lyric syncing".into())
+            })?;
+        let root = fs::canonicalize(self.project_dir(&project.id).join("takes"))?;
+        let source = fs::canonicalize(Path::new(&take.path)).map_err(|_| {
+            StudioError::Invalid("the selected preserved master is missing from disk".into())
+        })?;
+        if !source.starts_with(root) || !source.is_file() {
+            return Err(StudioError::Invalid(
+                "the lyric-sync audio is outside this private music project".into(),
+            ));
+        }
+        let (_, actual_sha256) = hash_file(&source)?;
+        if actual_sha256 != take.sha256 {
+            return Err(StudioError::Invalid(
+                "the preserved master changed after generation; Kestrel will not attach lyric timings to altered audio".into(),
+            ));
+        }
+        Ok(MusicLyricsAudioSource {
+            path: source,
+            lyrics: take.lyrics.clone(),
+            duration_seconds: take.duration_seconds,
+        })
+    }
+
+    pub fn validate_lyrics_range(
+        &self,
+        request: &MusicLyricsRequest,
+        start_seconds: f64,
+        end_seconds: f64,
+        maximum_seconds: Option<f64>,
+    ) -> Result<MusicLyricsAudioSource, StudioError> {
+        let source = self.lyrics_audio_source(request)?;
+        if !start_seconds.is_finite()
+            || !end_seconds.is_finite()
+            || start_seconds < 0.0
+            || end_seconds <= start_seconds
+            || end_seconds > source.duration_seconds + 0.05
+        {
+            return Err(StudioError::Invalid(format!(
+                "choose a finite lyric range inside the {:.2}-second preserved take",
+                source.duration_seconds
+            )));
+        }
+        if let Some(maximum) = maximum_seconds {
+            if end_seconds - start_seconds > maximum {
+                return Err(StudioError::Invalid(format!(
+                    "the local audio model can listen to at most {maximum:.0} seconds at a time"
+                )));
+            }
+        }
+        Ok(source)
+    }
+
+    pub fn create_lyrics_draft(
+        &self,
+        request: MusicLyricsRequest,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| take.id == request.take_id && take.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("choose a completed music take for the lyric stage".into())
+            })?;
+        if !take.lyrics_document_path.trim().is_empty() {
+            return self.load_lyrics_document(request);
+        }
+        let take_id = take.id.clone();
+        let take_sha256 = take.sha256.clone();
+        let take_lyrics = take.lyrics.clone();
+        let duration_seconds = take.duration_seconds;
+        let now = Utc::now().to_rfc3339();
+        let document = normalize_lyrics_document(
+            MusicLyricsDocument {
+                schema_version: 1,
+                take_id,
+                source_sha256: take_sha256.clone(),
+                revision: 0,
+                language: "auto".into(),
+                source: "producer-timing-draft".into(),
+                transcript: take_lyrics.clone(),
+                theme: DEFAULT_LYRIC_THEME.into(),
+                show_translation: true,
+                translation_language: String::new(),
+                translation_model_id: String::new(),
+                created_at: now.clone(),
+                updated_at: now,
+                segments: estimated_lyric_segments(&take_lyrics, duration_seconds),
+            },
+            duration_seconds,
+        )?;
+        self.persist_new_lyrics_session(
+            project,
+            &request.take_id,
+            document,
+            json!({
+                "schemaVersion": 1,
+                "createdAt": Utc::now().to_rfc3339(),
+                "takeId": request.take_id,
+                "sourceSha256": take_sha256,
+                "source": "producer-timing-draft",
+                "detail": "Initial cue positions were estimated from the immutable generated lyrics and can be edited or replaced by local Whisper sync."
+            }),
+        )
+    }
+
+    pub fn persist_lyrics_transcription(
+        &self,
+        request: &TranscribeMusicLyricsRequest,
+        transcription: SpeechFileTranscription,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| take.id == request.take_id && take.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("the lyric-sync music take no longer exists".into())
+            })?;
+        let take_id = take.id.clone();
+        let take_sha256 = take.sha256.clone();
+        let duration_seconds = take.duration_seconds;
+        let (theme, show_translation) = if take.lyrics_document_path.trim().is_empty() {
+            (DEFAULT_LYRIC_THEME.to_string(), true)
+        } else {
+            let previous = self.load_lyrics_document(MusicLyricsRequest {
+                project_id: request.project_id.clone(),
+                take_id: request.take_id.clone(),
+            })?;
+            (previous.document.theme, previous.document.show_translation)
+        };
+        let segment_count = transcription.segments.len();
+        let word_count = transcription.words.len();
+        let transcription_strategy = transcription.strategy.clone();
+        let context_copies = transcription.context_copies;
+        let context_seam_seconds = transcription.context_seam_seconds;
+        let selected_context_copy = transcription.selected_context_copy;
+        let first_context_score = transcription.first_context_score;
+        let second_context_score = transcription.second_context_score;
+        let now = Utc::now().to_rfc3339();
+        let document = normalize_lyrics_document(
+            MusicLyricsDocument {
+                schema_version: 1,
+                take_id,
+                source_sha256: take_sha256.clone(),
+                revision: 0,
+                language: request.language.clone(),
+                source: request.model_id.clone(),
+                transcript: transcription.text.clone(),
+                theme: theme.clone(),
+                show_translation,
+                translation_language: String::new(),
+                translation_model_id: String::new(),
+                created_at: now.clone(),
+                updated_at: now,
+                segments: lyric_segments_from_speech(transcription.segments, &transcription.words),
+            },
+            duration_seconds,
+        )?;
+        self.persist_new_lyrics_session(
+            project,
+            &request.take_id,
+            document,
+            json!({
+                "schemaVersion": 1,
+                "createdAt": Utc::now().to_rfc3339(),
+                "takeId": request.take_id,
+                "sourceSha256": take_sha256,
+                "tool": "Kestrel Whisper",
+                "modelId": request.model_id,
+                "language": request.language,
+                "transcript": transcription.text,
+                "segmentCount": segment_count,
+                "wordCount": word_count,
+                "transcriptionStrategy": transcription_strategy,
+                "contextCopies": context_copies,
+                "contextSeamSeconds": context_seam_seconds,
+                "selectedContextCopy": selected_context_copy,
+                "firstContextScore": first_context_score,
+                "secondContextScore": second_context_score,
+                "theme": theme,
+                "network": "disabled"
+            }),
+        )
+    }
+
+    pub fn persist_lyrics_range_repair(
+        &self,
+        request: &RepairMusicLyricsRangeRequest,
+        transcription: SpeechFileTranscription,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| take.id == request.take_id && take.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("the lyric-sync music take no longer exists".into())
+            })?;
+        let take_id = take.id.clone();
+        let take_sha256 = take.sha256.clone();
+        let duration_seconds = take.duration_seconds;
+        let previous = if !take.lyrics_document_path.trim().is_empty() {
+            self.load_lyrics_document(MusicLyricsRequest {
+                project_id: request.project_id.clone(),
+                take_id: request.take_id.clone(),
+            })?
+        } else {
+            MusicLyricsSaveResult {
+                project: project.clone(),
+                document: MusicLyricsDocument {
+                    schema_version: 1,
+                    take_id: take_id.clone(),
+                    source_sha256: take_sha256.clone(),
+                    revision: 0,
+                    language: request.language.clone(),
+                    source: request.model_id.clone(),
+                    transcript: String::new(),
+                    theme: DEFAULT_LYRIC_THEME.to_string(),
+                    show_translation: true,
+                    translation_language: String::new(),
+                    translation_model_id: String::new(),
+                    created_at: Utc::now().to_rfc3339(),
+                    updated_at: Utc::now().to_rfc3339(),
+                    segments: Vec::new(),
+                },
+            }
+        };
+
+        let segment_count = transcription.segments.len();
+        let word_count = transcription.words.len();
+        let transcription_strategy = transcription.strategy.clone();
+        let context_copies = transcription.context_copies;
+        let context_seam_seconds = transcription.context_seam_seconds;
+        let selected_context_copy = transcription.selected_context_copy;
+        let first_context_score = transcription.first_context_score;
+        let second_context_score = transcription.second_context_score;
+        let repaired_segments =
+            lyric_segments_from_speech(transcription.segments, &transcription.words);
+        let spliced_segments = splice_repaired_lyrics_segments(
+            &previous.document.segments,
+            repaired_segments,
+            request.start_seconds,
+            request.end_seconds,
+        );
+
+        let full_transcript = spliced_segments
+            .iter()
+            .map(|s| s.primary.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let now = Utc::now().to_rfc3339();
+        let mut project = project;
+        let take_index = project
+            .takes
+            .iter()
+            .position(|t| t.id == request.take_id && t.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("the lyric-sync music take no longer exists".into())
+            })?;
+
+        let has_existing_session = !project.takes[take_index]
+            .lyrics_document_path
+            .trim()
+            .is_empty();
+
+        if has_existing_session {
+            let previous_path = self.validated_lyrics_artifact(
+                &project.id,
+                &project.takes[take_index].lyrics_document_path,
+            )?;
+            let revisions = previous_path.parent().ok_or_else(|| {
+                StudioError::Invalid("the lyric revision folder is unavailable".into())
+            })?;
+            let revision = next_available_lyrics_revision(revisions, previous.document.revision)?;
+            let document = normalize_lyrics_document(
+                MusicLyricsDocument {
+                    schema_version: 1,
+                    take_id: take_id.clone(),
+                    source_sha256: take_sha256.clone(),
+                    revision,
+                    language: request.language.clone(),
+                    source: format!("{}-range-repair", request.model_id),
+                    transcript: full_transcript,
+                    theme: previous.document.theme.clone(),
+                    show_translation: previous.document.show_translation,
+                    translation_language: previous.document.translation_language,
+                    translation_model_id: previous.document.translation_model_id,
+                    created_at: previous.document.created_at,
+                    updated_at: now,
+                    segments: spliced_segments,
+                },
+                duration_seconds,
+            )?;
+            let document_path = revisions.join(format!("{revision:03}.json"));
+            let receipt_path = revisions.join(format!("{revision:03}.receipt.json"));
+            write_json_recoverable(&document_path, &document)?;
+            write_json_recoverable(
+                &receipt_path,
+                &json!({
+                    "schemaVersion": 1,
+                    "createdAt": document.updated_at,
+                    "takeId": request.take_id,
+                    "revision": revision,
+                    "sourceSha256": take_sha256,
+                    "tool": "Kestrel Whisper Range Repair",
+                    "modelId": request.model_id,
+                    "language": request.language,
+                    "rangeStart": request.start_seconds,
+                    "rangeEnd": request.end_seconds,
+                    "prompt": request.prompt,
+                    "segmentCount": segment_count,
+                    "wordCount": word_count,
+                    "transcriptionStrategy": transcription_strategy,
+                    "contextCopies": context_copies,
+                    "contextSeamSeconds": context_seam_seconds,
+                    "selectedContextCopy": selected_context_copy,
+                    "firstContextScore": first_context_score,
+                    "secondContextScore": second_context_score,
+                    "theme": document.theme,
+                    "network": "disabled"
+                }),
+            )?;
+            project.takes[take_index].lyrics_document_path =
+                document_path.to_string_lossy().into_owned();
+            project.takes[take_index].lyrics_revision = revision;
+            project.phase = "lyrics-ready".into();
+            project.detail = format!(
+                "Lyric revision {revision} saved after Whisper range repair ({:.1}s–{:.1}s). Earlier revisions and raw take audio remain untouched.",
+                request.start_seconds, request.end_seconds
+            );
+            project.updated_at = Utc::now().to_rfc3339();
+            self.persist(&project)?;
+            Ok(MusicLyricsSaveResult { project, document })
+        } else {
+            let document = normalize_lyrics_document(
+                MusicLyricsDocument {
+                    schema_version: 1,
+                    take_id: take_id.clone(),
+                    source_sha256: take_sha256.clone(),
+                    revision: 0,
+                    language: request.language.clone(),
+                    source: format!("{}-range-repair", request.model_id),
+                    transcript: full_transcript,
+                    theme: DEFAULT_LYRIC_THEME.to_string(),
+                    show_translation: true,
+                    translation_language: String::new(),
+                    translation_model_id: String::new(),
+                    created_at: now.clone(),
+                    updated_at: now,
+                    segments: spliced_segments,
+                },
+                duration_seconds,
+            )?;
+            self.persist_new_lyrics_session(
+                project,
+                &request.take_id,
+                document,
+                json!({
+                    "schemaVersion": 1,
+                    "createdAt": Utc::now().to_rfc3339(),
+                    "takeId": request.take_id,
+                    "sourceSha256": take_sha256,
+                    "tool": "Kestrel Whisper Range Repair",
+                    "modelId": request.model_id,
+                    "language": request.language,
+                    "rangeStart": request.start_seconds,
+                    "rangeEnd": request.end_seconds,
+                    "prompt": request.prompt,
+                    "segmentCount": segment_count,
+                    "wordCount": word_count,
+                    "transcriptionStrategy": transcription_strategy,
+                    "contextCopies": context_copies,
+                    "contextSeamSeconds": context_seam_seconds,
+                    "selectedContextCopy": selected_context_copy,
+                    "firstContextScore": first_context_score,
+                    "secondContextScore": second_context_score,
+                    "theme": DEFAULT_LYRIC_THEME,
+                    "network": "disabled"
+                }),
+            )
+        }
+    }
+
+    pub fn load_lyrics_document(
+        &self,
+        request: MusicLyricsRequest,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| {
+                take.id == request.take_id
+                    && take.status == "complete"
+                    && !take.lyrics_document_path.trim().is_empty()
+            })
+            .ok_or_else(|| {
+                StudioError::Invalid(
+                    "this take has no lyric document yet; prepare the lyric stage first".into(),
+                )
+            })?;
+        let path = self.validated_lyrics_artifact(&project.id, &take.lyrics_document_path)?;
+        let document = read_lyrics_document(&path)?;
+        if document.take_id != request.take_id || document.source_sha256 != take.sha256 {
+            return Err(StudioError::Invalid(
+                "the lyric document no longer matches its immutable music take; resync instead of overwriting provenance".into(),
+            ));
+        }
+        let duration_seconds = take.duration_seconds;
+        let take_lyrics_revision = take.lyrics_revision;
+        let path_revision = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .and_then(|value| value.parse::<u32>().ok());
+        if document.revision != take_lyrics_revision || path_revision != Some(document.revision) {
+            return Err(StudioError::Invalid(format!(
+                "lyric revision provenance is inconsistent (project {take_lyrics_revision}, document {}, file {}); restore an earlier immutable lyric revision or run a new local sync",
+                document.revision,
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("unknown")
+            )));
+        }
+        validate_lyrics_document(&document, duration_seconds)?;
+        Ok(MusicLyricsSaveResult { project, document })
+    }
+
+    pub fn save_lyrics_document(
+        &self,
+        request: SaveMusicLyricsDocumentRequest,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let loaded = self.load_lyrics_document(MusicLyricsRequest {
+            project_id: request.project_id.clone(),
+            take_id: request.take_id.clone(),
+        })?;
+        let mut project = loaded.project;
+        let take_index = project
+            .takes
+            .iter()
+            .position(|take| take.id == request.take_id)
+            .ok_or_else(|| StudioError::Invalid("the lyric take no longer exists".into()))?;
+        if request.document.take_id != request.take_id
+            || request.document.source_sha256 != loaded.document.source_sha256
+            || request.document.revision != loaded.document.revision
+            || request.document.created_at != loaded.document.created_at
+        {
+            return Err(StudioError::Invalid(
+                "the lyric edit is stale or belongs to another take; reopen the lyric stage before saving".into(),
+            ));
+        }
+        let mut document = request.document;
+        document.revision = loaded.document.revision;
+        document.schema_version = loaded.document.schema_version;
+        document.take_id.clone_from(&loaded.document.take_id);
+        document
+            .source_sha256
+            .clone_from(&loaded.document.source_sha256);
+        document.language.clone_from(&loaded.document.language);
+        document.source.clone_from(&loaded.document.source);
+        document.transcript.clone_from(&loaded.document.transcript);
+        document.created_at.clone_from(&loaded.document.created_at);
+        document.updated_at.clone_from(&loaded.document.updated_at);
+        document = normalize_lyrics_document(document, project.takes[take_index].duration_seconds)?;
+        let normalized_loaded = normalize_lyrics_document(
+            loaded.document.clone(),
+            project.takes[take_index].duration_seconds,
+        )?;
+        if lyrics_editable_content_matches(&document, &normalized_loaded) {
+            return Ok(MusicLyricsSaveResult {
+                project,
+                document: loaded.document,
+            });
+        }
+        let previous = self.validated_lyrics_artifact(
+            &project.id,
+            &project.takes[take_index].lyrics_document_path,
+        )?;
+        let revisions = previous.parent().ok_or_else(|| {
+            StudioError::Invalid("the lyric revision folder is unavailable".into())
+        })?;
+        let revision = next_available_lyrics_revision(revisions, loaded.document.revision)?;
+        document.revision = revision;
+        document.updated_at = Utc::now().to_rfc3339();
+        let document_path = revisions.join(format!("{revision:03}.json"));
+        let receipt_path = revisions.join(format!("{revision:03}.receipt.json"));
+        write_json_recoverable(&document_path, &document)?;
+        write_json_recoverable(
+            &receipt_path,
+            &json!({
+                "schemaVersion": 1,
+                "createdAt": document.updated_at,
+                "takeId": request.take_id,
+                "revision": revision,
+                "sourceSha256": document.source_sha256,
+                "segmentCount": document.segments.len(),
+                "wordCount": document.segments.iter().map(|segment| segment.words.len()).sum::<usize>(),
+                "theme": document.theme,
+                "translationLanguage": document.translation_language,
+                "translationModelId": document.translation_model_id,
+                "operation": "producer lyric timing edit"
+            }),
+        )?;
+        project.takes[take_index].lyrics_document_path =
+            document_path.to_string_lossy().into_owned();
+        project.takes[take_index].lyrics_revision = revision;
+        project.phase = "lyrics-ready".into();
+        project.detail = format!(
+            "Lyric revision {revision} is saved. The master, transcription receipt, and every earlier cue revision remain unchanged."
+        );
+        project.updated_at = Utc::now().to_rfc3339();
+        self.persist(&project)?;
+        Ok(MusicLyricsSaveResult { project, document })
+    }
+
+    fn persist_new_lyrics_session(
+        &self,
+        mut project: MusicProject,
+        take_id: &str,
+        document: MusicLyricsDocument,
+        receipt: Value,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let take_index = project
+            .takes
+            .iter()
+            .position(|take| take.id == take_id && take.status == "complete")
+            .ok_or_else(|| StudioError::Invalid("the lyric take no longer exists".into()))?;
+        validate_lyrics_document(&document, project.takes[take_index].duration_seconds)?;
+        let session = self
+            .project_dir(&project.id)
+            .join("lyrics")
+            .join(take_id)
+            .join(uuid::Uuid::new_v4().to_string());
+        let revisions = session.join("revisions");
+        fs::create_dir_all(&revisions)?;
+        let document_path = revisions.join("000.json");
+        let receipt_path = session.join("transcription.receipt.json");
+        write_json_recoverable(&document_path, &document)?;
+        write_json_recoverable(&receipt_path, &receipt)?;
+        project.takes[take_index].lyrics_document_path =
+            document_path.to_string_lossy().into_owned();
+        project.takes[take_index].lyrics_receipt_path = receipt_path.to_string_lossy().into_owned();
+        project.takes[take_index].lyrics_revision = 0;
+        project.phase = "lyrics-ready".into();
+        project.detail = if document.source == "producer-timing-draft" {
+            "A durable lyric timing draft is ready. Refine cues by hand or sync the preserved take with local Whisper."
+        } else {
+            "Local Whisper synced durable lyric segments and word timings to the preserved take."
+        }
+        .into();
+        project.updated_at = Utc::now().to_rfc3339();
+        self.persist(&project)?;
+        Ok(MusicLyricsSaveResult { project, document })
+    }
+
+    fn validated_lyrics_artifact(
+        &self,
+        project_id: &str,
+        value: &str,
+    ) -> Result<PathBuf, StudioError> {
+        let root = fs::canonicalize(self.project_dir(project_id).join("lyrics"))?;
+        let path = fs::canonicalize(Path::new(value)).map_err(|_| {
+            StudioError::Invalid(format!("the lyric project file is unavailable at {value}"))
+        })?;
+        if !path.starts_with(root) || !path.is_file() {
+            return Err(StudioError::Invalid(
+                "the lyric path is outside this private music project".into(),
+            ));
+        }
+        Ok(path)
     }
 
     pub async fn transcribe_midi(
@@ -1248,6 +2131,606 @@ fn default_sections() -> Vec<MusicSection> {
     .collect()
 }
 
+fn default_lyrics_language() -> String {
+    "auto".into()
+}
+
+fn estimated_lyric_segments(lyrics: &str, duration_seconds: f64) -> Vec<MusicLyricSegment> {
+    let lines = lyrics
+        .lines()
+        .map(str::trim)
+        .filter(|line| !(line.is_empty() || line.starts_with('[') && line.ends_with(']')))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if lines.is_empty() || !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return Vec::new();
+    }
+    let padding = (duration_seconds * 0.025).min(2.0);
+    let usable = (duration_seconds - padding * 2.0).max(duration_seconds * 0.5);
+    let weights = lines
+        .iter()
+        .map(|line| line.split_whitespace().count().max(1) as f64)
+        .collect::<Vec<_>>();
+    let total_weight = weights.iter().sum::<f64>().max(1.0);
+    let mut cursor = padding;
+    lines
+        .into_iter()
+        .zip(weights)
+        .map(|(primary, weight)| {
+            let start = cursor;
+            let end = (start + usable * weight / total_weight).min(duration_seconds);
+            cursor = end;
+            MusicLyricSegment {
+                id: uuid::Uuid::new_v4().to_string(),
+                start,
+                end,
+                words: estimated_words(&primary, start, end),
+                primary,
+                translation: String::new(),
+            }
+        })
+        .collect()
+}
+
+fn starts_with_capital(val: &str) -> bool {
+    val.chars()
+        .find(|c| c.is_alphabetic())
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+}
+
+fn is_pronoun_i(val: &str) -> bool {
+    let trimmed = val.trim_matches(|c: char| !c.is_alphabetic());
+    trimmed == "I"
+        || trimmed.starts_with("I'")
+        || trimmed.starts_with("I’")
+        || trimmed == "Im"
+        || trimmed == "Ive"
+        || trimmed == "Ill"
+        || trimmed == "Id"
+}
+
+fn has_terminal_punctuation(val: &str) -> bool {
+    let trimmed = val.trim();
+    trimmed.ends_with("...")
+        || trimmed.ends_with('…')
+        || trimmed.ends_with('.')
+        || trimmed.ends_with('!')
+        || trimmed.ends_with('?')
+        || trimmed.ends_with(';')
+        || trimmed.ends_with(':')
+        || trimmed.ends_with('—')
+        || trimmed.ends_with("--")
+}
+
+fn has_clause_punctuation(val: &str) -> bool {
+    has_terminal_punctuation(val) || val.trim().ends_with(',')
+}
+
+fn should_split_lyric_cue(current_cue_words: &[MusicLyricWord], next_word: &SpeechTiming) -> bool {
+    if current_cue_words.is_empty() {
+        return false;
+    }
+    let prev = &current_cue_words[current_cue_words.len() - 1];
+    let gap = next_word.start - prev.end;
+    let word_count = current_cue_words.len();
+    let cue_duration = next_word.start - current_cue_words[0].start;
+
+    // 1. Long vocal pause / breath boundary in singing:
+    if gap >= 0.60 {
+        return true;
+    }
+
+    // 2. Terminal punctuation on previous word (like "...", ".", "!", "?"):
+    if has_terminal_punctuation(&prev.value)
+        && (gap >= 0.15 || starts_with_capital(&next_word.value) || word_count >= 3)
+    {
+        return true;
+    }
+
+    // 3. Next word starts with a capital letter (Whisper sentence/line start):
+    if starts_with_capital(&next_word.value) {
+        if is_pronoun_i(&next_word.value) {
+            // Standalone pronoun "I" / "I'm":
+            // Split if preceded by a vocal breath pause, clause punctuation, or after an established phrase
+            if gap >= 0.30
+                || has_clause_punctuation(&prev.value)
+                || word_count >= 6
+                || cue_duration >= 4.5
+            {
+                return true;
+            }
+        } else {
+            // General capitalized words ("Deep", "A", "The", "Hold", "Before", "Rain", etc.):
+            // In Whisper transcription, capitalized words mark the start of a new line or sentence.
+            if gap >= 0.10
+                || has_clause_punctuation(&prev.value)
+                || word_count >= 3
+                || cue_duration >= 2.5
+            {
+                return true;
+            }
+        }
+    }
+
+    // 4. Safety maximum bounds to prevent runaway unpunctuated cues from overflowing the screen:
+    if (word_count >= 10 || cue_duration >= 7.0)
+        && (gap >= 0.15
+            || has_clause_punctuation(&prev.value)
+            || word_count >= 14
+            || cue_duration >= 9.0)
+    {
+        return true;
+    }
+
+    false
+}
+
+fn lyric_segments_from_speech(
+    segments: Vec<SpeechTiming>,
+    words: &[SpeechTiming],
+) -> Vec<MusicLyricSegment> {
+    let valid_words = words
+        .iter()
+        .filter(|w| {
+            !w.value.trim().is_empty()
+                && w.start.is_finite()
+                && w.end.is_finite()
+                && w.end >= w.start
+        })
+        .collect::<Vec<_>>();
+
+    if !valid_words.is_empty() {
+        let mut sorted_words = valid_words;
+        sorted_words.sort_by(|left, right| left.start.total_cmp(&right.start));
+
+        let mut output = Vec::new();
+        let mut current_words: Vec<MusicLyricWord> = Vec::new();
+
+        for word in sorted_words {
+            if should_split_lyric_cue(&current_words, word) {
+                let start = current_words.first().unwrap().start;
+                let end = current_words.last().unwrap().end;
+                let primary = current_words
+                    .iter()
+                    .map(|w| w.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                output.push(MusicLyricSegment {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    start,
+                    end,
+                    primary,
+                    translation: String::new(),
+                    words: std::mem::take(&mut current_words),
+                });
+            }
+            current_words.push(MusicLyricWord {
+                value: word.value.trim().to_string(),
+                start: word.start,
+                end: word.end.max(word.start),
+            });
+        }
+
+        if !current_words.is_empty() {
+            let start = current_words.first().unwrap().start;
+            let end = current_words.last().unwrap().end;
+            let primary = current_words
+                .iter()
+                .map(|w| w.value.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            output.push(MusicLyricSegment {
+                id: uuid::Uuid::new_v4().to_string(),
+                start,
+                end,
+                primary,
+                translation: String::new(),
+                words: current_words,
+            });
+        }
+
+        return output;
+    }
+
+    segments
+        .into_iter()
+        .filter(|segment| !segment.value.trim().is_empty())
+        .map(|segment| MusicLyricSegment {
+            id: uuid::Uuid::new_v4().to_string(),
+            start: segment.start,
+            end: segment.end,
+            primary: segment.value,
+            translation: String::new(),
+            words: Vec::new(),
+        })
+        .collect()
+}
+
+pub(crate) fn splice_repaired_lyrics_segments(
+    existing: &[MusicLyricSegment],
+    repaired: Vec<MusicLyricSegment>,
+    range_start: f64,
+    range_end: f64,
+) -> Vec<MusicLyricSegment> {
+    let mut result = Vec::new();
+
+    for segment in existing {
+        if segment.end <= range_start {
+            result.push(segment.clone());
+            continue;
+        }
+        if segment.start >= range_end {
+            result.push(segment.clone());
+            continue;
+        }
+
+        if segment.start < range_start {
+            let words = segment
+                .words
+                .iter()
+                .filter(|word| word.end <= range_start)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !words.is_empty() && range_start > segment.start {
+                let primary = words
+                    .iter()
+                    .map(|word| word.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                result.push(MusicLyricSegment {
+                    id: segment.id.clone(),
+                    start: segment.start,
+                    end: range_start,
+                    primary,
+                    translation: String::new(),
+                    words,
+                });
+            }
+        }
+
+        if segment.end > range_end {
+            let words = segment
+                .words
+                .iter()
+                .filter(|word| word.start >= range_end)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !words.is_empty() && segment.end > range_end {
+                let primary = words
+                    .iter()
+                    .map(|word| word.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                result.push(MusicLyricSegment {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    start: range_end,
+                    end: segment.end,
+                    primary,
+                    translation: String::new(),
+                    words,
+                });
+            }
+        }
+    }
+
+    for mut segment in repaired {
+        if segment.primary.trim().is_empty()
+            || segment.end <= range_start
+            || segment.start >= range_end
+        {
+            continue;
+        }
+        segment.words.retain(|word| {
+            let midpoint = (word.start + word.end) / 2.0;
+            midpoint >= range_start && midpoint < range_end
+        });
+        segment.start = segment.start.max(range_start);
+        segment.end = segment.end.min(range_end);
+        segment.translation.clear();
+        if !segment.words.is_empty() {
+            for word in &mut segment.words {
+                word.start = word.start.max(segment.start);
+                word.end = word.end.min(segment.end).max(word.start);
+            }
+            segment.words.retain(|word| word.end > word.start);
+            segment.primary = segment
+                .words
+                .iter()
+                .map(|word| word.value.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+        if !segment.primary.trim().is_empty() && segment.end > segment.start {
+            result.push(segment);
+        }
+    }
+
+    result.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    result
+}
+
+fn estimated_words(primary: &str, start: f64, end: f64) -> Vec<MusicLyricWord> {
+    let words = primary.split_whitespace().collect::<Vec<_>>();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let step = (end - start).max(0.01) / words.len() as f64;
+    words
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| MusicLyricWord {
+            value: value.into(),
+            start: start + step * index as f64,
+            end: start + step * (index + 1) as f64,
+        })
+        .collect()
+}
+
+fn next_available_lyrics_revision(revisions: &Path, current: u32) -> Result<u32, StudioError> {
+    let mut revision = current
+        .checked_add(1)
+        .ok_or_else(|| StudioError::Invalid("the lyric revision counter is exhausted".into()))?;
+    loop {
+        let document = revisions.join(format!("{revision:03}.json"));
+        let receipt = revisions.join(format!("{revision:03}.receipt.json"));
+        if !document.exists() && !receipt.exists() {
+            return Ok(revision);
+        }
+        revision = revision.checked_add(1).ok_or_else(|| {
+            StudioError::Invalid("the lyric revision counter is exhausted".into())
+        })?;
+    }
+}
+
+fn lyrics_editable_content_matches(
+    left: &MusicLyricsDocument,
+    right: &MusicLyricsDocument,
+) -> bool {
+    left.theme == right.theme
+        && left.show_translation == right.show_translation
+        && left.translation_language == right.translation_language
+        && left.translation_model_id == right.translation_model_id
+        && left.segments.len() == right.segments.len()
+        && left
+            .segments
+            .iter()
+            .zip(&right.segments)
+            .all(|(left, right)| {
+                left.id == right.id
+                    && timing_matches(left.start, right.start)
+                    && timing_matches(left.end, right.end)
+                    && left.primary == right.primary
+                    && left.translation == right.translation
+                    && left.words.len() == right.words.len()
+                    && left.words.iter().zip(&right.words).all(|(left, right)| {
+                        left.value == right.value
+                            && timing_matches(left.start, right.start)
+                            && timing_matches(left.end, right.end)
+                    })
+            })
+}
+
+fn timing_matches(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 0.000_5
+}
+
+fn normalized_words(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|character| character.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_lyrics_document(
+    mut document: MusicLyricsDocument,
+    duration_seconds: f64,
+) -> Result<MusicLyricsDocument, StudioError> {
+    document.schema_version = 1;
+    document.language = document.language.trim().to_string();
+    document.source = document.source.trim().to_string();
+    document.theme = document.theme.trim().to_ascii_lowercase();
+    document.translation_language = document.translation_language.trim().to_string();
+    document.translation_model_id = document.translation_model_id.trim().to_string();
+    if document.theme.is_empty() {
+        document.theme = DEFAULT_LYRIC_THEME.into();
+    }
+    document
+        .segments
+        .retain(|segment| !segment.primary.trim().is_empty());
+    document
+        .segments
+        .sort_by(|left, right| left.start.total_cmp(&right.start));
+    let mut ids = HashSet::new();
+    for segment in &mut document.segments {
+        if uuid::Uuid::parse_str(&segment.id).is_err() || !ids.insert(segment.id.clone()) {
+            segment.id = uuid::Uuid::new_v4().to_string();
+            ids.insert(segment.id.clone());
+        }
+        segment.primary = segment.primary.trim().to_string();
+        segment.translation = segment.translation.trim().to_string();
+        if !segment.start.is_finite() || !segment.end.is_finite() {
+            return Err(StudioError::Invalid(
+                "lyric cue times must be finite numbers".into(),
+            ));
+        }
+        segment.start = segment.start.max(0.0).min(duration_seconds);
+        segment.end = segment.end.max(segment.start + 0.01).min(duration_seconds);
+        if segment.end <= segment.start {
+            return Err(StudioError::Invalid(
+                "every lyric cue must have time to appear before the take ends".into(),
+            ));
+        }
+        segment.words.retain(|word| {
+            !word.value.trim().is_empty()
+                && word.start.is_finite()
+                && word.end.is_finite()
+                && word.end >= word.start
+        });
+        segment
+            .words
+            .sort_by(|left, right| left.start.total_cmp(&right.start));
+        let timed_text = segment
+            .words
+            .iter()
+            .map(|word| word.value.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if segment.words.is_empty()
+            || normalized_words(&timed_text) != normalized_words(&segment.primary)
+        {
+            segment.words = estimated_words(&segment.primary, segment.start, segment.end);
+        } else {
+            for word in &mut segment.words {
+                word.value = word.value.trim().to_string();
+                word.start = word.start.max(segment.start).min(segment.end);
+                word.end = word.end.max(word.start).min(segment.end);
+            }
+        }
+    }
+    if !document
+        .segments
+        .iter()
+        .any(|segment| !segment.translation.is_empty())
+    {
+        document.translation_language.clear();
+        document.translation_model_id.clear();
+    }
+    validate_lyrics_document(&document, duration_seconds)?;
+    Ok(document)
+}
+
+fn validate_lyrics_document(
+    document: &MusicLyricsDocument,
+    duration_seconds: f64,
+) -> Result<(), StudioError> {
+    if document.schema_version != 1 {
+        return Err(StudioError::Invalid(
+            "unsupported music lyric document version".into(),
+        ));
+    }
+    if uuid::Uuid::parse_str(&document.take_id).is_err()
+        || document.source_sha256.len() != 64
+        || !document
+            .source_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(StudioError::Invalid(
+            "the lyric document has no valid immutable take identity".into(),
+        ));
+    }
+    if document.language.is_empty()
+        || document.language.len() > 64
+        || !document
+            .language
+            .chars()
+            .all(|character| character.is_alphabetic() || matches!(character, ' ' | '-'))
+    {
+        return Err(StudioError::Invalid("unsafe lyric language".into()));
+    }
+    if document.source.is_empty()
+        || document.source.len() > 256
+        || !is_supported_lyric_theme(&document.theme)
+    {
+        return Err(StudioError::Invalid(
+            "the lyric source or visual theme is unsupported".into(),
+        ));
+    }
+    if (!document.translation_language.is_empty()
+        && (document.translation_language.len() > 64
+            || !document
+                .translation_language
+                .chars()
+                .all(|character| character.is_alphabetic() || matches!(character, ' ' | '-'))))
+        || document.translation_model_id.len() > 256
+        || document.translation_model_id.chars().any(char::is_control)
+        || (!document.translation_model_id.is_empty() && document.translation_language.is_empty())
+    {
+        return Err(StudioError::Invalid(
+            "the lyric translation language or local model identity is unsafe".into(),
+        ));
+    }
+    if document.segments.len() > MAX_LYRIC_SEGMENTS
+        || document
+            .segments
+            .iter()
+            .map(|segment| segment.words.len())
+            .sum::<usize>()
+            > MAX_LYRIC_WORDS
+    {
+        return Err(StudioError::Invalid(
+            "the lyric document exceeds its bounded cue or word count".into(),
+        ));
+    }
+    let text_bytes = document.transcript.len()
+        + document
+            .segments
+            .iter()
+            .map(|segment| {
+                segment.primary.len()
+                    + segment.translation.len()
+                    + segment
+                        .words
+                        .iter()
+                        .map(|word| word.value.len())
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+    if text_bytes > MAX_LYRIC_TEXT_BYTES {
+        return Err(StudioError::Invalid(
+            "the lyric document exceeds the 2 MiB text boundary".into(),
+        ));
+    }
+    let mut ids = HashSet::new();
+    for segment in &document.segments {
+        if uuid::Uuid::parse_str(&segment.id).is_err()
+            || !ids.insert(&segment.id)
+            || segment.primary.is_empty()
+            || segment.primary.len() > 16 * 1024
+            || segment.translation.len() > 16 * 1024
+            || !segment.start.is_finite()
+            || !segment.end.is_finite()
+            || segment.start < 0.0
+            || segment.end <= segment.start
+            || segment.end > duration_seconds + 0.05
+        {
+            return Err(StudioError::Invalid(
+                "the lyric document contains an invalid cue".into(),
+            ));
+        }
+        if segment.words.iter().any(|word| {
+            word.value.is_empty()
+                || word.value.len() > 1_024
+                || !word.start.is_finite()
+                || !word.end.is_finite()
+                || word.start < segment.start
+                || word.end < word.start
+                || word.end > segment.end + 0.05
+        }) {
+            return Err(StudioError::Invalid(
+                "the lyric document contains an invalid word timing".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_supported_lyric_theme(theme: &str) -> bool {
+    matches!(theme, DEFAULT_LYRIC_THEME | SIGNAL_BLOOM_LYRIC_THEME)
+}
+
 fn render_lyrics(project: &MusicProject) -> String {
     project
         .sections
@@ -1733,6 +3216,16 @@ fn read_midi_document(path: &Path) -> Result<MusicMidiDocument, StudioError> {
     Ok(document)
 }
 
+fn read_lyrics_document(path: &Path) -> Result<MusicLyricsDocument, StudioError> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 16 * 1024 * 1024 {
+        return Err(StudioError::Invalid(
+            "the lyric edit document is missing or exceeds 16 MiB".into(),
+        ));
+    }
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
 fn validate_music_id(id: &str) -> Result<(), StudioError> {
     if uuid::Uuid::parse_str(id).is_err() {
         Err(StudioError::Invalid("invalid music project ID".into()))
@@ -1805,6 +3298,653 @@ mod tests {
         project.caption = "Global Metadata: synth-pop, 112 BPM.\n\nVocal Details: intimate alto.\n\nArrangement: analog drums and wide pads.".into();
         project.sections[1].lyrics = "The streetlights answer me".into();
         studio.save_editable(project).unwrap()
+    }
+
+    fn completed_take(studio: &MusicStudio, project: &MusicProject) -> (MusicProject, String) {
+        let (_, take_id) = studio.begin_generation(&project.id, None).unwrap();
+        let mut stored = studio.get(&project.id).unwrap();
+        let master = studio
+            .project_dir(&project.id)
+            .join("takes")
+            .join(format!("{take_id}.flac"));
+        fs::write(&master, b"immutable generated music master").unwrap();
+        let (bytes, sha256) = hash_file(&master).unwrap();
+        let take = stored
+            .takes
+            .iter_mut()
+            .find(|take| take.id == take_id)
+            .unwrap();
+        take.status = "complete".into();
+        take.path = master.to_string_lossy().into_owned();
+        take.bytes = bytes;
+        take.sha256 = sha256;
+        take.duration_seconds = 42.0;
+        stored.status = "ready".into();
+        stored.phase = "take-ready".into();
+        studio.persist(&stored).unwrap();
+        (stored, take_id)
+    }
+
+    #[test]
+    fn lyric_drafts_and_producer_edits_are_durable_immutable_revisions() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, take_id) = completed_take(&studio, &project);
+        let draft = studio
+            .create_lyrics_draft(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(draft.document.source, "producer-timing-draft");
+        assert!(!draft.document.segments.is_empty());
+        assert!(!draft.document.segments[0].words.is_empty());
+        let original_path = PathBuf::from(&draft.project.takes[0].lyrics_document_path);
+        assert!(original_path.is_file());
+        let mut legacy_value = serde_json::to_value(&draft.document).unwrap();
+        legacy_value
+            .as_object_mut()
+            .unwrap()
+            .remove("translationLanguage");
+        legacy_value
+            .as_object_mut()
+            .unwrap()
+            .remove("translationModelId");
+        let legacy: MusicLyricsDocument = serde_json::from_value(legacy_value).unwrap();
+        assert!(legacy.translation_language.is_empty());
+        assert!(legacy.translation_model_id.is_empty());
+
+        let unchanged = studio
+            .save_lyrics_document(SaveMusicLyricsDocumentRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+                document: draft.document.clone(),
+            })
+            .unwrap();
+        assert_eq!(unchanged.document.revision, 0);
+        assert_eq!(
+            unchanged.project.takes[0].lyrics_document_path,
+            original_path.to_string_lossy()
+        );
+
+        let mut edited = draft.document.clone();
+        edited.segments[0].primary = "A producer rewrote this cue".into();
+        edited.segments[0].translation = "Tuottaja muokkasi tämän rivin".into();
+        edited.theme = SIGNAL_BLOOM_LYRIC_THEME.into();
+        edited.source = "forged-remote-service".into();
+        let saved = studio
+            .save_lyrics_document(SaveMusicLyricsDocumentRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+                document: edited,
+            })
+            .unwrap();
+        assert_eq!(saved.document.revision, 1);
+        assert_eq!(saved.document.source, "producer-timing-draft");
+        assert_eq!(saved.document.theme, SIGNAL_BLOOM_LYRIC_THEME);
+        assert_eq!(saved.document.segments[0].words[0].value, "A");
+        assert!(original_path.is_file());
+        assert_ne!(
+            saved.project.takes[0].lyrics_document_path,
+            original_path.to_string_lossy()
+        );
+
+        let mut unsupported_theme = saved.document.clone();
+        unsupported_theme.theme = "downloaded-javascript-theme".into();
+        assert!(studio
+            .save_lyrics_document(SaveMusicLyricsDocumentRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+                document: unsupported_theme,
+            })
+            .is_err());
+
+        let synced = studio
+            .persist_lyrics_transcription(
+                &TranscribeMusicLyricsRequest {
+                    project_id: project.id.clone(),
+                    take_id: take_id.clone(),
+                    job_id: uuid::Uuid::new_v4().to_string(),
+                    model_id: "whisper-local".into(),
+                    language: "English".into(),
+                },
+                SpeechFileTranscription {
+                    text: "A producer rewrote this cue".into(),
+                    segments: vec![SpeechTiming {
+                        value: "A producer rewrote this cue".into(),
+                        start: 1.0,
+                        end: 4.0,
+                    }],
+                    words: vec![
+                        SpeechTiming {
+                            value: "A".into(),
+                            start: 1.0,
+                            end: 1.2,
+                        },
+                        SpeechTiming {
+                            value: "producer".into(),
+                            start: 1.2,
+                            end: 2.0,
+                        },
+                        SpeechTiming {
+                            value: "rewrote".into(),
+                            start: 2.0,
+                            end: 2.8,
+                        },
+                        SpeechTiming {
+                            value: "this".into(),
+                            start: 2.8,
+                            end: 3.2,
+                        },
+                        SpeechTiming {
+                            value: "cue".into(),
+                            start: 3.2,
+                            end: 4.0,
+                        },
+                    ],
+                    strategy: "whisper-repeat-context-v1".into(),
+                    context_copies: 2,
+                    context_seam_seconds: 1.0,
+                    selected_context_copy: 2,
+                    first_context_score: 0.4,
+                    second_context_score: 0.8,
+                },
+            )
+            .unwrap();
+        assert_eq!(synced.document.theme, SIGNAL_BLOOM_LYRIC_THEME);
+
+        assert!(studio
+            .save_lyrics_document(SaveMusicLyricsDocumentRequest {
+                project_id: project.id,
+                take_id,
+                document: draft.document,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn lyric_save_never_overwrites_an_unreferenced_revision_after_interruption() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, take_id) = completed_take(&studio, &project);
+        let draft = studio
+            .create_lyrics_draft(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+            })
+            .unwrap();
+        let revisions = PathBuf::from(&draft.project.takes[0].lyrics_document_path)
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let interrupted = revisions.join("001.json");
+        fs::write(&interrupted, b"interrupted revision sentinel").unwrap();
+
+        let mut edited = draft.document;
+        edited.segments[0].primary = "A safe later revision".into();
+        let saved = studio
+            .save_lyrics_document(SaveMusicLyricsDocumentRequest {
+                project_id: project.id,
+                take_id,
+                document: edited,
+            })
+            .unwrap();
+
+        assert_eq!(saved.document.revision, 2);
+        assert_eq!(
+            fs::read(interrupted).unwrap(),
+            b"interrupted revision sentinel"
+        );
+        assert!(revisions.join("002.json").is_file());
+        assert!(revisions.join("002.receipt.json").is_file());
+    }
+
+    #[test]
+    fn lyric_load_rejects_revision_mismatch_instead_of_rewriting_provenance() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, take_id) = completed_take(&studio, &project);
+        let draft = studio
+            .create_lyrics_draft(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+            })
+            .unwrap();
+        let mut inconsistent = draft.project;
+        inconsistent.takes[0].lyrics_revision = 7;
+        studio.persist(&inconsistent).unwrap();
+
+        let error = studio
+            .load_lyrics_document(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id,
+            })
+            .unwrap_err();
+
+        assert!(error.to_string().contains("provenance is inconsistent"));
+        assert_eq!(studio.get(&project.id).unwrap().takes[0].lyrics_revision, 7);
+    }
+
+    #[test]
+    fn speech_segments_partition_words_into_sentence_cues() {
+        let segments = lyric_segments_from_speech(
+            vec![SpeechTiming {
+                value: "sing it now outside".into(),
+                start: 3.0,
+                end: 8.5,
+            }],
+            &[
+                SpeechTiming {
+                    value: "sing".into(),
+                    start: 3.0,
+                    end: 3.5,
+                },
+                SpeechTiming {
+                    value: "it".into(),
+                    start: 3.6,
+                    end: 4.0,
+                },
+                SpeechTiming {
+                    value: "outside".into(),
+                    start: 8.0,
+                    end: 8.5,
+                },
+            ],
+        );
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].primary, "sing it");
+        assert_eq!(segments[0].words.len(), 2);
+        assert_eq!(segments[1].primary, "outside");
+        assert_eq!(segments[1].words.len(), 1);
+
+        // Screenshot 1 pattern: Ellipsis and capital letter starts
+        let screenshot_1 = lyric_segments_from_speech(
+            Vec::new(),
+            &[
+                SpeechTiming {
+                    value: "Hello...".into(),
+                    start: 0.5,
+                    end: 1.2,
+                },
+                SpeechTiming {
+                    value: "Hello...".into(),
+                    start: 2.0,
+                    end: 2.8,
+                },
+                SpeechTiming {
+                    value: "I'm".into(),
+                    start: 4.5,
+                    end: 4.8,
+                },
+                SpeechTiming {
+                    value: "sitting".into(),
+                    start: 4.9,
+                    end: 5.3,
+                },
+                SpeechTiming {
+                    value: "by".into(),
+                    start: 5.4,
+                    end: 5.5,
+                },
+                SpeechTiming {
+                    value: "the".into(),
+                    start: 5.6,
+                    end: 5.7,
+                },
+                SpeechTiming {
+                    value: "window...".into(),
+                    start: 5.8,
+                    end: 6.4,
+                },
+                SpeechTiming {
+                    value: "Rain".into(),
+                    start: 7.2,
+                    end: 7.6,
+                },
+                SpeechTiming {
+                    value: "on".into(),
+                    start: 7.7,
+                    end: 7.8,
+                },
+                SpeechTiming {
+                    value: "the".into(),
+                    start: 7.9,
+                    end: 8.0,
+                },
+                SpeechTiming {
+                    value: "glass...".into(),
+                    start: 8.1,
+                    end: 8.7,
+                },
+            ],
+        );
+        assert_eq!(screenshot_1.len(), 4);
+        assert_eq!(screenshot_1[0].primary, "Hello...");
+        assert_eq!(screenshot_1[1].primary, "Hello...");
+        assert_eq!(screenshot_1[2].primary, "I'm sitting by the window...");
+        assert_eq!(screenshot_1[3].primary, "Rain on the glass...");
+
+        // Screenshot 2 pattern: Capital letters at line starts without punctuation
+        let screenshot_2 = lyric_segments_from_speech(
+            Vec::new(),
+            &[
+                SpeechTiming {
+                    value: "Deep".into(),
+                    start: 0.5,
+                    end: 0.9,
+                },
+                SpeechTiming {
+                    value: "and".into(),
+                    start: 1.0,
+                    end: 1.2,
+                },
+                SpeechTiming {
+                    value: "steep,".into(),
+                    start: 1.3,
+                    end: 1.7,
+                },
+                SpeechTiming {
+                    value: "a".into(),
+                    start: 1.8,
+                    end: 1.9,
+                },
+                SpeechTiming {
+                    value: "silent".into(),
+                    start: 2.0,
+                    end: 2.4,
+                },
+                SpeechTiming {
+                    value: "geometry".into(),
+                    start: 2.5,
+                    end: 3.1,
+                },
+                SpeechTiming {
+                    value: "A".into(),
+                    start: 3.4,
+                    end: 3.6,
+                },
+                SpeechTiming {
+                    value: "promise".into(),
+                    start: 3.7,
+                    end: 4.1,
+                },
+                SpeechTiming {
+                    value: "I".into(),
+                    start: 4.2,
+                    end: 4.3,
+                },
+                SpeechTiming {
+                    value: "keep".into(),
+                    start: 4.4,
+                    end: 4.9,
+                },
+                SpeechTiming {
+                    value: "The".into(),
+                    start: 5.2,
+                    end: 5.4,
+                },
+                SpeechTiming {
+                    value: "universe".into(),
+                    start: 5.5,
+                    end: 6.0,
+                },
+                SpeechTiming {
+                    value: "spins".into(),
+                    start: 6.1,
+                    end: 6.5,
+                },
+            ],
+        );
+        assert_eq!(screenshot_2.len(), 3);
+        assert_eq!(screenshot_2[0].primary, "Deep and steep, a silent geometry");
+        assert_eq!(screenshot_2[1].primary, "A promise I keep");
+        assert_eq!(screenshot_2[2].primary, "The universe spins");
+
+        // Mid-sentence pronoun "I" without pause should not split
+        let mid_sentence_i = lyric_segments_from_speech(
+            Vec::new(),
+            &[
+                SpeechTiming {
+                    value: "when".into(),
+                    start: 1.0,
+                    end: 1.3,
+                },
+                SpeechTiming {
+                    value: "I".into(),
+                    start: 1.35,
+                    end: 1.5,
+                },
+                SpeechTiming {
+                    value: "look".into(),
+                    start: 1.55,
+                    end: 1.8,
+                },
+                SpeechTiming {
+                    value: "outside".into(),
+                    start: 1.85,
+                    end: 2.2,
+                },
+            ],
+        );
+        assert_eq!(mid_sentence_i.len(), 1);
+        assert_eq!(mid_sentence_i[0].primary, "when I look outside");
+
+        // Fallback to coarse segments when words are empty
+        let fallback = lyric_segments_from_speech(
+            vec![
+                SpeechTiming {
+                    value: "first".into(),
+                    start: 0.0,
+                    end: 2.0,
+                },
+                SpeechTiming {
+                    value: "second".into(),
+                    start: 2.0,
+                    end: 4.0,
+                },
+            ],
+            &[],
+        );
+        assert_eq!(fallback.len(), 2);
+        assert_eq!(fallback[0].primary, "first");
+        assert_eq!(fallback[1].primary, "second");
+    }
+
+    #[test]
+    fn parse_lyrical_translations_filters_headers_notes_and_aligns_strictly() {
+        // Screenshot exact test case: Preamble metadata + inline LLM notes
+        let raw_llm_output = r#"
+*Target: Spanish.
+*Style: Poetic accuracy, rhythmic flow, natural phrasing.
+1. Una chispa brilla en la calle
+2. Es un ritmo naranja neón
+3. Corta a través del gris del pueblo (Note: "darkidency" seems like a typo or a made-up word, likely "darkness" or a specific place name. I'll treat it as a poetic atmosphere).
+"#;
+        let parsed = parse_lyrical_translations(raw_llm_output, 3);
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0], "Una chispa brilla en la calle");
+        assert_eq!(parsed[1], "Es un ritmo naranja neón");
+        assert_eq!(parsed[2], "Corta a través del gris del pueblo");
+
+        // Markdown wrapped numbers and quotation marks
+        let raw_markdown = r#"
+**1.** "El cielo se oscurece"
+**2.** "Las luces parpadean"
+"#;
+        let parsed_md = parse_lyrical_translations(raw_markdown, 2);
+        assert_eq!(parsed_md.len(), 2);
+        assert_eq!(parsed_md[0], "El cielo se oscurece");
+        assert_eq!(parsed_md[1], "Las luces parpadean");
+
+        // JSON array format
+        let raw_json = r#"
+```json
+[
+  "Ligne un",
+  "Ligne deux (Note: littéraire)"
+]
+```
+"#;
+        let parsed_json = parse_lyrical_translations(raw_json, 2);
+        assert_eq!(parsed_json.len(), 2);
+        assert_eq!(parsed_json[0], "Ligne un");
+        assert_eq!(parsed_json[1], "Ligne deux");
+    }
+
+    #[test]
+    fn lyric_sync_refuses_a_master_that_changed_after_generation() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, take_id) = completed_take(&studio, &project);
+        fs::write(&project.takes[0].path, b"altered after preservation").unwrap();
+        assert!(studio
+            .lyrics_audio_source(&MusicLyricsRequest {
+                project_id: project.id,
+                take_id,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn range_repair_maintains_consistent_take_and_document_revisions() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, take_id) = completed_take(&studio, &project);
+
+        // 1. Initial draft (revision 0)
+        let initial = studio
+            .create_lyrics_draft(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(initial.document.revision, 0);
+        assert_eq!(initial.project.takes[0].lyrics_revision, 0);
+
+        // 2. Range repair creates revision 1
+        let repaired_1 = studio
+            .persist_lyrics_range_repair(
+                &RepairMusicLyricsRangeRequest {
+                    project_id: project.id.clone(),
+                    take_id: take_id.clone(),
+                    job_id: "test-job-1".into(),
+                    model_id: "whisper-test".into(),
+                    language: "en".into(),
+                    start_seconds: 0.0,
+                    end_seconds: 3.0,
+                    prompt: "repaired first line".into(),
+                },
+                SpeechFileTranscription {
+                    text: "repaired first line".into(),
+                    segments: vec![SpeechTiming {
+                        value: "repaired first line".into(),
+                        start: 0.0,
+                        end: 2.5,
+                    }],
+                    words: vec![
+                        SpeechTiming {
+                            value: "repaired".into(),
+                            start: 0.0,
+                            end: 0.8,
+                        },
+                        SpeechTiming {
+                            value: "first".into(),
+                            start: 0.8,
+                            end: 1.5,
+                        },
+                        SpeechTiming {
+                            value: "line".into(),
+                            start: 1.5,
+                            end: 2.5,
+                        },
+                    ],
+                    strategy: "whisper-range-repair".into(),
+                    context_copies: 1,
+                    context_seam_seconds: 0.0,
+                    selected_context_copy: 1,
+                    first_context_score: 1.0,
+                    second_context_score: 1.0,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(repaired_1.document.revision, 1);
+        assert_eq!(repaired_1.project.takes[0].lyrics_revision, 1);
+
+        // 3. load_lyrics_document succeeds immediately with matching revision
+        let loaded = studio
+            .load_lyrics_document(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(loaded.document.revision, 1);
+        assert_eq!(loaded.project.takes[0].lyrics_revision, 1);
+
+        // 4. Consecutive range repair creates revision 2
+        let repaired_2 = studio
+            .persist_lyrics_range_repair(
+                &RepairMusicLyricsRangeRequest {
+                    project_id: project.id.clone(),
+                    take_id: take_id.clone(),
+                    job_id: "test-job-2".into(),
+                    model_id: "whisper-test".into(),
+                    language: "en".into(),
+                    start_seconds: 2.5,
+                    end_seconds: 5.0,
+                    prompt: "repaired second line".into(),
+                },
+                SpeechFileTranscription {
+                    text: "repaired second line".into(),
+                    segments: vec![SpeechTiming {
+                        value: "repaired second line".into(),
+                        start: 2.6,
+                        end: 4.8,
+                    }],
+                    words: vec![
+                        SpeechTiming {
+                            value: "repaired".into(),
+                            start: 2.6,
+                            end: 3.2,
+                        },
+                        SpeechTiming {
+                            value: "second".into(),
+                            start: 3.2,
+                            end: 4.0,
+                        },
+                        SpeechTiming {
+                            value: "line".into(),
+                            start: 4.0,
+                            end: 4.8,
+                        },
+                    ],
+                    strategy: "whisper-range-repair".into(),
+                    context_copies: 1,
+                    context_seam_seconds: 0.0,
+                    selected_context_copy: 1,
+                    first_context_score: 1.0,
+                    second_context_score: 1.0,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(repaired_2.document.revision, 2);
+        assert_eq!(repaired_2.project.takes[0].lyrics_revision, 2);
+
+        // 5. Reopen succeeds without provenance mismatch error
+        let loaded_2 = studio
+            .load_lyrics_document(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id,
+            })
+            .unwrap();
+        assert_eq!(loaded_2.document.revision, 2);
+        assert_eq!(loaded_2.project.takes[0].lyrics_revision, 2);
     }
 
     #[test]
@@ -2089,5 +4229,230 @@ mod tests {
         assert!(take.bytes > 0);
         assert_eq!(take.sha256.len(), 64);
         assert_eq!(take.exact_graph["10"]["inputs"]["format"], "flac");
+    }
+
+    #[test]
+    fn range_repair_splices_cues_within_target_window_and_preserves_surrounding() {
+        let existing = vec![
+            MusicLyricSegment {
+                id: "cue-1".into(),
+                start: 0.0,
+                end: 10.0,
+                primary: "intro line untouched".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord {
+                        value: "intro".into(),
+                        start: 0.0,
+                        end: 3.0,
+                    },
+                    MusicLyricWord {
+                        value: "line".into(),
+                        start: 3.2,
+                        end: 6.0,
+                    },
+                    MusicLyricWord {
+                        value: "untouched".into(),
+                        start: 6.5,
+                        end: 9.5,
+                    },
+                ],
+            },
+            MusicLyricSegment {
+                id: "cue-2".into(),
+                start: 11.0,
+                end: 25.0,
+                primary: "broken words to replace".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord {
+                        value: "broken".into(),
+                        start: 11.0,
+                        end: 15.0,
+                    },
+                    MusicLyricWord {
+                        value: "words".into(),
+                        start: 15.5,
+                        end: 20.0,
+                    },
+                    MusicLyricWord {
+                        value: "to".into(),
+                        start: 20.5,
+                        end: 22.0,
+                    },
+                    MusicLyricWord {
+                        value: "replace".into(),
+                        start: 22.5,
+                        end: 25.0,
+                    },
+                ],
+            },
+            MusicLyricSegment {
+                id: "cue-3".into(),
+                start: 30.0,
+                end: 40.0,
+                primary: "outro line untouched".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord {
+                        value: "outro".into(),
+                        start: 30.0,
+                        end: 34.0,
+                    },
+                    MusicLyricWord {
+                        value: "line".into(),
+                        start: 34.5,
+                        end: 37.0,
+                    },
+                    MusicLyricWord {
+                        value: "untouched".into(),
+                        start: 37.5,
+                        end: 40.0,
+                    },
+                ],
+            },
+        ];
+
+        let repaired = vec![
+            MusicLyricSegment {
+                id: "cue-rep-1".into(),
+                start: 11.2,
+                end: 17.5,
+                primary: "deep and steep".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord {
+                        value: "deep".into(),
+                        start: 11.2,
+                        end: 13.0,
+                    },
+                    MusicLyricWord {
+                        value: "and".into(),
+                        start: 13.2,
+                        end: 14.5,
+                    },
+                    MusicLyricWord {
+                        value: "steep".into(),
+                        start: 14.8,
+                        end: 17.5,
+                    },
+                ],
+            },
+            MusicLyricSegment {
+                id: "cue-rep-2".into(),
+                start: 18.0,
+                end: 24.8,
+                primary: "a silent geometry".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord {
+                        value: "a".into(),
+                        start: 18.0,
+                        end: 19.0,
+                    },
+                    MusicLyricWord {
+                        value: "silent".into(),
+                        start: 19.2,
+                        end: 21.5,
+                    },
+                    MusicLyricWord {
+                        value: "geometry".into(),
+                        start: 21.8,
+                        end: 24.8,
+                    },
+                ],
+            },
+        ];
+
+        let spliced = splice_repaired_lyrics_segments(&existing, repaired, 11.0, 26.0);
+        assert_eq!(spliced.len(), 4);
+        assert_eq!(spliced[0].id, "cue-1");
+        assert_eq!(spliced[0].primary, "intro line untouched");
+        assert_eq!(spliced[1].primary, "deep and steep");
+        assert_eq!(spliced[2].primary, "a silent geometry");
+        assert_eq!(spliced[3].id, "cue-3");
+        assert_eq!(spliced[3].primary, "outro line untouched");
+    }
+
+    #[test]
+    fn range_repair_preserves_both_tails_of_a_cue_that_spans_the_window() {
+        let existing = vec![MusicLyricSegment {
+            id: "spanning-cue".into(),
+            start: 0.0,
+            end: 30.0,
+            primary: "left discarded right".into(),
+            translation: "ancienne traduction".into(),
+            words: vec![
+                MusicLyricWord {
+                    value: "left".into(),
+                    start: 1.0,
+                    end: 4.0,
+                },
+                MusicLyricWord {
+                    value: "discarded".into(),
+                    start: 12.0,
+                    end: 16.0,
+                },
+                MusicLyricWord {
+                    value: "right".into(),
+                    start: 24.0,
+                    end: 28.0,
+                },
+            ],
+        }];
+        let repaired = vec![MusicLyricSegment {
+            id: "replacement".into(),
+            start: 11.0,
+            end: 19.0,
+            primary: "new center".into(),
+            translation: "must be cleared".into(),
+            words: vec![
+                MusicLyricWord {
+                    value: "new".into(),
+                    start: 11.0,
+                    end: 14.0,
+                },
+                MusicLyricWord {
+                    value: "center".into(),
+                    start: 15.0,
+                    end: 19.0,
+                },
+            ],
+        }];
+
+        let spliced = splice_repaired_lyrics_segments(&existing, repaired, 10.0, 20.0);
+
+        assert_eq!(spliced.len(), 3);
+        assert_eq!(spliced[0].id, "spanning-cue");
+        assert_eq!(spliced[0].primary, "left");
+        assert_eq!(spliced[1].primary, "new center");
+        assert_eq!(spliced[2].primary, "right");
+        assert_ne!(spliced[2].id, "spanning-cue");
+        assert!(spliced.iter().all(|segment| segment.translation.is_empty()));
+    }
+
+    #[test]
+    fn lyric_range_validation_rejects_non_finite_and_out_of_take_ranges() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, take_id) = completed_take(&studio, &project);
+        let request = MusicLyricsRequest {
+            project_id: project.id,
+            take_id,
+        };
+
+        assert!(studio
+            .validate_lyrics_range(&request, f64::NAN, 2.0, None)
+            .is_err());
+        assert!(studio
+            .validate_lyrics_range(&request, 40.0, 43.0, None)
+            .is_err());
+        assert!(studio
+            .validate_lyrics_range(&request, 0.0, 31.0, Some(30.0))
+            .is_err());
+        assert!(studio
+            .validate_lyrics_range(&request, 10.0, 20.0, Some(30.0))
+            .is_ok());
     }
 }

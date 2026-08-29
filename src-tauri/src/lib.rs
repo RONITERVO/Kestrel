@@ -29,8 +29,9 @@ use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
 use local_speech::{
-    LocalSpeech, SpeechAlignmentRequest, SpeechClip, SpeechSnapshot, SpeechSynthesisRequest,
-    SpeechTranscription, SpeechTranscriptionRequest,
+    LocalSpeech, SpeechAlignmentRequest, SpeechClip, SpeechFileRangeTranscriptionRequest,
+    SpeechFileTranscriptionRequest, SpeechSnapshot, SpeechSynthesisRequest, SpeechTranscription,
+    SpeechTranscriptionRequest,
 };
 use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
 use model_download::{
@@ -63,9 +64,11 @@ use studio::{
     MovieGenerationProposal, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
     MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
     MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieRenderState,
-    MovieRuntimePolicyRequest, MovieStudio, MovieSummary, MusicMidiRequest, MusicMidiSaveResult,
-    MusicProject, MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest,
-    SaveMusicMidiDocumentRequest, StartMovieRequest,
+    MovieRuntimePolicyRequest, MovieStudio, MovieSummary, MusicLyricsRequest,
+    MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
+    MusicSummary, PromptDraftJob, PromptDraftRequest, RepairMusicLyricsRangeRequest,
+    SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
+    TranscribeMusicLyricsRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -1965,6 +1968,294 @@ fn save_music_project(
         .music
         .save_editable(project)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_music_lyrics_draft(
+    request: MusicLyricsRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .create_lyrics_draft(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_music_lyrics_document(
+    request: MusicLyricsRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    state
+        .music
+        .load_lyrics_document(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_music_lyrics_document(
+    request: SaveMusicLyricsDocumentRequest,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .music
+        .save_lyrics_document(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn transcribe_music_lyrics(
+    request: TranscribeMusicLyricsRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let source_request = MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let music = state.music.clone();
+    let source = tokio::task::spawn_blocking(move || music.lyrics_audio_source(&source_request))
+        .await
+        .map_err(|error| format!("lyric audio validation stopped unexpectedly: {error}"))?
+        .map_err(|error| error.to_string())?;
+    let cancel = register_speech_job(&state, &request.job_id)?;
+    let result: Result<MusicLyricsSaveResult, String> = async {
+        let _turn = wait_for_speech_turn(&state, &cancel).await?;
+        let _guard = claim_workspace(&state)?;
+        release_all_comfy_memory(&state).await;
+        remember_runtime_for_speech(&state).await;
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .ensure_comfy(&settings.comfy_root, &cancel)
+            .await
+            .map_err(|error| error.to_string())?;
+        let transcription = state
+            .speech
+            .transcribe_file(
+                &settings.comfy_root,
+                &SpeechFileTranscriptionRequest {
+                    job_id: request.job_id.clone(),
+                    recording_id: request.take_id.clone(),
+                    audio_path: source.path,
+                    model_id: request.model_id.clone(),
+                    language: request.language.clone(),
+                    prompt: source.lyrics,
+                },
+                &cancel,
+                Some(&app),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .music
+            .persist_lyrics_transcription(&request, transcription)
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    finish_speech_job(&state, &request.job_id);
+    result
+}
+
+#[tauri::command]
+async fn repair_music_lyrics_range(
+    request: RepairMusicLyricsRangeRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let source_request = MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let music = state.music.clone();
+    let start_seconds = request.start_seconds;
+    let end_seconds = request.end_seconds;
+    let source = tokio::task::spawn_blocking(move || {
+        music.validate_lyrics_range(&source_request, start_seconds, end_seconds, None)
+    })
+    .await
+    .map_err(|error| format!("lyric audio validation stopped unexpectedly: {error}"))?
+    .map_err(|error| error.to_string())?;
+    let prompt = if request.prompt.trim().is_empty() {
+        crate::local_speech::music_opening_prompt(&source.lyrics)
+    } else {
+        request.prompt.clone()
+    };
+    let mut effective_request = request.clone();
+    effective_request.prompt.clone_from(&prompt);
+    let cancel = register_speech_job(&state, &request.job_id)?;
+    let result: Result<MusicLyricsSaveResult, String> = async {
+        let _turn = wait_for_speech_turn(&state, &cancel).await?;
+        let _guard = claim_workspace(&state)?;
+        release_all_comfy_memory(&state).await;
+        remember_runtime_for_speech(&state).await;
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .ensure_comfy(&settings.comfy_root, &cancel)
+            .await
+            .map_err(|error| error.to_string())?;
+        let transcription = state
+            .speech
+            .transcribe_file_range(
+                &settings.comfy_root,
+                &SpeechFileRangeTranscriptionRequest {
+                    job_id: effective_request.job_id.clone(),
+                    recording_id: effective_request.take_id.clone(),
+                    audio_path: source.path,
+                    model_id: effective_request.model_id.clone(),
+                    language: effective_request.language.clone(),
+                    prompt,
+                    start_seconds: effective_request.start_seconds,
+                    end_seconds: effective_request.end_seconds,
+                },
+                &cancel,
+                Some(&app),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .music
+            .persist_lyrics_range_repair(&effective_request, transcription)
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    finish_speech_job(&state, &request.job_id);
+    result
+}
+
+#[tauri::command]
+async fn draft_lyrics_from_audio_range(
+    request: studio::DraftLyricsFromAudioRangeRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<studio::DraftLyricsFromAudioRangeResult, String> {
+    let _guard = claim_workspace(&state)?;
+    let models = state.models.read().await.clone();
+    let model = models
+        .iter()
+        .find(|m| m.id == request.model_id)
+        .cloned()
+        .ok_or_else(|| "The selected local model is no longer in the catalog.".to_string())?;
+    if !model.supports_audio {
+        return Err(format!(
+            "{} cannot listen to audio. Choose a catalog model with native audio support.",
+            model.name
+        ));
+    }
+
+    let source_request = studio::MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let music = state.music.clone();
+    let start_seconds = request.start_seconds;
+    let end_seconds = request.end_seconds;
+    let source = tokio::task::spawn_blocking(move || {
+        music.validate_lyrics_range(&source_request, start_seconds, end_seconds, Some(30.0))
+    })
+    .await
+    .map_err(|error| format!("lyric audio validation stopped unexpectedly: {error}"))?
+    .map_err(|error| error.to_string())?;
+    let buffer_seconds = 1.5_f64;
+    let slice_start = (request.start_seconds - buffer_seconds).max(0.0);
+    let slice_end = (request.end_seconds + buffer_seconds).min(source.duration_seconds);
+    let temp_slice_path = std::env::temp_dir().join(format!(
+        "kestrel-audio-copilot-{}.wav",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let slice = crate::local_speech::prepare_audio_slice(
+        &source.path,
+        temp_slice_path,
+        slice_start,
+        slice_end,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let metadata = tokio::fs::metadata(slice.path())
+        .await
+        .map_err(|error| format!("Could not inspect the prepared audio excerpt: {error}"))?;
+    if metadata.len() > 16 * 1024 * 1024 {
+        return Err("The prepared audio excerpt exceeds the 16 MiB local-model limit. Choose a shorter range.".into());
+    }
+    let wav_bytes = tokio::fs::read(slice.path())
+        .await
+        .map_err(|error| format!("Could not read the prepared audio excerpt: {error}"))?;
+    let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?
+        .for_model(&request.model_id);
+    release_all_comfy_memory(&state).await;
+    let lease = state
+        .runtime
+        .lease_model(&request.model_id, &models, &settings, Some(&app))
+        .await
+        .map_err(|error| error.to_string())?;
+    studio::draft_music_lyrics_from_audio(&request, &model, &lease.connection, &wav_bytes).await
+}
+
+#[tauri::command]
+async fn translate_music_lyrics(
+    request: studio::TranslateMusicLyricsRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<studio::TranslateMusicLyricsResult, String> {
+    let _guard = claim_workspace(&state)?;
+    studio::validate_music_lyrics_translation(&request)?;
+    let models = state.models.read().await.clone();
+    let model = models
+        .iter()
+        .find(|m| m.id == request.model_id)
+        .cloned()
+        .ok_or_else(|| "The selected local model is no longer in the catalog.".to_string())?;
+
+    let source_request = studio::MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let music = state.music.clone();
+    tokio::task::spawn_blocking(move || music.lyrics_audio_source(&source_request))
+        .await
+        .map_err(|error| format!("lyric take validation stopped unexpectedly: {error}"))?
+        .map_err(|error| error.to_string())?;
+    if request.lines.is_empty() {
+        return Ok(studio::TranslateMusicLyricsResult {
+            translations: Vec::new(),
+            model_id: model.id,
+            model_name: model.name,
+        });
+    }
+    let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?
+        .for_model(&request.model_id);
+    release_all_comfy_memory(&state).await;
+    let lease = state
+        .runtime
+        .lease_model(&request.model_id, &models, &settings, Some(&app))
+        .await
+        .map_err(|error| error.to_string())?;
+    studio::translate_music_lyrics_with_model(&request, &model, &lease.connection).await
 }
 
 #[tauri::command]
@@ -3951,6 +4242,13 @@ pub fn run() {
             get_music_project,
             create_music_project,
             save_music_project,
+            create_music_lyrics_draft,
+            get_music_lyrics_document,
+            save_music_lyrics_document,
+            transcribe_music_lyrics,
+            repair_music_lyrics_range,
+            draft_lyrics_from_audio_range,
+            translate_music_lyrics,
             start_music_generation,
             cancel_music_generation,
             transcribe_music_midi,

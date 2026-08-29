@@ -68,10 +68,17 @@ import type {
   ModelDownloadInspection,
   MovieSummary,
   MusicGenerationEvent,
+  MusicLyricsDocument,
+  MusicLyricsSaveResult,
   MusicMidiDocument,
   MusicMidiSaveResult,
   MusicProject,
   MusicSummary,
+  DraftLyricsFromAudioRangeRequest,
+  DraftLyricsFromAudioRangeResult,
+  TranslateMusicLyricsRequest,
+  TranslateMusicLyricsResult,
+  RepairMusicLyricsRangeRequest,
   ImageGenerationEvent,
   ImageProject,
   ImageSummary,
@@ -258,6 +265,53 @@ export async function transcribeMusicMidi(projectId: string, takeId: string): Pr
 
 export async function revealMusicProject(id: string): Promise<void> {
   if (isTauri()) await invoke("reveal_music_project", { id });
+}
+
+export async function createMusicLyricsDraft(projectId: string, takeId: string): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("The visual lyric producer requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("create_music_lyrics_draft", { request: { projectId, takeId } });
+}
+
+export async function getMusicLyricsDocument(projectId: string, takeId: string): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("The visual lyric producer requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("get_music_lyrics_document", { request: { projectId, takeId } });
+}
+
+export async function saveMusicLyricsDocument(projectId: string, takeId: string, document: MusicLyricsDocument): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("Saving lyric cues requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("save_music_lyrics_document", { request: { projectId, takeId, document } });
+}
+
+export async function transcribeMusicLyrics(request: { projectId: string; takeId: string; jobId: string; modelId: string; language: string }): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("Local lyric syncing requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("transcribe_music_lyrics", { request });
+}
+
+export async function repairMusicLyricsRange(request: RepairMusicLyricsRangeRequest): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("Local lyric range repair requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("repair_music_lyrics_range", { request });
+}
+
+export async function draftLyricsFromAudioRange(request: DraftLyricsFromAudioRangeRequest): Promise<DraftLyricsFromAudioRangeResult> {
+  if (!isTauri()) {
+    return {
+      transcription: "Sample drafted lyrics from local audio model copilot.",
+      modelId: request.modelId,
+      modelName: "Simulated Audio LLM",
+    };
+  }
+  return invoke<DraftLyricsFromAudioRangeResult>("draft_lyrics_from_audio_range", { request });
+}
+
+export async function translateMusicLyrics(request: TranslateMusicLyricsRequest): Promise<TranslateMusicLyricsResult> {
+  if (!isTauri()) {
+    return {
+      translations: request.lines.map((l) => `[${request.targetLanguage}] ${l}`),
+      modelId: request.modelId,
+      modelName: "Simulated Local Translator",
+    };
+  }
+  return invoke<TranslateMusicLyricsResult>("translate_music_lyrics", { request });
 }
 
 export async function onMusicGeneration(callback: (event: MusicGenerationEvent) => void): Promise<UnlistenFn> {
