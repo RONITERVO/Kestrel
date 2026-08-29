@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { midiSecondsToTick, midiTickToSeconds, MusicMidiEditor, quantizeTick } from "./MusicMidiEditor";
 import { applyTaggedLyrics, managedMuscriptorPaths, MusicStudio } from "./MusicStudio";
-import { musicLyricDisplaySegmentAt, musicLyricSegmentAt, MusicLyricsProducer, wordProgress } from "./MusicLyricsProducer";
+import { MusicLyricsProducer } from "./MusicLyricsProducer";
+import { musicLyricDisplaySegmentAt, musicLyricSegmentAt, wordProgress } from "./MusicLyricsTiming";
 import * as api from "./api";
 import type { MusicLyricsDocument, MusicMidiDocument, MusicProject, MusicSection, MusicTake } from "./types";
 
@@ -99,6 +100,8 @@ describe("MusicStudio", () => {
     expect(musicLyricSegmentAt([cue], 1.99)).toBeUndefined();
     expect(musicLyricSegmentAt([cue], 2)).toBe(cue);
     expect(musicLyricSegmentAt([cue], 5)).toBe(cue);
+    const next = { ...cue, id: "cue-2", start: 5, end: 7 };
+    expect(musicLyricSegmentAt([cue, next], 5)).toBe(next);
     expect(musicLyricDisplaySegmentAt([cue], 5.3)).toBe(cue);
     expect(musicLyricDisplaySegmentAt([cue], 5.43)).toBeUndefined();
     expect(wordProgress(3, 4, 2.5)).toBe(0);
@@ -120,6 +123,8 @@ describe("MusicStudio", () => {
       theme: "sketchbook",
       updatedAt: "2026-08-29T00:00:00Z",
       showTranslation: true,
+      translationLanguage: "",
+      translationModelId: "",
       segments: [{
         id: "cue-1",
         start: 2,
@@ -155,6 +160,8 @@ describe("MusicStudio", () => {
       transcript: "stay here",
       theme: "sketchbook",
       showTranslation: true,
+      translationLanguage: "",
+      translationModelId: "",
       createdAt: "2026-08-29T00:00:00Z",
       updatedAt: "2026-08-29T00:00:00Z",
       segments: [{ id: "cue-1", start: 2, end: 5, primary: "stay here", translation: "", words: [] }],
@@ -194,6 +201,8 @@ describe("MusicStudio", () => {
       transcript: "deep and steep",
       theme: "sketchbook",
       showTranslation: true,
+      translationLanguage: "",
+      translationModelId: "",
       createdAt: "2026-08-29T00:00:00Z",
       updatedAt: "2026-08-29T00:00:00Z",
       segments: [{
@@ -268,7 +277,7 @@ describe("MusicStudio", () => {
     canvas.mockRestore();
   });
 
-  it("supports targeted Whisper range repair with start prompt conditioning and buffer guidance", async () => {
+  it("applies a complete local translation with durable target and model metadata", async () => {
     const take = { id: "take-1", durationSeconds: 30, resolvedModel: "Music 3", lyrics: "Deep and steep\nA silent geometry" } as MusicTake;
     const project = { id: "project-1", title: "Night signal", takes: [take] } as MusicProject;
     const document = {
@@ -281,6 +290,8 @@ describe("MusicStudio", () => {
       transcript: "deep and steep",
       theme: "sketchbook",
       showTranslation: true,
+      translationLanguage: "",
+      translationModelId: "",
       createdAt: "2026-08-29T00:00:00Z",
       updatedAt: "2026-08-29T00:00:00Z",
       segments: [{
@@ -293,6 +304,7 @@ describe("MusicStudio", () => {
       }],
     } satisfies MusicLyricsDocument;
     const onRepairRange = vi.fn();
+    const onChange = vi.fn();
     const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
     const common = {
       project,
@@ -304,7 +316,7 @@ describe("MusicStudio", () => {
       status: "",
       onTogglePlay: vi.fn(),
       onSeek: vi.fn(),
-      onChange: vi.fn(),
+      onChange,
       onSave: vi.fn(),
       onSync: vi.fn(),
       onRepairRange,
@@ -314,25 +326,91 @@ describe("MusicStudio", () => {
     const view = render(<MusicLyricsProducer {...common} document={document} />);
     const producer = within(view.container);
 
-    // Open timing editor
     fireEvent.click(producer.getByRole("button", { name: "Edit timing" }));
-
-    // Switch to Cues & Words tab
-    fireEvent.click(producer.getByRole("button", { name: /Cues & Words/i }));
-
-    // Test Translate All Cues
     const onTranslateLyrics = vi.fn().mockResolvedValue({
-      translations: ["Quédate aquí", "Luz de la noche"],
+      translations: ["Profundo y empinado"],
+      modelId: "gemma-12b",
       modelName: "Gemma 12B",
     });
     view.rerender(<MusicLyricsProducer {...common} document={document} onTranslateLyrics={onTranslateLyrics} />);
     const translateAllBtn = producer.getByRole("button", { name: /Translate all/i });
     expect(translateAllBtn).toBeInTheDocument();
     fireEvent.click(translateAllBtn);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(onTranslateLyrics).toHaveBeenCalledWith("Spanish", expect.any(Array));
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+        showTranslation: true,
+        translationLanguage: "Spanish",
+        translationModelId: "gemma-12b",
+        segments: [expect.objectContaining({ translation: "Profundo y empinado" })],
+      }));
     });
 
+    view.unmount();
+    canvas.mockRestore();
+  });
+
+  it("preserves a cue edited while a local translation is still running", async () => {
+    const take = { id: "take-1", durationSeconds: 10, resolvedModel: "Music 3" } as MusicTake;
+    const project = { id: "project-1", title: "Night signal", takes: [take] } as MusicProject;
+    const document = {
+      schemaVersion: 1,
+      takeId: take.id,
+      sourceSha256: "a".repeat(64),
+      revision: 1,
+      language: "English",
+      source: "whisper-local",
+      transcript: "stay here",
+      theme: "sketchbook",
+      showTranslation: true,
+      translationLanguage: "",
+      translationModelId: "",
+      createdAt: "2026-08-29T00:00:00Z",
+      updatedAt: "2026-08-29T00:00:00Z",
+      segments: [{ id: "cue-1", start: 2, end: 5, primary: "stay here", translation: "", words: [] }],
+    } satisfies MusicLyricsDocument;
+    let resolveTranslation!: (value: { translations: string[]; modelId: string; modelName: string }) => void;
+    const onTranslateLyrics = vi.fn(() => new Promise<{ translations: string[]; modelId: string; modelName: string }>((resolve) => {
+      resolveTranslation = resolve;
+    }));
+    const onChange = vi.fn();
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    const common = {
+      project,
+      take,
+      audio: null,
+      currentTime: 2.2,
+      playing: false,
+      busy: false,
+      status: "",
+      onTogglePlay: vi.fn(),
+      onSeek: vi.fn(),
+      onChange,
+      onSave: vi.fn(),
+      onSync: vi.fn(),
+      onTranslateLyrics,
+      onCancelSync: vi.fn(),
+      onClose: vi.fn(),
+    };
+    const view = render(<MusicLyricsProducer {...common} document={document} />);
+    const producer = within(view.container);
+    fireEvent.click(producer.getByRole("button", { name: "Edit timing" }));
+    fireEvent.click(producer.getByRole("button", { name: /Translate all/i }));
+    await waitFor(() => expect(onTranslateLyrics).toHaveBeenCalledOnce());
+
+    const edited = {
+      ...document,
+      segments: [{ ...document.segments[0], primary: "newer producer edit" }],
+    };
+    view.rerender(<MusicLyricsProducer {...common} document={edited} />);
+    await act(async () => resolveTranslation({
+      translations: ["quédate aquí"],
+      modelId: "gemma-12b",
+      modelName: "Gemma 12B",
+    }));
+
+    await waitFor(() => expect(producer.getByText(/Preserved 1 cue edited/i)).toBeInTheDocument());
+    expect(onChange).not.toHaveBeenCalled();
     view.unmount();
     canvas.mockRestore();
   });

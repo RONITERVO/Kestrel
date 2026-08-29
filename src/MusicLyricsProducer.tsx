@@ -10,10 +10,27 @@ import {
   type MusicLyricBounds,
   type MusicLyricLayout,
 } from "./MusicLyricReactivity";
+import {
+  clampFiniteMusicLyricTime as clampFinite,
+  estimatedMusicLyricWords as estimatedWords,
+  extractLyricsForRange,
+  formatMusicLyricTime as formatTime,
+  formatPreciseMusicLyricTime as formatPreciseTime,
+  musicLyricDisplaySegmentAt,
+  musicLyricSegmentAt,
+  newMusicLyricId as stableId,
+  reconcileMusicLyricWords as reconcileTimedWords,
+  roundMusicLyricTime as roundTime,
+  truncateUtf8,
+  utf8ByteLength,
+  wordProgress,
+} from "./MusicLyricsTiming";
 import { createMusicLyricVisualizer, MUSIC_LYRIC_THEMES, type MusicLyricRenderer } from "./MusicLyricVisualizers";
 import type {
   ModelInfo, MusicLyricSegment, MusicLyricsDocument, MusicLyricWord, MusicProject, MusicTake, SpeechModel,
 } from "./types";
+
+export { musicLyricDisplaySegmentAt, musicLyricSegmentAt, wordProgress } from "./MusicLyricsTiming";
 
 interface AudioAnalysis {
   context: AudioContext;
@@ -37,6 +54,7 @@ export function MusicLyricsProducer({
   currentTime,
   playing,
   busy,
+  speechBusy = false,
   status,
   models,
   activeModelId,
@@ -58,6 +76,7 @@ export function MusicLyricsProducer({
   currentTime: number;
   playing: boolean;
   busy: boolean;
+  speechBusy?: boolean;
   status: string;
   models?: ModelInfo[];
   activeModelId?: string;
@@ -67,12 +86,14 @@ export function MusicLyricsProducer({
   onSave: (document: MusicLyricsDocument) => Promise<MusicLyricsDocument | undefined>;
   onSync: (modelId: string, language: string) => Promise<void>;
   onRepairRange?: (modelId: string, language: string, startSeconds: number, endSeconds: number, prompt: string) => Promise<void>;
-  onDraftAudioPrompt?: (startSeconds: number, endSeconds: number) => Promise<{ transcription: string; modelName: string }>;
-  onTranslateLyrics?: (targetLanguage: string, lines: string[]) => Promise<{ translations: string[]; modelName: string }>;
+  onDraftAudioPrompt?: (startSeconds: number, endSeconds: number) => Promise<{ transcription: string; modelId: string; modelName: string }>;
+  onTranslateLyrics?: (targetLanguage: string, lines: string[]) => Promise<{ translations: string[]; modelId: string; modelName: string }>;
   onCancelSync: () => void;
   onClose: () => void;
 }) {
   const producerRef = useRef<HTMLElement>(null);
+  const documentRef = useRef(document);
+  documentRef.current = document;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const primaryRef = useRef<HTMLDivElement>(null);
   const translationRef = useRef<HTMLDivElement>(null);
@@ -91,9 +112,10 @@ export function MusicLyricsProducer({
   const [repairPrompt, setRepairPrompt] = useState("");
   const [audioDraftBusy, setAudioDraftBusy] = useState(false);
   const [audioDraftStatus, setAudioDraftStatus] = useState("");
-  const [targetLanguage, setTargetLanguage] = useState("Spanish");
+  const [targetLanguage, setTargetLanguage] = useState(document.translationLanguage || "Spanish");
   const [translationBusy, setTranslationBusy] = useState(false);
   const [translationStatus, setTranslationStatus] = useState("");
+  const [dirty, setDirty] = useState(false);
   const activeSegment = musicLyricSegmentAt(document.segments, currentTime);
   const displaySegment = musicLyricDisplaySegmentAt(document.segments, currentTime);
   const cueExiting = Boolean(displaySegment && displaySegment !== activeSegment);
@@ -102,9 +124,9 @@ export function MusicLyricsProducer({
   const audioModel = useMemo(() => {
     if (activeModelId && models) {
       const active = models.find((m) => m.id === activeModelId);
-      if (active) return active;
+      if (active?.supportsAudio) return active;
     }
-    return models?.find((m) => m.supportsAudio) ?? models?.[0];
+    return models?.find((m) => m.supportsAudio);
   }, [models, activeModelId]);
 
   useEffect(() => {
@@ -129,6 +151,7 @@ export function MusicLyricsProducer({
 
   useEffect(() => {
     setLanguage(document.language || "auto");
+    if (document.translationLanguage) setTargetLanguage(document.translationLanguage);
     setSelectedId((current) => document.segments.some((segment) => segment.id === current)
       ? current
       : document.segments[0]?.id ?? "");
@@ -137,6 +160,7 @@ export function MusicLyricsProducer({
   useEffect(() => {
     setSavedRevision(document.revision);
     setSavedTheme(document.theme);
+    setDirty(false);
     // updatedAt changes only when the backend returns a durable document; local previews keep it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [document.revision, document.updatedAt]);
@@ -144,31 +168,46 @@ export function MusicLyricsProducer({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    let visualizer: MusicLyricRenderer;
-    try {
-      visualizer = createMusicLyricVisualizer(document.theme, canvas);
-    } catch {
-      return;
-    }
-    const analysis = audio ? ensureAudioAnalysis(audio) : undefined;
-    const reactivity = new MusicLyricReactivity();
+    let visualizer: MusicLyricRenderer | undefined;
+    let disposed = false;
     let frame = 0;
-    const draw = () => {
-      const visualFrame = reactivity.sample(
-        analysis?.analyser,
-        analysis?.frequency,
-        analysis?.time,
-        currentTimeRef.current / Math.max(0.01, take.durationSeconds),
-        measureLyricLayout(canvas, primaryRef.current, translationRef.current),
-      );
-      visualizer.draw(visualFrame);
-      if (producerRef.current) applyMusicLyricFrameStyles(producerRef.current, visualFrame);
-      frame = requestAnimationFrame(draw);
-    };
-    frame = requestAnimationFrame(draw);
+    void createMusicLyricVisualizer(document.theme, canvas)
+      .then((created) => {
+        if (disposed) {
+          created.destroy?.();
+          return;
+        }
+        visualizer = created;
+        const analysis = audio ? ensureAudioAnalysis(audio) : undefined;
+        const reactivity = new MusicLyricReactivity();
+        let layout = measureLyricLayout(canvas, primaryRef.current, translationRef.current);
+        let lastLayoutAt = 0;
+        const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+        const draw = (now = performance.now()) => {
+          if (disposed || !visualizer) return;
+          if (now - lastLayoutAt >= 80) {
+            layout = measureLyricLayout(canvas, primaryRef.current, translationRef.current);
+            lastLayoutAt = now;
+          }
+          const visualFrame = reactivity.sample(
+            analysis?.analyser,
+            analysis?.frequency,
+            analysis?.time,
+            currentTimeRef.current / Math.max(0.01, take.durationSeconds),
+            layout,
+            now,
+          );
+          visualizer.draw(visualFrame);
+          if (producerRef.current) applyMusicLyricFrameStyles(producerRef.current, visualFrame);
+          if (!reducedMotion) frame = requestAnimationFrame(draw);
+        };
+        draw();
+      })
+      .catch(() => undefined);
     return () => {
+      disposed = true;
       cancelAnimationFrame(frame);
-      visualizer.destroy?.();
+      visualizer?.destroy?.();
     };
   }, [audio, document.theme, take.durationSeconds]);
 
@@ -183,26 +222,49 @@ export function MusicLyricsProducer({
     [currentTime, document.segments],
   );
 
+  const changeDocument = (next: MusicLyricsDocument) => {
+    documentRef.current = next;
+    setDirty(true);
+    onChange(next);
+  };
+
   const patchSegment = (id: string, patch: Partial<MusicLyricSegment>) => {
-    onChange({
-      ...document,
-      segments: document.segments.map((segment) => {
-        if (segment.id !== id) return segment;
-        const next = { ...segment, ...patch };
-        if (("start" in patch || "end" in patch) && !("words" in patch) && segment.words.length > 0) {
-          next.words = segment.words.map((word) => ({
-            ...word,
-            start: Math.max(next.start, Math.min(next.end, word.start)),
-            end: Math.max(next.start, Math.min(next.end, word.end)),
-          }));
-        }
-        return next;
-      }),
+    const current = documentRef.current;
+    const targetIndex = current.segments.findIndex((segment) => segment.id === id);
+    if (targetIndex < 0) return;
+    const minimumStart = current.segments[targetIndex - 1]?.end ?? 0;
+    const maximumEnd = current.segments[targetIndex + 1]?.start ?? take.durationSeconds;
+    const segments = current.segments.map((segment) => {
+      if (segment.id !== id) return segment;
+      const next = { ...segment, ...patch };
+      const maximumStart = Math.max(minimumStart, Math.min(maximumEnd - 0.01, segment.end - 0.01));
+      next.start = clampFinite(next.start, minimumStart, maximumStart, segment.start);
+      next.end = clampFinite(next.end, next.start + 0.01, maximumEnd, segment.end);
+      const primaryChanged = "primary" in patch && next.primary !== segment.primary;
+      if (primaryChanged) next.translation = "";
+      if (primaryChanged && !("words" in patch) && segment.words.length > 0) {
+        next.words = reconcileTimedWords(next.primary, next.start, next.end, segment.words);
+      }
+      if (("start" in patch || "end" in patch) && !("words" in patch) && segment.words.length > 0) {
+        next.words = segment.words.map((word) => ({
+          ...word,
+          start: Math.max(next.start, Math.min(next.end, word.start)),
+          end: Math.max(next.start, Math.min(next.end, word.end)),
+        }));
+      }
+      return next;
+    });
+    const hasTranslation = segments.some((segment) => segment.translation.trim());
+    changeDocument({
+      ...current,
+      translationLanguage: hasTranslation ? current.translationLanguage : "",
+      translationModelId: hasTranslation && !("translation" in patch) ? current.translationModelId : "",
+      segments,
     });
   };
 
   const patchWord = (segmentId: string, wordIndex: number, wordPatch: Partial<MusicLyricWord>) => {
-    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    const targetSegment = documentRef.current.segments.find((s) => s.id === segmentId);
     if (!targetSegment) return;
     const nextWords = targetSegment.words.map((w, idx) => (idx === wordIndex ? { ...w, ...wordPatch } : w));
     const timingChanged = "start" in wordPatch || "end" in wordPatch;
@@ -224,25 +286,27 @@ export function MusicLyricsProducer({
   };
 
   const setWordStart = (segmentId: string, wordIndex: number) => {
-    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    const targetSegment = documentRef.current.segments.find((s) => s.id === segmentId);
     if (!targetSegment || !targetSegment.words[wordIndex]) return;
     const currentWord = targetSegment.words[wordIndex];
-    const newStart = roundTime(currentTime);
-    const newEnd = Math.max(newStart + 0.1, currentWord.end);
+    const previousEnd = targetSegment.words[wordIndex - 1]?.end ?? targetSegment.start;
+    const newStart = roundTime(Math.max(previousEnd, Math.min(currentWord.end - 0.01, currentTime)));
+    const newEnd = Math.min(targetSegment.end, Math.max(newStart + 0.01, currentWord.end));
     patchWord(segmentId, wordIndex, { start: newStart, end: newEnd });
   };
 
   const setWordEnd = (segmentId: string, wordIndex: number) => {
-    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    const targetSegment = documentRef.current.segments.find((s) => s.id === segmentId);
     if (!targetSegment || !targetSegment.words[wordIndex]) return;
     const currentWord = targetSegment.words[wordIndex];
-    const newEnd = roundTime(currentTime);
-    const newStart = Math.min(newEnd - 0.1, currentWord.start);
+    const nextStart = targetSegment.words[wordIndex + 1]?.start ?? targetSegment.end;
+    const newEnd = roundTime(Math.max(currentWord.start + 0.01, Math.min(nextStart, currentTime)));
+    const newStart = Math.max(targetSegment.start, Math.min(newEnd - 0.01, currentWord.start));
     patchWord(segmentId, wordIndex, { start: newStart, end: newEnd });
   };
 
   const addWordToSegment = (segmentId: string) => {
-    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    const targetSegment = documentRef.current.segments.find((s) => s.id === segmentId);
     if (!targetSegment) return;
     const wordStart = roundTime(Math.max(targetSegment.start, Math.min(targetSegment.end, currentTime)));
     const wordEnd = roundTime(Math.min(targetSegment.end, wordStart + 0.5));
@@ -259,7 +323,7 @@ export function MusicLyricsProducer({
   };
 
   const removeWordFromSegment = (segmentId: string, wordIndex: number) => {
-    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    const targetSegment = documentRef.current.segments.find((s) => s.id === segmentId);
     if (!targetSegment) return;
     const nextWords = targetSegment.words.filter((_, idx) => idx !== wordIndex);
     patchSegment(segmentId, {
@@ -269,14 +333,14 @@ export function MusicLyricsProducer({
   };
 
   const splitWordsFromPrimary = (segmentId: string) => {
-    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    const targetSegment = documentRef.current.segments.find((s) => s.id === segmentId);
     if (!targetSegment) return;
     const words = estimatedWords(targetSegment.primary, targetSegment.start, targetSegment.end);
     patchSegment(segmentId, { words });
   };
 
   const addCue = () => {
-    const start = Math.min(take.durationSeconds - 0.02, Math.max(0, currentTime));
+    const start = Math.max(0, Math.min(Math.max(0, take.durationSeconds - 0.02), currentTime));
     const segment: MusicLyricSegment = {
       id: stableId(),
       start,
@@ -285,35 +349,52 @@ export function MusicLyricsProducer({
       translation: "",
       words: [],
     };
-    onChange({ ...document, segments: [...document.segments, segment].sort((left, right) => left.start - right.start) });
+    const current = documentRef.current;
+    changeDocument({ ...current, segments: [...current.segments, segment].sort((left, right) => left.start - right.start) });
     setSelectedId(segment.id);
   };
 
   const removeCue = (id: string) => {
-    const index = document.segments.findIndex((segment) => segment.id === id);
-    const next = document.segments.filter((segment) => segment.id !== id);
-    onChange({ ...document, segments: next });
+    const current = documentRef.current;
+    const index = current.segments.findIndex((segment) => segment.id === id);
+    const next = current.segments.filter((segment) => segment.id !== id);
+    changeDocument({ ...current, segments: next });
     setSelectedId(next[Math.min(index, next.length - 1)]?.id ?? "");
   };
 
   const handleTranslateAll = async () => {
-    if (!onTranslateLyrics || !document.segments.length) return;
+    const requestedDocument = documentRef.current;
+    if (!onTranslateLyrics || !requestedDocument.segments.length) return;
     const target = targetLanguage.trim() || "Spanish";
+    const requested = requestedDocument.segments.map((segment) => ({ id: segment.id, primary: segment.primary }));
     setTranslationBusy(true);
-    setTranslationStatus(`Translating ${document.segments.length} cues into ${target}…`);
+    setTranslationStatus(`Translating ${requested.length} cues into ${target}…`);
     try {
-      const lines = document.segments.map((s) => s.primary);
+      const lines = requested.map((segment) => segment.primary);
       const res = await onTranslateLyrics(target, lines);
-      const updatedSegments = document.segments.map((s, idx) => ({
-        ...s,
-        translation: res.translations[idx]?.trim() || s.translation,
-      }));
-      onChange({
-        ...document,
-        showTranslation: true,
-        segments: updatedSegments,
+      const translations = new Map(requested.map((segment, index) => [segment.id, {
+        primary: segment.primary,
+        translation: res.translations[index]?.trim() || "",
+      }]));
+      const latest = documentRef.current;
+      let applied = 0;
+      const updatedSegments = latest.segments.map((segment) => {
+        const candidate = translations.get(segment.id);
+        if (!candidate || candidate.primary !== segment.primary || !candidate.translation) return segment;
+        applied += 1;
+        return { ...segment, translation: candidate.translation };
       });
-      setTranslationStatus(`Translated ${document.segments.length} cues into ${target} with ${res.modelName}.`);
+      if (applied > 0) {
+        changeDocument({
+          ...latest,
+          showTranslation: true,
+          translationLanguage: target,
+          translationModelId: res.modelId,
+          segments: updatedSegments,
+        });
+      }
+      const skipped = requested.length - applied;
+      setTranslationStatus(`Translated ${applied} cue${applied === 1 ? "" : "s"} into ${target} with ${res.modelName}.${skipped ? ` Preserved ${skipped} cue${skipped === 1 ? "" : "s"} edited while the model was working.` : ""}`);
     } catch (err) {
       setTranslationStatus(`Translation error: ${String(err)}`);
     } finally {
@@ -330,10 +411,21 @@ export function MusicLyricsProducer({
       const res = await onTranslateLyrics(target, [primaryText]);
       const trans = res.translations[0]?.trim() || "";
       if (trans) {
-        patchSegment(segmentId, { translation: trans });
-        if (!document.showTranslation) {
-          onChange({ ...document, showTranslation: true });
+        const latest = documentRef.current;
+        const matchingCue = latest.segments.find((segment) => segment.id === segmentId);
+        if (!matchingCue || matchingCue.primary !== primaryText) {
+          setTranslationStatus("The cue changed while the model was working, so its newer text was preserved.");
+          return;
         }
+        changeDocument({
+          ...latest,
+          showTranslation: true,
+          translationLanguage: target,
+          translationModelId: res.modelId,
+          segments: latest.segments.map((segment) => segment.id === segmentId
+            ? { ...segment, translation: trans }
+            : segment),
+        });
         setTranslationStatus(`Cue translated into ${target} with ${res.modelName}.`);
       }
     } catch (err) {
@@ -354,11 +446,20 @@ export function MusicLyricsProducer({
     handleTogglePlay();
   };
 
-  const saveCurrentDocument = async () => {
-    const saved = await onSave(document);
-    if (!saved) return;
+  const saveCurrentDocument = async (): Promise<boolean> => {
+    const saved = await onSave(documentRef.current);
+    if (!saved) return false;
+    documentRef.current = saved;
     setSavedRevision(saved.revision);
     setSavedTheme(saved.theme);
+    setDirty(false);
+    return true;
+  };
+
+  const closeProducer = async () => {
+    if (busy) return;
+    if (dirty && !(await saveCurrentDocument())) return;
+    onClose();
   };
 
   return (
@@ -367,17 +468,17 @@ export function MusicLyricsProducer({
       <div className="music-lyrics-paper" aria-hidden="true" />
 
       <header className="music-lyrics-header" data-lyric-control>
-        <button aria-label="Close visual lyric producer" onClick={onClose}><ChevronLeft /> Arranger</button>
+        <button aria-label="Close visual lyric producer" disabled={busy} onClick={() => void closeProducer()}><ChevronLeft /> {dirty ? "Save & return" : "Back to arranger"}</button>
         <div className="music-lyrics-title"><small>Kestrel visual lyrics · Take {takeNumber}</small><strong>{project.title}</strong></div>
         <div className="music-lyrics-header-actions">
           <label className="music-lyrics-theme-picker" title={MUSIC_LYRIC_THEMES.find((theme) => theme.id === document.theme)?.description}>
             <Palette /><span>Visual</span>
-            <select aria-label="Lyric visual theme" disabled={busy} value={document.theme} onChange={(event) => onChange({ ...document, theme: event.currentTarget.value as MusicLyricsDocument["theme"] })}>
+            <select aria-label="Lyric visual theme" disabled={busy} value={document.theme} onChange={(event) => changeDocument({ ...documentRef.current, theme: event.currentTarget.value as MusicLyricsDocument["theme"] })}>
               {MUSIC_LYRIC_THEMES.map((theme) => <option key={theme.id} value={theme.id}>{theme.name}</option>)}
             </select>
           </label>
           {document.theme !== savedTheme && <button className="music-lyrics-save-look" disabled={busy} onClick={() => void saveCurrentDocument()}><Save /> Save look</button>}
-          <span><Captions /> Revision {document.revision} · {document.source === "producer-timing-draft" ? "timing draft" : "local sync"}</span>
+              <span><Captions /> Revision {document.revision}{dirty ? " · unsaved" : ""} · {document.source === "producer-timing-draft" ? "timing draft" : "local sync"}</span>
         </div>
       </header>
 
@@ -415,9 +516,9 @@ export function MusicLyricsProducer({
             if (selectedSegment) {
               setRepairStart(roundTime(selectedSegment.start));
               setRepairEnd(roundTime(selectedSegment.end));
-              setRepairPrompt(selectedSegment.primary);
+              setRepairPrompt(truncateUtf8(selectedSegment.primary, 512));
             }
-          }}><Wand2 /> Whisper Repair</button>
+          }}><Wand2 /> Repair with Whisper</button>
         </div>
 
         {editorTab === "repair" ? (
@@ -425,7 +526,7 @@ export function MusicLyricsProducer({
             <div className="music-lyrics-repair-guide">
               <Sparkles />
               <span>
-                <strong>Targeted Whisper forced alignment</strong>
+                <strong>Targeted, prompt-guided Whisper transcription</strong>
                 <small>Select a time range and prompt Whisper with expected words. 1.5s audio buffers prevent boundary clipping.</small>
               </span>
             </div>
@@ -440,7 +541,7 @@ export function MusicLyricsProducer({
                     max={take.durationSeconds}
                     step={0.01}
                     value={repairStart}
-                    onChange={(e) => setRepairStart(e.currentTarget.valueAsNumber)}
+                    onChange={(e) => setRepairStart(clampFinite(e.currentTarget.valueAsNumber, 0, take.durationSeconds, repairStart))}
                   />
                 </label>
                 <button
@@ -462,7 +563,7 @@ export function MusicLyricsProducer({
                     max={take.durationSeconds}
                     step={0.01}
                     value={repairEnd}
-                    onChange={(e) => setRepairEnd(e.currentTarget.valueAsNumber)}
+                    onChange={(e) => setRepairEnd(clampFinite(e.currentTarget.valueAsNumber, 0.01, take.durationSeconds, repairEnd))}
                   />
                 </label>
                 <button
@@ -483,7 +584,7 @@ export function MusicLyricsProducer({
                 onClick={() => {
                   setRepairStart(roundTime(selectedSegment.start));
                   setRepairEnd(roundTime(selectedSegment.end));
-                  setRepairPrompt(selectedSegment.primary);
+                  setRepairPrompt(truncateUtf8(selectedSegment.primary, 512));
                 }}
               >
                 <Clock3 /> Use Cue #{document.segments.findIndex((s) => s.id === selectedSegment.id) + 1} ({formatTime(selectedSegment.start)} – {formatTime(selectedSegment.end)})
@@ -493,13 +594,12 @@ export function MusicLyricsProducer({
             <label className="music-lyrics-field">
               <div className="music-lyrics-prompt-header">
                 <span>Start prompt / Expected lyrics</span>
-                <small>{repairPrompt.length} / 512 bytes</small>
+                <small>{utf8ByteLength(repairPrompt)} / 512 bytes</small>
               </div>
               <textarea
                 value={repairPrompt}
                 rows={3}
-                maxLength={512}
-                onChange={(e) => setRepairPrompt(e.target.value)}
+                onChange={(e) => setRepairPrompt(truncateUtf8(e.target.value, 512))}
                 placeholder="Type or paste the exact expected sung words for this section…"
               />
             </label>
@@ -512,7 +612,7 @@ export function MusicLyricsProducer({
                 title="Extract matching lines from generated take lyrics"
                 onClick={() => {
                   const extracted = extractLyricsForRange(take.lyrics || project.caption, repairStart, repairEnd, take.durationSeconds);
-                  if (extracted) setRepairPrompt(extracted);
+                  if (extracted) setRepairPrompt(truncateUtf8(extracted, 512));
                 }}
               >
                 <FileText /> Take lyrics
@@ -522,24 +622,24 @@ export function MusicLyricsProducer({
                   type="button"
                   className="music-lyrics-btn-sm"
                   title="Use selected cue text"
-                  onClick={() => setRepairPrompt(selectedSegment.primary)}
+                  onClick={() => setRepairPrompt(truncateUtf8(selectedSegment.primary, 512))}
                 >
                   <Sparkles /> Current cue
                 </button>
               )}
-              {onDraftAudioPrompt && (
+              {onDraftAudioPrompt && audioModel && (
                 <button
                   type="button"
                   className="music-lyrics-btn-sm music-lyrics-copilot-btn"
                   disabled={audioDraftBusy || busy}
-                  title={audioModel ? `Listen to audio slice using ${audioModel.name}${audioModel.supportsAudio ? " (Native Audio LLM)" : ""}` : "Listen to audio slice using local model"}
+                  title={`Listen to audio slice using ${audioModel.name} (native audio model)`}
                   onClick={async () => {
                     setAudioDraftBusy(true);
                     setAudioDraftStatus("Audio model is listening to the slice…");
                     try {
                       const res = await onDraftAudioPrompt(repairStart, repairEnd);
                       if (res.transcription) {
-                        setRepairPrompt(res.transcription);
+                        setRepairPrompt(truncateUtf8(res.transcription, 512));
                         setAudioDraftStatus(`Transcribed by ${res.modelName}: "${res.transcription}"`);
                       } else {
                         setAudioDraftStatus(`${res.modelName} finished without detected vocal words.`);
@@ -551,9 +651,10 @@ export function MusicLyricsProducer({
                     }
                   }}
                 >
-                  {audioDraftBusy ? <LoaderCircle className="spin" /> : <Bot />} {audioModel?.supportsAudio ? `🤖 Audio Copilot (${audioModel.name})` : "🤖 Audio Copilot"}
+                  {audioDraftBusy ? <LoaderCircle className="spin" /> : <Bot />} Audio Copilot ({audioModel.name})
                 </button>
               )}
+              {onDraftAudioPrompt && !audioModel && <small>Audio Copilot needs a local model with native audio input.</small>}
             </div>
 
             {audioDraftStatus && (
@@ -577,7 +678,7 @@ export function MusicLyricsProducer({
             </div>
 
             <div className="music-lyrics-range-repair-actions">
-              {busy ? (
+              {speechBusy ? (
                 <button type="button" className="danger" onClick={onCancelSync}>
                   <CircleStop /> Stop safely
                 </button>
@@ -585,7 +686,7 @@ export function MusicLyricsProducer({
                 <button
                   type="button"
                   className="primary-button music-lyrics-repair-submit-btn"
-                  disabled={!modelId || repairEnd <= repairStart}
+                  disabled={busy || !modelId || !Number.isFinite(repairStart) || !Number.isFinite(repairEnd) || repairEnd <= repairStart || utf8ByteLength(repairPrompt) > 512}
                   onClick={() => {
                     if (onRepairRange && modelId) {
                       void onRepairRange(modelId, language.trim() || "auto", repairStart, repairEnd, repairPrompt.trim());
@@ -604,15 +705,15 @@ export function MusicLyricsProducer({
               <div><Sparkles /><span><strong>Local word sync</strong><small>{speechDetail}</small></span></div>
               <label>Whisper model<select aria-label="Lyric transcription model" disabled={busy || !transcribers.length} value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Not installed</option>{transcribers.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
               <label>Language<input aria-label="Lyric transcription language" disabled={busy} value={language} maxLength={64} onChange={(event) => setLanguage(event.target.value)} placeholder="auto" /></label>
-              {busy
+              {speechBusy
                 ? <button className="danger" onClick={onCancelSync}><CircleStop /> Stop safely</button>
-                : <button disabled={!modelId} onClick={() => void onSync(modelId, language.trim() || "auto")}><WandSparkles /> Sync this take</button>}
+                : <button disabled={busy || !modelId} onClick={() => void onSync(modelId, language.trim() || "auto")}><WandSparkles /> Sync this take</button>}
               {status && <p role="status">{busy && <LoaderCircle className="spin" />} {status}</p>}
             </section>
             <div className="music-lyrics-editor-actions">
               <button onClick={addCue}><Plus /> Add cue</button>
               <label className="music-lyrics-translation-toggle">
-                <input type="checkbox" checked={document.showTranslation} onChange={(event) => onChange({ ...document, showTranslation: event.target.checked })} />
+                <input type="checkbox" checked={document.showTranslation} onChange={(event) => changeDocument({ ...documentRef.current, showTranslation: event.target.checked })} />
                 <Languages /> Show subtitles
               </label>
               {onTranslateLyrics && (
@@ -845,47 +946,10 @@ export function MusicLyricsProducer({
             )}
           </>
         )}
-        <footer><span>{document.segments.length} cues · saved revision {savedRevision}</span><button disabled={busy} onClick={() => void saveCurrentDocument()}><Save /> Save revision</button></footer>
+        <footer><span>{document.segments.length} cues · saved revision {savedRevision}{dirty ? " · unsaved edits" : ""}</span><button disabled={busy || !dirty} onClick={() => void saveCurrentDocument()}><Save /> {dirty ? "Save revision" : "Saved"}</button></footer>
       </aside>}
     </section>
   );
-}
-
-export function musicLyricSegmentAt(segments: MusicLyricSegment[], seconds: number): MusicLyricSegment | undefined {
-  return segments.find((segment) => seconds >= segment.start && seconds <= segment.end);
-}
-
-export function musicLyricDisplaySegmentAt(segments: MusicLyricSegment[], seconds: number): MusicLyricSegment | undefined {
-  const active = musicLyricSegmentAt(segments, seconds);
-  if (active) return active;
-  for (let index = segments.length - 1; index >= 0; index -= 1) {
-    const segment = segments[index];
-    if (seconds > segment.end && seconds <= segment.end + 0.42) return segment;
-  }
-  return undefined;
-}
-
-function extractLyricsForRange(lyrics: string, start: number, end: number, totalDuration: number): string {
-  const lines = lyrics.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("[") && !l.startsWith("{") && !l.startsWith("("));
-  if (!lines.length) return "";
-  const duration = Math.max(0.01, totalDuration);
-  const startFraction = Math.max(0, start / duration);
-  const endFraction = Math.min(1, end / duration);
-  const startIndex = Math.floor(startFraction * lines.length);
-  const endIndex = Math.min(lines.length, Math.ceil(endFraction * lines.length));
-  return lines.slice(startIndex, Math.max(startIndex + 1, endIndex)).join(" ");
-}
-
-function estimatedWords(primary: string, start: number, end: number): MusicLyricWord[] {
-  const words = primary.trim().split(/\s+/u).filter(Boolean);
-  if (!words.length) return [];
-  const duration = Math.max(0.05, end - start);
-  const step = duration / words.length;
-  return words.map((value, index) => ({
-    value,
-    start: roundTime(start + step * index),
-    end: roundTime(start + step * (index + 1)),
-  }));
 }
 
 function renderTimedWords(segment: MusicLyricSegment, currentTime: number, onSeek: (seconds: number) => void) {
@@ -908,12 +972,6 @@ function renderProgressiveText(text: string, start: number, end: number, current
     const progress = wordProgress(wordStart, wordEnd, currentTime);
     return <span key={`${index}-${word}`} className={`music-lyrics-progressive-word ${progress > 0 ? "written" : "waiting"}`} style={{ "--word-hide": `${(1 - progress) * 100}%`, "--word-index": index } as React.CSSProperties}><span className="music-lyrics-word-ghost">{word}</span><span className="music-lyrics-word-ink" aria-hidden="true">{word}</span>{index < words.length - 1 ? " " : ""}</span>;
   });
-}
-
-export function wordProgress(start: number, end: number, currentTime: number): number {
-  if (currentTime <= start) return 0;
-  if (currentTime >= end || end <= start) return 1;
-  return (currentTime - start) / (end - start);
 }
 
 function ensureAudioAnalysis(audio: HTMLMediaElement): AudioAnalysis | undefined {
@@ -972,29 +1030,4 @@ function relativeBounds(
     top: bounds.top - canvasBounds.top,
     bottom: bounds.bottom - canvasBounds.top,
   };
-}
-
-function stableId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
-    const random = Math.floor(Math.random() * 16);
-    return (character === "x" ? random : (random & 0x3) | 0x8).toString(16);
-  });
-}
-
-function roundTime(seconds: number): number {
-  return Math.round(seconds * 100) / 100;
-}
-
-function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds)) return "00:00";
-  const safe = Math.max(0, seconds);
-  const minutes = Math.floor(safe / 60);
-  return `${minutes.toString().padStart(2, "0")}:${Math.floor(safe % 60).toString().padStart(2, "0")}`;
-}
-
-function formatPreciseTime(seconds: number): string {
-  const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
-  const minutes = Math.floor(safe / 60);
-  return `${minutes.toString().padStart(2, "0")}:${(safe % 60).toFixed(1).padStart(4, "0")}`;
 }

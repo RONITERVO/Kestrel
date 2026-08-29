@@ -1,5 +1,3 @@
-import { SketchbookMusicLyricVisualizer } from "./MusicLyricVisualizer";
-import { SignalBloomMusicLyricVisualizer } from "./MusicLyricSignalBloomVisualizer";
 import type { MusicLyricFrame } from "./MusicLyricReactivity";
 import type { MusicLyricTheme } from "./types";
 
@@ -25,15 +23,19 @@ export const MUSIC_LYRIC_THEMES: ReadonlyArray<{
   },
 ];
 
-export function createMusicLyricVisualizer(
+export async function createMusicLyricVisualizer(
   theme: MusicLyricTheme,
   canvas: HTMLCanvasElement,
-): MusicLyricRenderer {
+): Promise<MusicLyricRenderer> {
   switch (theme) {
-    case "signal-bloom":
+    case "signal-bloom": {
+      const { SignalBloomMusicLyricVisualizer } = await import("./MusicLyricSignalBloomVisualizer");
       return new SignalBloomMusicLyricVisualizer(canvas);
+    }
     case "sketchbook":
-    default:
+    default: {
+      const { SketchbookMusicLyricVisualizer } = await import("./MusicLyricVisualizer");
       return new SketchbookMusicLyricVisualizer(canvas);
+    }
   }
 }

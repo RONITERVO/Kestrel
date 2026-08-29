@@ -1,7 +1,7 @@
 """Small, auditable ComfyUI boundary for Kestrel's local speech contract.
 
 The setup flow downloads the selected OpenAI Whisper checkpoint before offline use. This adapter
-never asks Whisper to download a model and exposes only transcript, segment, and word JSON strings.
+never asks Whisper to download a model and exposes bounded transcript, timing, and context metadata.
 """
 
 import gc

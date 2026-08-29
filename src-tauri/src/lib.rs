@@ -2019,9 +2019,10 @@ async fn transcribe_music_lyrics(
         project_id: request.project_id.clone(),
         take_id: request.take_id.clone(),
     };
-    let (audio_path, prompt, _) = state
-        .music
-        .lyrics_audio_source(&source_request)
+    let music = state.music.clone();
+    let source = tokio::task::spawn_blocking(move || music.lyrics_audio_source(&source_request))
+        .await
+        .map_err(|error| format!("lyric audio validation stopped unexpectedly: {error}"))?
         .map_err(|error| error.to_string())?;
     let cancel = register_speech_job(&state, &request.job_id)?;
     let result: Result<MusicLyricsSaveResult, String> = async {
@@ -2046,10 +2047,10 @@ async fn transcribe_music_lyrics(
                 &SpeechFileTranscriptionRequest {
                     job_id: request.job_id.clone(),
                     recording_id: request.take_id.clone(),
-                    audio_path,
+                    audio_path: source.path,
                     model_id: request.model_id.clone(),
                     language: request.language.clone(),
-                    prompt,
+                    prompt: source.lyrics,
                 },
                 &cancel,
                 Some(&app),
@@ -2080,15 +2081,22 @@ async fn repair_music_lyrics_range(
         project_id: request.project_id.clone(),
         take_id: request.take_id.clone(),
     };
-    let (audio_path, take_prompt, _) = state
-        .music
-        .lyrics_audio_source(&source_request)
-        .map_err(|error| error.to_string())?;
+    let music = state.music.clone();
+    let start_seconds = request.start_seconds;
+    let end_seconds = request.end_seconds;
+    let source = tokio::task::spawn_blocking(move || {
+        music.validate_lyrics_range(&source_request, start_seconds, end_seconds, None)
+    })
+    .await
+    .map_err(|error| format!("lyric audio validation stopped unexpectedly: {error}"))?
+    .map_err(|error| error.to_string())?;
     let prompt = if request.prompt.trim().is_empty() {
-        take_prompt
+        crate::local_speech::music_opening_prompt(&source.lyrics)
     } else {
         request.prompt.clone()
     };
+    let mut effective_request = request.clone();
+    effective_request.prompt.clone_from(&prompt);
     let cancel = register_speech_job(&state, &request.job_id)?;
     let result: Result<MusicLyricsSaveResult, String> = async {
         let _turn = wait_for_speech_turn(&state, &cancel).await?;
@@ -2110,14 +2118,14 @@ async fn repair_music_lyrics_range(
             .transcribe_file_range(
                 &settings.comfy_root,
                 &SpeechFileRangeTranscriptionRequest {
-                    job_id: request.job_id.clone(),
-                    recording_id: request.take_id.clone(),
-                    audio_path,
-                    model_id: request.model_id.clone(),
-                    language: request.language.clone(),
+                    job_id: effective_request.job_id.clone(),
+                    recording_id: effective_request.take_id.clone(),
+                    audio_path: source.path,
+                    model_id: effective_request.model_id.clone(),
+                    language: effective_request.language.clone(),
                     prompt,
-                    start_seconds: request.start_seconds,
-                    end_seconds: request.end_seconds,
+                    start_seconds: effective_request.start_seconds,
+                    end_seconds: effective_request.end_seconds,
                 },
                 &cancel,
                 Some(&app),
@@ -2126,7 +2134,7 @@ async fn repair_music_lyrics_range(
             .map_err(|error| error.to_string())?;
         state
             .music
-            .persist_lyrics_range_repair(&request, transcription)
+            .persist_lyrics_range_repair(&effective_request, transcription)
             .map_err(|error| error.to_string())
     }
     .await;
@@ -2140,149 +2148,69 @@ async fn draft_lyrics_from_audio_range(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<studio::DraftLyricsFromAudioRangeResult, String> {
-    use base64::Engine as _;
-
-    ensure_workspace_idle(&state)?;
+    let _guard = claim_workspace(&state)?;
     let models = state.models.read().await.clone();
     let model = models
         .iter()
         .find(|m| m.id == request.model_id)
         .cloned()
         .ok_or_else(|| "The selected local model is no longer in the catalog.".to_string())?;
+    if !model.supports_audio {
+        return Err(format!(
+            "{} cannot listen to audio. Choose a catalog model with native audio support.",
+            model.name
+        ));
+    }
 
     let source_request = studio::MusicLyricsRequest {
         project_id: request.project_id.clone(),
         take_id: request.take_id.clone(),
     };
-    let (audio_path, take_lyrics, _) = state
-        .music
-        .lyrics_audio_source(&source_request)
-        .map_err(|error| error.to_string())?;
-
+    let music = state.music.clone();
+    let start_seconds = request.start_seconds;
+    let end_seconds = request.end_seconds;
+    let source = tokio::task::spawn_blocking(move || {
+        music.validate_lyrics_range(&source_request, start_seconds, end_seconds, Some(30.0))
+    })
+    .await
+    .map_err(|error| format!("lyric audio validation stopped unexpectedly: {error}"))?
+    .map_err(|error| error.to_string())?;
     let buffer_seconds = 1.5_f64;
     let slice_start = (request.start_seconds - buffer_seconds).max(0.0);
-    let slice_end = request.end_seconds + buffer_seconds;
-
+    let slice_end = (request.end_seconds + buffer_seconds).min(source.duration_seconds);
     let temp_slice_path = std::env::temp_dir().join(format!(
         "kestrel-audio-copilot-{}.wav",
         uuid::Uuid::new_v4().simple()
     ));
-
-    if crate::local_speech::slice_wav_pcm(
-        &audio_path,
-        &temp_slice_path,
+    let slice = crate::local_speech::prepare_audio_slice(
+        &source.path,
+        temp_slice_path,
         slice_start,
         slice_end,
     )
-    .is_err()
-    {
-        let _ = std::fs::copy(&audio_path, &temp_slice_path);
+    .await
+    .map_err(|error| error.to_string())?;
+    let metadata = tokio::fs::metadata(slice.path())
+        .await
+        .map_err(|error| format!("Could not inspect the prepared audio excerpt: {error}"))?;
+    if metadata.len() > 16 * 1024 * 1024 {
+        return Err("The prepared audio excerpt exceeds the 16 MiB local-model limit. Choose a shorter range.".into());
     }
-
-    let wav_bytes = std::fs::read(&temp_slice_path)
-        .map_err(|err| format!("Failed to read sliced audio for copilot: {err}"))?;
-    let _ = std::fs::remove_file(&temp_slice_path);
-
+    let wav_bytes = tokio::fs::read(slice.path())
+        .await
+        .map_err(|error| format!("Could not read the prepared audio excerpt: {error}"))?;
     let settings = state
         .control_settings
         .load()
         .map_err(|error| error.to_string())?
         .for_model(&request.model_id);
-
+    release_all_comfy_memory(&state).await;
     let lease = state
         .runtime
         .lease_model(&request.model_id, &models, &settings, Some(&app))
         .await
         .map_err(|error| error.to_string())?;
-
-    let messages = if model.supports_audio {
-        let base64_audio = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
-        vec![serde_json::json!({
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Listen carefully to this isolated audio snippet from a song vocal take. Transcribe the exact sung words that you hear. Output ONLY the plain transcribed words on a single line with standard punctuation. Do not include commentary, timestamps, thoughts, or quotes."
-                },
-                {
-                    "type": "input_audio",
-                    "input_audio": {
-                        "data": base64_audio,
-                        "format": "wav"
-                    }
-                }
-            ]
-        })]
-    } else {
-        vec![serde_json::json!({
-            "role": "user",
-            "content": format!(
-                "Based on the following song lyrics, extract and output ONLY the lyric line(s) corresponding to the section between {:.1}s and {:.1}s:\n\nSong Lyrics:\n{}\n\nOutput only the exact lyric words on a single line without commentary.",
-                request.start_seconds, request.end_seconds,
-                take_lyrics.trim()
-            )
-        })]
-    };
-
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(180))
-        .build()
-        .map_err(|error| error.to_string())?;
-
-    let req = client
-        .post(format!("{}/chat/completions", lease.connection.endpoint))
-        .json(&serde_json::json!({
-            "model": lease.connection.model_id,
-            "messages": messages,
-            "max_tokens": 150,
-            "temperature": 0.2
-        }));
-
-    let response = crate::runtime::authorized(req, &lease.connection)
-        .send()
-        .await
-        .map_err(|error| format!("Model audio transcription request failed: {error}"))?;
-
-    if !response.status().is_success() {
-        let err_body = response.text().await.unwrap_or_default();
-        return Err(format!("Local model returned error: {err_body}"));
-    }
-
-    let completion: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|error| format!("Invalid JSON from model: {error}"))?;
-
-    let content = completion["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .trim();
-    let reasoning = completion["choices"][0]["message"]["reasoning_content"]
-        .as_str()
-        .unwrap_or_default()
-        .trim();
-
-    let raw_text = if !content.is_empty() {
-        content
-    } else if !reasoning.is_empty() {
-        reasoning.lines().last().unwrap_or(reasoning).trim()
-    } else {
-        ""
-    };
-
-    let clean = raw_text
-        .trim_matches(|c| c == '"' || c == '\'' || c == '`')
-        .trim_start_matches("Transcribed lyrics:")
-        .trim_start_matches("Lyrics:")
-        .trim_start_matches("Transcription:")
-        .trim()
-        .to_string();
-
-    Ok(studio::DraftLyricsFromAudioRangeResult {
-        transcription: clean,
-        model_name: model.name,
-    })
+    studio::draft_music_lyrics_from_audio(&request, &model, &lease.connection, &wav_bytes).await
 }
 
 #[tauri::command]
@@ -2291,14 +2219,8 @@ async fn translate_music_lyrics(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<studio::TranslateMusicLyricsResult, String> {
-    ensure_workspace_idle(&state)?;
-    if request.lines.is_empty() {
-        return Ok(studio::TranslateMusicLyricsResult {
-            translations: Vec::new(),
-            model_name: "None".to_string(),
-        });
-    }
-
+    let _guard = claim_workspace(&state)?;
+    studio::validate_music_lyrics_translation(&request)?;
     let models = state.models.read().await.clone();
     let model = models
         .iter()
@@ -2310,100 +2232,30 @@ async fn translate_music_lyrics(
         project_id: request.project_id.clone(),
         take_id: request.take_id.clone(),
     };
-    let _ = state
-        .music
-        .lyrics_audio_source(&source_request)
+    let music = state.music.clone();
+    tokio::task::spawn_blocking(move || music.lyrics_audio_source(&source_request))
+        .await
+        .map_err(|error| format!("lyric take validation stopped unexpectedly: {error}"))?
         .map_err(|error| error.to_string())?;
-
+    if request.lines.is_empty() {
+        return Ok(studio::TranslateMusicLyricsResult {
+            translations: Vec::new(),
+            model_id: model.id,
+            model_name: model.name,
+        });
+    }
     let settings = state
         .control_settings
         .load()
         .map_err(|error| error.to_string())?
         .for_model(&request.model_id);
-
+    release_all_comfy_memory(&state).await;
     let lease = state
         .runtime
         .lease_model(&request.model_id, &models, &settings, Some(&app))
         .await
         .map_err(|error| error.to_string())?;
-
-    let lines_formatted = request
-        .lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| format!("{}. {}", i + 1, line.trim()))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let system_prompt = "You are an expert lyrical subtitle translator. You translate song lyrics into the target language with natural poetic rhythm, emotion, and line-by-line alignment.\n\nSTRICT RULES:\n1. Output ONLY the translated lines with the exact same numbers as the input.\n2. Do NOT output notes, commentary, target/style headers, explanations, or metadata.\n\nExample Input (Target: Spanish):\n1. High above the streetlights\n2. Running through the rain\n\nExample Output:\n1. Muy por encima de las farolas\n2. Corriendo bajo la lluvia";
-
-    let user_prompt = format!(
-        "Translate the following {} line(s) into {}:\n\n{}\n\nOutput only the translated lines numbered 1 to {}:",
-        request.lines.len(),
-        request.target_language.trim(),
-        lines_formatted,
-        request.lines.len()
-    );
-
-    let messages = vec![
-        serde_json::json!({
-            "role": "system",
-            "content": system_prompt
-        }),
-        serde_json::json!({
-            "role": "user",
-            "content": user_prompt
-        }),
-    ];
-
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(180))
-        .build()
-        .map_err(|error| error.to_string())?;
-
-    let max_tokens = (request.lines.len() * 50).clamp(256, 4096) as u32;
-
-    let req = client
-        .post(format!("{}/chat/completions", lease.connection.endpoint))
-        .json(&serde_json::json!({
-            "model": lease.connection.model_id,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": 0.3
-        }));
-
-    let response = crate::runtime::authorized(req, &lease.connection)
-        .send()
-        .await
-        .map_err(|error| format!("Translation request failed: {error}"))?;
-
-    if !response.status().is_success() {
-        let err_body = response.text().await.unwrap_or_default();
-        return Err(format!("Local translation model returned error: {err_body}"));
-    }
-
-    let completion: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|error| format!("Invalid JSON from model: {error}"))?;
-
-    let content = completion["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .trim();
-    let reasoning = completion["choices"][0]["message"]["reasoning_content"]
-        .as_str()
-        .unwrap_or_default()
-        .trim();
-
-    let raw_text = if !content.is_empty() { content } else { reasoning };
-    let parsed_translations = studio::parse_lyrical_translations(raw_text, request.lines.len());
-
-    Ok(studio::TranslateMusicLyricsResult {
-        translations: parsed_translations,
-        model_name: model.name,
-    })
+    studio::translate_music_lyrics_with_model(&request, &model, &lease.connection).await
 }
 
 #[tauri::command]

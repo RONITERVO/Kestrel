@@ -296,6 +296,7 @@ export async function draftLyricsFromAudioRange(request: DraftLyricsFromAudioRan
   if (!isTauri()) {
     return {
       transcription: "Sample drafted lyrics from local audio model copilot.",
+      modelId: request.modelId,
       modelName: "Simulated Audio LLM",
     };
   }
@@ -306,6 +307,7 @@ export async function translateMusicLyrics(request: TranslateMusicLyricsRequest)
   if (!isTauri()) {
     return {
       translations: request.lines.map((l) => `[${request.targetLanguage}] ${l}`),
+      modelId: request.modelId,
       modelName: "Simulated Local Translator",
     };
   }

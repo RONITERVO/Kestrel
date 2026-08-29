@@ -888,6 +888,8 @@ export interface MusicLyricsDocument {
   transcript: string;
   theme: MusicLyricTheme;
   showTranslation: boolean;
+  translationLanguage: string;
+  translationModelId: string;
   createdAt: string;
   updatedAt: string;
   segments: MusicLyricSegment[];
@@ -919,6 +921,7 @@ export interface DraftLyricsFromAudioRangeRequest {
 
 export interface DraftLyricsFromAudioRangeResult {
   transcription: string;
+  modelId: string;
   modelName: string;
 }
 
@@ -932,6 +935,7 @@ export interface TranslateMusicLyricsRequest {
 
 export interface TranslateMusicLyricsResult {
   translations: string[];
+  modelId: string;
   modelName: string;
 }
 

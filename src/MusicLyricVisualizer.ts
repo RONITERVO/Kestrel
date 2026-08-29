@@ -67,7 +67,7 @@ export class SketchbookMusicLyricVisualizer {
 
   draw(frame: MusicLyricFrame) {
     this.resize();
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = lyricPixelRatio();
     const width = this.canvas.width / ratio;
     const height = this.canvas.height / ratio;
     const horizon = clamp(frame.layout.horizon || height * 0.56, height * 0.47, height * 0.69);
@@ -100,7 +100,7 @@ export class SketchbookMusicLyricVisualizer {
 
   private resize() {
     const rectangle = this.canvas.getBoundingClientRect();
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = lyricPixelRatio();
     const width = Math.max(1, Math.round(rectangle.width * ratio));
     const height = Math.max(1, Math.round(rectangle.height * ratio));
     if (this.canvas.width !== width || this.canvas.height !== height) {
@@ -574,4 +574,8 @@ function pseudoRandom(seed: number): number {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function lyricPixelRatio(): number {
+  return Math.min(2, Math.max(1, window.devicePixelRatio || 1));
 }

@@ -160,6 +160,11 @@ export function MusicStudio({
   const assistantBusy = !!collaboration && ["queued", "thinking", "writing"].includes(collaboration.status);
   const totalBars = Math.max(1, project?.sections.reduce((sum, section) => sum + section.bars, 0) ?? 1);
 
+  useEffect(() => {
+    setCurrentTime(0);
+    setPlaying(false);
+  }, [activeTake?.id]);
+
   const mutate = (change: (current: MusicProject) => MusicProject) => {
     setProject((current) => current ? change(current) : current);
     setDirty(true);
@@ -507,30 +512,43 @@ export function MusicStudio({
     }
   };
 
-  const draftAudioLyrics = async (startSeconds: number, endSeconds: number): Promise<{ transcription: string; modelName: string }> => {
+  const draftAudioLyrics = async (startSeconds: number, endSeconds: number): Promise<{ transcription: string; modelId: string; modelName: string }> => {
     if (!project || !lyricsTake) throw new Error("Choose an active take for audio copilot listening.");
-    const chosenModel = models.find((m) => m.id === modelId) ?? models.find((m) => m.supportsAudio) ?? models[0];
-    if (!chosenModel) throw new Error("No local model available in the catalog.");
-    return draftLyricsFromAudioRange({
-      projectId: project.id,
-      takeId: lyricsTake.id,
-      modelId: chosenModel.id,
-      startSeconds,
-      endSeconds,
-    });
+    const active = models.find((candidate) => candidate.id === modelId && candidate.supportsAudio);
+    const chosenModel = active ?? models.find((candidate) => candidate.supportsAudio);
+    if (!chosenModel) throw new Error("Audio Copilot requires a local model with native audio input support.");
+    setLyricsBusy(true);
+    setLyricsStatus(`Listening to ${formatTime(startSeconds)} – ${formatTime(endSeconds)} with ${chosenModel.name}…`);
+    try {
+      return await draftLyricsFromAudioRange({
+        projectId: project.id,
+        takeId: lyricsTake.id,
+        modelId: chosenModel.id,
+        startSeconds,
+        endSeconds,
+      });
+    } finally {
+      setLyricsBusy(false);
+    }
   };
 
-  const translateLyrics = async (targetLanguage: string, lines: string[]): Promise<{ translations: string[]; modelName: string }> => {
+  const translateLyrics = async (targetLanguage: string, lines: string[]): Promise<{ translations: string[]; modelId: string; modelName: string }> => {
     if (!project || !lyricsTake) throw new Error("Choose an active take to translate lyrics.");
     const chosenModel = models.find((m) => m.id === modelId) ?? models[0];
     if (!chosenModel) throw new Error("No local model available in the catalog.");
-    return translateMusicLyrics({
-      projectId: project.id,
-      takeId: lyricsTake.id,
-      modelId: chosenModel.id,
-      targetLanguage,
-      lines,
-    });
+    setLyricsBusy(true);
+    setLyricsStatus(`Translating ${lines.length} lyric cue${lines.length === 1 ? "" : "s"} with ${chosenModel.name}…`);
+    try {
+      return await translateMusicLyrics({
+        projectId: project.id,
+        takeId: lyricsTake.id,
+        modelId: chosenModel.id,
+        targetLanguage,
+        lines,
+      });
+    } finally {
+      setLyricsBusy(false);
+    }
   };
 
   if (loading) return <div className="music-studio-loading"><LoaderCircle className="spin" /><span>Opening private music projects…</span></div>;
@@ -728,6 +746,7 @@ export function MusicStudio({
         currentTime={currentTime}
         playing={playing}
         busy={lyricsBusy}
+        speechBusy={Boolean(lyricsJobId.current)}
         status={lyricsStatus}
         models={models}
         activeModelId={modelId}

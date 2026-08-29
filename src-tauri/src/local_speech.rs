@@ -52,7 +52,7 @@ const MAX_MUSIC_OPENING_PROMPT_LINES: usize = 4;
 const MUSIC_REPEAT_CONTEXT_STRATEGY: &str = "whisper-repeat-context-v1";
 const MUSIC_REPEAT_CONTEXT_SEAM_SECONDS: f64 = 1.0;
 const MAX_MUSIC_CONTEXT_SOURCE_SECONDS: f64 = 330.0;
-const MAX_MUSIC_SCORING_TOKENS: usize = 4_096;
+const MAX_MUSIC_SCORING_TOKENS: usize = 1_024;
 const MAX_GENERATED_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TRANSCRIPT_TIMING_BYTES: usize = 16 * 1024 * 1024;
@@ -215,6 +215,26 @@ pub(crate) struct SpeechFileTranscription {
     pub selected_context_copy: u8,
     pub first_context_score: f64,
     pub second_context_score: f64,
+}
+
+pub(crate) struct TemporaryAudioFile {
+    path: PathBuf,
+}
+
+impl TemporaryAudioFile {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryAudioFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 #[derive(Debug)]
@@ -736,8 +756,8 @@ impl LocalSpeech {
             uuid::Uuid::new_v4().simple(),
             extension
         );
-        let input_path = input_directory.join(&input_name);
-        tokio::fs::copy(&request.audio_path, &input_path).await?;
+        let input = TemporaryAudioFile::new(input_directory.join(&input_name));
+        tokio::fs::copy(&request.audio_path, input.path()).await?;
         let graph_request = SpeechTranscriptionRequest {
             job_id: request.job_id.clone(),
             source_kind: "copilot".into(),
@@ -765,7 +785,6 @@ impl LocalSpeech {
                 cancel,
             )
             .await;
-        let _ = tokio::fs::remove_file(&input_path).await;
         let WhisperTranscriptionResult {
             text,
             segments,
@@ -809,6 +828,7 @@ impl LocalSpeech {
             prompt: request.prompt.clone(),
         };
         validate_file_transcription_request(comfy_root, &file_req)?;
+        validate_music_range_request(request)?;
         let _generation = self.generation.lock().await;
         if cancel.is_cancelled() {
             return Err(SpeechError::Cancelled);
@@ -838,28 +858,8 @@ impl LocalSpeech {
         let slice_start = (request.start_seconds - buffer_seconds).max(0.0);
         let slice_end = request.end_seconds + buffer_seconds;
 
-        if slice_wav_pcm(&request.audio_path, &input_path, slice_start, slice_end).is_err() {
-            let ffmpeg_cmd = std::env::var_os("KESTREL_FFMPEG_PATH")
-                .map(PathBuf::from)
-                .filter(|p| p.is_file())
-                .unwrap_or_else(|| PathBuf::from("ffmpeg"));
-            let status = tokio::process::Command::new(ffmpeg_cmd)
-                .args([
-                    "-y",
-                    "-ss",
-                    &format!("{:.3}", slice_start),
-                    "-to",
-                    &format!("{:.3}", slice_end),
-                    "-i",
-                ])
-                .arg(&request.audio_path)
-                .arg(&input_path)
-                .output()
-                .await;
-            if status.is_err() || !status.unwrap().status.success() {
-                tokio::fs::copy(&request.audio_path, &input_path).await?;
-            }
-        }
+        let input =
+            prepare_audio_slice(&request.audio_path, input_path, slice_start, slice_end).await?;
 
         let prompt = bounded_prefix(&request.prompt, MAX_MUSIC_OPENING_PROMPT_BYTES);
         let graph_request = SpeechTranscriptionRequest {
@@ -881,15 +881,8 @@ impl LocalSpeech {
             context_mode,
         );
         let result = self
-            .execute_whisper_graph(
-                &request.job_id,
-                graph,
-                context_mode,
-                Some(&prompt),
-                cancel,
-            )
+            .execute_whisper_graph(&request.job_id, graph, context_mode, Some(&prompt), cancel)
             .await;
-        let _ = tokio::fs::remove_file(&input_path).await;
         let WhisperTranscriptionResult {
             text,
             mut segments,
@@ -910,8 +903,13 @@ impl LocalSpeech {
 
         words.retain(|w| {
             let mid = (w.start + w.end) / 2.0;
-            mid >= request.start_seconds - 0.25 && mid <= request.end_seconds + 0.25
+            mid >= request.start_seconds && mid <= request.end_seconds
         });
+        segments.retain(|segment| {
+            let midpoint = (segment.start + segment.end) / 2.0;
+            midpoint >= request.start_seconds && midpoint <= request.end_seconds
+        });
+        drop(input);
 
         emit_file_transcription_progress(
             app,
@@ -1476,8 +1474,8 @@ fn validate_transcription_request(
         || request.language.len() > 64
         || !request
             .language
-            .bytes()
-            .all(|byte| byte.is_ascii_alphabetic() || matches!(byte, b' ' | b'-'))
+            .chars()
+            .all(|character| character.is_alphabetic() || matches!(character, ' ' | '-'))
     {
         return Err(SpeechError::Invalid("unsafe dictation language".into()));
     }
@@ -1543,8 +1541,8 @@ fn validate_file_transcription_request(
         || request.language.len() > 64
         || !request
             .language
-            .bytes()
-            .all(|byte| byte.is_ascii_alphabetic() || matches!(byte, b' ' | b'-'))
+            .chars()
+            .all(|character| character.is_alphabetic() || matches!(character, ' ' | '-'))
     {
         return Err(SpeechError::Invalid("unsafe transcription language".into()));
     }
@@ -1555,6 +1553,28 @@ fn validate_file_transcription_request(
         return Err(SpeechError::Invalid(format!(
             "{} is not a complete local ComfyUI Whisper model",
             request.model_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_music_range_request(
+    request: &SpeechFileRangeTranscriptionRequest,
+) -> Result<(), SpeechError> {
+    if !request.start_seconds.is_finite()
+        || !request.end_seconds.is_finite()
+        || request.start_seconds < 0.0
+        || request.end_seconds <= request.start_seconds
+        || request.end_seconds - request.start_seconds > MAX_MUSIC_CONTEXT_SOURCE_SECONDS
+    {
+        return Err(SpeechError::Invalid(
+            "music lyric repair requires a finite, positive range no longer than 330 seconds"
+                .into(),
+        ));
+    }
+    if request.prompt.len() > MAX_MUSIC_OPENING_PROMPT_BYTES {
+        return Err(SpeechError::Invalid(format!(
+            "music lyric repair guidance exceeds {MAX_MUSIC_OPENING_PROMPT_BYTES} UTF-8 bytes"
         )));
     }
     Ok(())
@@ -2254,6 +2274,10 @@ fn select_context_candidate(
 ) -> WhisperTranscriptionResult {
     let selected_words = words
         .iter()
+        .filter(|word| {
+            let midpoint = (word.start + word.end) / 2.0;
+            midpoint >= source_start && midpoint < source_end
+        })
         .filter_map(|word| rebase_context_timing(word, source_start, source_end))
         .collect::<Vec<_>>();
     let selected_segments = segments
@@ -2267,7 +2291,7 @@ fn select_context_candidate(
                     .filter(|word| {
                         let midpoint = (word.start + word.end) / 2.0;
                         midpoint >= source_start
-                            && midpoint <= source_end
+                            && midpoint < source_end
                             && midpoint >= segment.start
                             && midpoint <= segment.end
                     })
@@ -2552,77 +2576,243 @@ fn safe_comfy_output(
     Ok(source)
 }
 
+pub(crate) async fn prepare_audio_slice(
+    input_path: &Path,
+    output_path: PathBuf,
+    start_seconds: f64,
+    end_seconds: f64,
+) -> Result<TemporaryAudioFile, SpeechError> {
+    if !start_seconds.is_finite()
+        || !end_seconds.is_finite()
+        || start_seconds < 0.0
+        || end_seconds <= start_seconds
+    {
+        return Err(SpeechError::Invalid(
+            "audio slicing requires a finite, positive time range".into(),
+        ));
+    }
+    let source = input_path.to_path_buf();
+    let native_target = output_path.clone();
+    let native = tokio::task::spawn_blocking(move || {
+        slice_wav_pcm(&source, &native_target, start_seconds, end_seconds)
+    })
+    .await
+    .map_err(|error| SpeechError::Unavailable(format!("audio slice task failed: {error}")))?;
+    if native.is_ok() {
+        return Ok(TemporaryAudioFile::new(output_path));
+    }
+
+    let ffmpeg = std::env::var_os("KESTREL_FFMPEG_PATH")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("ffmpeg"));
+    let duration = end_seconds - start_seconds;
+    let mut command = tokio::process::Command::new(&ffmpeg);
+    command
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-ss",
+            &format!("{start_seconds:.3}"),
+            "-i",
+        ])
+        .arg(input_path)
+        .args([
+            "-t",
+            &format!("{duration:.3}"),
+            "-vn",
+            "-sn",
+            "-dn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+        ])
+        .arg(&output_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let rendered = tokio::time::timeout(Duration::from_secs(120), command.output()).await;
+    let result = match rendered {
+        Ok(Ok(output)) if output.status.success() => fs::metadata(&output_path)
+            .ok()
+            .filter(|metadata| metadata.is_file() && metadata.len() > 44)
+            .map(|_| TemporaryAudioFile::new(output_path.clone()))
+            .ok_or_else(|| {
+                SpeechError::Unavailable(
+                    "FFmpeg completed without a readable WAV lyric excerpt".into(),
+                )
+            }),
+        Ok(Ok(output)) => Err(SpeechError::Unavailable(format!(
+            "FFmpeg could not prepare the lyric excerpt: {}",
+            truncate(&String::from_utf8_lossy(&output.stderr), 700)
+        ))),
+        Ok(Err(error)) => Err(SpeechError::Unavailable(format!(
+            "Kestrel needs its configured FFmpeg to slice this audio format: {error}. Open Setup and repair Media tools."
+        ))),
+        Err(_) => Err(SpeechError::Unavailable(
+            "FFmpeg did not finish the bounded lyric excerpt within two minutes".into(),
+        )),
+    };
+    if result.is_err() {
+        let _ = fs::remove_file(&output_path);
+    }
+    result
+}
+
 pub(crate) fn slice_wav_pcm(
     input_path: &Path,
     output_path: &Path,
     start_seconds: f64,
     end_seconds: f64,
 ) -> Result<(), std::io::Error> {
-    let bytes = std::fs::read(input_path)?;
-    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+    let mut input = fs::File::open(input_path)?;
+    let file_length = input.metadata()?.len();
+    let mut riff = [0_u8; 12];
+    input.read_exact(&mut riff)?;
+    if file_length < 44 || &riff[0..4] != b"RIFF" || &riff[8..12] != b"WAVE" {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "not a valid RIFF/WAVE file",
         ));
     }
-    let mut pos = 12;
-    let mut fmt_opt: Option<(u16, u16, u32, u32, u16, u16)> = None;
-    let mut data_chunk: Option<(usize, usize)> = None;
-    while pos + 8 <= bytes.len() {
-        let chunk_id = &bytes[pos..pos + 4];
-        let chunk_len = u32::from_le_bytes(
-            bytes[pos + 4..pos + 8]
-                .try_into()
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid chunk size"))?,
-        ) as usize;
-        let data_start = pos + 8;
-        if chunk_id == b"fmt " && chunk_len >= 16 && data_start + 16 <= bytes.len() {
-            let format_tag = u16::from_le_bytes(bytes[data_start..data_start + 2].try_into().unwrap());
-            let channels = u16::from_le_bytes(bytes[data_start + 2..data_start + 4].try_into().unwrap());
-            let sample_rate = u32::from_le_bytes(bytes[data_start + 4..data_start + 8].try_into().unwrap());
-            let byte_rate = u32::from_le_bytes(bytes[data_start + 8..data_start + 12].try_into().unwrap());
-            let block_align = u16::from_le_bytes(bytes[data_start + 12..data_start + 14].try_into().unwrap());
-            let bits_per_sample = u16::from_le_bytes(bytes[data_start + 14..data_start + 16].try_into().unwrap());
-            fmt_opt = Some((format_tag, channels, sample_rate, byte_rate, block_align, bits_per_sample));
-        } else if chunk_id == b"data" {
-            let actual_data_len = chunk_len.min(bytes.len().saturating_sub(data_start));
-            data_chunk = Some((data_start, actual_data_len));
-            break;
-        }
-        pos = data_start + chunk_len + (chunk_len % 2);
+    if !start_seconds.is_finite()
+        || !end_seconds.is_finite()
+        || start_seconds < 0.0
+        || end_seconds <= start_seconds
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid WAV slice range",
+        ));
     }
-    let (format_tag, channels, sample_rate, _byte_rate, block_align, bits_per_sample) = fmt_opt
+    let mut position = 12_u64;
+    let mut format = None;
+    let mut data = None;
+    while position.saturating_add(8) <= file_length {
+        input.seek(SeekFrom::Start(position))?;
+        let mut header = [0_u8; 8];
+        input.read_exact(&mut header)?;
+        let chunk_length = u32::from_le_bytes(header[4..8].try_into().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid WAV chunk length")
+        })?) as u64;
+        let data_start = position + 8;
+        let data_end = data_start.checked_add(chunk_length).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "WAV chunk overflow")
+        })?;
+        if data_end > file_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated WAV chunk",
+            ));
+        }
+        if &header[0..4] == b"fmt " && chunk_length >= 16 {
+            let mut bytes = [0_u8; 16];
+            input.read_exact(&mut bytes)?;
+            format = Some((
+                u16::from_le_bytes(bytes[0..2].try_into().map_err(invalid_wav_field)?),
+                u16::from_le_bytes(bytes[2..4].try_into().map_err(invalid_wav_field)?),
+                u32::from_le_bytes(bytes[4..8].try_into().map_err(invalid_wav_field)?),
+                u16::from_le_bytes(bytes[12..14].try_into().map_err(invalid_wav_field)?),
+                u16::from_le_bytes(bytes[14..16].try_into().map_err(invalid_wav_field)?),
+            ));
+        } else if &header[0..4] == b"data" {
+            data = Some((data_start, chunk_length));
+        }
+        position = data_end.saturating_add(chunk_length % 2);
+    }
+    let (format_tag, channels, sample_rate, block_align, bits_per_sample) = format
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing fmt chunk"))?;
-    let (data_start, data_len) = data_chunk
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing data chunk"))?;
-
-    let bytes_per_sec = sample_rate as f64 * block_align as f64;
-    let start_sample_byte = ((start_seconds * bytes_per_sec) as usize / block_align as usize) * block_align as usize;
-    let end_sample_byte = ((end_seconds * bytes_per_sec) as usize / block_align as usize) * block_align as usize;
-    let slice_start = start_sample_byte.min(data_len);
-    let slice_end = end_sample_byte.min(data_len).max(slice_start);
-    let sliced_audio_bytes = &bytes[data_start + slice_start..data_start + slice_end];
-    let sliced_len = sliced_audio_bytes.len() as u32;
-
-    let mut out = Vec::with_capacity(44 + sliced_audio_bytes.len());
-    let total_file_size = 36 + sliced_len;
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&total_file_size.to_le_bytes());
-    out.extend_from_slice(b"WAVE");
-    out.extend_from_slice(b"fmt ");
-    out.extend_from_slice(&16_u32.to_le_bytes());
-    out.extend_from_slice(&format_tag.to_le_bytes());
-    out.extend_from_slice(&channels.to_le_bytes());
-    out.extend_from_slice(&sample_rate.to_le_bytes());
-    out.extend_from_slice(&(sample_rate * block_align as u32).to_le_bytes());
-    out.extend_from_slice(&block_align.to_le_bytes());
-    out.extend_from_slice(&bits_per_sample.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&sliced_len.to_le_bytes());
-    out.extend_from_slice(sliced_audio_bytes);
-
-    std::fs::write(output_path, out)?;
+    let (data_start, data_length) = data.ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "missing data chunk")
+    })?;
+    let bytes_per_sample = u32::from(bits_per_sample)
+        .checked_add(7)
+        .unwrap_or_default()
+        / 8;
+    let expected_align = u32::from(channels).saturating_mul(bytes_per_sample);
+    if !matches!(format_tag, 1 | 3)
+        || channels == 0
+        || channels > 32
+        || !(8_000..=384_000).contains(&sample_rate)
+        || bits_per_sample == 0
+        || bits_per_sample > 64
+        || u32::from(block_align) != expected_align
+        || block_align == 0
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "unsupported or inconsistent PCM WAV format",
+        ));
+    }
+    let bytes_per_second = f64::from(sample_rate) * f64::from(block_align);
+    let aligned_offset = |seconds: f64| {
+        let capped = (seconds * bytes_per_second).min(data_length as f64) as u64;
+        capped / u64::from(block_align) * u64::from(block_align)
+    };
+    let slice_start = aligned_offset(start_seconds);
+    let slice_end = aligned_offset(end_seconds);
+    if slice_end <= slice_start {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "the WAV slice does not intersect audio data",
+        ));
+    }
+    let sliced_length = slice_end - slice_start;
+    let sliced_length_u32 = u32::try_from(sliced_length).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "WAV slice exceeds RIFF limits",
+        )
+    })?;
+    let padding = sliced_length_u32 % 2;
+    let riff_length = 36_u32
+        .checked_add(sliced_length_u32)
+        .and_then(|length| length.checked_add(padding))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "WAV slice exceeds RIFF limits",
+            )
+        })?;
+    let mut output = fs::File::create(output_path)?;
+    output.write_all(b"RIFF")?;
+    output.write_all(&riff_length.to_le_bytes())?;
+    output.write_all(b"WAVEfmt ")?;
+    output.write_all(&16_u32.to_le_bytes())?;
+    output.write_all(&format_tag.to_le_bytes())?;
+    output.write_all(&channels.to_le_bytes())?;
+    output.write_all(&sample_rate.to_le_bytes())?;
+    output.write_all(&(sample_rate * u32::from(block_align)).to_le_bytes())?;
+    output.write_all(&block_align.to_le_bytes())?;
+    output.write_all(&bits_per_sample.to_le_bytes())?;
+    output.write_all(b"data")?;
+    output.write_all(&sliced_length_u32.to_le_bytes())?;
+    input.seek(SeekFrom::Start(data_start + slice_start))?;
+    let copied = std::io::copy(&mut input.take(sliced_length), &mut output)?;
+    if copied != sliced_length {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "WAV audio ended before the requested slice",
+        ));
+    }
+    if padding != 0 {
+        output.write_all(&[0])?;
+    }
+    output.sync_all()?;
     Ok(())
+}
+
+fn invalid_wav_field(_: std::array::TryFromSliceError) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid WAV format field")
 }
 
 fn find_audio_output(entry: &Value) -> Option<(String, String)> {
@@ -2790,7 +2980,7 @@ fn bounded_prefix(value: &str, maximum: usize) -> String {
     value[..boundary].into()
 }
 
-fn music_opening_prompt(lyrics: &str) -> String {
+pub(crate) fn music_opening_prompt(lyrics: &str) -> String {
     let mut prompt = String::new();
     let mut lyric_lines = 0_usize;
     for line in lyrics.lines().map(str::trim) {
@@ -2832,6 +3022,30 @@ fn is_music_section_heading(line: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn write_test_wav(path: &Path, block_align: u16, samples: &[u8]) {
+        let data_length = u32::try_from(samples.len()).unwrap();
+        let padding = data_length % 2;
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(b"RIFF").unwrap();
+        file.write_all(&(36 + data_length + padding).to_le_bytes())
+            .unwrap();
+        file.write_all(b"WAVEfmt ").unwrap();
+        file.write_all(&16_u32.to_le_bytes()).unwrap();
+        file.write_all(&1_u16.to_le_bytes()).unwrap();
+        file.write_all(&1_u16.to_le_bytes()).unwrap();
+        file.write_all(&8_000_u32.to_le_bytes()).unwrap();
+        file.write_all(&(8_000_u32 * u32::from(block_align)).to_le_bytes())
+            .unwrap();
+        file.write_all(&block_align.to_le_bytes()).unwrap();
+        file.write_all(&8_u16.to_le_bytes()).unwrap();
+        file.write_all(b"data").unwrap();
+        file.write_all(&data_length.to_le_bytes()).unwrap();
+        file.write_all(samples).unwrap();
+        if padding != 0 {
+            file.write_all(&[0]).unwrap();
+        }
+    }
+
     fn request(text: &str) -> SpeechSynthesisRequest {
         SpeechSynthesisRequest {
             job_id: "job-1".into(),
@@ -2842,6 +3056,38 @@ mod tests {
             model_id: "chatterbox:resembleai_default_voice".into(),
             voice_profile_id: "voice-default".into(),
         }
+    }
+
+    #[test]
+    fn native_wav_slice_streams_only_the_requested_pcm_frames() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.wav");
+        let target = directory.path().join("slice.wav");
+        let samples = (0..8_000)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        write_test_wav(&source, 1, &samples);
+
+        slice_wav_pcm(&source, &target, 0.25, 0.5).unwrap();
+
+        let output = fs::read(target).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(output[40..44].try_into().unwrap()),
+            2_000
+        );
+        assert_eq!(&output[44..], &samples[2_000..4_000]);
+    }
+
+    #[test]
+    fn native_wav_slice_rejects_inconsistent_format_fields_without_panicking() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("invalid.wav");
+        write_test_wav(&source, 0, &[0; 80]);
+
+        let error =
+            slice_wav_pcm(&source, &directory.path().join("slice.wav"), 0.0, 0.1).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 
     fn default_conditioning() -> VoiceConditioning {

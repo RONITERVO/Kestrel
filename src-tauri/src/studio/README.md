@@ -56,6 +56,7 @@ and must not acquire authority implicitly.
 | `image_studio.rs` | Recoverable image projects, structured compositions, native Ideogram 4 graphs, immutable PNG takes, and progress | LLM process ownership, arbitrary imported workflows, bundled license rights, or public-network fallback |
 | `live_preview.rs` | TAE preview graph nodes, bounded project-level reconnect state, and producer-visible preview events | Final-render truth or durable base64 preview storage |
 | `music.rs` | Recoverable song projects, producer arrangement, native Music 3 graphs, immutable takes, durable lyric cue revisions, progress, and optional MuScriptor adapter | LLM process ownership, fake stem separation, bundled gated weights, or public-network fallback |
+| `music_lyrics_model.rs` | Bounded audio-listening and translation suggestions through a caller-owned local-model lease | Durable lyric mutation, runtime ownership, remote fallback, or arbitrary tools |
 | `music_midi.rs` | Bounded Standard MIDI parsing/writing, typed piano-roll documents, and recoverable binary replacement | MuScriptor execution, project path selection, source mutation, or UI state |
 
 If a change appears to belong to two rows, introduce a typed boundary instead of importing private

@@ -80,7 +80,7 @@ export class SignalBloomMusicLyricVisualizer {
     );
     this.rotation += frame.delta * (0.045 + frame.presence * 0.16 + frame.centroid * 0.08);
 
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = lyricPixelRatio();
     const width = this.canvas.width / ratio;
     const height = this.canvas.height / ratio;
     const journeyX = width * (0.18 + frame.progress * 0.64);
@@ -131,7 +131,7 @@ export class SignalBloomMusicLyricVisualizer {
 
   private resize() {
     const rectangle = this.canvas.getBoundingClientRect();
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = lyricPixelRatio();
     const width = Math.max(1, Math.round(rectangle.width * ratio));
     const height = Math.max(1, Math.round(rectangle.height * ratio));
     if (this.canvas.width !== width || this.canvas.height !== height) {
@@ -555,4 +555,8 @@ export class SignalBloomMusicLyricVisualizer {
 function seeded(seed: number): number {
   const value = Math.sin((seed + 11) * 91.731) * 43_758.5453;
   return value - Math.floor(value);
+}
+
+function lyricPixelRatio(): number {
+  return Math.min(2, Math.max(1, window.devicePixelRatio || 1));
 }

@@ -1,11 +1,10 @@
 # Music lyric isolation and alignment contingency
 
-Status: **do not replace the current path without an acceptance failure.** Extended producer
-testing in August 2026 found Kestrel's installed Whisper lyric sync correct in approximately 99% of
-material after the opening window, but also exposed a repeatable cold-start weakness in the first
-several seconds. Kestrel now hardens that opening without adding another runtime or model download.
-The later-song result is not a general benchmark, but it remains strong evidence that another
-maintenance surface is not presently justified.
+Status: **do not replace the current path without a repeatable acceptance failure.** Brief producer
+checks in August 2026 exposed a cold-start weakness in the first several seconds while the existing
+path otherwise remained useful. Kestrel now hardens that opening without adding another runtime or
+model download. This observation is not a benchmark and does not justify a model comparison or a
+new maintenance surface.
 
 This note records the preferred fallback so a future maintainer does not have to restart the model
 and licensing investigation if dense arrangements, new languages, or a changed generator cause a
@@ -32,7 +31,7 @@ its score is materially higher; otherwise the stable first copy wins. This guard
 because recent tail lyrics can occasionally make a context-conditioned second opening jump ahead
 to a chorus. Boundary-crossing cues are rebuilt from only in-range words. The durable lyric-sync
 receipt records the strategy, copy count, selected copy, both candidate scores, and seam. Scoring is
-bounded to 4,096 tokens per side. Generated music is limited to five minutes; the adapter allows a
+bounded to 1,024 tokens per side. Generated music is limited to five minutes; the adapter allows a
 30-second container margin and fails explicitly above that bound rather than making an unbounded
 duplicate allocation.
 
