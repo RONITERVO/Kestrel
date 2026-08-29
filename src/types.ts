@@ -909,6 +909,19 @@ export interface RepairMusicLyricsRangeRequest {
   prompt: string;
 }
 
+export interface DraftLyricsFromAudioRangeRequest {
+  projectId: string;
+  takeId: string;
+  modelId: string;
+  startSeconds: number;
+  endSeconds: number;
+}
+
+export interface DraftLyricsFromAudioRangeResult {
+  transcription: string;
+  modelName: string;
+}
+
 export interface MusicMidiTempo {
   tick: number;
   microsecondsPerQuarter: number;

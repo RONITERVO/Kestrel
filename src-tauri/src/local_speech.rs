@@ -2552,7 +2552,7 @@ fn safe_comfy_output(
     Ok(source)
 }
 
-fn slice_wav_pcm(
+pub(crate) fn slice_wav_pcm(
     input_path: &Path,
     output_path: &Path,
     start_seconds: f64,

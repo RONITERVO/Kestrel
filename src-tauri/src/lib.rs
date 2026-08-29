@@ -2135,6 +2135,156 @@ async fn repair_music_lyrics_range(
 }
 
 #[tauri::command]
+async fn draft_lyrics_from_audio_range(
+    request: studio::DraftLyricsFromAudioRangeRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<studio::DraftLyricsFromAudioRangeResult, String> {
+    use base64::Engine as _;
+
+    ensure_workspace_idle(&state)?;
+    let models = state.models.read().await.clone();
+    let model = models
+        .iter()
+        .find(|m| m.id == request.model_id)
+        .cloned()
+        .ok_or_else(|| "The selected local model is no longer in the catalog.".to_string())?;
+
+    let source_request = studio::MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let (audio_path, take_lyrics, _) = state
+        .music
+        .lyrics_audio_source(&source_request)
+        .map_err(|error| error.to_string())?;
+
+    let buffer_seconds = 1.5_f64;
+    let slice_start = (request.start_seconds - buffer_seconds).max(0.0);
+    let slice_end = request.end_seconds + buffer_seconds;
+
+    let temp_slice_path = std::env::temp_dir().join(format!(
+        "kestrel-audio-copilot-{}.wav",
+        uuid::Uuid::new_v4().simple()
+    ));
+
+    if crate::local_speech::slice_wav_pcm(
+        &audio_path,
+        &temp_slice_path,
+        slice_start,
+        slice_end,
+    )
+    .is_err()
+    {
+        let _ = std::fs::copy(&audio_path, &temp_slice_path);
+    }
+
+    let wav_bytes = std::fs::read(&temp_slice_path)
+        .map_err(|err| format!("Failed to read sliced audio for copilot: {err}"))?;
+    let _ = std::fs::remove_file(&temp_slice_path);
+
+    let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?
+        .for_model(&request.model_id);
+
+    let lease = state
+        .runtime
+        .lease_model(&request.model_id, &models, &settings, Some(&app))
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let messages = if model.supports_audio {
+        let base64_audio = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
+        vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Listen carefully to this isolated audio snippet from a song vocal take. Transcribe the exact sung words that you hear. Output ONLY the plain transcribed words on a single line with standard punctuation. Do not include commentary, timestamps, thoughts, or quotes."
+                },
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": base64_audio,
+                        "format": "wav"
+                    }
+                }
+            ]
+        })]
+    } else {
+        vec![serde_json::json!({
+            "role": "user",
+            "content": format!(
+                "Based on the following song lyrics, extract and output ONLY the lyric line(s) corresponding to the section between {:.1}s and {:.1}s:\n\nSong Lyrics:\n{}\n\nOutput only the exact lyric words on a single line without commentary.",
+                request.start_seconds, request.end_seconds,
+                take_lyrics.trim()
+            )
+        })]
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let req = client
+        .post(format!("{}/chat/completions", lease.connection.endpoint))
+        .json(&serde_json::json!({
+            "model": lease.connection.model_id,
+            "messages": messages,
+            "max_tokens": 150,
+            "temperature": 0.2
+        }));
+
+    let response = crate::runtime::authorized(req, &lease.connection)
+        .send()
+        .await
+        .map_err(|error| format!("Model audio transcription request failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let err_body = response.text().await.unwrap_or_default();
+        return Err(format!("Local model returned error: {err_body}"));
+    }
+
+    let completion: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Invalid JSON from model: {error}"))?;
+
+    let content = completion["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim();
+    let reasoning = completion["choices"][0]["message"]["reasoning_content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim();
+
+    let raw_text = if !content.is_empty() {
+        content
+    } else if !reasoning.is_empty() {
+        reasoning.lines().last().unwrap_or(reasoning).trim()
+    } else {
+        ""
+    };
+
+    let clean = raw_text
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+        .trim_start_matches("Transcribed lyrics:")
+        .trim_start_matches("Lyrics:")
+        .trim_start_matches("Transcription:")
+        .trim()
+        .to_string();
+
+    Ok(studio::DraftLyricsFromAudioRangeResult {
+        transcription: clean,
+        model_name: model.name,
+    })
+}
+
+#[tauri::command]
 async fn start_music_generation(
     id: String,
     app: AppHandle,
@@ -4123,6 +4273,7 @@ pub fn run() {
             save_music_lyrics_document,
             transcribe_music_lyrics,
             repair_music_lyrics_range,
+            draft_lyrics_from_audio_range,
             start_music_generation,
             cancel_music_generation,
             transcribe_music_midi,

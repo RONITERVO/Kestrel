@@ -74,6 +74,8 @@ import type {
   MusicMidiSaveResult,
   MusicProject,
   MusicSummary,
+  DraftLyricsFromAudioRangeRequest,
+  DraftLyricsFromAudioRangeResult,
   RepairMusicLyricsRangeRequest,
   ImageGenerationEvent,
   ImageProject,
@@ -286,6 +288,16 @@ export async function transcribeMusicLyrics(request: { projectId: string; takeId
 export async function repairMusicLyricsRange(request: RepairMusicLyricsRangeRequest): Promise<MusicLyricsSaveResult> {
   if (!isTauri()) throw new Error("Local lyric range repair requires the desktop application.");
   return invoke<MusicLyricsSaveResult>("repair_music_lyrics_range", { request });
+}
+
+export async function draftLyricsFromAudioRange(request: DraftLyricsFromAudioRangeRequest): Promise<DraftLyricsFromAudioRangeResult> {
+  if (!isTauri()) {
+    return {
+      transcription: "Sample drafted lyrics from local audio model copilot.",
+      modelName: "Simulated Audio LLM",
+    };
+  }
+  return invoke<DraftLyricsFromAudioRangeResult>("draft_lyrics_from_audio_range", { request });
 }
 
 export async function onMusicGeneration(callback: (event: MusicGenerationEvent) => void): Promise<UnlistenFn> {

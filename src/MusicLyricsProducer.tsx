@@ -1,5 +1,5 @@
 import {
-  Captions, ChevronLeft, CircleStop, Clock3, FileText, Languages, ListMusic, LoaderCircle, Pause, Play,
+  Bot, Captions, ChevronLeft, CircleStop, Clock3, FileText, Languages, ListMusic, LoaderCircle, Pause, Play,
   Palette, Plus, Save, Sparkles, Trash2, Wand2, WandSparkles,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -12,7 +12,7 @@ import {
 } from "./MusicLyricReactivity";
 import { createMusicLyricVisualizer, MUSIC_LYRIC_THEMES, type MusicLyricRenderer } from "./MusicLyricVisualizers";
 import type {
-  MusicLyricSegment, MusicLyricsDocument, MusicLyricWord, MusicProject, MusicTake, SpeechModel,
+  ModelInfo, MusicLyricSegment, MusicLyricsDocument, MusicLyricWord, MusicProject, MusicTake, SpeechModel,
 } from "./types";
 
 interface AudioAnalysis {
@@ -33,12 +33,15 @@ export function MusicLyricsProducer({
   playing,
   busy,
   status,
+  models,
+  activeModelId,
   onTogglePlay,
   onSeek,
   onChange,
   onSave,
   onSync,
   onRepairRange,
+  onDraftAudioPrompt,
   onCancelSync,
   onClose,
 }: {
@@ -50,12 +53,15 @@ export function MusicLyricsProducer({
   playing: boolean;
   busy: boolean;
   status: string;
+  models?: ModelInfo[];
+  activeModelId?: string;
   onTogglePlay: () => void;
   onSeek: (seconds: number) => void;
   onChange: (document: MusicLyricsDocument) => void;
   onSave: (document: MusicLyricsDocument) => Promise<MusicLyricsDocument | undefined>;
   onSync: (modelId: string, language: string) => Promise<void>;
   onRepairRange?: (modelId: string, language: string, startSeconds: number, endSeconds: number, prompt: string) => Promise<void>;
+  onDraftAudioPrompt?: (startSeconds: number, endSeconds: number) => Promise<{ transcription: string; modelName: string }>;
   onCancelSync: () => void;
   onClose: () => void;
 }) {
@@ -76,11 +82,20 @@ export function MusicLyricsProducer({
   const [repairStart, setRepairStart] = useState(0);
   const [repairEnd, setRepairEnd] = useState(Math.min(take.durationSeconds, 10));
   const [repairPrompt, setRepairPrompt] = useState("");
+  const [audioDraftBusy, setAudioDraftBusy] = useState(false);
+  const [audioDraftStatus, setAudioDraftStatus] = useState("");
   const activeSegment = musicLyricSegmentAt(document.segments, currentTime);
   const displaySegment = musicLyricDisplaySegmentAt(document.segments, currentTime);
   const cueExiting = Boolean(displaySegment && displaySegment !== activeSegment);
   const selectedSegment = document.segments.find((segment) => segment.id === selectedId);
   const takeNumber = project.takes.findIndex((candidate) => candidate.id === take.id) + 1;
+  const audioModel = useMemo(() => {
+    if (activeModelId && models) {
+      const active = models.find((m) => m.id === activeModelId);
+      if (active) return active;
+    }
+    return models?.find((m) => m.supportsAudio) ?? models?.[0];
+  }, [models, activeModelId]);
 
   useEffect(() => {
     currentTimeRef.current = currentTime;
@@ -455,7 +470,40 @@ export function MusicLyricsProducer({
                   <Sparkles /> Current cue
                 </button>
               )}
+              {onDraftAudioPrompt && (
+                <button
+                  type="button"
+                  className="music-lyrics-btn-sm music-lyrics-copilot-btn"
+                  disabled={audioDraftBusy || busy}
+                  title={audioModel ? `Listen to audio slice using ${audioModel.name}${audioModel.supportsAudio ? " (Native Audio LLM)" : ""}` : "Listen to audio slice using local model"}
+                  onClick={async () => {
+                    setAudioDraftBusy(true);
+                    setAudioDraftStatus("Audio model is listening to the slice…");
+                    try {
+                      const res = await onDraftAudioPrompt(repairStart, repairEnd);
+                      if (res.transcription) {
+                        setRepairPrompt(res.transcription);
+                        setAudioDraftStatus(`Transcribed by ${res.modelName}: "${res.transcription}"`);
+                      } else {
+                        setAudioDraftStatus(`${res.modelName} finished without detected vocal words.`);
+                      }
+                    } catch (err) {
+                      setAudioDraftStatus(`Audio Copilot error: ${String(err)}`);
+                    } finally {
+                      setAudioDraftBusy(false);
+                    }
+                  }}
+                >
+                  {audioDraftBusy ? <LoaderCircle className="spin" /> : <Bot />} {audioModel?.supportsAudio ? `🤖 Audio Copilot (${audioModel.name})` : "🤖 Audio Copilot"}
+                </button>
+              )}
             </div>
+
+            {audioDraftStatus && (
+              <div className="music-lyrics-copilot-status">
+                {audioDraftBusy && <LoaderCircle className="spin" />} {audioDraftStatus}
+              </div>
+            )}
 
             <div className="music-lyrics-repair-model-row">
               <label>

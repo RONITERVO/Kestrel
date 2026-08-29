@@ -289,6 +289,23 @@ pub struct RepairMusicLyricsRangeRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DraftLyricsFromAudioRangeRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub model_id: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftLyricsFromAudioRangeResult {
+    pub transcription: String,
+    pub model_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SaveMusicLyricsDocumentRequest {
     pub project_id: String,
     pub take_id: String,

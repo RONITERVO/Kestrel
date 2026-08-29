@@ -70,7 +70,8 @@ use live_preview::{
 };
 use movie_agent::MovieAgentWorkspace;
 pub use music::{
-    CreateMusicProjectRequest, MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest,
+    CreateMusicProjectRequest, DraftLyricsFromAudioRangeRequest, DraftLyricsFromAudioRangeResult,
+    MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest,
     MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, RepairMusicLyricsRangeRequest,
     SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest,
 };

@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  cancelLocalSpeech, cancelMoviePromptDraft, cancelMusicGeneration, createMusicLyricsDraft, createMusicProject, getMusicLyricsDocument, getMusicProject,
+  cancelLocalSpeech, cancelMoviePromptDraft, cancelMusicGeneration, createMusicLyricsDraft, createMusicProject, draftLyricsFromAudioRange, getMusicLyricsDocument, getMusicProject,
   exportMusicMidi, getMusicMidiDocument, listMusicProjects, musicMediaUrl, onMoviePromptDraft, onMusicGeneration,
   onLocalSpeechProgress, onMusicProjectUpdated, pickSetupFile, repairMusicLyricsRange, revealMusicProject, saveMusicLyricsDocument, saveMusicProject,
   revealMusicMidi, saveMusicMidiDocument, startMoviePromptDraft, startMusicGeneration,
@@ -507,6 +507,19 @@ export function MusicStudio({
     }
   };
 
+  const draftAudioLyrics = async (startSeconds: number, endSeconds: number): Promise<{ transcription: string; modelName: string }> => {
+    if (!project || !lyricsTake) throw new Error("Choose an active take for audio copilot listening.");
+    const chosenModel = models.find((m) => m.id === modelId) ?? models.find((m) => m.supportsAudio) ?? models[0];
+    if (!chosenModel) throw new Error("No local model available in the catalog.");
+    return draftLyricsFromAudioRange({
+      projectId: project.id,
+      takeId: lyricsTake.id,
+      modelId: chosenModel.id,
+      startSeconds,
+      endSeconds,
+    });
+  };
+
   if (loading) return <div className="music-studio-loading"><LoaderCircle className="spin" /><span>Opening private music projects…</span></div>;
 
   if (!project) return (
@@ -703,6 +716,8 @@ export function MusicStudio({
         playing={playing}
         busy={lyricsBusy}
         status={lyricsStatus}
+        models={models}
+        activeModelId={modelId}
         onTogglePlay={togglePlay}
         onSeek={(seconds) => {
           if (!audioRef.current) return;
@@ -713,6 +728,7 @@ export function MusicStudio({
         onSave={saveLyrics}
         onSync={syncLyrics}
         onRepairRange={repairLyricsRange}
+        onDraftAudioPrompt={draftAudioLyrics}
         onCancelSync={() => { if (lyricsJobId.current) void cancelLocalSpeech(lyricsJobId.current); }}
         onClose={() => { setLyricsOpen(false); setLyricsDocument(undefined); }}
       />}

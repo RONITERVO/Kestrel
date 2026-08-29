@@ -326,6 +326,16 @@ describe("MusicStudio", () => {
     const promptArea = producer.getByPlaceholderText("Type or paste the exact expected sung words for this section…") as HTMLTextAreaElement;
     expect(promptArea.value.length).toBeGreaterThan(0);
 
+    // Test Audio Copilot listening
+    const onDraftAudioPrompt = vi.fn().mockResolvedValue({ transcription: "Heard sung words by audio LLM", modelName: "Gemma 12B" });
+    view.rerender(<MusicLyricsProducer {...common} document={document} onDraftAudioPrompt={onDraftAudioPrompt} />);
+    const copilotBtn = producer.getByRole("button", { name: /Audio Copilot/i });
+    expect(copilotBtn).toBeInTheDocument();
+    fireEvent.click(copilotBtn);
+    await vi.waitFor(() => {
+      expect(onDraftAudioPrompt).toHaveBeenCalled();
+    });
+
     // Click Re-sync range
     const syncRangeBtn = producer.getByRole("button", { name: /Re-sync range with Whisper/i });
     expect(syncRangeBtn).toBeInTheDocument();

@@ -3037,6 +3037,9 @@ pre .speech-word-active, code .speech-word-active {
 .music-lyrics-prompt-header small { color: rgba(35,30,28,.55); font: 8.5px var(--mono); }
 .music-lyrics-prompt-fill-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .music-lyrics-prompt-fill-actions span { color: rgba(35,30,28,.65); font-size: 8.5px; font-weight: 750; text-transform: uppercase; }
+.music-lyrics-copilot-btn { background: rgba(16,120,80,.12); border-color: rgba(16,120,80,.35); color: #0d5f3e; font-weight: 750; }
+.music-lyrics-copilot-btn:hover { background: rgba(16,120,80,.2); border-color: #0d5f3e; }
+.music-lyrics-copilot-status { padding: 4px 6px; border-radius: 3px; background: rgba(16,120,80,.08); border: 1px solid rgba(16,120,80,.2); color: #0d5f3e; font-size: 8.5px; line-height: 1.3; }
 .music-lyrics-repair-model-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .music-lyrics-repair-model-row label { display: flex; flex-direction: column; gap: 3px; color: rgba(35,30,28,.65); font-size: 8.5px; font-weight: 800; text-transform: uppercase; }
 .music-lyrics-repair-model-row input, .music-lyrics-repair-model-row select { width: 100%; height: 26px; padding: 0 6px; border: 1px solid rgba(35,30,28,.35); border-radius: 3px; font: 10px var(--mono); background: rgba(255,252,244,.85); outline: 0; }
