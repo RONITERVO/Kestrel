@@ -321,6 +321,157 @@ pub struct TranslateMusicLyricsResult {
     pub model_name: String,
 }
 
+pub fn clean_lyric_line(raw: &str) -> String {
+    let mut text = raw.trim();
+    text = text.trim_start_matches(['*', '_', '#', '-', '•']).trim();
+    text = text.trim_end_matches(['*', '_', '#']).trim();
+
+    text = text
+        .trim_matches(['"', '\'', '`', '“', '”', '‘', '’', '«', '»'])
+        .trim();
+
+    text = text.trim_start_matches(['*', '_', '#', '-', '•']).trim();
+    text = text.trim_end_matches(['*', '_', '#']).trim();
+    text = text
+        .trim_matches(['"', '\'', '`', '“', '”', '‘', '’', '«', '»'])
+        .trim();
+
+    let mut cleaned = text.to_string();
+    if let Some(idx) = cleaned
+        .find("(Note:")
+        .or_else(|| cleaned.find("(note:"))
+        .or_else(|| cleaned.find("[Note:"))
+        .or_else(|| cleaned.find("[note:"))
+        .or_else(|| cleaned.find("(Literal:"))
+        .or_else(|| cleaned.find("(literal:"))
+        .or_else(|| cleaned.find("(Meaning:"))
+        .or_else(|| cleaned.find("(meaning:"))
+        .or_else(|| cleaned.find("(Explanation:"))
+        .or_else(|| cleaned.find("(explanation:"))
+        .or_else(|| cleaned.find("(Context:"))
+        .or_else(|| cleaned.find("(context:"))
+    {
+        cleaned.truncate(idx);
+    }
+
+    cleaned.trim().to_string()
+}
+
+pub fn parse_lyrical_translations(raw_text: &str, expected_count: usize) -> Vec<String> {
+    if expected_count == 0 {
+        return Vec::new();
+    }
+
+    // 1. Try JSON extraction
+    let json_candidate = if let Some(start) = raw_text.find("```json") {
+        if let Some(end) = raw_text[start + 7..].find("```") {
+            &raw_text[start + 7..start + 7 + end]
+        } else {
+            &raw_text[start + 7..]
+        }
+    } else if let Some(start) = raw_text.find('[') {
+        if let Some(end) = raw_text.rfind(']') {
+            if end > start {
+                &raw_text[start..=end]
+            } else {
+                raw_text
+            }
+        } else {
+            raw_text
+        }
+    } else {
+        raw_text
+    };
+
+    if let Ok(arr) = serde_json::from_str::<Vec<String>>(json_candidate.trim()) {
+        if !arr.is_empty() {
+            let mut results: Vec<String> = arr.into_iter().map(|s| clean_lyric_line(&s)).collect();
+            results.resize(expected_count, String::new());
+            return results;
+        }
+    }
+
+    // 2. Parse strictly numbered lines (e.g. "1. ...", "1) ...", "1: ...")
+    let mut numbered_map = std::collections::HashMap::new();
+    let mut fallback_lines = Vec::new();
+
+    for line in raw_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("*target:")
+            || lower.starts_with("target:")
+            || lower.starts_with("*style:")
+            || lower.starts_with("style:")
+            || lower.starts_with("*language:")
+            || lower.starts_with("language:")
+            || lower.starts_with("here is")
+            || lower.starts_with("here are")
+            || lower.starts_with("sure,")
+            || lower.starts_with("certainly")
+            || lower.starts_with("###")
+            || lower.starts_with("##")
+            || lower.starts_with("#")
+            || lower.starts_with("note:")
+            || lower.starts_with("(note")
+        {
+            continue;
+        }
+
+        let line_content = trimmed.trim_start_matches(['*', '_', '#']).trim();
+        let mut digits_end = 0;
+        for (idx, ch) in line_content.char_indices() {
+            if ch.is_ascii_digit() {
+                digits_end = idx + 1;
+            } else {
+                break;
+            }
+        }
+
+        if digits_end > 0 {
+            if let Ok(num) = line_content[..digits_end].parse::<usize>() {
+                let rest = line_content[digits_end..].trim_start();
+                let stripped = if rest.starts_with('.')
+                    || rest.starts_with(')')
+                    || rest.starts_with(':')
+                    || rest.starts_with('-')
+                {
+                    rest[1..].trim()
+                } else {
+                    rest
+                };
+                let cleaned = clean_lyric_line(stripped);
+                if num >= 1 && num <= expected_count && !cleaned.is_empty() {
+                    numbered_map.insert(num, cleaned);
+                }
+            }
+        }
+
+        let cleaned_fallback = clean_lyric_line(trimmed);
+        if !cleaned_fallback.is_empty() {
+            fallback_lines.push(cleaned_fallback);
+        }
+    }
+
+    if !numbered_map.is_empty() {
+        let mut results = Vec::with_capacity(expected_count);
+        for i in 1..=expected_count {
+            if let Some(val) = numbered_map.get(&i) {
+                results.push(val.clone());
+            } else {
+                results.push(String::new());
+            }
+        }
+        results
+    } else {
+        fallback_lines.resize(expected_count, String::new());
+        fallback_lines
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveMusicLyricsDocumentRequest {
@@ -3206,6 +3357,47 @@ mod tests {
         assert_eq!(fallback.len(), 2);
         assert_eq!(fallback[0].primary, "first");
         assert_eq!(fallback[1].primary, "second");
+    }
+
+    #[test]
+    fn parse_lyrical_translations_filters_headers_notes_and_aligns_strictly() {
+        // Screenshot exact test case: Preamble metadata + inline LLM notes
+        let raw_llm_output = r#"
+*Target: Spanish.
+*Style: Poetic accuracy, rhythmic flow, natural phrasing.
+1. Una chispa brilla en la calle
+2. Es un ritmo naranja neón
+3. Corta a través del gris del pueblo (Note: "darkidency" seems like a typo or a made-up word, likely "darkness" or a specific place name. I'll treat it as a poetic atmosphere).
+"#;
+        let parsed = parse_lyrical_translations(raw_llm_output, 3);
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0], "Una chispa brilla en la calle");
+        assert_eq!(parsed[1], "Es un ritmo naranja neón");
+        assert_eq!(parsed[2], "Corta a través del gris del pueblo");
+
+        // Markdown wrapped numbers and quotation marks
+        let raw_markdown = r#"
+**1.** "El cielo se oscurece"
+**2.** "Las luces parpadean"
+"#;
+        let parsed_md = parse_lyrical_translations(raw_markdown, 2);
+        assert_eq!(parsed_md.len(), 2);
+        assert_eq!(parsed_md[0], "El cielo se oscurece");
+        assert_eq!(parsed_md[1], "Las luces parpadean");
+
+        // JSON array format
+        let raw_json = r#"
+```json
+[
+  "Ligne un",
+  "Ligne deux (Note: littéraire)"
+]
+```
+"#;
+        let parsed_json = parse_lyrical_translations(raw_json, 2);
+        assert_eq!(parsed_json.len(), 2);
+        assert_eq!(parsed_json[0], "Ligne un");
+        assert_eq!(parsed_json[1], "Ligne deux");
     }
 
     #[test]

@@ -2335,13 +2335,14 @@ async fn translate_music_lyrics(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let system_prompt = "You are a master lyrical translator. You translate song lyric lines into the requested target language with poetic accuracy, rhythmic flow, and natural phrasing. For each numbered line, provide its exact translation. Output ONLY the translated lines formatted with the exact same numbers (e.g. '1. ...\\n2. ...') or as a JSON array of strings. Do not include commentary, notes, pronunciation, or explanations.";
+    let system_prompt = "You are an expert lyrical subtitle translator. You translate song lyrics into the target language with natural poetic rhythm, emotion, and line-by-line alignment.\n\nSTRICT RULES:\n1. Output ONLY the translated lines with the exact same numbers as the input.\n2. Do NOT output notes, commentary, target/style headers, explanations, or metadata.\n\nExample Input (Target: Spanish):\n1. High above the streetlights\n2. Running through the rain\n\nExample Output:\n1. Muy por encima de las farolas\n2. Corriendo bajo la lluvia";
 
     let user_prompt = format!(
-        "Translate the following {} song lyric line(s) into {}:\n\n{}\n\nReturn strictly the translated lines in numerical order:",
+        "Translate the following {} line(s) into {}:\n\n{}\n\nOutput only the translated lines numbered 1 to {}:",
         request.lines.len(),
         request.target_language.trim(),
-        lines_formatted
+        lines_formatted,
+        request.lines.len()
     );
 
     let messages = vec![
@@ -2361,7 +2362,7 @@ async fn translate_music_lyrics(
         .build()
         .map_err(|error| error.to_string())?;
 
-    let max_tokens = (request.lines.len() * 40).clamp(256, 4096) as u32;
+    let max_tokens = (request.lines.len() * 50).clamp(256, 4096) as u32;
 
     let req = client
         .post(format!("{}/chat/completions", lease.connection.endpoint))
@@ -2397,46 +2398,7 @@ async fn translate_music_lyrics(
         .trim();
 
     let raw_text = if !content.is_empty() { content } else { reasoning };
-
-    let mut parsed_translations: Vec<String> = if let Ok(arr) = serde_json::from_str::<Vec<String>>(raw_text) {
-        arr
-    } else {
-        let mut lines = Vec::new();
-        for raw_line in raw_text.lines() {
-            let trimmed = raw_line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let stripped = if let Some(idx) = trimmed.find('.') {
-                if trimmed[..idx].chars().all(|c| c.is_ascii_digit()) {
-                    trimmed[idx + 1..].trim()
-                } else {
-                    trimmed
-                }
-            } else if let Some(idx) = trimmed.find(')') {
-                if trimmed[..idx].chars().all(|c| c.is_ascii_digit()) {
-                    trimmed[idx + 1..].trim()
-                } else {
-                    trimmed
-                }
-            } else {
-                trimmed
-            };
-            let clean = stripped.trim_matches(|c| c == '"' || c == '\'' || c == '`').trim();
-            if !clean.is_empty() {
-                lines.push(clean.to_string());
-            }
-        }
-        lines
-    };
-
-    if parsed_translations.len() < request.lines.len() {
-        while parsed_translations.len() < request.lines.len() {
-            parsed_translations.push(String::new());
-        }
-    } else if parsed_translations.len() > request.lines.len() {
-        parsed_translations.truncate(request.lines.len());
-    }
+    let parsed_translations = studio::parse_lyrical_translations(raw_text, request.lines.len());
 
     Ok(studio::TranslateMusicLyricsResult {
         translations: parsed_translations,

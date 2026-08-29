@@ -70,8 +70,8 @@ use live_preview::{
 };
 use movie_agent::MovieAgentWorkspace;
 pub use music::{
-    CreateMusicProjectRequest, DraftLyricsFromAudioRangeRequest, DraftLyricsFromAudioRangeResult,
-    MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest,
+    parse_lyrical_translations, CreateMusicProjectRequest, DraftLyricsFromAudioRangeRequest,
+    DraftLyricsFromAudioRangeResult, MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest,
     MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, RepairMusicLyricsRangeRequest,
     SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest,
     TranslateMusicLyricsRequest, TranslateMusicLyricsResult,
