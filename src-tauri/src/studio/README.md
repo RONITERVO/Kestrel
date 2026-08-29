@@ -216,7 +216,7 @@ segments and word timestamps only after the master SHA-256 is rechecked. Each sy
 `lyrics/<take>/<sync>` session, and each producer edit appends a numbered JSON revision while the take
 continues to point at the newest document. The audio-reactive canvas is presentation only and cannot
 modify or masquerade as the preserved master. Visual themes share one 1024-point analyser and one
-multi-band/transient frame with the lyric typography, live in separate bounded renderer modules,
+multi-band/transient/adaptive-beat frame with the lyric typography, live in separate bounded renderer modules,
 and enter durable JSON only through the native theme allowlist; a theme is never downloaded code.
 The shared H3/speech service remains on port 8188 with its conservative low-VRAM profile. Music uses
 port 8189 with async weight offload disabled, dynamic VRAM as an OOM fallback, and one GiB reserved

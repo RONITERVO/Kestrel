@@ -32,6 +32,8 @@ export interface MusicLyricFrame {
   rms: number;
   flux: number;
   transient: number;
+  beat: number;
+  beatTrigger: boolean;
   centroid: number;
   bands: Float32Array;
   waveform?: Uint8Array;
@@ -48,6 +50,10 @@ export class MusicLyricReactivity {
   private lastNow = 0;
   private bassEnvelope = 0;
   private transientEnvelope = 0;
+  private beatEnvelope = 0;
+  private beatBaseline = 0;
+  private beatDeviation = 0.025;
+  private lastBeatAt = -1;
   private hasPreviousSpectrum = false;
 
   sample(
@@ -79,15 +85,36 @@ export class MusicLyricReactivity {
     const air = hasSignal && frequency ? fractionalEnergy(frequency, 0.36, 0.82) : idle(time + 4.5, 0.08, 0.29);
     const energy = clamp01(subBass * 0.12 + bass * 0.22 + lowMid * 0.24 + mid * 0.2 + presence * 0.15 + air * 0.07);
     const rms = hasSignal && waveform ? waveformRms(waveform) : idle(time + 5.4, 0.1, 0.74);
-    const { flux, centroid } = hasSignal && frequency
+    const { flux, lowFlux, centroid } = hasSignal && frequency
       ? this.compareSpectrum(frequency)
-      : { flux: idle(time + 6.3, 0.035, 1.7), centroid: 0.34 + Math.sin(time * 0.11) * 0.04 };
+      : { flux: idle(time + 6.3, 0.035, 1.7), lowFlux: 0, centroid: 0.34 + Math.sin(time * 0.11) * 0.04 };
 
     const previousBass = this.bassEnvelope;
     const bassRate = bass > previousBass ? 22 : 5;
     this.bassEnvelope += (bass - previousBass) * Math.min(1, delta * bassRate);
-    const onset = Math.max(0, bass - previousBass - 0.012) * 8.5 + flux * 2.4 + Math.max(0, rms - energy) * 0.8;
+    const bassRise = Math.max(0, bass - previousBass);
+    const onset = Math.max(0, bassRise - 0.012) * 8.5 + flux * 2.4 + Math.max(0, rms - energy) * 0.8;
     this.transientEnvelope = Math.max(this.transientEnvelope * Math.exp(-delta * 6.2), clamp01(onset));
+
+    // A beat is deliberately narrower than a transient: only a positive low-band spectral
+    // change or a fast bass attack may trigger it. The adaptive floor follows the current song
+    // slowly, while the refractory interval prevents a sustained bass note from retriggering.
+    const beatInput = hasSignal ? clamp01(lowFlux * 0.82 + bassRise * 0.65) : 0;
+    const beatThreshold = this.beatBaseline + Math.max(0.025, this.beatDeviation * 1.65);
+    let beatHit = 0;
+    if (beatInput > beatThreshold && (this.lastBeatAt < 0 || time - this.lastBeatAt >= 0.17)) {
+      beatHit = clamp01((beatInput - beatThreshold) / Math.max(0.075, this.beatDeviation * 2.4));
+      if (beatHit >= 0.12) this.lastBeatAt = time;
+    }
+    this.beatEnvelope = Math.max(this.beatEnvelope * Math.exp(-delta * 8.5), beatHit);
+    const learnedBeatInput = Math.min(
+      beatInput,
+      this.beatBaseline + this.beatDeviation * 2.5 + 0.04,
+    );
+    this.beatBaseline += (learnedBeatInput - this.beatBaseline) * Math.min(1, delta * 1.4);
+    this.beatDeviation += (
+      Math.abs(learnedBeatInput - this.beatBaseline) - this.beatDeviation
+    ) * Math.min(1, delta * 1.8);
 
     for (let index = 0; index < this.bands.length; index += 1) {
       const normalized = index / Math.max(1, this.bands.length - 1);
@@ -118,6 +145,8 @@ export class MusicLyricReactivity {
       rms,
       flux,
       transient: this.transientEnvelope,
+      beat: this.beatEnvelope,
+      beatTrigger: beatHit >= 0.12,
       centroid,
       bands: this.bands,
       waveform: hasSignal ? waveform : undefined,
@@ -125,14 +154,21 @@ export class MusicLyricReactivity {
     };
   }
 
-  private compareSpectrum(frequency: Uint8Array): { flux: number; centroid: number } {
+  private compareSpectrum(frequency: Uint8Array): { flux: number; lowFlux: number; centroid: number } {
     let positiveDifference = 0;
+    let lowPositiveDifference = 0;
     let magnitude = 0;
     let weighted = 0;
     const count = Math.min(frequency.length, this.previousSpectrum.length);
+    const lowStart = Math.max(1, Math.floor(count * 0.002));
+    const lowEnd = Math.max(lowStart + 1, Math.min(count, Math.ceil(count * 0.012)));
     for (let index = 1; index < count; index += 1) {
       const value = (frequency[index] ?? 0) / 255;
-      if (this.hasPreviousSpectrum) positiveDifference += Math.max(0, value - this.previousSpectrum[index]);
+      if (this.hasPreviousSpectrum) {
+        const positive = Math.max(0, value - this.previousSpectrum[index]);
+        positiveDifference += positive;
+        if (index >= lowStart && index < lowEnd) lowPositiveDifference += positive;
+      }
       this.previousSpectrum[index] = value;
       magnitude += value;
       weighted += value * (index / Math.max(1, count - 1));
@@ -140,6 +176,7 @@ export class MusicLyricReactivity {
     this.hasPreviousSpectrum = true;
     return {
       flux: clamp01(positiveDifference / Math.max(1, count - 1) * 5.5),
+      lowFlux: clamp01(lowPositiveDifference / Math.max(1, lowEnd - lowStart) * 1.35),
       centroid: magnitude > 0.0001 ? clamp01(weighted / magnitude) : 0,
     };
   }
@@ -151,9 +188,10 @@ export function applyMusicLyricFrameStyles(element: HTMLElement, frame: MusicLyr
   element.style.setProperty("--lyric-presence", frame.presence.toFixed(4));
   element.style.setProperty("--lyric-air", frame.air.toFixed(4));
   element.style.setProperty("--lyric-transient", frame.transient.toFixed(4));
+  element.style.setProperty("--lyric-beat", frame.beat.toFixed(4));
   element.style.setProperty("--lyric-copy-lift", `${(-frame.energy * 4.5).toFixed(2)}px`);
-  element.style.setProperty("--lyric-copy-scale", (1 + frame.transient * 0.018).toFixed(4));
-  element.style.setProperty("--lyric-active-scale", (1.01 + frame.transient * 0.045).toFixed(4));
+  element.style.setProperty("--lyric-copy-scale", (1 + frame.transient * 0.012 + frame.beat * 0.008).toFixed(4));
+  element.style.setProperty("--lyric-active-scale", (1.01 + frame.transient * 0.036 + frame.beat * 0.018).toFixed(4));
   element.style.setProperty("--lyric-translation-lift", `${(-frame.lowMid * 5).toFixed(2)}px`);
   element.style.setProperty("--lyric-glow", `${(18 + frame.presence * 34 + frame.transient * 12).toFixed(1)}px`);
 }

@@ -146,13 +146,13 @@ export class SketchbookMusicLyricVisualizer {
     frame: MusicLyricFrame,
   ) {
     const smaller = Math.min(width, height);
-    const radius = smaller * (0.105 + frame.bass * 0.035 + frame.transient * 0.012);
+    const radius = smaller * (0.105 + frame.bass * 0.03 + frame.transient * 0.007 + frame.beat * 0.018);
     const lift = smaller * (0.055 + frame.energy * 0.09);
     context.save();
     context.globalCompositeOperation = "multiply";
     const glow = context.createRadialGradient(centerX, centerY, radius * 0.35, centerX, centerY, radius * 3.4);
-    glow.addColorStop(0, `rgba(235,150,45,${0.19 + frame.bass * 0.18})`);
-    glow.addColorStop(0.46, `rgba(235,150,45,${0.075 + frame.transient * 0.09})`);
+    glow.addColorStop(0, `rgba(235,150,45,${0.19 + frame.bass * 0.14 + frame.beat * 0.09})`);
+    glow.addColorStop(0.46, `rgba(235,150,45,${0.075 + frame.transient * 0.06 + frame.beat * 0.07})`);
     glow.addColorStop(1, "rgba(255,255,255,0)");
     context.fillStyle = glow;
     context.beginPath();
@@ -167,8 +167,8 @@ export class SketchbookMusicLyricVisualizer {
     for (let ray = 0; ray < 30; ray += 1) {
       const angle = ray / 30 * Math.PI * 2 + Math.sin(frame.time * 0.6) * 0.03;
       const inner = radius * 1.12 + Math.sin(frame.time * 2 + ray) * 2.5;
-      const length = 8 + frame.bass * 42 * this.seeds[ray] + frame.transient * 13;
-      context.lineWidth = 1.1 + frame.bass * 2.3;
+      const length = 8 + frame.bass * 34 * this.seeds[ray] + frame.transient * 7 + frame.beat * 25;
+      context.lineWidth = 1.1 + frame.bass * 1.8 + frame.beat * 0.9;
       context.beginPath();
       context.moveTo(centerX + Math.cos(angle) * inner, centerY + Math.sin(angle) * inner * 0.9);
       context.lineTo(
@@ -195,7 +195,7 @@ export class SketchbookMusicLyricVisualizer {
       context.closePath();
       context.strokeStyle = pass === 3 ? "rgba(35,30,28,.72)" : "rgba(219,126,26,.7)";
       context.globalAlpha = pass === 3 ? 0.7 : 0.62 + frame.energy * 0.2;
-      context.lineWidth = 0.9 + pass * 0.48 + frame.transient * 0.7;
+      context.lineWidth = 0.9 + pass * 0.48 + frame.transient * 0.45 + frame.beat * 0.55;
       context.stroke();
     }
     context.restore();
@@ -274,16 +274,16 @@ export class SketchbookMusicLyricVisualizer {
       const depth = (y - horizon) / Math.max(1, height - horizon);
       if (this.seeds[(row * 7 + 19) % this.seeds.length] > 0.83) continue;
       const shift = Math.sin(y * 0.1 + frame.time * 4) * 15 * depth;
-      const reflectionWidth = width * (0.07 + depth * 0.17) + Math.sin(y * 0.05 + frame.time) * 10;
+      const reflectionWidth = width * (0.07 + depth * 0.17 + frame.beat * 0.018) + Math.sin(y * 0.05 + frame.time) * 10;
       const breakup = (this.seeds[(row * 11 + 3) % this.seeds.length] - 0.5) * width * 0.06 * depth;
-      context.fillStyle = `rgba(226,143,38,${0.32 * (1 - depth) * (0.5 + frame.energy * 0.7)})`;
+      context.fillStyle = `rgba(226,143,38,${0.32 * (1 - depth) * (0.5 + frame.energy * 0.58 + frame.beat * 0.22)})`;
       context.fillRect(sunX - reflectionWidth / 2 + shift + breakup, y, reflectionWidth, 1.5 + depth * 2.5);
     }
 
     const waveCount = 5 + Math.floor(frame.energy * 4 + frame.air * 2);
-    context.globalAlpha = 0.24 + frame.air * 0.45;
+    context.globalAlpha = 0.24 + frame.air * 0.4 + frame.beat * 0.1;
     context.strokeStyle = "rgba(35,30,28,.72)";
-    context.lineWidth = 0.9 + frame.air * 2.2;
+    context.lineWidth = 0.9 + frame.air * 2 + frame.beat * 0.8;
     context.lineCap = "round";
     for (let wave = 0; wave < waveCount; wave += 1) {
       const depth = (wave + frame.time * (0.35 + frame.energy * 0.4) % 1) / waveCount;
@@ -387,13 +387,13 @@ export class SketchbookMusicLyricVisualizer {
       });
       this.nextBirdAt = frame.time + 5 + this.nextEventSeed() * 8;
     }
-    if (!this.fish && frame.time >= this.nextFishAt && (frame.transient > 0.2 || !frame.hasSignal)) {
+    if (!this.fish && frame.time >= this.nextFishAt && (frame.beatTrigger || !frame.hasSignal)) {
       const direction = this.nextEventSeed() > 0.5 ? 1 : -1;
       this.fish = {
         x: width * (0.2 + this.nextEventSeed() * 0.6),
         y: horizon + 4,
         vx: direction * (90 + this.nextEventSeed() * 130),
-        vy: -250 - this.nextEventSeed() * 230 - frame.transient * 90,
+        vy: -250 - this.nextEventSeed() * 230 - frame.beat * 90,
       };
       this.pushSplat(this.fish.x, horizon, 0.42, 0.9);
       this.nextFishAt = frame.time + 10 + this.nextEventSeed() * 16;
