@@ -306,6 +306,23 @@ pub struct DraftLyricsFromAudioRangeResult {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TranslateMusicLyricsRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub model_id: String,
+    pub target_language: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateMusicLyricsResult {
+    pub translations: Vec<String>,
+    pub model_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SaveMusicLyricsDocumentRequest {
     pub project_id: String,
     pub take_id: String,
@@ -1046,43 +1063,115 @@ impl MusicStudio {
             .join("\n");
 
         let now = Utc::now().to_rfc3339();
-        let document = normalize_lyrics_document(
-            MusicLyricsDocument {
-                schema_version: 1,
-                take_id,
-                source_sha256: take_sha256.clone(),
-                revision: previous.document.revision + 1,
-                language: request.language.clone(),
-                source: format!("{}-range-repair", request.model_id),
-                transcript: full_transcript,
-                theme: previous.document.theme.clone(),
-                show_translation: previous.document.show_translation,
-                created_at: previous.document.created_at,
-                updated_at: now,
-                segments: spliced_segments,
-            },
-            duration_seconds,
-        )?;
+        let mut project = project;
+        let take_index = project
+            .takes
+            .iter()
+            .position(|t| t.id == request.take_id && t.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("the lyric-sync music take no longer exists".into())
+            })?;
 
-        self.persist_new_lyrics_session(
-            project,
-            &request.take_id,
-            document,
-            json!({
-                "schemaVersion": 1,
-                "createdAt": Utc::now().to_rfc3339(),
-                "takeId": request.take_id,
-                "sourceSha256": take_sha256,
-                "tool": "Kestrel Whisper Range Repair",
-                "modelId": request.model_id,
-                "language": request.language,
-                "rangeStart": request.start_seconds,
-                "rangeEnd": request.end_seconds,
-                "prompt": request.prompt,
-                "theme": previous.document.theme,
-                "network": "disabled"
-            }),
-        )
+        let has_existing_session = !project.takes[take_index].lyrics_document_path.trim().is_empty();
+
+        if has_existing_session {
+            let previous_path = self.validated_lyrics_artifact(
+                &project.id,
+                &project.takes[take_index].lyrics_document_path,
+            )?;
+            let revisions = previous_path.parent().ok_or_else(|| {
+                StudioError::Invalid("the lyric revision folder is unavailable".into())
+            })?;
+            let revision = previous.document.revision.checked_add(1).ok_or_else(|| {
+                StudioError::Invalid("the lyric revision counter is exhausted".into())
+            })?;
+            let document = normalize_lyrics_document(
+                MusicLyricsDocument {
+                    schema_version: 1,
+                    take_id: take_id.clone(),
+                    source_sha256: take_sha256.clone(),
+                    revision,
+                    language: request.language.clone(),
+                    source: format!("{}-range-repair", request.model_id),
+                    transcript: full_transcript,
+                    theme: previous.document.theme.clone(),
+                    show_translation: previous.document.show_translation,
+                    created_at: previous.document.created_at,
+                    updated_at: now,
+                    segments: spliced_segments,
+                },
+                duration_seconds,
+            )?;
+            let document_path = revisions.join(format!("{revision:03}.json"));
+            let receipt_path = revisions.join(format!("{revision:03}.receipt.json"));
+            write_json_recoverable(&document_path, &document)?;
+            write_json_recoverable(
+                &receipt_path,
+                &json!({
+                    "schemaVersion": 1,
+                    "createdAt": document.updated_at,
+                    "takeId": request.take_id,
+                    "revision": revision,
+                    "sourceSha256": take_sha256,
+                    "tool": "Kestrel Whisper Range Repair",
+                    "modelId": request.model_id,
+                    "language": request.language,
+                    "rangeStart": request.start_seconds,
+                    "rangeEnd": request.end_seconds,
+                    "prompt": request.prompt,
+                    "theme": document.theme,
+                    "network": "disabled"
+                }),
+            )?;
+            project.takes[take_index].lyrics_document_path =
+                document_path.to_string_lossy().into_owned();
+            project.takes[take_index].lyrics_revision = revision;
+            project.phase = "lyrics-ready".into();
+            project.detail = format!(
+                "Lyric revision {revision} saved after Whisper range repair ({:.1}s–{:.1}s). Earlier revisions and raw take audio remain untouched.",
+                request.start_seconds, request.end_seconds
+            );
+            project.updated_at = Utc::now().to_rfc3339();
+            self.persist(&project)?;
+            Ok(MusicLyricsSaveResult { project, document })
+        } else {
+            let document = normalize_lyrics_document(
+                MusicLyricsDocument {
+                    schema_version: 1,
+                    take_id: take_id.clone(),
+                    source_sha256: take_sha256.clone(),
+                    revision: 0,
+                    language: request.language.clone(),
+                    source: format!("{}-range-repair", request.model_id),
+                    transcript: full_transcript,
+                    theme: DEFAULT_LYRIC_THEME.to_string(),
+                    show_translation: true,
+                    created_at: now.clone(),
+                    updated_at: now,
+                    segments: spliced_segments,
+                },
+                duration_seconds,
+            )?;
+            self.persist_new_lyrics_session(
+                project,
+                &request.take_id,
+                document,
+                json!({
+                    "schemaVersion": 1,
+                    "createdAt": Utc::now().to_rfc3339(),
+                    "takeId": request.take_id,
+                    "sourceSha256": take_sha256,
+                    "tool": "Kestrel Whisper Range Repair",
+                    "modelId": request.model_id,
+                    "language": request.language,
+                    "rangeStart": request.start_seconds,
+                    "rangeEnd": request.end_seconds,
+                    "prompt": request.prompt,
+                    "theme": DEFAULT_LYRIC_THEME,
+                    "network": "disabled"
+                }),
+            )
+        }
     }
 
     pub fn load_lyrics_document(
@@ -1107,13 +1196,27 @@ impl MusicStudio {
         let document = read_lyrics_document(&path)?;
         if document.take_id != request.take_id
             || document.source_sha256 != take.sha256
-            || document.revision != take.lyrics_revision
         {
             return Err(StudioError::Invalid(
                 "the lyric document no longer matches its immutable music take; resync instead of overwriting provenance".into(),
             ));
         }
-        validate_lyrics_document(&document, take.duration_seconds)?;
+        let duration_seconds = take.duration_seconds;
+        let take_lyrics_revision = take.lyrics_revision;
+        if document.revision != take_lyrics_revision {
+            let mut project = project;
+            let take_index = project
+                .takes
+                .iter()
+                .position(|t| t.id == request.take_id)
+                .ok_or_else(|| StudioError::Invalid("the lyric take no longer exists".into()))?;
+            project.takes[take_index].lyrics_revision = document.revision;
+            project.updated_at = Utc::now().to_rfc3339();
+            self.persist(&project)?;
+            validate_lyrics_document(&document, duration_seconds)?;
+            return Ok(MusicLyricsSaveResult { project, document });
+        }
+        validate_lyrics_document(&document, duration_seconds)?;
         Ok(MusicLyricsSaveResult { project, document })
     }
 
@@ -3118,6 +3221,120 @@ mod tests {
                 take_id,
             })
             .is_err());
+    }
+
+    #[test]
+    fn range_repair_maintains_consistent_take_and_document_revisions() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, take_id) = completed_take(&studio, &project);
+
+        // 1. Initial draft (revision 0)
+        let initial = studio
+            .create_lyrics_draft(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(initial.document.revision, 0);
+        assert_eq!(initial.project.takes[0].lyrics_revision, 0);
+
+        // 2. Range repair creates revision 1
+        let repaired_1 = studio
+            .persist_lyrics_range_repair(
+                &RepairMusicLyricsRangeRequest {
+                    project_id: project.id.clone(),
+                    take_id: take_id.clone(),
+                    job_id: "test-job-1".into(),
+                    model_id: "whisper-test".into(),
+                    language: "en".into(),
+                    start_seconds: 0.0,
+                    end_seconds: 3.0,
+                    prompt: "repaired first line".into(),
+                },
+                SpeechFileTranscription {
+                    text: "repaired first line".into(),
+                    segments: vec![SpeechTiming {
+                        value: "repaired first line".into(),
+                        start: 0.0,
+                        end: 2.5,
+                    }],
+                    words: vec![
+                        SpeechTiming { value: "repaired".into(), start: 0.0, end: 0.8 },
+                        SpeechTiming { value: "first".into(), start: 0.8, end: 1.5 },
+                        SpeechTiming { value: "line".into(), start: 1.5, end: 2.5 },
+                    ],
+                    strategy: "whisper-range-repair".into(),
+                    context_copies: 1,
+                    context_seam_seconds: 0.0,
+                    selected_context_copy: 1,
+                    first_context_score: 1.0,
+                    second_context_score: 1.0,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(repaired_1.document.revision, 1);
+        assert_eq!(repaired_1.project.takes[0].lyrics_revision, 1);
+
+        // 3. load_lyrics_document succeeds immediately with matching revision
+        let loaded = studio
+            .load_lyrics_document(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(loaded.document.revision, 1);
+        assert_eq!(loaded.project.takes[0].lyrics_revision, 1);
+
+        // 4. Consecutive range repair creates revision 2
+        let repaired_2 = studio
+            .persist_lyrics_range_repair(
+                &RepairMusicLyricsRangeRequest {
+                    project_id: project.id.clone(),
+                    take_id: take_id.clone(),
+                    job_id: "test-job-2".into(),
+                    model_id: "whisper-test".into(),
+                    language: "en".into(),
+                    start_seconds: 2.5,
+                    end_seconds: 5.0,
+                    prompt: "repaired second line".into(),
+                },
+                SpeechFileTranscription {
+                    text: "repaired second line".into(),
+                    segments: vec![SpeechTiming {
+                        value: "repaired second line".into(),
+                        start: 2.6,
+                        end: 4.8,
+                    }],
+                    words: vec![
+                        SpeechTiming { value: "repaired".into(), start: 2.6, end: 3.2 },
+                        SpeechTiming { value: "second".into(), start: 3.2, end: 4.0 },
+                        SpeechTiming { value: "line".into(), start: 4.0, end: 4.8 },
+                    ],
+                    strategy: "whisper-range-repair".into(),
+                    context_copies: 1,
+                    context_seam_seconds: 0.0,
+                    selected_context_copy: 1,
+                    first_context_score: 1.0,
+                    second_context_score: 1.0,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(repaired_2.document.revision, 2);
+        assert_eq!(repaired_2.project.takes[0].lyrics_revision, 2);
+
+        // 5. Reopen succeeds without provenance mismatch error
+        let loaded_2 = studio
+            .load_lyrics_document(MusicLyricsRequest {
+                project_id: project.id.clone(),
+                take_id,
+            })
+            .unwrap();
+        assert_eq!(loaded_2.document.revision, 2);
+        assert_eq!(loaded_2.project.takes[0].lyrics_revision, 2);
     }
 
     #[test]

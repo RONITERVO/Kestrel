@@ -76,6 +76,8 @@ import type {
   MusicSummary,
   DraftLyricsFromAudioRangeRequest,
   DraftLyricsFromAudioRangeResult,
+  TranslateMusicLyricsRequest,
+  TranslateMusicLyricsResult,
   RepairMusicLyricsRangeRequest,
   ImageGenerationEvent,
   ImageProject,
@@ -298,6 +300,16 @@ export async function draftLyricsFromAudioRange(request: DraftLyricsFromAudioRan
     };
   }
   return invoke<DraftLyricsFromAudioRangeResult>("draft_lyrics_from_audio_range", { request });
+}
+
+export async function translateMusicLyrics(request: TranslateMusicLyricsRequest): Promise<TranslateMusicLyricsResult> {
+  if (!isTauri()) {
+    return {
+      translations: request.lines.map((l) => `[${request.targetLanguage}] ${l}`),
+      modelName: "Simulated Local Translator",
+    };
+  }
+  return invoke<TranslateMusicLyricsResult>("translate_music_lyrics", { request });
 }
 
 export async function onMusicGeneration(callback: (event: MusicGenerationEvent) => void): Promise<UnlistenFn> {

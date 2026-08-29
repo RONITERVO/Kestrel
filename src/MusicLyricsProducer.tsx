@@ -24,6 +24,11 @@ interface AudioAnalysis {
 
 const analyses = new WeakMap<HTMLMediaElement, AudioAnalysis>();
 
+const LANGUAGE_PRESETS = [
+  "English", "Spanish", "French", "German", "Italian", "Portuguese",
+  "Japanese", "Chinese", "Korean", "Arabic", "Russian", "Hindi", "Dutch", "Swedish",
+];
+
 export function MusicLyricsProducer({
   project,
   take,
@@ -42,6 +47,7 @@ export function MusicLyricsProducer({
   onSync,
   onRepairRange,
   onDraftAudioPrompt,
+  onTranslateLyrics,
   onCancelSync,
   onClose,
 }: {
@@ -62,6 +68,7 @@ export function MusicLyricsProducer({
   onSync: (modelId: string, language: string) => Promise<void>;
   onRepairRange?: (modelId: string, language: string, startSeconds: number, endSeconds: number, prompt: string) => Promise<void>;
   onDraftAudioPrompt?: (startSeconds: number, endSeconds: number) => Promise<{ transcription: string; modelName: string }>;
+  onTranslateLyrics?: (targetLanguage: string, lines: string[]) => Promise<{ translations: string[]; modelName: string }>;
   onCancelSync: () => void;
   onClose: () => void;
 }) {
@@ -84,6 +91,9 @@ export function MusicLyricsProducer({
   const [repairPrompt, setRepairPrompt] = useState("");
   const [audioDraftBusy, setAudioDraftBusy] = useState(false);
   const [audioDraftStatus, setAudioDraftStatus] = useState("");
+  const [targetLanguage, setTargetLanguage] = useState("Spanish");
+  const [translationBusy, setTranslationBusy] = useState(false);
+  const [translationStatus, setTranslationStatus] = useState("");
   const activeSegment = musicLyricSegmentAt(document.segments, currentTime);
   const displaySegment = musicLyricDisplaySegmentAt(document.segments, currentTime);
   const cueExiting = Boolean(displaySegment && displaySegment !== activeSegment);
@@ -284,6 +294,53 @@ export function MusicLyricsProducer({
     const next = document.segments.filter((segment) => segment.id !== id);
     onChange({ ...document, segments: next });
     setSelectedId(next[Math.min(index, next.length - 1)]?.id ?? "");
+  };
+
+  const handleTranslateAll = async () => {
+    if (!onTranslateLyrics || !document.segments.length) return;
+    const target = targetLanguage.trim() || "Spanish";
+    setTranslationBusy(true);
+    setTranslationStatus(`Translating ${document.segments.length} cues into ${target}…`);
+    try {
+      const lines = document.segments.map((s) => s.primary);
+      const res = await onTranslateLyrics(target, lines);
+      const updatedSegments = document.segments.map((s, idx) => ({
+        ...s,
+        translation: res.translations[idx]?.trim() || s.translation,
+      }));
+      onChange({
+        ...document,
+        showTranslation: true,
+        segments: updatedSegments,
+      });
+      setTranslationStatus(`Translated ${document.segments.length} cues into ${target} with ${res.modelName}.`);
+    } catch (err) {
+      setTranslationStatus(`Translation error: ${String(err)}`);
+    } finally {
+      setTranslationBusy(false);
+    }
+  };
+
+  const handleTranslateCue = async (segmentId: string, primaryText: string) => {
+    if (!onTranslateLyrics || !primaryText.trim()) return;
+    const target = targetLanguage.trim() || "Spanish";
+    setTranslationBusy(true);
+    setTranslationStatus(`Translating cue into ${target}…`);
+    try {
+      const res = await onTranslateLyrics(target, [primaryText]);
+      const trans = res.translations[0]?.trim() || "";
+      if (trans) {
+        patchSegment(segmentId, { translation: trans });
+        if (!document.showTranslation) {
+          onChange({ ...document, showTranslation: true });
+        }
+        setTranslationStatus(`Cue translated into ${target} with ${res.modelName}.`);
+      }
+    } catch (err) {
+      setTranslationStatus(`Translation error: ${String(err)}`);
+    } finally {
+      setTranslationBusy(false);
+    }
   };
 
   const handleTogglePlay = () => {
@@ -552,7 +609,41 @@ export function MusicLyricsProducer({
                 : <button disabled={!modelId} onClick={() => void onSync(modelId, language.trim() || "auto")}><WandSparkles /> Sync this take</button>}
               {status && <p role="status">{busy && <LoaderCircle className="spin" />} {status}</p>}
             </section>
-            <div className="music-lyrics-editor-actions"><button onClick={addCue}><Plus /> Add cue at playhead</button><label className="music-lyrics-translation-toggle"><input type="checkbox" checked={document.showTranslation} onChange={(event) => onChange({ ...document, showTranslation: event.target.checked })} /><Languages /> Show translations</label></div>
+            <div className="music-lyrics-editor-actions">
+              <button onClick={addCue}><Plus /> Add cue</button>
+              <label className="music-lyrics-translation-toggle">
+                <input type="checkbox" checked={document.showTranslation} onChange={(event) => onChange({ ...document, showTranslation: event.target.checked })} />
+                <Languages /> Show subtitles
+              </label>
+              {onTranslateLyrics && (
+                <div className="music-lyrics-translation-bar">
+                  <select
+                    aria-label="Target translation language"
+                    disabled={translationBusy || busy}
+                    value={targetLanguage}
+                    onChange={(e) => setTargetLanguage(e.target.value)}
+                    className="music-lyrics-lang-select"
+                    title="Select target language for local AI translation"
+                  >
+                    {LANGUAGE_PRESETS.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                  <button
+                    type="button"
+                    className="music-lyrics-btn-sm music-lyrics-translate-all-btn"
+                    disabled={translationBusy || busy || !document.segments.length}
+                    title={`Translate all ${document.segments.length} cues into ${targetLanguage} using local AI`}
+                    onClick={handleTranslateAll}
+                  >
+                    {translationBusy ? <LoaderCircle className="spin" /> : <Languages />} Translate all
+                  </button>
+                </div>
+              )}
+            </div>
+            {translationStatus && (
+              <div className="music-lyrics-translation-status">
+                {translationBusy && <LoaderCircle className="spin" />} {translationStatus}
+              </div>
+            )}
             <div className="music-lyrics-cue-list">
               {document.segments.map((segment, index) => <button key={segment.id} className={`${segment.id === selectedId ? "selected" : ""} ${segment.id === activeSegment?.id ? "active" : ""}`} onClick={() => { setSelectedId(segment.id); onSeek(segment.start); }}><span>{index + 1}</span><strong>{segment.primary}</strong><small>{formatTime(segment.start)} – {formatTime(segment.end)}</small></button>)}
               {!document.segments.length && <p>No vocal cues yet. Add one at the playhead or run local word sync.</p>}
@@ -643,15 +734,28 @@ export function MusicLyricsProducer({
                 </label>
 
                 {document.showTranslation && (
-                  <label className="music-lyrics-field">
-                    <span>Translation</span>
+                  <div className="music-lyrics-field">
+                    <div className="music-lyrics-field-header">
+                      <span>Translation ({targetLanguage})</span>
+                      {onTranslateLyrics && (
+                        <button
+                          type="button"
+                          className="music-lyrics-btn-xs"
+                          disabled={translationBusy || busy || !selectedSegment.primary.trim()}
+                          title={`Translate this cue into ${targetLanguage} using local AI`}
+                          onClick={() => handleTranslateCue(selectedSegment.id, selectedSegment.primary)}
+                        >
+                          {translationBusy ? <LoaderCircle className="spin" /> : <Languages />} Translate cue
+                        </button>
+                      )}
+                    </div>
                     <textarea
                       value={selectedSegment.translation}
                       rows={2}
                       onChange={(e) => patchSegment(selectedSegment.id, { translation: e.target.value })}
-                      placeholder="Optional translation…"
+                      placeholder={`Translated lyric in ${targetLanguage}…`}
                     />
-                  </label>
+                  </div>
                 )}
 
                 <div className="music-lyrics-words-panel">

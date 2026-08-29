@@ -922,6 +922,19 @@ export interface DraftLyricsFromAudioRangeResult {
   modelName: string;
 }
 
+export interface TranslateMusicLyricsRequest {
+  projectId: string;
+  takeId: string;
+  modelId: string;
+  targetLanguage: string;
+  lines: string[];
+}
+
+export interface TranslateMusicLyricsResult {
+  translations: string[];
+  modelName: string;
+}
+
 export interface MusicMidiTempo {
   tick: number;
   microsecondsPerQuarter: number;

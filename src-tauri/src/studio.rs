@@ -74,6 +74,7 @@ pub use music::{
     MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest,
     MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, RepairMusicLyricsRangeRequest,
     SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest,
+    TranslateMusicLyricsRequest, TranslateMusicLyricsResult,
 };
 pub use planning::{
     MoviePlanningEvent, MoviePlanningSnapshot, PlanningEventKind, PlanningModelRole, PlanningStage,

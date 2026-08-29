@@ -317,28 +317,21 @@ describe("MusicStudio", () => {
     // Open timing editor
     fireEvent.click(producer.getByRole("button", { name: "Edit timing" }));
 
-    // Switch to Whisper Repair tab
-    fireEvent.click(producer.getByRole("button", { name: /Whisper Repair/i }));
-    expect(producer.getByText("Targeted Whisper forced alignment")).toBeInTheDocument();
+    // Switch to Cues & Words tab
+    fireEvent.click(producer.getByRole("button", { name: /Cues & Words/i }));
 
-    // Fill prompt from take lyrics
-    fireEvent.click(producer.getByTitle("Extract matching lines from generated take lyrics"));
-    const promptArea = producer.getByPlaceholderText("Type or paste the exact expected sung words for this section…") as HTMLTextAreaElement;
-    expect(promptArea.value.length).toBeGreaterThan(0);
-
-    // Test Audio Copilot listening
-    const onDraftAudioPrompt = vi.fn().mockResolvedValue({ transcription: "Heard sung words by audio LLM", modelName: "Gemma 12B" });
-    view.rerender(<MusicLyricsProducer {...common} document={document} onDraftAudioPrompt={onDraftAudioPrompt} />);
-    const copilotBtn = producer.getByRole("button", { name: /Audio Copilot/i });
-    expect(copilotBtn).toBeInTheDocument();
-    fireEvent.click(copilotBtn);
-    await vi.waitFor(() => {
-      expect(onDraftAudioPrompt).toHaveBeenCalled();
+    // Test Translate All Cues
+    const onTranslateLyrics = vi.fn().mockResolvedValue({
+      translations: ["Quédate aquí", "Luz de la noche"],
+      modelName: "Gemma 12B",
     });
-
-    // Click Re-sync range
-    const syncRangeBtn = producer.getByRole("button", { name: /Re-sync range with Whisper/i });
-    expect(syncRangeBtn).toBeInTheDocument();
+    view.rerender(<MusicLyricsProducer {...common} document={document} onTranslateLyrics={onTranslateLyrics} />);
+    const translateAllBtn = producer.getByRole("button", { name: /Translate all/i });
+    expect(translateAllBtn).toBeInTheDocument();
+    fireEvent.click(translateAllBtn);
+    await vi.waitFor(() => {
+      expect(onTranslateLyrics).toHaveBeenCalledWith("Spanish", expect.any(Array));
+    });
 
     view.unmount();
     canvas.mockRestore();

@@ -10,7 +10,7 @@ import {
   exportMusicMidi, getMusicMidiDocument, listMusicProjects, musicMediaUrl, onMoviePromptDraft, onMusicGeneration,
   onLocalSpeechProgress, onMusicProjectUpdated, pickSetupFile, repairMusicLyricsRange, revealMusicProject, saveMusicLyricsDocument, saveMusicProject,
   revealMusicMidi, saveMusicMidiDocument, startMoviePromptDraft, startMusicGeneration,
-  transcribeMusicLyrics, transcribeMusicMidi,
+  transcribeMusicLyrics, transcribeMusicMidi, translateMusicLyrics,
 } from "./api";
 import { appendModelThinking, ModelThinkingStream } from "./ModelThinkingStream";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "./ModelRuntimePolicy";
@@ -520,6 +520,19 @@ export function MusicStudio({
     });
   };
 
+  const translateLyrics = async (targetLanguage: string, lines: string[]): Promise<{ translations: string[]; modelName: string }> => {
+    if (!project || !lyricsTake) throw new Error("Choose an active take to translate lyrics.");
+    const chosenModel = models.find((m) => m.id === modelId) ?? models[0];
+    if (!chosenModel) throw new Error("No local model available in the catalog.");
+    return translateMusicLyrics({
+      projectId: project.id,
+      takeId: lyricsTake.id,
+      modelId: chosenModel.id,
+      targetLanguage,
+      lines,
+    });
+  };
+
   if (loading) return <div className="music-studio-loading"><LoaderCircle className="spin" /><span>Opening private music projects…</span></div>;
 
   if (!project) return (
@@ -729,6 +742,7 @@ export function MusicStudio({
         onSync={syncLyrics}
         onRepairRange={repairLyricsRange}
         onDraftAudioPrompt={draftAudioLyrics}
+        onTranslateLyrics={translateLyrics}
         onCancelSync={() => { if (lyricsJobId.current) void cancelLocalSpeech(lyricsJobId.current); }}
         onClose={() => { setLyricsOpen(false); setLyricsDocument(undefined); }}
       />}

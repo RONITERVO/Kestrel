@@ -2225,7 +2225,8 @@ async fn draft_lyrics_from_audio_range(
     };
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|error| error.to_string())?;
 
@@ -2280,6 +2281,165 @@ async fn draft_lyrics_from_audio_range(
 
     Ok(studio::DraftLyricsFromAudioRangeResult {
         transcription: clean,
+        model_name: model.name,
+    })
+}
+
+#[tauri::command]
+async fn translate_music_lyrics(
+    request: studio::TranslateMusicLyricsRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<studio::TranslateMusicLyricsResult, String> {
+    ensure_workspace_idle(&state)?;
+    if request.lines.is_empty() {
+        return Ok(studio::TranslateMusicLyricsResult {
+            translations: Vec::new(),
+            model_name: "None".to_string(),
+        });
+    }
+
+    let models = state.models.read().await.clone();
+    let model = models
+        .iter()
+        .find(|m| m.id == request.model_id)
+        .cloned()
+        .ok_or_else(|| "The selected local model is no longer in the catalog.".to_string())?;
+
+    let source_request = studio::MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let _ = state
+        .music
+        .lyrics_audio_source(&source_request)
+        .map_err(|error| error.to_string())?;
+
+    let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?
+        .for_model(&request.model_id);
+
+    let lease = state
+        .runtime
+        .lease_model(&request.model_id, &models, &settings, Some(&app))
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let lines_formatted = request
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| format!("{}. {}", i + 1, line.trim()))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let system_prompt = "You are a master lyrical translator. You translate song lyric lines into the requested target language with poetic accuracy, rhythmic flow, and natural phrasing. For each numbered line, provide its exact translation. Output ONLY the translated lines formatted with the exact same numbers (e.g. '1. ...\\n2. ...') or as a JSON array of strings. Do not include commentary, notes, pronunciation, or explanations.";
+
+    let user_prompt = format!(
+        "Translate the following {} song lyric line(s) into {}:\n\n{}\n\nReturn strictly the translated lines in numerical order:",
+        request.lines.len(),
+        request.target_language.trim(),
+        lines_formatted
+    );
+
+    let messages = vec![
+        serde_json::json!({
+            "role": "system",
+            "content": system_prompt
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": user_prompt
+        }),
+    ];
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let max_tokens = (request.lines.len() * 40).clamp(256, 4096) as u32;
+
+    let req = client
+        .post(format!("{}/chat/completions", lease.connection.endpoint))
+        .json(&serde_json::json!({
+            "model": lease.connection.model_id,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.3
+        }));
+
+    let response = crate::runtime::authorized(req, &lease.connection)
+        .send()
+        .await
+        .map_err(|error| format!("Translation request failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let err_body = response.text().await.unwrap_or_default();
+        return Err(format!("Local translation model returned error: {err_body}"));
+    }
+
+    let completion: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Invalid JSON from model: {error}"))?;
+
+    let content = completion["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim();
+    let reasoning = completion["choices"][0]["message"]["reasoning_content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim();
+
+    let raw_text = if !content.is_empty() { content } else { reasoning };
+
+    let mut parsed_translations: Vec<String> = if let Ok(arr) = serde_json::from_str::<Vec<String>>(raw_text) {
+        arr
+    } else {
+        let mut lines = Vec::new();
+        for raw_line in raw_text.lines() {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let stripped = if let Some(idx) = trimmed.find('.') {
+                if trimmed[..idx].chars().all(|c| c.is_ascii_digit()) {
+                    trimmed[idx + 1..].trim()
+                } else {
+                    trimmed
+                }
+            } else if let Some(idx) = trimmed.find(')') {
+                if trimmed[..idx].chars().all(|c| c.is_ascii_digit()) {
+                    trimmed[idx + 1..].trim()
+                } else {
+                    trimmed
+                }
+            } else {
+                trimmed
+            };
+            let clean = stripped.trim_matches(|c| c == '"' || c == '\'' || c == '`').trim();
+            if !clean.is_empty() {
+                lines.push(clean.to_string());
+            }
+        }
+        lines
+    };
+
+    if parsed_translations.len() < request.lines.len() {
+        while parsed_translations.len() < request.lines.len() {
+            parsed_translations.push(String::new());
+        }
+    } else if parsed_translations.len() > request.lines.len() {
+        parsed_translations.truncate(request.lines.len());
+    }
+
+    Ok(studio::TranslateMusicLyricsResult {
+        translations: parsed_translations,
         model_name: model.name,
     })
 }
@@ -4274,6 +4434,7 @@ pub fn run() {
             transcribe_music_lyrics,
             repair_music_lyrics_range,
             draft_lyrics_from_audio_range,
+            translate_music_lyrics,
             start_music_generation,
             cancel_music_generation,
             transcribe_music_midi,
