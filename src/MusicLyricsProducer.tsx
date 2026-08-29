@@ -12,7 +12,7 @@ import {
 } from "./MusicLyricReactivity";
 import { createMusicLyricVisualizer, MUSIC_LYRIC_THEMES, type MusicLyricRenderer } from "./MusicLyricVisualizers";
 import type {
-  MusicLyricSegment, MusicLyricsDocument, MusicProject, MusicTake, SpeechModel,
+  MusicLyricSegment, MusicLyricsDocument, MusicLyricWord, MusicProject, MusicTake, SpeechModel,
 } from "./types";
 
 interface AudioAnalysis {
@@ -153,11 +153,95 @@ export function MusicLyricsProducer({
   );
 
   const patchSegment = (id: string, patch: Partial<MusicLyricSegment>) => {
-    const timingChanged = "start" in patch || "end" in patch;
     onChange({
       ...document,
-      segments: document.segments.map((segment) => segment.id === id ? { ...segment, ...patch, ...(timingChanged ? { words: [] } : {}) } : segment),
+      segments: document.segments.map((segment) => {
+        if (segment.id !== id) return segment;
+        const next = { ...segment, ...patch };
+        if (("start" in patch || "end" in patch) && !("words" in patch) && segment.words.length > 0) {
+          next.words = segment.words.map((word) => ({
+            ...word,
+            start: Math.max(next.start, Math.min(next.end, word.start)),
+            end: Math.max(next.start, Math.min(next.end, word.end)),
+          }));
+        }
+        return next;
+      }),
     });
+  };
+
+  const patchWord = (segmentId: string, wordIndex: number, wordPatch: Partial<MusicLyricWord>) => {
+    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    if (!targetSegment) return;
+    const nextWords = targetSegment.words.map((w, idx) => (idx === wordIndex ? { ...w, ...wordPatch } : w));
+    const timingChanged = "start" in wordPatch || "end" in wordPatch;
+    let nextStart = targetSegment.start;
+    let nextEnd = targetSegment.end;
+    if (timingChanged) {
+      nextWords.sort((a, b) => a.start - b.start);
+      if (nextWords[0]) nextStart = Math.min(nextStart, nextWords[0].start);
+      const lastWord = nextWords[nextWords.length - 1];
+      if (lastWord) nextEnd = Math.max(nextEnd, lastWord.end);
+    }
+    const nextPrimary = "value" in wordPatch ? nextWords.map((w) => w.value).join(" ") : targetSegment.primary;
+    patchSegment(segmentId, {
+      start: nextStart,
+      end: nextEnd,
+      primary: nextPrimary,
+      words: nextWords,
+    });
+  };
+
+  const setWordStart = (segmentId: string, wordIndex: number) => {
+    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    if (!targetSegment || !targetSegment.words[wordIndex]) return;
+    const currentWord = targetSegment.words[wordIndex];
+    const newStart = roundTime(currentTime);
+    const newEnd = Math.max(newStart + 0.1, currentWord.end);
+    patchWord(segmentId, wordIndex, { start: newStart, end: newEnd });
+  };
+
+  const setWordEnd = (segmentId: string, wordIndex: number) => {
+    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    if (!targetSegment || !targetSegment.words[wordIndex]) return;
+    const currentWord = targetSegment.words[wordIndex];
+    const newEnd = roundTime(currentTime);
+    const newStart = Math.min(newEnd - 0.1, currentWord.start);
+    patchWord(segmentId, wordIndex, { start: newStart, end: newEnd });
+  };
+
+  const addWordToSegment = (segmentId: string) => {
+    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    if (!targetSegment) return;
+    const wordStart = roundTime(Math.max(targetSegment.start, Math.min(targetSegment.end, currentTime)));
+    const wordEnd = roundTime(Math.min(targetSegment.end, wordStart + 0.5));
+    const newWord: MusicLyricWord = {
+      value: "word",
+      start: wordStart,
+      end: wordEnd,
+    };
+    const nextWords = [...targetSegment.words, newWord].sort((a, b) => a.start - b.start);
+    patchSegment(segmentId, {
+      words: nextWords,
+      primary: nextWords.map((w) => w.value).join(" "),
+    });
+  };
+
+  const removeWordFromSegment = (segmentId: string, wordIndex: number) => {
+    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    if (!targetSegment) return;
+    const nextWords = targetSegment.words.filter((_, idx) => idx !== wordIndex);
+    patchSegment(segmentId, {
+      words: nextWords,
+      primary: nextWords.length > 0 ? nextWords.map((w) => w.value).join(" ") : targetSegment.primary,
+    });
+  };
+
+  const splitWordsFromPrimary = (segmentId: string) => {
+    const targetSegment = document.segments.find((s) => s.id === segmentId);
+    if (!targetSegment) return;
+    const words = estimatedWords(targetSegment.primary, targetSegment.start, targetSegment.end);
+    patchSegment(segmentId, { words });
   };
 
   const addCue = () => {
@@ -260,13 +344,188 @@ export function MusicLyricsProducer({
           {document.segments.map((segment, index) => <button key={segment.id} className={`${segment.id === selectedId ? "selected" : ""} ${segment.id === activeSegment?.id ? "active" : ""}`} onClick={() => { setSelectedId(segment.id); onSeek(segment.start); }}><span>{index + 1}</span><strong>{segment.primary}</strong><small>{formatTime(segment.start)} – {formatTime(segment.end)}</small></button>)}
           {!document.segments.length && <p>No vocal cues yet. Add one at the playhead or run local word sync.</p>}
         </div>
-        {selectedSegment && <fieldset disabled={busy} className="music-lyrics-cue-editor">
-          <legend>Cue {document.segments.findIndex((segment) => segment.id === selectedSegment.id) + 1}</legend>
-          <div className="music-lyrics-time-fields"><label>Start<input type="number" min={0} max={take.durationSeconds} step={0.01} value={roundTime(selectedSegment.start)} onChange={(event) => patchSegment(selectedSegment.id, { start: event.currentTarget.valueAsNumber })} /></label><button onClick={() => patchSegment(selectedSegment.id, { start: currentTime })}>Set playhead</button><label>End<input type="number" min={0.01} max={take.durationSeconds} step={0.01} value={roundTime(selectedSegment.end)} onChange={(event) => patchSegment(selectedSegment.id, { end: event.currentTarget.valueAsNumber })} /></label><button onClick={() => patchSegment(selectedSegment.id, { end: currentTime })}>Set playhead</button></div>
-          <label>Primary lyric<textarea value={selectedSegment.primary} onChange={(event) => patchSegment(selectedSegment.id, { primary: event.target.value, words: [] })} /></label>
-          <label>Translation<textarea value={selectedSegment.translation} onChange={(event) => patchSegment(selectedSegment.id, { translation: event.target.value })} placeholder="Optional second line…" /></label>
-          <button className="danger" onClick={() => removeCue(selectedSegment.id)}><Trash2 /> Remove cue</button>
-        </fieldset>}
+        {selectedSegment && (
+          <fieldset disabled={busy} className="music-lyrics-cue-editor">
+            <div className="music-lyrics-cue-editor-header">
+              <legend>
+                Cue {document.segments.findIndex((s) => s.id === selectedSegment.id) + 1} of {document.segments.length}
+              </legend>
+              <div className="music-lyrics-cue-quick-actions">
+                <button
+                  type="button"
+                  className="music-lyrics-preview-btn"
+                  title="Preview cue from start"
+                  onClick={() => {
+                    onSeek(selectedSegment.start);
+                    if (!playing) handleTogglePlay();
+                  }}
+                >
+                  <Play /> Play cue
+                </button>
+                <button
+                  type="button"
+                  className="danger music-lyrics-remove-cue-btn"
+                  title="Remove this cue"
+                  onClick={() => removeCue(selectedSegment.id)}
+                >
+                  <Trash2 />
+                </button>
+              </div>
+            </div>
+
+            <div className="music-lyrics-time-fields">
+              <div className="music-lyrics-time-card">
+                <label>
+                  <span>Start ({formatTime(selectedSegment.start)})</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={take.durationSeconds}
+                    step={0.01}
+                    value={roundTime(selectedSegment.start)}
+                    onChange={(e) => patchSegment(selectedSegment.id, { start: e.currentTarget.valueAsNumber })}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="music-lyrics-set-btn"
+                  title="Set cue start to playhead position"
+                  onClick={() => patchSegment(selectedSegment.id, { start: roundTime(currentTime) })}
+                >
+                  <Clock3 /> Set Start ({formatPreciseTime(currentTime)})
+                </button>
+              </div>
+
+              <div className="music-lyrics-time-card">
+                <label>
+                  <span>End ({formatTime(selectedSegment.end)})</span>
+                  <input
+                    type="number"
+                    min={0.01}
+                    max={take.durationSeconds}
+                    step={0.01}
+                    value={roundTime(selectedSegment.end)}
+                    onChange={(e) => patchSegment(selectedSegment.id, { end: e.currentTarget.valueAsNumber })}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="music-lyrics-set-btn"
+                  title="Set cue end to playhead position"
+                  onClick={() => patchSegment(selectedSegment.id, { end: roundTime(currentTime) })}
+                >
+                  <Clock3 /> Set End ({formatPreciseTime(currentTime)})
+                </button>
+              </div>
+            </div>
+
+            <label className="music-lyrics-field">
+              <span>Primary lyric</span>
+              <textarea
+                value={selectedSegment.primary}
+                rows={2}
+                onChange={(e) => patchSegment(selectedSegment.id, { primary: e.target.value })}
+                placeholder="Lyric line text…"
+              />
+            </label>
+
+            {document.showTranslation && (
+              <label className="music-lyrics-field">
+                <span>Translation</span>
+                <textarea
+                  value={selectedSegment.translation}
+                  rows={2}
+                  onChange={(e) => patchSegment(selectedSegment.id, { translation: e.target.value })}
+                  placeholder="Optional translation…"
+                />
+              </label>
+            )}
+
+            <div className="music-lyrics-words-panel">
+              <div className="music-lyrics-words-panel-header">
+                <strong>Word Timings ({selectedSegment.words.length})</strong>
+                <div className="music-lyrics-words-actions">
+                  <button
+                    type="button"
+                    className="music-lyrics-btn-sm"
+                    title="Add word at current playhead"
+                    onClick={() => addWordToSegment(selectedSegment.id)}
+                  >
+                    <Plus /> Add word
+                  </button>
+                  {selectedSegment.words.length === 0 && selectedSegment.primary.trim().length > 0 && (
+                    <button
+                      type="button"
+                      className="music-lyrics-btn-sm"
+                      title="Generate word timings from primary lyric"
+                      onClick={() => splitWordsFromPrimary(selectedSegment.id)}
+                    >
+                      <Sparkles /> Split words
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {selectedSegment.words.length === 0 ? (
+                <div className="music-lyrics-no-words">
+                  <span>No individual word timings. Add words or click Split words above.</span>
+                </div>
+              ) : (
+                <div className="music-lyrics-word-list">
+                  {selectedSegment.words.map((word, wordIndex) => (
+                    <div key={`${wordIndex}-${word.start}`} className="music-lyrics-word-item">
+                      <div className="music-lyrics-word-main">
+                        <input
+                          className="music-lyrics-word-text-input"
+                          value={word.value}
+                          onChange={(e) => patchWord(selectedSegment.id, wordIndex, { value: e.target.value })}
+                          placeholder="word"
+                        />
+                        <button
+                          type="button"
+                          className="music-lyrics-word-play-btn"
+                          title={`Seek and play from "${word.value}" (${formatPreciseTime(word.start)})`}
+                          onClick={() => {
+                            onSeek(word.start);
+                            if (!playing) handleTogglePlay();
+                          }}
+                        >
+                          <Play /> {formatPreciseTime(word.start)} – {formatPreciseTime(word.end)}
+                        </button>
+                        <button
+                          type="button"
+                          className="music-lyrics-word-del-btn"
+                          title="Remove word"
+                          onClick={() => removeWordFromSegment(selectedSegment.id, wordIndex)}
+                        >
+                          <Trash2 />
+                        </button>
+                      </div>
+                      <div className="music-lyrics-word-timing-bar">
+                        <button
+                          type="button"
+                          className="music-lyrics-word-set-btn"
+                          title={`Set start of "${word.value}" to playhead (${formatPreciseTime(currentTime)})`}
+                          onClick={() => setWordStart(selectedSegment.id, wordIndex)}
+                        >
+                          Set start ({formatPreciseTime(currentTime)})
+                        </button>
+                        <button
+                          type="button"
+                          className="music-lyrics-word-set-btn"
+                          title={`Set end of "${word.value}" to playhead (${formatPreciseTime(currentTime)})`}
+                          onClick={() => setWordEnd(selectedSegment.id, wordIndex)}
+                        >
+                          Set end ({formatPreciseTime(currentTime)})
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </fieldset>
+        )}
         <footer><span>{document.segments.length} cues · saved revision {savedRevision}</span><button disabled={busy} onClick={() => void saveCurrentDocument()}><Save /> Save revision</button></footer>
       </aside>}
     </section>
@@ -285,6 +544,18 @@ export function musicLyricDisplaySegmentAt(segments: MusicLyricSegment[], second
     if (seconds > segment.end && seconds <= segment.end + 0.42) return segment;
   }
   return undefined;
+}
+
+function estimatedWords(primary: string, start: number, end: number): MusicLyricWord[] {
+  const words = primary.trim().split(/\s+/u).filter(Boolean);
+  if (!words.length) return [];
+  const duration = Math.max(0.05, end - start);
+  const step = duration / words.length;
+  return words.map((value, index) => ({
+    value,
+    start: roundTime(start + step * index),
+    end: roundTime(start + step * (index + 1)),
+  }));
 }
 
 function renderTimedWords(segment: MusicLyricSegment, currentTime: number, onSeek: (seconds: number) => void) {

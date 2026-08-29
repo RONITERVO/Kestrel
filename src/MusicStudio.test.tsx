@@ -177,6 +177,94 @@ describe("MusicStudio", () => {
     expect(producer.getByRole("region", { name: "Visual lyric producer" })).toHaveClass("theme-signal-bloom");
     fireEvent.click(producer.getByRole("button", { name: "Save look" }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ theme: "signal-bloom" })));
+    view.unmount();
+    canvas.mockRestore();
+  });
+
+  it("supports easy cue and per-word timestamp editing with convenient playhead set buttons", async () => {
+    const take = { id: "take-1", durationSeconds: 10, resolvedModel: "Music 3" } as MusicTake;
+    const project = { id: "project-1", title: "Night signal", takes: [take] } as MusicProject;
+    const document = {
+      schemaVersion: 1,
+      takeId: take.id,
+      sourceSha256: "a".repeat(64),
+      revision: 1,
+      language: "English",
+      source: "whisper-local",
+      transcript: "deep and steep",
+      theme: "sketchbook",
+      showTranslation: true,
+      createdAt: "2026-08-29T00:00:00Z",
+      updatedAt: "2026-08-29T00:00:00Z",
+      segments: [{
+        id: "cue-1",
+        start: 1.0,
+        end: 4.0,
+        primary: "deep and steep",
+        translation: "",
+        words: [
+          { value: "deep", start: 1.0, end: 1.8 },
+          { value: "and", start: 1.9, end: 2.3 },
+          { value: "steep", start: 2.4, end: 3.5 },
+        ],
+      }],
+    } satisfies MusicLyricsDocument;
+    const onChange = vi.fn();
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    const common = {
+      project,
+      take,
+      audio: null,
+      currentTime: 1.25,
+      playing: false,
+      busy: false,
+      status: "",
+      onTogglePlay: vi.fn(),
+      onSeek: vi.fn(),
+      onChange,
+      onSave: vi.fn(),
+      onSync: vi.fn(),
+      onCancelSync: vi.fn(),
+      onClose: vi.fn(),
+    };
+    const view = render(<MusicLyricsProducer {...common} document={document} />);
+    const producer = within(view.container);
+
+    // Open timing editor
+    fireEvent.click(producer.getByRole("button", { name: "Edit timing" }));
+    expect(producer.getByText("Lyrics & timing")).toBeInTheDocument();
+
+    // Cue set start button uses current playhead (1.25s)
+    fireEvent.click(producer.getByTitle("Set cue start to playhead position"));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      segments: [expect.objectContaining({
+        id: "cue-1",
+        start: 1.25,
+      })],
+    }));
+
+    // Word set start button sets word start to current playhead (1.25s)
+    const setStartBtn = producer.getByTitle('Set start of "deep" to playhead (00:01.3)');
+    fireEvent.click(setStartBtn);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      segments: [expect.objectContaining({
+        words: expect.arrayContaining([
+          expect.objectContaining({ value: "deep", start: 1.25 }),
+        ]),
+      })],
+    }));
+
+    // Add word adds a new word and keeps primary in sync
+    fireEvent.click(producer.getByTitle("Add word at current playhead"));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      segments: [expect.objectContaining({
+        words: expect.arrayContaining([
+          expect.objectContaining({ value: "word" }),
+        ]),
+      })],
+    }));
+
+    view.unmount();
     canvas.mockRestore();
   });
 
