@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelLocalSpeech, cancelMoviePromptDraft, cancelMusicGeneration, createMusicLyricsDraft, createMusicProject, getMusicLyricsDocument, getMusicProject,
   exportMusicMidi, getMusicMidiDocument, listMusicProjects, musicMediaUrl, onMoviePromptDraft, onMusicGeneration,
-  onLocalSpeechProgress, onMusicProjectUpdated, pickSetupFile, revealMusicProject, saveMusicLyricsDocument, saveMusicProject,
+  onLocalSpeechProgress, onMusicProjectUpdated, pickSetupFile, repairMusicLyricsRange, revealMusicProject, saveMusicLyricsDocument, saveMusicProject,
   revealMusicMidi, saveMusicMidiDocument, startMoviePromptDraft, startMusicGeneration,
   transcribeMusicLyrics, transcribeMusicMidi,
 } from "./api";
@@ -477,6 +477,36 @@ export function MusicStudio({
     }
   };
 
+  const repairLyricsRange = async (modelId: string, language: string, startSeconds: number, endSeconds: number, prompt: string) => {
+    if (!project || !lyricsTake) return;
+    const jobId = stableId();
+    lyricsJobId.current = jobId;
+    setLyricsBusy(true);
+    setLyricsStatus(`Repairing lyrics in range ${formatTime(startSeconds)} – ${formatTime(endSeconds)} with local Whisper…`);
+    try {
+      const synced = await repairMusicLyricsRange({
+        projectId: project.id,
+        takeId: lyricsTake.id,
+        jobId,
+        modelId,
+        language,
+        startSeconds,
+        endSeconds,
+        prompt,
+      });
+      setProject(synced.project);
+      setLyricsDocument(synced.document);
+      setLyricsStatus(`Lyric range repair saved as revision ${synced.document.revision}.`);
+    } catch (error) {
+      const message = String(error);
+      if (!message.toLocaleLowerCase().includes("stopped")) onError(message);
+      setLyricsStatus(message.toLocaleLowerCase().includes("stopped") ? "Lyric range repair stopped safely." : "Lyric range repair failed; previous revision unchanged.");
+    } finally {
+      lyricsJobId.current = "";
+      setLyricsBusy(false);
+    }
+  };
+
   if (loading) return <div className="music-studio-loading"><LoaderCircle className="spin" /><span>Opening private music projects…</span></div>;
 
   if (!project) return (
@@ -682,6 +712,7 @@ export function MusicStudio({
         onChange={setLyricsDocument}
         onSave={saveLyrics}
         onSync={syncLyrics}
+        onRepairRange={repairLyricsRange}
         onCancelSync={() => { if (lyricsJobId.current) void cancelLocalSpeech(lyricsJobId.current); }}
         onClose={() => { setLyricsOpen(false); setLyricsDocument(undefined); }}
       />}

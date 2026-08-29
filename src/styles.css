@@ -3020,6 +3020,31 @@ pre .speech-word-active, code .speech-word-active {
 .music-lyrics-word-set-btn { min-height: 20px; padding: 0 3px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgba(35,30,28,.2); border-radius: 2px; background: rgba(244,238,225,.7); color: rgba(35,30,28,.75); font: 650 8px var(--mono); cursor: pointer; transition: all .1s ease; }
 .music-lyrics-word-set-btn:hover { color: var(--lyrics-blue); border-color: var(--lyrics-blue); background: rgba(24,75,165,.1); }
 
+.music-lyrics-tab-bar { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid rgba(35,30,28,.28); background: rgba(35,30,28,.04); }
+.music-lyrics-tab-bar button { min-height: 32px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: rgba(35,30,28,.7); font: 750 9.5px var(--mono); text-transform: uppercase; cursor: pointer; transition: all .15s ease; }
+.music-lyrics-tab-bar button:hover { background: rgba(255,252,244,.5); color: var(--lyrics-ink); }
+.music-lyrics-tab-bar button.active { border-bottom-color: var(--lyrics-blue); color: var(--lyrics-blue); background: rgba(24,75,165,.08); }
+.music-lyrics-tab-bar button svg { width: 12px; height: 12px; }
+
+.music-lyrics-range-repair { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; scrollbar-width: thin; }
+.music-lyrics-repair-guide { padding: 7px 8px; display: flex; align-items: flex-start; gap: 7px; border: 1px solid rgba(24,75,165,.25); border-radius: 4px; background: rgba(24,75,165,.06); }
+.music-lyrics-repair-guide svg { width: 14px; color: var(--lyrics-blue); flex-shrink: 0; margin-top: 1px; }
+.music-lyrics-repair-guide span { display: flex; flex-direction: column; gap: 2px; }
+.music-lyrics-repair-guide strong { color: var(--lyrics-blue); font-size: 10.5px; }
+.music-lyrics-repair-guide small { color: rgba(35,30,28,.65); font-size: 9px; line-height: 1.35; }
+.music-lyrics-use-cue-btn { justify-self: start; align-self: flex-start; color: var(--lyrics-blue); }
+.music-lyrics-prompt-header { display: flex; align-items: center; justify-content: space-between; }
+.music-lyrics-prompt-header small { color: rgba(35,30,28,.55); font: 8.5px var(--mono); }
+.music-lyrics-prompt-fill-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.music-lyrics-prompt-fill-actions span { color: rgba(35,30,28,.65); font-size: 8.5px; font-weight: 750; text-transform: uppercase; }
+.music-lyrics-repair-model-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.music-lyrics-repair-model-row label { display: flex; flex-direction: column; gap: 3px; color: rgba(35,30,28,.65); font-size: 8.5px; font-weight: 800; text-transform: uppercase; }
+.music-lyrics-repair-model-row input, .music-lyrics-repair-model-row select { width: 100%; height: 26px; padding: 0 6px; border: 1px solid rgba(35,30,28,.35); border-radius: 3px; font: 10px var(--mono); background: rgba(255,252,244,.85); outline: 0; }
+.music-lyrics-range-repair-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.music-lyrics-repair-submit-btn { width: 100%; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-weight: 750; font-size: 10.5px; color: #fff; background: var(--lyrics-blue); }
+.music-lyrics-range-repair-actions p { margin: 0; display: flex; align-items: center; gap: 6px; color: rgba(35,30,28,.68); font-size: 9px; line-height: 1.35; }
+.music-lyrics-range-repair-actions p svg { width: 13px; }
+
 .music-lyrics-editor > footer { min-height: 44px; padding: 6px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid rgba(35,30,28,.34); background: rgba(244,238,225,.86); }
 .music-lyrics-editor > footer span { color: rgba(35,30,28,.58); font: 9px var(--mono); }
 

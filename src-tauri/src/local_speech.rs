@@ -193,6 +193,18 @@ pub(crate) struct SpeechFileTranscriptionRequest {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct SpeechFileRangeTranscriptionRequest {
+    pub job_id: String,
+    pub recording_id: String,
+    pub audio_path: PathBuf,
+    pub model_id: String,
+    pub language: String,
+    pub prompt: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct SpeechFileTranscription {
     pub text: String,
     pub segments: Vec<SpeechTiming>,
@@ -775,6 +787,146 @@ impl LocalSpeech {
             strategy: MUSIC_REPEAT_CONTEXT_STRATEGY.into(),
             context_copies: 2,
             context_seam_seconds: MUSIC_REPEAT_CONTEXT_SEAM_SECONDS,
+            selected_context_copy,
+            first_context_score,
+            second_context_score,
+        })
+    }
+
+    pub(crate) async fn transcribe_file_range(
+        &self,
+        comfy_root: &str,
+        request: &SpeechFileRangeTranscriptionRequest,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<SpeechFileTranscription, SpeechError> {
+        let file_req = SpeechFileTranscriptionRequest {
+            job_id: request.job_id.clone(),
+            recording_id: request.recording_id.clone(),
+            audio_path: request.audio_path.clone(),
+            model_id: request.model_id.clone(),
+            language: request.language.clone(),
+            prompt: request.prompt.clone(),
+        };
+        validate_file_transcription_request(comfy_root, &file_req)?;
+        let _generation = self.generation.lock().await;
+        if cancel.is_cancelled() {
+            return Err(SpeechError::Cancelled);
+        }
+        self.verify_live_whisper_node().await?;
+        self.verify_live_node("PreviewAny", "the ComfyUI Preview as Text node")
+            .await?;
+
+        emit_file_transcription_progress(
+            app,
+            &file_req,
+            "transcribing",
+            "ComfyUI Whisper is repairing lyric range with start prompt.",
+        );
+
+        let root = Path::new(comfy_root);
+        let input_directory = root.join("input/kestrel_speech");
+        fs::create_dir_all(&input_directory)?;
+        let input_name = format!(
+            "{}-repair-{}.wav",
+            request.job_id,
+            uuid::Uuid::new_v4().simple(),
+        );
+        let input_path = input_directory.join(&input_name);
+
+        let buffer_seconds = 1.5_f64;
+        let slice_start = (request.start_seconds - buffer_seconds).max(0.0);
+        let slice_end = request.end_seconds + buffer_seconds;
+
+        if slice_wav_pcm(&request.audio_path, &input_path, slice_start, slice_end).is_err() {
+            let ffmpeg_cmd = std::env::var_os("KESTREL_FFMPEG_PATH")
+                .map(PathBuf::from)
+                .filter(|p| p.is_file())
+                .unwrap_or_else(|| PathBuf::from("ffmpeg"));
+            let status = tokio::process::Command::new(ffmpeg_cmd)
+                .args([
+                    "-y",
+                    "-ss",
+                    &format!("{:.3}", slice_start),
+                    "-to",
+                    &format!("{:.3}", slice_end),
+                    "-i",
+                ])
+                .arg(&request.audio_path)
+                .arg(&input_path)
+                .output()
+                .await;
+            if status.is_err() || !status.unwrap().status.success() {
+                tokio::fs::copy(&request.audio_path, &input_path).await?;
+            }
+        }
+
+        let prompt = bounded_prefix(&request.prompt, MAX_MUSIC_OPENING_PROMPT_BYTES);
+        let graph_request = SpeechTranscriptionRequest {
+            job_id: request.job_id.clone(),
+            source_kind: "copilot".into(),
+            source_id: request.recording_id.clone(),
+            recording_id: request.recording_id.clone(),
+            audio_base64: String::new(),
+            mime_type: String::new(),
+            model_id: request.model_id.clone(),
+            language: request.language.clone(),
+            prompt: prompt.clone(),
+            final_pass: true,
+        };
+        let context_mode = WhisperContextMode::Single;
+        let graph = whisper_graph(
+            &graph_request,
+            &format!("kestrel_speech/{input_name}"),
+            context_mode,
+        );
+        let result = self
+            .execute_whisper_graph(
+                &request.job_id,
+                graph,
+                context_mode,
+                Some(&prompt),
+                cancel,
+            )
+            .await;
+        let _ = tokio::fs::remove_file(&input_path).await;
+        let WhisperTranscriptionResult {
+            text,
+            mut segments,
+            mut words,
+            selected_context_copy,
+            first_context_score,
+            second_context_score,
+        } = result?;
+
+        for seg in &mut segments {
+            seg.start += slice_start;
+            seg.end += slice_start;
+        }
+        for word in &mut words {
+            word.start += slice_start;
+            word.end += slice_start;
+        }
+
+        words.retain(|w| {
+            let mid = (w.start + w.end) / 2.0;
+            mid >= request.start_seconds - 0.25 && mid <= request.end_seconds + 0.25
+        });
+
+        emit_file_transcription_progress(
+            app,
+            &file_req,
+            "complete",
+            "Lyric range repair is ready.",
+        );
+
+        Ok(SpeechFileTranscription {
+            text,
+            segments,
+            words,
+            strategy: "range-repair-prompt-guided".into(),
+            context_copies: 1,
+            context_seam_seconds: 0.0,
             selected_context_copy,
             first_context_score,
             second_context_score,
@@ -2398,6 +2550,79 @@ fn safe_comfy_output(
         ));
     }
     Ok(source)
+}
+
+fn slice_wav_pcm(
+    input_path: &Path,
+    output_path: &Path,
+    start_seconds: f64,
+    end_seconds: f64,
+) -> Result<(), std::io::Error> {
+    let bytes = std::fs::read(input_path)?;
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not a valid RIFF/WAVE file",
+        ));
+    }
+    let mut pos = 12;
+    let mut fmt_opt: Option<(u16, u16, u32, u32, u16, u16)> = None;
+    let mut data_chunk: Option<(usize, usize)> = None;
+    while pos + 8 <= bytes.len() {
+        let chunk_id = &bytes[pos..pos + 4];
+        let chunk_len = u32::from_le_bytes(
+            bytes[pos + 4..pos + 8]
+                .try_into()
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid chunk size"))?,
+        ) as usize;
+        let data_start = pos + 8;
+        if chunk_id == b"fmt " && chunk_len >= 16 && data_start + 16 <= bytes.len() {
+            let format_tag = u16::from_le_bytes(bytes[data_start..data_start + 2].try_into().unwrap());
+            let channels = u16::from_le_bytes(bytes[data_start + 2..data_start + 4].try_into().unwrap());
+            let sample_rate = u32::from_le_bytes(bytes[data_start + 4..data_start + 8].try_into().unwrap());
+            let byte_rate = u32::from_le_bytes(bytes[data_start + 8..data_start + 12].try_into().unwrap());
+            let block_align = u16::from_le_bytes(bytes[data_start + 12..data_start + 14].try_into().unwrap());
+            let bits_per_sample = u16::from_le_bytes(bytes[data_start + 14..data_start + 16].try_into().unwrap());
+            fmt_opt = Some((format_tag, channels, sample_rate, byte_rate, block_align, bits_per_sample));
+        } else if chunk_id == b"data" {
+            let actual_data_len = chunk_len.min(bytes.len().saturating_sub(data_start));
+            data_chunk = Some((data_start, actual_data_len));
+            break;
+        }
+        pos = data_start + chunk_len + (chunk_len % 2);
+    }
+    let (format_tag, channels, sample_rate, _byte_rate, block_align, bits_per_sample) = fmt_opt
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing fmt chunk"))?;
+    let (data_start, data_len) = data_chunk
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing data chunk"))?;
+
+    let bytes_per_sec = sample_rate as f64 * block_align as f64;
+    let start_sample_byte = ((start_seconds * bytes_per_sec) as usize / block_align as usize) * block_align as usize;
+    let end_sample_byte = ((end_seconds * bytes_per_sec) as usize / block_align as usize) * block_align as usize;
+    let slice_start = start_sample_byte.min(data_len);
+    let slice_end = end_sample_byte.min(data_len).max(slice_start);
+    let sliced_audio_bytes = &bytes[data_start + slice_start..data_start + slice_end];
+    let sliced_len = sliced_audio_bytes.len() as u32;
+
+    let mut out = Vec::with_capacity(44 + sliced_audio_bytes.len());
+    let total_file_size = 36 + sliced_len;
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&total_file_size.to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16_u32.to_le_bytes());
+    out.extend_from_slice(&format_tag.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * block_align as u32).to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&bits_per_sample.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&sliced_len.to_le_bytes());
+    out.extend_from_slice(sliced_audio_bytes);
+
+    std::fs::write(output_path, out)?;
+    Ok(())
 }
 
 fn find_audio_output(entry: &Value) -> Option<(String, String)> {

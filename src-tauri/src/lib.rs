@@ -29,8 +29,9 @@ use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
 use local_speech::{
-    LocalSpeech, SpeechAlignmentRequest, SpeechClip, SpeechFileTranscriptionRequest,
-    SpeechSnapshot, SpeechSynthesisRequest, SpeechTranscription, SpeechTranscriptionRequest,
+    LocalSpeech, SpeechAlignmentRequest, SpeechClip, SpeechFileRangeTranscriptionRequest,
+    SpeechFileTranscriptionRequest, SpeechSnapshot, SpeechSynthesisRequest, SpeechTranscription,
+    SpeechTranscriptionRequest,
 };
 use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
 use model_download::{
@@ -65,8 +66,9 @@ use studio::{
     MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieRenderState,
     MovieRuntimePolicyRequest, MovieStudio, MovieSummary, MusicLyricsRequest,
     MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
-    MusicSummary, PromptDraftJob, PromptDraftRequest, SaveMusicLyricsDocumentRequest,
-    SaveMusicMidiDocumentRequest, StartMovieRequest, TranscribeMusicLyricsRequest,
+    MusicSummary, PromptDraftJob, PromptDraftRequest, RepairMusicLyricsRangeRequest,
+    SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
+    TranscribeMusicLyricsRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -2065,6 +2067,74 @@ async fn transcribe_music_lyrics(
 }
 
 #[tauri::command]
+async fn repair_music_lyrics_range(
+    request: RepairMusicLyricsRangeRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MusicLyricsSaveResult, String> {
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let source_request = MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let (audio_path, take_prompt, _) = state
+        .music
+        .lyrics_audio_source(&source_request)
+        .map_err(|error| error.to_string())?;
+    let prompt = if request.prompt.trim().is_empty() {
+        take_prompt
+    } else {
+        request.prompt.clone()
+    };
+    let cancel = register_speech_job(&state, &request.job_id)?;
+    let result: Result<MusicLyricsSaveResult, String> = async {
+        let _turn = wait_for_speech_turn(&state, &cancel).await?;
+        let _guard = claim_workspace(&state)?;
+        release_all_comfy_memory(&state).await;
+        remember_runtime_for_speech(&state).await;
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .speech
+            .ensure_comfy(&settings.comfy_root, &cancel)
+            .await
+            .map_err(|error| error.to_string())?;
+        let transcription = state
+            .speech
+            .transcribe_file_range(
+                &settings.comfy_root,
+                &SpeechFileRangeTranscriptionRequest {
+                    job_id: request.job_id.clone(),
+                    recording_id: request.take_id.clone(),
+                    audio_path,
+                    model_id: request.model_id.clone(),
+                    language: request.language.clone(),
+                    prompt,
+                    start_seconds: request.start_seconds,
+                    end_seconds: request.end_seconds,
+                },
+                &cancel,
+                Some(&app),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .music
+            .persist_lyrics_range_repair(&request, transcription)
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    finish_speech_job(&state, &request.job_id);
+    result
+}
+
+#[tauri::command]
 async fn start_music_generation(
     id: String,
     app: AppHandle,
@@ -4052,6 +4122,7 @@ pub fn run() {
             get_music_lyrics_document,
             save_music_lyrics_document,
             transcribe_music_lyrics,
+            repair_music_lyrics_range,
             start_music_generation,
             cancel_music_generation,
             transcribe_music_midi,

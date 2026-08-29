@@ -274,6 +274,21 @@ pub struct TranscribeMusicLyricsRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RepairMusicLyricsRangeRequest {
+    pub project_id: String,
+    pub take_id: String,
+    pub job_id: String,
+    pub model_id: String,
+    #[serde(default = "default_lyrics_language")]
+    pub language: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    #[serde(default)]
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SaveMusicLyricsDocumentRequest {
     pub project_id: String,
     pub take_id: String,
@@ -952,6 +967,102 @@ impl MusicStudio {
                 "firstContextScore": first_context_score,
                 "secondContextScore": second_context_score,
                 "theme": theme,
+                "network": "disabled"
+            }),
+        )
+    }
+
+    pub fn persist_lyrics_range_repair(
+        &self,
+        request: &RepairMusicLyricsRangeRequest,
+        transcription: SpeechFileTranscription,
+    ) -> Result<MusicLyricsSaveResult, StudioError> {
+        let project = self.get(&request.project_id)?;
+        let take = project
+            .takes
+            .iter()
+            .find(|take| take.id == request.take_id && take.status == "complete")
+            .ok_or_else(|| {
+                StudioError::Invalid("the lyric-sync music take no longer exists".into())
+            })?;
+        let take_id = take.id.clone();
+        let take_sha256 = take.sha256.clone();
+        let duration_seconds = take.duration_seconds;
+        let previous = if !take.lyrics_document_path.trim().is_empty() {
+            self.load_lyrics_document(MusicLyricsRequest {
+                project_id: request.project_id.clone(),
+                take_id: request.take_id.clone(),
+            })?
+        } else {
+            MusicLyricsSaveResult {
+                project: project.clone(),
+                document: MusicLyricsDocument {
+                    schema_version: 1,
+                    take_id: take_id.clone(),
+                    source_sha256: take_sha256.clone(),
+                    revision: 0,
+                    language: request.language.clone(),
+                    source: request.model_id.clone(),
+                    transcript: String::new(),
+                    theme: DEFAULT_LYRIC_THEME.to_string(),
+                    show_translation: true,
+                    created_at: Utc::now().to_rfc3339(),
+                    updated_at: Utc::now().to_rfc3339(),
+                    segments: Vec::new(),
+                },
+            }
+        };
+
+        let repaired_segments = lyric_segments_from_speech(transcription.segments, &transcription.words);
+        let spliced_segments = splice_repaired_lyrics_segments(
+            &previous.document.segments,
+            repaired_segments,
+            request.start_seconds,
+            request.end_seconds,
+        );
+
+        let full_transcript = spliced_segments
+            .iter()
+            .map(|s| s.primary.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let now = Utc::now().to_rfc3339();
+        let document = normalize_lyrics_document(
+            MusicLyricsDocument {
+                schema_version: 1,
+                take_id,
+                source_sha256: take_sha256.clone(),
+                revision: previous.document.revision + 1,
+                language: request.language.clone(),
+                source: format!("{}-range-repair", request.model_id),
+                transcript: full_transcript,
+                theme: previous.document.theme.clone(),
+                show_translation: previous.document.show_translation,
+                created_at: previous.document.created_at,
+                updated_at: now,
+                segments: spliced_segments,
+            },
+            duration_seconds,
+        )?;
+
+        self.persist_new_lyrics_session(
+            project,
+            &request.take_id,
+            document,
+            json!({
+                "schemaVersion": 1,
+                "createdAt": Utc::now().to_rfc3339(),
+                "takeId": request.take_id,
+                "sourceSha256": take_sha256,
+                "tool": "Kestrel Whisper Range Repair",
+                "modelId": request.model_id,
+                "language": request.language,
+                "rangeStart": request.start_seconds,
+                "rangeEnd": request.end_seconds,
+                "prompt": request.prompt,
+                "theme": previous.document.theme,
                 "network": "disabled"
             }),
         )
@@ -1871,6 +1982,93 @@ fn lyric_segments_from_speech(
             words: Vec::new(),
         })
         .collect()
+}
+
+pub(crate) fn splice_repaired_lyrics_segments(
+    existing: &[MusicLyricSegment],
+    repaired: Vec<MusicLyricSegment>,
+    range_start: f64,
+    range_end: f64,
+) -> Vec<MusicLyricSegment> {
+    let mut result = Vec::new();
+
+    for segment in existing {
+        if segment.end <= range_start + 0.05 {
+            result.push(segment.clone());
+            continue;
+        }
+        if segment.start >= range_end - 0.05 {
+            result.push(segment.clone());
+            continue;
+        }
+
+        if segment.start < range_start - 0.05 && segment.end > range_start {
+            let truncated_words: Vec<MusicLyricWord> = segment
+                .words
+                .iter()
+                .filter(|w| w.end <= range_start + 0.05)
+                .cloned()
+                .collect();
+            let primary = if !truncated_words.is_empty() {
+                truncated_words
+                    .iter()
+                    .map(|w| w.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            } else {
+                segment.primary.clone()
+            };
+            if range_start > segment.start + 0.1 {
+                result.push(MusicLyricSegment {
+                    id: segment.id.clone(),
+                    start: segment.start,
+                    end: range_start,
+                    primary,
+                    translation: segment.translation.clone(),
+                    words: truncated_words,
+                });
+            }
+            continue;
+        }
+
+        if segment.start < range_end && segment.end > range_end + 0.05 {
+            let truncated_words: Vec<MusicLyricWord> = segment
+                .words
+                .iter()
+                .filter(|w| w.start >= range_end - 0.05)
+                .cloned()
+                .collect();
+            let primary = if !truncated_words.is_empty() {
+                truncated_words
+                    .iter()
+                    .map(|w| w.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            } else {
+                segment.primary.clone()
+            };
+            if segment.end > range_end + 0.1 {
+                result.push(MusicLyricSegment {
+                    id: segment.id.clone(),
+                    start: range_end,
+                    end: segment.end,
+                    primary,
+                    translation: segment.translation.clone(),
+                    words: truncated_words,
+                });
+            }
+            continue;
+        }
+    }
+
+    for seg in repaired {
+        if !seg.primary.trim().is_empty() && seg.end > seg.start {
+            result.push(seg);
+        }
+    }
+
+    result.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    result
 }
 
 fn estimated_words(primary: &str, start: f64, end: f64) -> Vec<MusicLyricWord> {
@@ -3187,5 +3385,84 @@ mod tests {
         assert!(take.bytes > 0);
         assert_eq!(take.sha256.len(), 64);
         assert_eq!(take.exact_graph["10"]["inputs"]["format"], "flac");
+    }
+
+    #[test]
+    fn range_repair_splices_cues_within_target_window_and_preserves_surrounding() {
+        let existing = vec![
+            MusicLyricSegment {
+                id: "cue-1".into(),
+                start: 0.0,
+                end: 10.0,
+                primary: "intro line untouched".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord { value: "intro".into(), start: 0.0, end: 3.0 },
+                    MusicLyricWord { value: "line".into(), start: 3.2, end: 6.0 },
+                    MusicLyricWord { value: "untouched".into(), start: 6.5, end: 9.5 },
+                ],
+            },
+            MusicLyricSegment {
+                id: "cue-2".into(),
+                start: 11.0,
+                end: 25.0,
+                primary: "broken words to replace".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord { value: "broken".into(), start: 11.0, end: 15.0 },
+                    MusicLyricWord { value: "words".into(), start: 15.5, end: 20.0 },
+                    MusicLyricWord { value: "to".into(), start: 20.5, end: 22.0 },
+                    MusicLyricWord { value: "replace".into(), start: 22.5, end: 25.0 },
+                ],
+            },
+            MusicLyricSegment {
+                id: "cue-3".into(),
+                start: 30.0,
+                end: 40.0,
+                primary: "outro line untouched".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord { value: "outro".into(), start: 30.0, end: 34.0 },
+                    MusicLyricWord { value: "line".into(), start: 34.5, end: 37.0 },
+                    MusicLyricWord { value: "untouched".into(), start: 37.5, end: 40.0 },
+                ],
+            },
+        ];
+
+        let repaired = vec![
+            MusicLyricSegment {
+                id: "cue-rep-1".into(),
+                start: 11.2,
+                end: 17.5,
+                primary: "deep and steep".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord { value: "deep".into(), start: 11.2, end: 13.0 },
+                    MusicLyricWord { value: "and".into(), start: 13.2, end: 14.5 },
+                    MusicLyricWord { value: "steep".into(), start: 14.8, end: 17.5 },
+                ],
+            },
+            MusicLyricSegment {
+                id: "cue-rep-2".into(),
+                start: 18.0,
+                end: 24.8,
+                primary: "a silent geometry".into(),
+                translation: String::new(),
+                words: vec![
+                    MusicLyricWord { value: "a".into(), start: 18.0, end: 19.0 },
+                    MusicLyricWord { value: "silent".into(), start: 19.2, end: 21.5 },
+                    MusicLyricWord { value: "geometry".into(), start: 21.8, end: 24.8 },
+                ],
+            },
+        ];
+
+        let spliced = splice_repaired_lyrics_segments(&existing, repaired, 11.0, 26.0);
+        assert_eq!(spliced.len(), 4);
+        assert_eq!(spliced[0].id, "cue-1");
+        assert_eq!(spliced[0].primary, "intro line untouched");
+        assert_eq!(spliced[1].primary, "deep and steep");
+        assert_eq!(spliced[2].primary, "a silent geometry");
+        assert_eq!(spliced[3].id, "cue-3");
+        assert_eq!(spliced[3].primary, "outro line untouched");
     }
 }

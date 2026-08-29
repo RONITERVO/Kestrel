@@ -74,6 +74,7 @@ import type {
   MusicMidiSaveResult,
   MusicProject,
   MusicSummary,
+  RepairMusicLyricsRangeRequest,
   ImageGenerationEvent,
   ImageProject,
   ImageSummary,
@@ -280,6 +281,11 @@ export async function saveMusicLyricsDocument(projectId: string, takeId: string,
 export async function transcribeMusicLyrics(request: { projectId: string; takeId: string; jobId: string; modelId: string; language: string }): Promise<MusicLyricsSaveResult> {
   if (!isTauri()) throw new Error("Local lyric syncing requires the desktop application.");
   return invoke<MusicLyricsSaveResult>("transcribe_music_lyrics", { request });
+}
+
+export async function repairMusicLyricsRange(request: RepairMusicLyricsRangeRequest): Promise<MusicLyricsSaveResult> {
+  if (!isTauri()) throw new Error("Local lyric range repair requires the desktop application.");
+  return invoke<MusicLyricsSaveResult>("repair_music_lyrics_range", { request });
 }
 
 export async function onMusicGeneration(callback: (event: MusicGenerationEvent) => void): Promise<UnlistenFn> {

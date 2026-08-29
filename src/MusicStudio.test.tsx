@@ -268,6 +268,72 @@ describe("MusicStudio", () => {
     canvas.mockRestore();
   });
 
+  it("supports targeted Whisper range repair with start prompt conditioning and buffer guidance", async () => {
+    const take = { id: "take-1", durationSeconds: 30, resolvedModel: "Music 3", lyrics: "Deep and steep\nA silent geometry" } as MusicTake;
+    const project = { id: "project-1", title: "Night signal", takes: [take] } as MusicProject;
+    const document = {
+      schemaVersion: 1,
+      takeId: take.id,
+      sourceSha256: "a".repeat(64),
+      revision: 1,
+      language: "English",
+      source: "whisper-local",
+      transcript: "deep and steep",
+      theme: "sketchbook",
+      showTranslation: true,
+      createdAt: "2026-08-29T00:00:00Z",
+      updatedAt: "2026-08-29T00:00:00Z",
+      segments: [{
+        id: "cue-1",
+        start: 5.0,
+        end: 12.0,
+        primary: "deep and steep",
+        translation: "",
+        words: [],
+      }],
+    } satisfies MusicLyricsDocument;
+    const onRepairRange = vi.fn();
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    const common = {
+      project,
+      take,
+      audio: null,
+      currentTime: 6.5,
+      playing: false,
+      busy: false,
+      status: "",
+      onTogglePlay: vi.fn(),
+      onSeek: vi.fn(),
+      onChange: vi.fn(),
+      onSave: vi.fn(),
+      onSync: vi.fn(),
+      onRepairRange,
+      onCancelSync: vi.fn(),
+      onClose: vi.fn(),
+    };
+    const view = render(<MusicLyricsProducer {...common} document={document} />);
+    const producer = within(view.container);
+
+    // Open timing editor
+    fireEvent.click(producer.getByRole("button", { name: "Edit timing" }));
+
+    // Switch to Whisper Repair tab
+    fireEvent.click(producer.getByRole("button", { name: /Whisper Repair/i }));
+    expect(producer.getByText("Targeted Whisper forced alignment")).toBeInTheDocument();
+
+    // Fill prompt from take lyrics
+    fireEvent.click(producer.getByTitle("Extract matching lines from generated take lyrics"));
+    const promptArea = producer.getByPlaceholderText("Type or paste the exact expected sung words for this section…") as HTMLTextAreaElement;
+    expect(promptArea.value.length).toBeGreaterThan(0);
+
+    // Click Re-sync range
+    const syncRangeBtn = producer.getByRole("button", { name: /Re-sync range with Whisper/i });
+    expect(syncRangeBtn).toBeInTheDocument();
+
+    view.unmount();
+    canvas.mockRestore();
+  });
+
   it("loads local music with the CORS mode required for audible Web Audio analysis", async () => {
     const take = {
       id: "take-1",

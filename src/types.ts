@@ -898,6 +898,17 @@ export interface MusicLyricsSaveResult {
   document: MusicLyricsDocument;
 }
 
+export interface RepairMusicLyricsRangeRequest {
+  projectId: string;
+  takeId: string;
+  jobId: string;
+  modelId: string;
+  language: string;
+  startSeconds: number;
+  endSeconds: number;
+  prompt: string;
+}
+
 export interface MusicMidiTempo {
   tick: number;
   microsecondsPerQuarter: number;
