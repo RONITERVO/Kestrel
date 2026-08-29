@@ -1703,11 +1703,163 @@ fn estimated_lyric_segments(lyrics: &str, duration_seconds: f64) -> Vec<MusicLyr
         .collect()
 }
 
+fn starts_with_capital(val: &str) -> bool {
+    val.chars()
+        .find(|c| c.is_alphabetic())
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+}
+
+fn is_pronoun_i(val: &str) -> bool {
+    let trimmed = val.trim_matches(|c: char| !c.is_alphabetic());
+    trimmed == "I"
+        || trimmed.starts_with("I'")
+        || trimmed.starts_with("I’")
+        || trimmed == "Im"
+        || trimmed == "Ive"
+        || trimmed == "Ill"
+        || trimmed == "Id"
+}
+
+fn has_terminal_punctuation(val: &str) -> bool {
+    let trimmed = val.trim();
+    trimmed.ends_with("...")
+        || trimmed.ends_with('…')
+        || trimmed.ends_with('.')
+        || trimmed.ends_with('!')
+        || trimmed.ends_with('?')
+        || trimmed.ends_with(';')
+        || trimmed.ends_with(':')
+        || trimmed.ends_with('—')
+        || trimmed.ends_with("--")
+}
+
+fn has_clause_punctuation(val: &str) -> bool {
+    has_terminal_punctuation(val) || val.trim().ends_with(',')
+}
+
+fn should_split_lyric_cue(
+    current_cue_words: &[MusicLyricWord],
+    next_word: &SpeechTiming,
+) -> bool {
+    if current_cue_words.is_empty() {
+        return false;
+    }
+    let prev = &current_cue_words[current_cue_words.len() - 1];
+    let gap = next_word.start - prev.end;
+    let word_count = current_cue_words.len();
+    let cue_duration = next_word.start - current_cue_words[0].start;
+
+    // 1. Long vocal pause / breath boundary in singing:
+    if gap >= 0.60 {
+        return true;
+    }
+
+    // 2. Terminal punctuation on previous word (like "...", ".", "!", "?"):
+    if has_terminal_punctuation(&prev.value)
+        && (gap >= 0.15 || starts_with_capital(&next_word.value) || word_count >= 3)
+    {
+        return true;
+    }
+
+    // 3. Next word starts with a capital letter (Whisper sentence/line start):
+    if starts_with_capital(&next_word.value) {
+        if is_pronoun_i(&next_word.value) {
+            // Standalone pronoun "I" / "I'm":
+            // Split if preceded by a vocal breath pause, clause punctuation, or after an established phrase
+            if gap >= 0.30
+                || has_clause_punctuation(&prev.value)
+                || word_count >= 6
+                || cue_duration >= 4.5
+            {
+                return true;
+            }
+        } else {
+            // General capitalized words ("Deep", "A", "The", "Hold", "Before", "Rain", etc.):
+            // In Whisper transcription, capitalized words mark the start of a new line or sentence.
+            if gap >= 0.10
+                || has_clause_punctuation(&prev.value)
+                || word_count >= 3
+                || cue_duration >= 2.5
+            {
+                return true;
+            }
+        }
+    }
+
+    // 4. Safety maximum bounds to prevent runaway unpunctuated cues from overflowing the screen:
+    if (word_count >= 10 || cue_duration >= 7.0)
+        && (gap >= 0.15 || has_clause_punctuation(&prev.value) || word_count >= 14 || cue_duration >= 9.0)
+    {
+        return true;
+    }
+
+    false
+}
+
 fn lyric_segments_from_speech(
     segments: Vec<SpeechTiming>,
     words: &[SpeechTiming],
 ) -> Vec<MusicLyricSegment> {
-    let mut output = segments
+    let valid_words = words
+        .iter()
+        .filter(|w| !w.value.trim().is_empty() && w.start.is_finite() && w.end.is_finite() && w.end >= w.start)
+        .collect::<Vec<_>>();
+
+    if !valid_words.is_empty() {
+        let mut sorted_words = valid_words;
+        sorted_words.sort_by(|left, right| left.start.total_cmp(&right.start));
+
+        let mut output = Vec::new();
+        let mut current_words: Vec<MusicLyricWord> = Vec::new();
+
+        for word in sorted_words {
+            if should_split_lyric_cue(&current_words, word) {
+                let start = current_words.first().unwrap().start;
+                let end = current_words.last().unwrap().end;
+                let primary = current_words
+                    .iter()
+                    .map(|w| w.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                output.push(MusicLyricSegment {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    start,
+                    end,
+                    primary,
+                    translation: String::new(),
+                    words: std::mem::take(&mut current_words),
+                });
+            }
+            current_words.push(MusicLyricWord {
+                value: word.value.trim().to_string(),
+                start: word.start,
+                end: word.end.max(word.start),
+            });
+        }
+
+        if !current_words.is_empty() {
+            let start = current_words.first().unwrap().start;
+            let end = current_words.last().unwrap().end;
+            let primary = current_words
+                .iter()
+                .map(|w| w.value.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            output.push(MusicLyricSegment {
+                id: uuid::Uuid::new_v4().to_string(),
+                start,
+                end,
+                primary,
+                translation: String::new(),
+                words: current_words,
+            });
+        }
+
+        return output;
+    }
+
+    segments
         .into_iter()
         .filter(|segment| !segment.value.trim().is_empty())
         .map(|segment| MusicLyricSegment {
@@ -1718,34 +1870,7 @@ fn lyric_segments_from_speech(
             translation: String::new(),
             words: Vec::new(),
         })
-        .collect::<Vec<_>>();
-    for word in words {
-        let midpoint = (word.start + word.end) / 2.0;
-        let target = output
-            .iter()
-            .position(|segment| midpoint >= segment.start && midpoint <= segment.end)
-            .or_else(|| {
-                output
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, segment)| {
-                        let overlap = word.end.min(segment.end) - word.start.max(segment.start);
-                        (overlap > 0.0).then_some((index, overlap))
-                    })
-                    .max_by(|left, right| left.1.total_cmp(&right.1))
-                    .map(|(index, _)| index)
-            });
-        if let Some(index) = target {
-            let segment = &mut output[index];
-            let start = word.start.max(segment.start);
-            segment.words.push(MusicLyricWord {
-                value: word.value.clone(),
-                start,
-                end: word.end.min(segment.end).max(start),
-            });
-        }
-    }
-    output
+        .collect()
 }
 
 fn estimated_words(primary: &str, start: f64, end: f64) -> Vec<MusicLyricWord> {
@@ -2661,12 +2786,12 @@ mod tests {
     }
 
     #[test]
-    fn speech_segments_keep_word_timestamps_inside_their_cues() {
+    fn speech_segments_partition_words_into_sentence_cues() {
         let segments = lyric_segments_from_speech(
             vec![SpeechTiming {
-                value: "sing it now".into(),
+                value: "sing it now outside".into(),
                 start: 3.0,
-                end: 5.0,
+                end: 8.5,
             }],
             &[
                 SpeechTiming {
@@ -2686,39 +2811,83 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(segments.len(), 1);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].primary, "sing it");
         assert_eq!(segments[0].words.len(), 2);
-        assert!(segments[0]
-            .words
-            .iter()
-            .all(|word| word.start >= 3.0 && word.end <= 5.0));
+        assert_eq!(segments[1].primary, "outside");
+        assert_eq!(segments[1].words.len(), 1);
 
-        let boundary = lyric_segments_from_speech(
-            vec![
-                SpeechTiming {
-                    value: "first".into(),
-                    start: 0.0,
-                    end: 2.0,
-                },
-                SpeechTiming {
-                    value: "second".into(),
-                    start: 2.0,
-                    end: 4.0,
-                },
+        // Screenshot 1 pattern: Ellipsis and capital letter starts
+        let screenshot_1 = lyric_segments_from_speech(
+            Vec::new(),
+            &[
+                SpeechTiming { value: "Hello...".into(), start: 0.5, end: 1.2 },
+                SpeechTiming { value: "Hello...".into(), start: 2.0, end: 2.8 },
+                SpeechTiming { value: "I'm".into(), start: 4.5, end: 4.8 },
+                SpeechTiming { value: "sitting".into(), start: 4.9, end: 5.3 },
+                SpeechTiming { value: "by".into(), start: 5.4, end: 5.5 },
+                SpeechTiming { value: "the".into(), start: 5.6, end: 5.7 },
+                SpeechTiming { value: "window...".into(), start: 5.8, end: 6.4 },
+                SpeechTiming { value: "Rain".into(), start: 7.2, end: 7.6 },
+                SpeechTiming { value: "on".into(), start: 7.7, end: 7.8 },
+                SpeechTiming { value: "the".into(), start: 7.9, end: 8.0 },
+                SpeechTiming { value: "glass...".into(), start: 8.1, end: 8.7 },
             ],
-            &[SpeechTiming {
-                value: "boundary".into(),
-                start: 1.9,
-                end: 2.1,
-            }],
         );
-        assert_eq!(
-            boundary
-                .iter()
-                .map(|segment| segment.words.len())
-                .sum::<usize>(),
-            1
+        assert_eq!(screenshot_1.len(), 4);
+        assert_eq!(screenshot_1[0].primary, "Hello...");
+        assert_eq!(screenshot_1[1].primary, "Hello...");
+        assert_eq!(screenshot_1[2].primary, "I'm sitting by the window...");
+        assert_eq!(screenshot_1[3].primary, "Rain on the glass...");
+
+        // Screenshot 2 pattern: Capital letters at line starts without punctuation
+        let screenshot_2 = lyric_segments_from_speech(
+            Vec::new(),
+            &[
+                SpeechTiming { value: "Deep".into(), start: 0.5, end: 0.9 },
+                SpeechTiming { value: "and".into(), start: 1.0, end: 1.2 },
+                SpeechTiming { value: "steep,".into(), start: 1.3, end: 1.7 },
+                SpeechTiming { value: "a".into(), start: 1.8, end: 1.9 },
+                SpeechTiming { value: "silent".into(), start: 2.0, end: 2.4 },
+                SpeechTiming { value: "geometry".into(), start: 2.5, end: 3.1 },
+                SpeechTiming { value: "A".into(), start: 3.4, end: 3.6 },
+                SpeechTiming { value: "promise".into(), start: 3.7, end: 4.1 },
+                SpeechTiming { value: "I".into(), start: 4.2, end: 4.3 },
+                SpeechTiming { value: "keep".into(), start: 4.4, end: 4.9 },
+                SpeechTiming { value: "The".into(), start: 5.2, end: 5.4 },
+                SpeechTiming { value: "universe".into(), start: 5.5, end: 6.0 },
+                SpeechTiming { value: "spins".into(), start: 6.1, end: 6.5 },
+            ],
         );
+        assert_eq!(screenshot_2.len(), 3);
+        assert_eq!(screenshot_2[0].primary, "Deep and steep, a silent geometry");
+        assert_eq!(screenshot_2[1].primary, "A promise I keep");
+        assert_eq!(screenshot_2[2].primary, "The universe spins");
+
+        // Mid-sentence pronoun "I" without pause should not split
+        let mid_sentence_i = lyric_segments_from_speech(
+            Vec::new(),
+            &[
+                SpeechTiming { value: "when".into(), start: 1.0, end: 1.3 },
+                SpeechTiming { value: "I".into(), start: 1.35, end: 1.5 },
+                SpeechTiming { value: "look".into(), start: 1.55, end: 1.8 },
+                SpeechTiming { value: "outside".into(), start: 1.85, end: 2.2 },
+            ],
+        );
+        assert_eq!(mid_sentence_i.len(), 1);
+        assert_eq!(mid_sentence_i[0].primary, "when I look outside");
+
+        // Fallback to coarse segments when words are empty
+        let fallback = lyric_segments_from_speech(
+            vec![
+                SpeechTiming { value: "first".into(), start: 0.0, end: 2.0 },
+                SpeechTiming { value: "second".into(), start: 2.0, end: 4.0 },
+            ],
+            &[],
+        );
+        assert_eq!(fallback.len(), 2);
+        assert_eq!(fallback[0].primary, "first");
+        assert_eq!(fallback[1].primary, "second");
     }
 
     #[test]
