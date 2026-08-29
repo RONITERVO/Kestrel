@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { describe, expect, it, vi } from "vitest";
 import { midiSecondsToTick, midiTickToSeconds, MusicMidiEditor, quantizeTick } from "./MusicMidiEditor";
 import { applyTaggedLyrics, managedMuscriptorPaths, MusicStudio } from "./MusicStudio";
-import { musicLyricSegmentAt, MusicLyricsProducer, wordProgress } from "./MusicLyricsProducer";
+import { musicLyricDisplaySegmentAt, musicLyricSegmentAt, MusicLyricsProducer, wordProgress } from "./MusicLyricsProducer";
 import * as api from "./api";
 import type { MusicLyricsDocument, MusicMidiDocument, MusicProject, MusicSection, MusicTake } from "./types";
 
@@ -99,6 +99,8 @@ describe("MusicStudio", () => {
     expect(musicLyricSegmentAt([cue], 1.99)).toBeUndefined();
     expect(musicLyricSegmentAt([cue], 2)).toBe(cue);
     expect(musicLyricSegmentAt([cue], 5)).toBe(cue);
+    expect(musicLyricDisplaySegmentAt([cue], 5.3)).toBe(cue);
+    expect(musicLyricDisplaySegmentAt([cue], 5.43)).toBeUndefined();
     expect(wordProgress(3, 4, 2.5)).toBe(0);
     expect(wordProgress(3, 4, 3.5)).toBe(0.5);
     expect(wordProgress(3, 4, 5)).toBe(1);

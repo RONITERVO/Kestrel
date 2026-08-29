@@ -66,6 +66,9 @@ runtime speculatively. If a repeatable acceptance failure appears, follow the do
 plan in [`MUSIC_LYRIC_ALIGNMENT_CONTINGENCY.md`](MUSIC_LYRIC_ALIGNMENT_CONTINGENCY.md) rather than
 adding an ad-hoc separator or remote service.
 
+Visual lyric renderer ownership, source parity, audio-band semantics, fixed pool limits, and
+interaction requirements are recorded in [`MUSIC_LYRIC_VISUALS.md`](MUSIC_LYRIC_VISUALS.md).
+
 ## Studio planning lifecycle
 
 ```text
@@ -212,9 +215,9 @@ positions derive from the immutable take lyrics; local Whisper may replace them 
 segments and word timestamps only after the master SHA-256 is rechecked. Each sync creates a new
 `lyrics/<take>/<sync>` session, and each producer edit appends a numbered JSON revision while the take
 continues to point at the newest document. The audio-reactive canvas is presentation only and cannot
-modify or masquerade as the preserved master. Visual themes share one analyser and one lyric/playback
-surface, live in separate bounded renderer modules, and enter durable JSON only through the native
-theme allowlist; a theme is never downloaded code.
+modify or masquerade as the preserved master. Visual themes share one 1024-point analyser and one
+multi-band/transient frame with the lyric typography, live in separate bounded renderer modules,
+and enter durable JSON only through the native theme allowlist; a theme is never downloaded code.
 The shared H3/speech service remains on port 8188 with its conservative low-VRAM profile. Music uses
 port 8189 with async weight offload disabled, dynamic VRAM as an OOM fallback, and one GiB reserved
 for the desktop. The installed INT8 text encoder, INT8 DiT, and VAE run one stage at a time; Kestrel

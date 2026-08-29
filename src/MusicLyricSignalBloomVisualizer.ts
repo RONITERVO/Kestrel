@@ -5,6 +5,8 @@
  * producer's single Web Audio analyser with every other visual theme.
  */
 
+import type { MusicLyricFrame } from "./MusicLyricReactivity";
+
 interface LightSeed {
   angle: number;
   distance: number;
@@ -14,9 +16,27 @@ interface LightSeed {
   warmth: number;
 }
 
+interface SignalSpark {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  age: number;
+  duration: number;
+  hue: number;
+}
+
+interface SignalPulse {
+  x: number;
+  y: number;
+  age: number;
+  duration: number;
+  strength: number;
+}
+
 export class SignalBloomMusicLyricVisualizer {
   private readonly context: CanvasRenderingContext2D;
-  private readonly bands = new Float32Array(48);
+  private frameBands = new Float32Array(48);
   private readonly lights: LightSeed[] = Array.from({ length: 112 }, (_, index) => ({
     angle: seeded(index * 6 + 1) * Math.PI * 2,
     distance: 0.08 + seeded(index * 6 + 2) * 0.92,
@@ -25,10 +45,18 @@ export class SignalBloomMusicLyricVisualizer {
     phase: seeded(index * 6 + 5) * Math.PI * 2,
     warmth: seeded(index * 6 + 6),
   }));
-  private lastTime = performance.now();
-  private bassEnvelope = 0;
+  private readonly lightPositions = new Float32Array(224);
+  private readonly sparks: SignalSpark[] = Array.from({ length: 72 }, () => ({
+    x: 0, y: 0, vx: 0, vy: 0, age: 1, duration: 1, hue: 190,
+  }));
+  private readonly pulses: SignalPulse[] = Array.from({ length: 6 }, () => ({
+    x: 0, y: 0, age: 1, duration: 1, strength: 0,
+  }));
   private bloom = 0;
   private rotation = 0;
+  private sparkCursor = 0;
+  private pulseCursor = 0;
+  private lastBurstAt = -1;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const context = canvas.getContext("2d");
@@ -36,72 +64,38 @@ export class SignalBloomMusicLyricVisualizer {
     this.context = context;
   }
 
-  draw(
-    analyser: AnalyserNode | undefined,
-    frequency: Uint8Array | undefined,
-    timeData: Uint8Array | undefined,
-    progress: number,
-  ) {
+  draw(frame: MusicLyricFrame) {
     this.resize();
-    const now = performance.now();
-    const delta = Math.min(0.08, Math.max(0, (now - this.lastTime) / 1_000));
-    this.lastTime = now;
-    const time = now / 1_000;
-    const hasSignal = Boolean(analyser && frequency && timeData);
-    if (analyser && frequency && timeData) {
-      analyser.getByteFrequencyData(frequency as Uint8Array<ArrayBuffer>);
-      analyser.getByteTimeDomainData(timeData as Uint8Array<ArrayBuffer>);
-    }
-
-    const energy = hasSignal && frequency
-      ? average(frequency, 2, Math.floor(frequency.length * 0.76))
-      : idle(time, 0.13);
-    const bass = hasSignal && frequency
-      ? average(frequency, 0, Math.min(18, frequency.length))
-      : idle(time + 1.7, 0.16);
-    const presence = hasSignal && frequency
-      ? average(frequency, Math.min(18, frequency.length - 1), Math.min(58, frequency.length))
-      : idle(time + 3.1, 0.1);
-    const air = hasSignal && frequency
-      ? average(frequency, Math.floor(frequency.length * 0.55), frequency.length)
-      : idle(time + 4.7, 0.07);
-
-    const previousBass = this.bassEnvelope;
-    const envelopeRate = bass > previousBass ? 18 : 4.2;
-    this.bassEnvelope += (bass - previousBass) * Math.min(1, envelopeRate * delta);
-    const onset = Math.max(0, bass - previousBass - 0.018);
-    this.bloom = Math.max(this.bloom * Math.exp(-delta * 3.8), Math.min(1, onset * 15));
-    this.rotation += delta * (0.045 + presence * 0.16);
-
-    for (let index = 0; index < this.bands.length; index += 1) {
-      const normalized = index / Math.max(1, this.bands.length - 1);
-      const sourceIndex = Math.min(
-        (frequency?.length ?? 1) - 1,
-        Math.floor(Math.pow(normalized, 1.48) * Math.max(0, (frequency?.length ?? 1) - 1)),
-      );
-      const target = hasSignal && frequency
-        ? (frequency[sourceIndex] ?? 0) / 255
-        : 0.055 + Math.pow(Math.sin(time * 0.42 + index * 0.21) * 0.5 + 0.5, 3) * 0.11;
-      this.bands[index] += (target - this.bands[index]) * Math.min(1, delta * (target > this.bands[index] ? 17 : 5));
-    }
+    this.frameBands = frame.bands;
+    this.bloom = Math.max(this.bloom * Math.exp(-frame.delta * 3.8), frame.transient);
+    this.rotation += frame.delta * (0.045 + frame.presence * 0.16 + frame.centroid * 0.08);
 
     const ratio = window.devicePixelRatio || 1;
     const width = this.canvas.width / ratio;
     const height = this.canvas.height / ratio;
-    const safeProgress = Math.max(0, Math.min(1, progress));
-    const focusX = width * (0.18 + safeProgress * 0.64);
-    const focusY = height * (0.47 + Math.sin(safeProgress * Math.PI * 2.4) * 0.055);
+    const journeyX = width * (0.18 + frame.progress * 0.64);
+    const journeyY = height * (0.47 + Math.sin(frame.progress * Math.PI * 2.4) * 0.055);
+    const active = frame.layout.activeWord;
+    const focusX = active ? journeyX * 0.55 + (active.left + active.right) * 0.225 : journeyX;
+    const focusY = active ? journeyY * 0.55 + (active.top + active.bottom) * 0.225 : journeyY;
     const context = this.context;
     context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     context.save();
     context.scale(ratio, ratio);
-    this.drawNight(context, width, height, focusX, focusY, energy, time);
-    this.drawConstellation(context, width, height, focusX, focusY, energy, air, time);
-    this.drawRibbons(context, width, height, focusX, focusY, presence, time);
-    this.drawBloom(context, width, height, focusX, focusY, bass, presence, air, time);
-    this.drawWave(context, width, height, timeData, energy, air, time, hasSignal);
-    this.drawJourney(context, width, height, focusX, focusY, safeProgress, energy, time);
+    this.drawNight(context, width, height, focusX, focusY, frame.energy, frame.time);
+    this.drawConstellation(context, width, height, focusX, focusY, frame.energy, frame.air, frame.time);
+    this.drawRibbons(context, width, height, focusX, focusY, frame.presence, frame.time);
+    this.drawBloom(context, width, height, focusX, focusY, frame.bass, frame.presence, frame.air, frame.time);
+    this.emitTransientBurst(focusX, focusY, frame);
+    this.drawPulsesAndSparks(context, frame);
+    this.drawWave(context, width, height, frame.waveform, frame.energy, frame.air, frame.time, frame.hasSignal);
+    this.drawJourney(context, width, height, focusX, focusY, frame.progress, frame.energy, frame.time);
     context.restore();
+  }
+
+  destroy() {
+    for (const spark of this.sparks) spark.age = spark.duration;
+    for (const pulse of this.pulses) pulse.age = pulse.duration;
   }
 
   private resize() {
@@ -170,11 +164,35 @@ export class SignalBloomMusicLyricVisualizer {
     context.globalCompositeOperation = "lighter";
     for (let index = 0; index < this.lights.length; index += 1) {
       const light = this.lights[index];
-      const band = this.bands[index % this.bands.length] ?? 0;
+      const band = this.frameBands[index % this.frameBands.length] ?? 0;
       const angle = light.angle + this.rotation * (0.45 + light.drift) + Math.sin(time * 0.2 + light.phase) * 0.04;
       const distance = radius * light.distance * (1 + band * 0.24 + this.bloom * 0.08);
       const x = focusX + Math.cos(angle) * distance * (1.55 + light.drift);
       const y = focusY + Math.sin(angle) * distance * 0.82;
+      this.lightPositions[index * 2] = x;
+      this.lightPositions[index * 2 + 1] = y;
+    }
+    context.globalAlpha = 0.07 + air * 0.13;
+    context.strokeStyle = "rgba(126,224,255,.8)";
+    context.lineWidth = 0.45;
+    for (let index = 0; index < this.lights.length; index += 3) {
+      const target = (index + 7 + Math.floor(this.lights[index].warmth * 9)) % this.lights.length;
+      const x = this.lightPositions[index * 2];
+      const y = this.lightPositions[index * 2 + 1];
+      const targetX = this.lightPositions[target * 2];
+      const targetY = this.lightPositions[target * 2 + 1];
+      if (Math.hypot(targetX - x, targetY - y) > radius * 0.76) continue;
+      context.beginPath();
+      context.moveTo(x, y);
+      context.lineTo(targetX, targetY);
+      context.stroke();
+    }
+    context.globalAlpha = 1;
+    for (let index = 0; index < this.lights.length; index += 1) {
+      const light = this.lights[index];
+      const band = this.frameBands[index % this.frameBands.length] ?? 0;
+      const x = this.lightPositions[index * 2];
+      const y = this.lightPositions[index * 2 + 1];
       const alpha = 0.11 + band * 0.5 + air * 0.2;
       const size = light.size * (0.7 + band * 1.9 + this.bloom * 0.8);
       context.fillStyle = light.warmth > 0.78
@@ -236,8 +254,8 @@ export class SignalBloomMusicLyricVisualizer {
         for (let point = 0; point <= 96; point += 1) {
           const fraction = point / 96;
           const x = fraction * width;
-          const bandIndex = Math.min(this.bands.length - 1, Math.floor(fraction * this.bands.length));
-          const band = this.bands[(bandIndex + ribbon * 7) % this.bands.length] ?? 0;
+          const bandIndex = Math.min(this.frameBands.length - 1, Math.floor(fraction * this.frameBands.length));
+          const band = this.frameBands[(bandIndex + ribbon * 7) % this.frameBands.length] ?? 0;
           const focusPull = Math.exp(-Math.pow((x - focusX) / Math.max(1, width * 0.24), 2));
           const wave = Math.sin(fraction * Math.PI * (3.2 + ribbon * 0.52) + time * (0.38 + ribbon * 0.08));
           const fine = Math.sin(fraction * Math.PI * 17 - time * 0.8 + ribbon) * 0.18;
@@ -278,10 +296,10 @@ export class SignalBloomMusicLyricVisualizer {
     for (let ring = 0; ring < 4; ring += 1) {
       const radius = core * (1.2 + ring * 0.82 + this.bloom * (1.1 + ring * 0.2));
       context.beginPath();
-      for (let point = 0; point <= this.bands.length; point += 1) {
-        const bandIndex = point % this.bands.length;
-        const band = this.bands[bandIndex] ?? 0;
-        const angle = point / this.bands.length * Math.PI * 2 + this.rotation * (ring % 2 ? -1 : 1);
+      for (let point = 0; point <= this.frameBands.length; point += 1) {
+        const bandIndex = point % this.frameBands.length;
+        const band = this.frameBands[bandIndex] ?? 0;
+        const angle = point / this.frameBands.length * Math.PI * 2 + this.rotation * (ring % 2 ? -1 : 1);
         const petal = 1 + band * (0.18 + ring * 0.035) + Math.sin(angle * 6 + time + ring) * 0.025;
         const x = focusX + Math.cos(angle) * radius * petal;
         const y = focusY + Math.sin(angle) * radius * petal * 0.86;
@@ -303,6 +321,75 @@ export class SignalBloomMusicLyricVisualizer {
     context.beginPath();
     context.arc(focusX, focusY, Math.max(2.4, core * 0.16), 0, Math.PI * 2);
     context.fill();
+    context.restore();
+  }
+
+  private emitTransientBurst(focusX: number, focusY: number, frame: MusicLyricFrame) {
+    if (frame.transient < 0.22 || frame.time - this.lastBurstAt < 0.095) return;
+    this.lastBurstAt = frame.time;
+    const pulse = this.pulses[this.pulseCursor % this.pulses.length];
+    this.pulseCursor += 1;
+    pulse.x = focusX;
+    pulse.y = focusY;
+    pulse.age = 0;
+    pulse.duration = 0.58 + frame.transient * 0.48;
+    pulse.strength = frame.transient;
+
+    const count = 5 + Math.floor(frame.transient * 13 + frame.air * 5);
+    for (let index = 0; index < count; index += 1) {
+      const spark = this.sparks[this.sparkCursor % this.sparks.length];
+      this.sparkCursor += 1;
+      const seed = seeded(this.sparkCursor * 13 + index * 7);
+      const angle = seed * Math.PI * 2;
+      const speed = 34 + seeded(this.sparkCursor * 17 + index) * (115 + frame.transient * 130);
+      spark.x = focusX;
+      spark.y = focusY;
+      spark.vx = Math.cos(angle) * speed;
+      spark.vy = Math.sin(angle) * speed * 0.78;
+      spark.age = 0;
+      spark.duration = 0.34 + seeded(this.sparkCursor * 23 + index) * 0.62;
+      spark.hue = 185 + frame.centroid * 105 + (seeded(this.sparkCursor + index) - 0.5) * 34;
+    }
+  }
+
+  private drawPulsesAndSparks(context: CanvasRenderingContext2D, frame: MusicLyricFrame) {
+    context.save();
+    context.globalCompositeOperation = "lighter";
+    for (const pulse of this.pulses) {
+      if (pulse.age >= pulse.duration) continue;
+      pulse.age += frame.delta;
+      const progress = Math.min(1, pulse.age / pulse.duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const radius = (18 + pulse.strength * 125) * eased;
+      context.globalAlpha = (1 - progress) * (0.32 + pulse.strength * 0.38);
+      context.strokeStyle = pulse.strength > 0.58 ? "#e1a3ff" : "#82efff";
+      context.lineWidth = 0.7 + (1 - progress) * pulse.strength * 2.4;
+      context.shadowColor = context.strokeStyle;
+      context.shadowBlur = 10 + pulse.strength * 22;
+      context.beginPath();
+      context.ellipse(pulse.x, pulse.y, radius * 1.35, radius, this.rotation * 0.2, 0, Math.PI * 2);
+      context.stroke();
+    }
+    for (const spark of this.sparks) {
+      if (spark.age >= spark.duration) continue;
+      spark.age += frame.delta;
+      const progress = Math.min(1, spark.age / spark.duration);
+      const previousX = spark.x;
+      const previousY = spark.y;
+      spark.vx *= Math.exp(-frame.delta * 2.1);
+      spark.vy *= Math.exp(-frame.delta * 2.1);
+      spark.x += spark.vx * frame.delta;
+      spark.y += spark.vy * frame.delta;
+      context.globalAlpha = Math.pow(1 - progress, 1.4) * 0.78;
+      context.strokeStyle = `hsl(${spark.hue} 92% 76%)`;
+      context.lineWidth = 0.65 + (1 - progress) * 1.35;
+      context.shadowColor = context.strokeStyle;
+      context.shadowBlur = 8;
+      context.beginPath();
+      context.moveTo(previousX, previousY);
+      context.lineTo(spark.x, spark.y);
+      context.stroke();
+    }
     context.restore();
   }
 
@@ -380,18 +467,6 @@ export class SignalBloomMusicLyricVisualizer {
     context.stroke();
     context.restore();
   }
-}
-
-function average(values: Uint8Array, start: number, end: number): number {
-  const safeStart = Math.max(0, Math.min(values.length, start));
-  const safeEnd = Math.max(safeStart + 1, Math.min(values.length, end));
-  let total = 0;
-  for (let index = safeStart; index < safeEnd; index += 1) total += values[index] ?? 0;
-  return total / Math.max(1, safeEnd - safeStart) / 255;
-}
-
-function idle(time: number, floor: number): number {
-  return floor + Math.sin(time * 0.61) * 0.018 + Math.sin(time * 0.19 + 1.2) * 0.014;
 }
 
 function seeded(seed: number): number {

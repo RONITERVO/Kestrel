@@ -1,14 +1,10 @@
 import { SketchbookMusicLyricVisualizer } from "./MusicLyricVisualizer";
 import { SignalBloomMusicLyricVisualizer } from "./MusicLyricSignalBloomVisualizer";
+import type { MusicLyricFrame } from "./MusicLyricReactivity";
 import type { MusicLyricTheme } from "./types";
 
 export interface MusicLyricRenderer {
-  draw(
-    analyser: AnalyserNode | undefined,
-    frequency: Uint8Array | undefined,
-    timeData: Uint8Array | undefined,
-    progress: number,
-  ): void;
+  draw(frame: MusicLyricFrame): void;
   destroy?(): void;
 }
 

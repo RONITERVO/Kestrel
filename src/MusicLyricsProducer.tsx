@@ -4,6 +4,12 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getLocalSpeechSnapshot } from "./api";
+import {
+  applyMusicLyricFrameStyles,
+  MusicLyricReactivity,
+  type MusicLyricBounds,
+  type MusicLyricLayout,
+} from "./MusicLyricReactivity";
 import { createMusicLyricVisualizer, MUSIC_LYRIC_THEMES, type MusicLyricRenderer } from "./MusicLyricVisualizers";
 import type {
   MusicLyricSegment, MusicLyricsDocument, MusicProject, MusicTake, SpeechModel,
@@ -51,7 +57,10 @@ export function MusicLyricsProducer({
   onCancelSync: () => void;
   onClose: () => void;
 }) {
+  const producerRef = useRef<HTMLElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const primaryRef = useRef<HTMLDivElement>(null);
+  const translationRef = useRef<HTMLDivElement>(null);
   const currentTimeRef = useRef(currentTime);
   const [editing, setEditing] = useState(false);
   const [selectedId, setSelectedId] = useState(document.segments[0]?.id ?? "");
@@ -62,6 +71,8 @@ export function MusicLyricsProducer({
   const [savedRevision, setSavedRevision] = useState(document.revision);
   const [savedTheme, setSavedTheme] = useState(document.theme);
   const activeSegment = musicLyricSegmentAt(document.segments, currentTime);
+  const displaySegment = musicLyricDisplaySegmentAt(document.segments, currentTime);
+  const cueExiting = Boolean(displaySegment && displaySegment !== activeSegment);
   const selectedSegment = document.segments.find((segment) => segment.id === selectedId);
   const takeNumber = project.takes.findIndex((candidate) => candidate.id === take.id) + 1;
 
@@ -109,14 +120,18 @@ export function MusicLyricsProducer({
       return;
     }
     const analysis = audio ? ensureAudioAnalysis(audio) : undefined;
+    const reactivity = new MusicLyricReactivity();
     let frame = 0;
     const draw = () => {
-      visualizer.draw(
+      const visualFrame = reactivity.sample(
         analysis?.analyser,
         analysis?.frequency,
         analysis?.time,
         currentTimeRef.current / Math.max(0.01, take.durationSeconds),
+        measureLyricLayout(canvas, primaryRef.current, translationRef.current),
       );
+      visualizer.draw(visualFrame);
+      if (producerRef.current) applyMusicLyricFrameStyles(producerRef.current, visualFrame);
       frame = requestAnimationFrame(draw);
     };
     frame = requestAnimationFrame(draw);
@@ -125,6 +140,12 @@ export function MusicLyricsProducer({
       visualizer.destroy?.();
     };
   }, [audio, document.theme, take.durationSeconds]);
+
+  useEffect(() => {
+    if (!playing || !audio) return;
+    const analysis = ensureAudioAnalysis(audio);
+    if (analysis?.context.state === "suspended") void analysis.context.resume().catch(() => undefined);
+  }, [audio, playing]);
 
   const upcoming = useMemo(
     () => document.segments.find((segment) => segment.start > currentTime),
@@ -179,7 +200,7 @@ export function MusicLyricsProducer({
   };
 
   return (
-    <section className={`music-lyrics-producer theme-${document.theme} ${editing ? "editing" : ""}`} aria-label="Visual lyric producer">
+    <section ref={producerRef} className={`music-lyrics-producer theme-${document.theme} ${editing ? "editing" : ""}`} aria-label="Visual lyric producer">
       <canvas ref={canvasRef} className="music-lyrics-canvas" aria-hidden="true" />
       <div className="music-lyrics-paper" aria-hidden="true" />
 
@@ -200,16 +221,18 @@ export function MusicLyricsProducer({
 
       <div className="music-lyrics-stage" onClick={handleStageClick}>
         <div className="music-lyrics-stage-meta"><span>{take.resolvedModel || "Kestrel Music"}</span><strong>{formatPreciseTime(currentTime)}</strong></div>
-        <div className="music-lyrics-copy" data-lyric-control>
-          <div className="music-lyrics-primary">
-            {activeSegment
-              ? renderTimedWords(activeSegment, currentTime, (seconds) => {
-                onSeek(seconds);
-                if (!playing) handleTogglePlay();
-              })
-              : <span className="music-lyrics-placeholder">{document.segments.length ? (upcoming ? "( Instrumental )" : "End of page") : "( Instrumental )"}</span>}
+        <div className="music-lyrics-copy" data-lyric-control data-cue-state={cueExiting ? "exiting" : displaySegment ? "active" : "instrumental"}>
+          <div key={displaySegment?.id ?? (upcoming ? "instrumental" : "ending")} className={`music-lyrics-cue ${cueExiting ? "exiting" : "entering"}`}>
+            <div ref={primaryRef} className="music-lyrics-primary">
+              {displaySegment
+                ? renderTimedWords(displaySegment, currentTime, (seconds) => {
+                  onSeek(seconds);
+                  if (!playing) handleTogglePlay();
+                })
+                : <span className="music-lyrics-placeholder">{document.segments.length ? (upcoming ? "( Instrumental )" : "End of page") : "( Instrumental )"}</span>}
+            </div>
+            {document.showTranslation && displaySegment?.translation && <div ref={translationRef} className="music-lyrics-translation">{renderProgressiveText(displaySegment.translation, displaySegment.start, displaySegment.end, currentTime)}</div>}
           </div>
-          {document.showTranslation && activeSegment?.translation && <div className="music-lyrics-translation">{activeSegment.translation}</div>}
         </div>
       </div>
 
@@ -254,12 +277,35 @@ export function musicLyricSegmentAt(segments: MusicLyricSegment[], seconds: numb
   return segments.find((segment) => seconds >= segment.start && seconds <= segment.end);
 }
 
+export function musicLyricDisplaySegmentAt(segments: MusicLyricSegment[], seconds: number): MusicLyricSegment | undefined {
+  const active = musicLyricSegmentAt(segments, seconds);
+  if (active) return active;
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const segment = segments[index];
+    if (seconds > segment.end && seconds <= segment.end + 0.42) return segment;
+  }
+  return undefined;
+}
+
 function renderTimedWords(segment: MusicLyricSegment, currentTime: number, onSeek: (seconds: number) => void) {
-  if (!segment.words.length) return segment.primary;
+  if (!segment.words.length) return renderProgressiveText(segment.primary, segment.start, segment.end, currentTime);
   return segment.words.map((word, index) => {
     const written = currentTime >= word.start;
     const active = currentTime >= word.start && currentTime < word.end;
-    return <span key={`${word.start}-${index}`}><button className={`${written ? "written" : "waiting"} ${active ? "active" : ""}`} aria-label={`Play from ${word.value}`} onClick={(event) => { event.stopPropagation(); onSeek(word.start); }} style={{ "--word-progress": `${wordProgress(word.start, word.end, currentTime) * 100}%` } as React.CSSProperties}>{word.value}</button>{index < segment.words.length - 1 ? " " : ""}</span>;
+    const progress = wordProgress(word.start, word.end, currentTime);
+    return <span key={`${word.start}-${index}`} className="music-lyrics-word-wrap"><button className={`${written ? "written" : "waiting"} ${active ? "active" : ""}`} aria-label={`Play from ${word.value}`} onClick={(event) => { event.stopPropagation(); onSeek(word.start); }} style={{ "--word-progress": `${progress * 100}%`, "--word-hide": `${(1 - progress) * 100}%`, "--word-index": index } as React.CSSProperties}><span className="music-lyrics-word-ghost">{word.value}</span><span className="music-lyrics-word-ink" aria-hidden="true">{word.value}</span></button>{index < segment.words.length - 1 ? " " : ""}</span>;
+  });
+}
+
+function renderProgressiveText(text: string, start: number, end: number, currentTime: number) {
+  const words = text.trim().split(/\s+/u).filter(Boolean);
+  if (!words.length) return null;
+  const duration = Math.max(0.05, end - start);
+  return words.map((word, index) => {
+    const wordStart = start + duration * index / words.length;
+    const wordEnd = start + duration * (index + 1) / words.length;
+    const progress = wordProgress(wordStart, wordEnd, currentTime);
+    return <span key={`${index}-${word}`} className={`music-lyrics-progressive-word ${progress > 0 ? "written" : "waiting"}`} style={{ "--word-hide": `${(1 - progress) * 100}%`, "--word-index": index } as React.CSSProperties}><span className="music-lyrics-word-ghost">{word}</span><span className="music-lyrics-word-ink" aria-hidden="true">{word}</span>{index < words.length - 1 ? " " : ""}</span>;
   });
 }
 
@@ -277,8 +323,10 @@ function ensureAudioAnalysis(audio: HTMLMediaElement): AudioAnalysis | undefined
     if (!AudioContextClass) return undefined;
     const context = new AudioContextClass();
     const analyser = context.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.82;
+    analyser.fftSize = 1_024;
+    analyser.smoothingTimeConstant = 0.68;
+    analyser.minDecibels = -92;
+    analyser.maxDecibels = -12;
     const source = context.createMediaElementSource(audio);
     source.connect(analyser);
     analyser.connect(context.destination);
@@ -293,6 +341,36 @@ function ensureAudioAnalysis(audio: HTMLMediaElement): AudioAnalysis | undefined
   } catch {
     return undefined;
   }
+}
+
+function measureLyricLayout(
+  canvas: HTMLCanvasElement,
+  primary: HTMLElement | null,
+  translation: HTMLElement | null,
+): MusicLyricLayout {
+  const canvasBounds = canvas.getBoundingClientRect();
+  const primaryBounds = relativeBounds(primary?.getBoundingClientRect(), canvasBounds);
+  const translationBounds = relativeBounds(translation?.getBoundingClientRect(), canvasBounds);
+  const activeWordBounds = relativeBounds(primary?.querySelector("button.active")?.getBoundingClientRect(), canvasBounds);
+  return {
+    horizon: primaryBounds?.bottom ? primaryBounds.bottom + 7 : canvasBounds.height * 0.56,
+    primary: primaryBounds,
+    translation: translationBounds,
+    activeWord: activeWordBounds,
+  };
+}
+
+function relativeBounds(
+  bounds: DOMRect | undefined,
+  canvasBounds: DOMRect,
+): MusicLyricBounds | undefined {
+  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return undefined;
+  return {
+    left: bounds.left - canvasBounds.left,
+    right: bounds.right - canvasBounds.left,
+    top: bounds.top - canvasBounds.top,
+    bottom: bounds.bottom - canvasBounds.top,
+  };
 }
 
 function stableId(): string {
