@@ -11,7 +11,7 @@ interface RainDrop {
   length: number;
 }
 
-export class MusicLyricVisualizer {
+export class SketchbookMusicLyricVisualizer {
   private readonly context: CanvasRenderingContext2D;
   private readonly seeds = Array.from({ length: 128 }, (_, index) => pseudoRandom(index + 7));
   private readonly bins = new Float32Array(32);

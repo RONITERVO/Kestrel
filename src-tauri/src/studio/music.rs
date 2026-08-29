@@ -39,6 +39,8 @@ const MAX_TAKES: usize = 128;
 const MAX_LYRIC_SEGMENTS: usize = 4_096;
 const MAX_LYRIC_WORDS: usize = 65_536;
 const MAX_LYRIC_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const DEFAULT_LYRIC_THEME: &str = "sketchbook";
+const SIGNAL_BLOOM_LYRIC_THEME: &str = "signal-bloom";
 const MUSIC_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const MUSIC_DIT_INT8: &str = "minimax_music3_dit_int8_convrot.safetensors";
 const MUSIC_DIT_FP16: &str = "minimax_music3_dit_fp16.safetensors";
@@ -854,7 +856,7 @@ impl MusicStudio {
                 language: "auto".into(),
                 source: "producer-timing-draft".into(),
                 transcript: take_lyrics.clone(),
-                theme: "sketchbook".into(),
+                theme: DEFAULT_LYRIC_THEME.into(),
                 show_translation: true,
                 created_at: now.clone(),
                 updated_at: now,
@@ -893,6 +895,15 @@ impl MusicStudio {
         let take_id = take.id.clone();
         let take_sha256 = take.sha256.clone();
         let duration_seconds = take.duration_seconds;
+        let (theme, show_translation) = if take.lyrics_document_path.trim().is_empty() {
+            (DEFAULT_LYRIC_THEME.to_string(), true)
+        } else {
+            let previous = self.load_lyrics_document(MusicLyricsRequest {
+                project_id: request.project_id.clone(),
+                take_id: request.take_id.clone(),
+            })?;
+            (previous.document.theme, previous.document.show_translation)
+        };
         let segment_count = transcription.segments.len();
         let word_count = transcription.words.len();
         let now = Utc::now().to_rfc3339();
@@ -905,8 +916,8 @@ impl MusicStudio {
                 language: request.language.clone(),
                 source: request.model_id.clone(),
                 transcript: transcription.text.clone(),
-                theme: "sketchbook".into(),
-                show_translation: true,
+                theme: theme.clone(),
+                show_translation,
                 created_at: now.clone(),
                 updated_at: now,
                 segments: lyric_segments_from_speech(transcription.segments, &transcription.words),
@@ -928,6 +939,7 @@ impl MusicStudio {
                 "transcript": transcription.text,
                 "segmentCount": segment_count,
                 "wordCount": word_count,
+                "theme": theme,
                 "network": "disabled"
             }),
         )
@@ -982,6 +994,7 @@ impl MusicStudio {
         if request.document.take_id != request.take_id
             || request.document.source_sha256 != loaded.document.source_sha256
             || request.document.revision != loaded.document.revision
+            || request.document.created_at != loaded.document.created_at
         {
             return Err(StudioError::Invalid(
                 "the lyric edit is stale or belongs to another take; reopen the lyric stage before saving".into(),
@@ -998,7 +1011,6 @@ impl MusicStudio {
         document.language = loaded.document.language;
         document.source = loaded.document.source;
         document.transcript = loaded.document.transcript;
-        document.theme = loaded.document.theme;
         document.created_at = loaded.document.created_at;
         document.updated_at = Utc::now().to_rfc3339();
         document = normalize_lyrics_document(document, project.takes[take_index].duration_seconds)?;
@@ -1028,6 +1040,7 @@ impl MusicStudio {
                 "sourceSha256": document.source_sha256,
                 "segmentCount": document.segments.len(),
                 "wordCount": document.segments.iter().map(|segment| segment.words.len()).sum::<usize>(),
+                "theme": document.theme,
                 "operation": "producer lyric timing edit"
             }),
         )?;
@@ -1763,7 +1776,7 @@ fn normalize_lyrics_document(
     document.source = document.source.trim().to_string();
     document.theme = document.theme.trim().to_ascii_lowercase();
     if document.theme.is_empty() {
-        document.theme = "sketchbook".into();
+        document.theme = DEFAULT_LYRIC_THEME.into();
     }
     document
         .segments
@@ -1851,7 +1864,10 @@ fn validate_lyrics_document(
     {
         return Err(StudioError::Invalid("unsafe lyric language".into()));
     }
-    if document.source.is_empty() || document.source.len() > 256 || document.theme != "sketchbook" {
+    if document.source.is_empty()
+        || document.source.len() > 256
+        || !is_supported_lyric_theme(&document.theme)
+    {
         return Err(StudioError::Invalid(
             "the lyric source or visual theme is unsupported".into(),
         ));
@@ -1919,6 +1935,10 @@ fn validate_lyrics_document(
         }
     }
     Ok(())
+}
+
+fn is_supported_lyric_theme(theme: &str) -> bool {
+    matches!(theme, DEFAULT_LYRIC_THEME | SIGNAL_BLOOM_LYRIC_THEME)
 }
 
 fn render_lyrics(project: &MusicProject) -> String {
@@ -2536,6 +2556,7 @@ mod tests {
         let mut edited = draft.document.clone();
         edited.segments[0].primary = "A producer rewrote this cue".into();
         edited.segments[0].translation = "Tuottaja muokkasi tämän rivin".into();
+        edited.theme = SIGNAL_BLOOM_LYRIC_THEME.into();
         edited.source = "forged-remote-service".into();
         let saved = studio
             .save_lyrics_document(SaveMusicLyricsDocumentRequest {
@@ -2546,12 +2567,71 @@ mod tests {
             .unwrap();
         assert_eq!(saved.document.revision, 1);
         assert_eq!(saved.document.source, "producer-timing-draft");
+        assert_eq!(saved.document.theme, SIGNAL_BLOOM_LYRIC_THEME);
         assert_eq!(saved.document.segments[0].words[0].value, "A");
         assert!(original_path.is_file());
         assert_ne!(
             saved.project.takes[0].lyrics_document_path,
             original_path.to_string_lossy()
         );
+
+        let mut unsupported_theme = saved.document.clone();
+        unsupported_theme.theme = "downloaded-javascript-theme".into();
+        assert!(studio
+            .save_lyrics_document(SaveMusicLyricsDocumentRequest {
+                project_id: project.id.clone(),
+                take_id: take_id.clone(),
+                document: unsupported_theme,
+            })
+            .is_err());
+
+        let synced = studio
+            .persist_lyrics_transcription(
+                &TranscribeMusicLyricsRequest {
+                    project_id: project.id.clone(),
+                    take_id: take_id.clone(),
+                    job_id: uuid::Uuid::new_v4().to_string(),
+                    model_id: "whisper-local".into(),
+                    language: "English".into(),
+                },
+                SpeechFileTranscription {
+                    text: "A producer rewrote this cue".into(),
+                    segments: vec![SpeechTiming {
+                        value: "A producer rewrote this cue".into(),
+                        start: 1.0,
+                        end: 4.0,
+                    }],
+                    words: vec![
+                        SpeechTiming {
+                            value: "A".into(),
+                            start: 1.0,
+                            end: 1.2,
+                        },
+                        SpeechTiming {
+                            value: "producer".into(),
+                            start: 1.2,
+                            end: 2.0,
+                        },
+                        SpeechTiming {
+                            value: "rewrote".into(),
+                            start: 2.0,
+                            end: 2.8,
+                        },
+                        SpeechTiming {
+                            value: "this".into(),
+                            start: 2.8,
+                            end: 3.2,
+                        },
+                        SpeechTiming {
+                            value: "cue".into(),
+                            start: 3.2,
+                            end: 4.0,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        assert_eq!(synced.document.theme, SIGNAL_BLOOM_LYRIC_THEME);
 
         assert!(studio
             .save_lyrics_document(SaveMusicLyricsDocumentRequest {

@@ -61,6 +61,11 @@ and must not acquire authority implicitly.
 If a change appears to belong to two rows, introduce a typed boundary instead of importing private
 implementation details across both modules.
 
+The current lyric-sync path has strong extended producer results and should not acquire another
+runtime speculatively. If a repeatable acceptance failure appears, follow the dormant, license-aware
+plan in [`MUSIC_LYRIC_ALIGNMENT_CONTINGENCY.md`](MUSIC_LYRIC_ALIGNMENT_CONTINGENCY.md) rather than
+adding an ad-hoc separator or remote service.
+
 ## Studio planning lifecycle
 
 ```text
@@ -193,6 +198,7 @@ open recoverable song project
   -> copy and hash the completed lossless stereo master inside the project
   -> append an immutable take and exact generation receipt, then call `/free` on both ComfyUI services
   -> optionally open the take in the visual lyric stage with an immediate producer-editable cue draft
+  -> preview Living sketchbook or Signal bloom and preserve the chosen allowlisted visual theme
   -> optionally unload competing runtimes and use Kestrel Whisper on 8188 for local word timestamps
   -> preserve the sync receipt and each later timing/translation edit as an immutable JSON revision
 ```
@@ -206,7 +212,9 @@ positions derive from the immutable take lyrics; local Whisper may replace them 
 segments and word timestamps only after the master SHA-256 is rechecked. Each sync creates a new
 `lyrics/<take>/<sync>` session, and each producer edit appends a numbered JSON revision while the take
 continues to point at the newest document. The audio-reactive canvas is presentation only and cannot
-modify or masquerade as the preserved master.
+modify or masquerade as the preserved master. Visual themes share one analyser and one lyric/playback
+surface, live in separate bounded renderer modules, and enter durable JSON only through the native
+theme allowlist; a theme is never downloaded code.
 The shared H3/speech service remains on port 8188 with its conservative low-VRAM profile. Music uses
 port 8189 with async weight offload disabled, dynamic VRAM as an OOM fallback, and one GiB reserved
 for the desktop. The installed INT8 text encoder, INT8 DiT, and VAE run one stage at a time; Kestrel

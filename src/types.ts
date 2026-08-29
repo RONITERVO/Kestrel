@@ -876,6 +876,8 @@ export interface MusicLyricSegment {
   words: MusicLyricWord[];
 }
 
+export type MusicLyricTheme = "sketchbook" | "signal-bloom";
+
 export interface MusicLyricsDocument {
   schemaVersion: number;
   takeId: string;
@@ -884,7 +886,7 @@ export interface MusicLyricsDocument {
   language: string;
   source: string;
   transcript: string;
-  theme: "sketchbook";
+  theme: MusicLyricTheme;
   showTranslation: boolean;
   createdAt: string;
   updatedAt: string;

@@ -1,10 +1,10 @@
 import {
   Captions, ChevronLeft, CircleStop, Clock3, Languages, LoaderCircle, Pause, Play,
-  Plus, Save, Sparkles, Trash2, WandSparkles,
+  Palette, Plus, Save, Sparkles, Trash2, WandSparkles,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getLocalSpeechSnapshot } from "./api";
-import { MusicLyricVisualizer } from "./MusicLyricVisualizer";
+import { createMusicLyricVisualizer, MUSIC_LYRIC_THEMES, type MusicLyricRenderer } from "./MusicLyricVisualizers";
 import type {
   MusicLyricSegment, MusicLyricsDocument, MusicProject, MusicTake, SpeechModel,
 } from "./types";
@@ -60,6 +60,7 @@ export function MusicLyricsProducer({
   const [language, setLanguage] = useState(document.language || "auto");
   const [speechDetail, setSpeechDetail] = useState("Checking local Whisper…");
   const [savedRevision, setSavedRevision] = useState(document.revision);
+  const [savedTheme, setSavedTheme] = useState(document.theme);
   const activeSegment = musicLyricSegmentAt(document.segments, currentTime);
   const selectedSegment = document.segments.find((segment) => segment.id === selectedId);
   const takeNumber = project.takes.findIndex((candidate) => candidate.id === take.id) + 1;
@@ -86,18 +87,24 @@ export function MusicLyricsProducer({
 
   useEffect(() => {
     setLanguage(document.language || "auto");
-    setSavedRevision(document.revision);
     setSelectedId((current) => document.segments.some((segment) => segment.id === current)
       ? current
       : document.segments[0]?.id ?? "");
   }, [document]);
 
   useEffect(() => {
+    setSavedRevision(document.revision);
+    setSavedTheme(document.theme);
+    // updatedAt changes only when the backend returns a durable document; local previews keep it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [document.revision, document.updatedAt]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    let visualizer: MusicLyricVisualizer;
+    let visualizer: MusicLyricRenderer;
     try {
-      visualizer = new MusicLyricVisualizer(canvas);
+      visualizer = createMusicLyricVisualizer(document.theme, canvas);
     } catch {
       return;
     }
@@ -113,8 +120,11 @@ export function MusicLyricsProducer({
       frame = requestAnimationFrame(draw);
     };
     frame = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(frame);
-  }, [audio, take.durationSeconds]);
+    return () => {
+      cancelAnimationFrame(frame);
+      visualizer.destroy?.();
+    };
+  }, [audio, document.theme, take.durationSeconds]);
 
   const upcoming = useMemo(
     () => document.segments.find((segment) => segment.start > currentTime),
@@ -161,15 +171,31 @@ export function MusicLyricsProducer({
     handleTogglePlay();
   };
 
+  const saveCurrentDocument = async () => {
+    const saved = await onSave(document);
+    if (!saved) return;
+    setSavedRevision(saved.revision);
+    setSavedTheme(saved.theme);
+  };
+
   return (
-    <section className={`music-lyrics-producer ${editing ? "editing" : ""}`} aria-label="Visual lyric producer">
+    <section className={`music-lyrics-producer theme-${document.theme} ${editing ? "editing" : ""}`} aria-label="Visual lyric producer">
       <canvas ref={canvasRef} className="music-lyrics-canvas" aria-hidden="true" />
       <div className="music-lyrics-paper" aria-hidden="true" />
 
       <header className="music-lyrics-header" data-lyric-control>
         <button aria-label="Close visual lyric producer" onClick={onClose}><ChevronLeft /> Arranger</button>
-        <div><small>Kestrel visual lyrics · Take {takeNumber}</small><strong>{project.title}</strong></div>
-        <span><Captions /> Revision {document.revision} · {document.source === "producer-timing-draft" ? "timing draft" : "local sync"}</span>
+        <div className="music-lyrics-title"><small>Kestrel visual lyrics · Take {takeNumber}</small><strong>{project.title}</strong></div>
+        <div className="music-lyrics-header-actions">
+          <label className="music-lyrics-theme-picker" title={MUSIC_LYRIC_THEMES.find((theme) => theme.id === document.theme)?.description}>
+            <Palette /><span>Visual</span>
+            <select aria-label="Lyric visual theme" disabled={busy} value={document.theme} onChange={(event) => onChange({ ...document, theme: event.currentTarget.value as MusicLyricsDocument["theme"] })}>
+              {MUSIC_LYRIC_THEMES.map((theme) => <option key={theme.id} value={theme.id}>{theme.name}</option>)}
+            </select>
+          </label>
+          {document.theme !== savedTheme && <button className="music-lyrics-save-look" disabled={busy} onClick={() => void saveCurrentDocument()}><Save /> Save look</button>}
+          <span><Captions /> Revision {document.revision} · {document.source === "producer-timing-draft" ? "timing draft" : "local sync"}</span>
+        </div>
       </header>
 
       <div className="music-lyrics-stage" onClick={handleStageClick}>
@@ -218,7 +244,7 @@ export function MusicLyricsProducer({
           <label>Translation<textarea value={selectedSegment.translation} onChange={(event) => patchSegment(selectedSegment.id, { translation: event.target.value })} placeholder="Optional second line…" /></label>
           <button className="danger" onClick={() => removeCue(selectedSegment.id)}><Trash2 /> Remove cue</button>
         </fieldset>}
-        <footer><span>{document.segments.length} cues · saved revision {savedRevision}</span><button disabled={busy} onClick={() => void onSave(document).then((saved) => saved && setSavedRevision(saved.revision))}><Save /> Save revision</button></footer>
+        <footer><span>{document.segments.length} cues · saved revision {savedRevision}</span><button disabled={busy} onClick={() => void saveCurrentDocument()}><Save /> Save revision</button></footer>
       </aside>}
     </section>
   );

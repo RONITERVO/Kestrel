@@ -115,6 +115,8 @@ describe("MusicStudio", () => {
       revision: 0,
       source: "producer-timing-draft",
       language: "auto",
+      theme: "sketchbook",
+      updatedAt: "2026-08-29T00:00:00Z",
       showTranslation: true,
       segments: [{
         id: "cue-1",
@@ -135,6 +137,44 @@ describe("MusicStudio", () => {
     fireEvent.click(screen.getByRole("button", { name: "Play from here" }));
     expect(onSeek).toHaveBeenCalledWith(3);
     expect(onTogglePlay).toHaveBeenCalledTimes(1);
+    canvas.mockRestore();
+  });
+
+  it("previews the second visual theme through the shared producer and saves it explicitly", async () => {
+    const take = { id: "take-1", durationSeconds: 10, resolvedModel: "Music 3" } as MusicTake;
+    const project = { id: "project-1", title: "Night signal", takes: [take] } as MusicProject;
+    const document = {
+      schemaVersion: 1,
+      takeId: take.id,
+      sourceSha256: "a".repeat(64),
+      revision: 2,
+      language: "English",
+      source: "whisper-local",
+      transcript: "stay here",
+      theme: "sketchbook",
+      showTranslation: true,
+      createdAt: "2026-08-29T00:00:00Z",
+      updatedAt: "2026-08-29T00:00:00Z",
+      segments: [{ id: "cue-1", start: 2, end: 5, primary: "stay here", translation: "", words: [] }],
+    } satisfies MusicLyricsDocument;
+    const onChange = vi.fn();
+    const onSave = vi.fn(async (next: MusicLyricsDocument) => ({
+      ...next,
+      revision: next.revision + 1,
+      updatedAt: "2026-08-29T00:01:00Z",
+    }));
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    const common = { project, take, audio: null, currentTime: 2.2, playing: false, busy: false, status: "", onTogglePlay: vi.fn(), onSeek: vi.fn(), onChange, onSave, onSync: vi.fn(), onCancelSync: vi.fn(), onClose: vi.fn() };
+    const view = render(<MusicLyricsProducer {...common} document={document} />);
+    const producer = within(view.container);
+
+    fireEvent.change(producer.getByRole("combobox", { name: "Lyric visual theme" }), { target: { value: "signal-bloom" } });
+    const preview = onChange.mock.calls[0][0] as MusicLyricsDocument;
+    expect(preview.theme).toBe("signal-bloom");
+    view.rerender(<MusicLyricsProducer {...common} document={preview} />);
+    expect(producer.getByRole("region", { name: "Visual lyric producer" })).toHaveClass("theme-signal-bloom");
+    fireEvent.click(producer.getByRole("button", { name: "Save look" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ theme: "signal-bloom" })));
     canvas.mockRestore();
   });
 

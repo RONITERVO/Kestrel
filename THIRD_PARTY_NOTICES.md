@@ -2,8 +2,9 @@
 
 ## Visual Music Lyrics
 
-The Kestrel visual lyric canvas and its sketchbook visual language are adapted from Visual Music
-Lyrics (also published as Living Sketchbook Music).
+The Kestrel Living sketchbook visual lyric theme and its sketchbook visual language are adapted from
+Visual Music Lyrics (also published as Living Sketchbook Music). Kestrel's Signal bloom theme is an
+original renderer and does not incorporate that source implementation.
 
 Copyright 2026 Roni Tervo
 
