@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 const TTS_ADAPTER_REVISION: &str = "chatterbox-voice-profile-v1";
-const STT_ADAPTER_REVISION: &str = "kestrel-whisper-v1";
+const STT_ADAPTER_REVISION: &str = "kestrel-whisper-v2";
 const CHATTERBOX_NODE: &str = "custom_nodes/ComfyUI-Chatterbox/nodes.py";
 const CHATTERBOX_MODEL_ROOT: &str = "models/tts/chatterbox";
 const WHISPER_NODE: &str = "custom_nodes/Kestrel-Whisper/nodes.py";
@@ -47,8 +47,15 @@ const MAX_TRANSCRIPTION_AUDIO_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TRANSCRIPTION_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FILE_TRANSCRIPTION_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_TRANSCRIPTION_PROMPT_BYTES: usize = 4_096;
+const MAX_MUSIC_OPENING_PROMPT_BYTES: usize = 512;
+const MAX_MUSIC_OPENING_PROMPT_LINES: usize = 4;
+const MUSIC_REPEAT_CONTEXT_STRATEGY: &str = "whisper-repeat-context-v1";
+const MUSIC_REPEAT_CONTEXT_SEAM_SECONDS: f64 = 1.0;
+const MAX_MUSIC_CONTEXT_SOURCE_SECONDS: f64 = 330.0;
+const MAX_MUSIC_SCORING_TOKENS: usize = 4_096;
 const MAX_GENERATED_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TRANSCRIPT_TIMING_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ID_BYTES: usize = 128;
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -190,6 +197,47 @@ pub(crate) struct SpeechFileTranscription {
     pub text: String,
     pub segments: Vec<SpeechTiming>,
     pub words: Vec<SpeechTiming>,
+    pub strategy: String,
+    pub context_copies: u8,
+    pub context_seam_seconds: f64,
+    pub selected_context_copy: u8,
+    pub first_context_score: f64,
+    pub second_context_score: f64,
+}
+
+#[derive(Debug)]
+struct WhisperTranscriptionResult {
+    text: String,
+    segments: Vec<SpeechTiming>,
+    words: Vec<SpeechTiming>,
+    selected_context_copy: u8,
+    first_context_score: f64,
+    second_context_score: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhisperContextMode {
+    Single,
+    RepeatedMusic,
+}
+
+impl WhisperContextMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::RepeatedMusic => "music-repeat",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperContextMetadata {
+    mode: String,
+    source_duration: f64,
+    second_start: f64,
+    second_end: f64,
+    seam_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -544,8 +592,7 @@ impl LocalSpeech {
         if cancel.is_cancelled() {
             return Err(SpeechError::Cancelled);
         }
-        self.verify_live_node("KestrelWhisper", "Kestrel's Whisper adapter")
-            .await?;
+        self.verify_live_whisper_node().await?;
         self.verify_live_node("PreviewAny", "the ComfyUI Preview as Text node")
             .await?;
 
@@ -582,12 +629,18 @@ impl LocalSpeech {
         let input_path = input_directory.join(&input_name);
         write_recording_atomic(&input_path, &audio)?;
         let input_relative = format!("kestrel_speech/{input_name}");
-        let graph = whisper_graph(request, &input_relative);
+        let context_mode = WhisperContextMode::Single;
+        let graph = whisper_graph(request, &input_relative, context_mode);
         let result = self
-            .execute_whisper_graph(&request.job_id, graph, cancel)
+            .execute_whisper_graph(&request.job_id, graph, context_mode, None, cancel)
             .await;
         let _ = tokio::fs::remove_file(&input_path).await;
-        let (text, segments, words) = result?;
+        let WhisperTranscriptionResult {
+            text,
+            segments,
+            words,
+            ..
+        } = result?;
         let audio_relative_path = persisted
             .as_ref()
             .map(|path| relative_cache_path(&self.cache_root, path))
@@ -646,8 +699,7 @@ impl LocalSpeech {
         if cancel.is_cancelled() {
             return Err(SpeechError::Cancelled);
         }
-        self.verify_live_node("KestrelWhisper", "Kestrel's Whisper adapter")
-            .await?;
+        self.verify_live_whisper_node().await?;
         self.verify_live_node("PreviewAny", "the ComfyUI Preview as Text node")
             .await?;
 
@@ -683,15 +735,33 @@ impl LocalSpeech {
             mime_type: String::new(),
             model_id: request.model_id.clone(),
             language: request.language.clone(),
-            prompt: bounded_prefix(&request.prompt, MAX_TRANSCRIPTION_PROMPT_BYTES),
+            prompt: music_opening_prompt(&request.prompt),
             final_pass: true,
         };
-        let graph = whisper_graph(&graph_request, &format!("kestrel_speech/{input_name}"));
+        let context_mode = WhisperContextMode::RepeatedMusic;
+        let graph = whisper_graph(
+            &graph_request,
+            &format!("kestrel_speech/{input_name}"),
+            context_mode,
+        );
         let result = self
-            .execute_whisper_graph(&request.job_id, graph, cancel)
+            .execute_whisper_graph(
+                &request.job_id,
+                graph,
+                context_mode,
+                Some(&request.prompt),
+                cancel,
+            )
             .await;
         let _ = tokio::fs::remove_file(&input_path).await;
-        let (text, segments, words) = result?;
+        let WhisperTranscriptionResult {
+            text,
+            segments,
+            words,
+            selected_context_copy,
+            first_context_score,
+            second_context_score,
+        } = result?;
         emit_file_transcription_progress(
             app,
             request,
@@ -702,6 +772,12 @@ impl LocalSpeech {
             text,
             segments,
             words,
+            strategy: MUSIC_REPEAT_CONTEXT_STRATEGY.into(),
+            context_copies: 2,
+            context_seam_seconds: MUSIC_REPEAT_CONTEXT_SEAM_SECONDS,
+            selected_context_copy,
+            first_context_score,
+            second_context_score,
         })
     }
 
@@ -725,8 +801,7 @@ impl LocalSpeech {
         if cancel.is_cancelled() {
             return Err(SpeechError::Cancelled);
         }
-        self.verify_live_node("KestrelWhisper", "Kestrel's Whisper adapter")
-            .await?;
+        self.verify_live_whisper_node().await?;
         self.verify_live_node("PreviewAny", "the ComfyUI Preview as Text node")
             .await?;
         emit_alignment_progress(
@@ -752,12 +827,19 @@ impl LocalSpeech {
             prompt: bounded_prefix(&request.text, MAX_TRANSCRIPTION_PROMPT_BYTES),
             final_pass: false,
         };
-        let graph = whisper_graph(&transcription, &format!("kestrel_speech/{input_name}"));
+        let context_mode = WhisperContextMode::Single;
+        let graph = whisper_graph(
+            &transcription,
+            &format!("kestrel_speech/{input_name}"),
+            context_mode,
+        );
         let result = self
-            .execute_whisper_graph(&request.job_id, graph, cancel)
+            .execute_whisper_graph(&request.job_id, graph, context_mode, None, cancel)
             .await;
         let _ = tokio::fs::remove_file(&input_path).await;
-        let (_text, segments, words) = result?;
+        let WhisperTranscriptionResult {
+            segments, words, ..
+        } = result?;
         write_synthesis_receipt(
             &target,
             &request,
@@ -780,8 +862,10 @@ impl LocalSpeech {
         &self,
         job_id: &str,
         graph: Value,
+        context_mode: WhisperContextMode,
+        transcript_reference: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<(String, Vec<SpeechTiming>, Vec<SpeechTiming>), SpeechError> {
+    ) -> Result<WhisperTranscriptionResult, SpeechError> {
         let client_id = format!("kestrel-whisper-{}", uuid::Uuid::new_v4().simple());
         let response = self
             .http
@@ -840,7 +924,7 @@ impl LocalSpeech {
                     ));
                 }
                 if entry.pointer("/status/completed").and_then(Value::as_bool) == Some(true) {
-                    return parse_whisper_output(entry);
+                    return parse_whisper_output(entry, context_mode, transcript_reference);
                 }
             }
             tokio::select! {
@@ -892,6 +976,22 @@ impl LocalSpeech {
             )));
         }
         Ok(())
+    }
+
+    async fn verify_live_whisper_node(&self) -> Result<(), SpeechError> {
+        let value: Value = self
+            .http
+            .get(format!("{COMFY_BASE}/object_info/KestrelWhisper"))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if whisper_node_contract_is_current(&value) {
+            return Ok(());
+        }
+        Err(SpeechError::Unavailable(
+            "The running ComfyUI still has an older Kestrel Whisper adapter loaded. Open Setup and Resume Local voice and dictation, then stop and restart ComfyUI before retrying lyric sync.".into(),
+        ))
     }
 
     fn cache_target(
@@ -1812,7 +1912,11 @@ fn sha256_path(path: &Path) -> Result<String, SpeechError> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn whisper_graph(request: &SpeechTranscriptionRequest, input_relative: &str) -> Value {
+fn whisper_graph(
+    request: &SpeechTranscriptionRequest,
+    input_relative: &str,
+    context_mode: WhisperContextMode,
+) -> Value {
     let model = request
         .model_id
         .strip_prefix("whisper:")
@@ -1828,18 +1932,39 @@ fn whisper_graph(request: &SpeechTranscriptionRequest, input_relative: &str) -> 
                 "audio": ["1", 0],
                 "model": model,
                 "language": request.language,
-                "prompt": request.prompt.trim()
+                "prompt": request.prompt.trim(),
+                "context_mode": context_mode.as_str()
             }
         },
         "3": {"class_type": "PreviewAny", "inputs": {"source": ["2", 0]}},
         "4": {"class_type": "PreviewAny", "inputs": {"source": ["2", 1]}},
-        "5": {"class_type": "PreviewAny", "inputs": {"source": ["2", 2]}}
+        "5": {"class_type": "PreviewAny", "inputs": {"source": ["2", 2]}},
+        "6": {"class_type": "PreviewAny", "inputs": {"source": ["2", 3]}}
     })
+}
+
+fn whisper_node_contract_is_current(value: &Value) -> bool {
+    let Some(node) = value.get("KestrelWhisper") else {
+        return false;
+    };
+    node.pointer("/input/required/context_mode").is_some()
+        && node
+            .get("output")
+            .and_then(Value::as_array)
+            .is_some_and(|outputs| outputs.len() == 4)
+        && node
+            .get("output_name")
+            .and_then(Value::as_array)
+            .and_then(|names| names.get(3))
+            .and_then(Value::as_str)
+            == Some("context_json")
 }
 
 fn parse_whisper_output(
     entry: &Value,
-) -> Result<(String, Vec<SpeechTiming>, Vec<SpeechTiming>), SpeechError> {
+    context_mode: WhisperContextMode,
+    transcript_reference: Option<&str>,
+) -> Result<WhisperTranscriptionResult, SpeechError> {
     let output_text = |node: &str| {
         entry
             .pointer(&format!("/outputs/{node}/text/0"))
@@ -1865,6 +1990,11 @@ fn parse_whisper_output(
                 "ComfyUI Whisper completed without returning {label} timestamps."
             ))
         })?;
+        if value.len() > MAX_TRANSCRIPT_TIMING_BYTES {
+            return Err(SpeechError::Unavailable(format!(
+                "ComfyUI Whisper returned {label} timestamps larger than the 16 MiB local safety limit."
+            )));
+        }
         let timings: Vec<SpeechTiming> = serde_json::from_str(value).map_err(|error| {
             SpeechError::Unavailable(format!(
                 "ComfyUI Whisper returned invalid {label} timestamps: {error}"
@@ -1877,11 +2007,250 @@ fn parse_whisper_output(
         }
         Ok(timings)
     };
-    Ok((
+    let segments = parse_timing("4", "segment")?;
+    let words = parse_timing("5", "word")?;
+    let context_value = output_text("6").ok_or_else(|| {
+        SpeechError::Unavailable(
+            "ComfyUI Whisper completed without the current context boundary. Resume Local voice and dictation in Setup, stop and restart ComfyUI, then retry.".into(),
+        )
+    })?;
+    if context_value.len() > 4_096 {
+        return Err(SpeechError::Unavailable(
+            "ComfyUI Whisper returned an oversized context boundary.".into(),
+        ));
+    }
+    let context: WhisperContextMetadata = serde_json::from_str(context_value).map_err(|error| {
+        SpeechError::Unavailable(format!(
+            "ComfyUI Whisper returned an invalid context boundary: {error}"
+        ))
+    })?;
+    validate_whisper_context(&context, context_mode)?;
+    if context_mode == WhisperContextMode::Single {
+        return Ok(WhisperTranscriptionResult {
+            text,
+            segments,
+            words,
+            selected_context_copy: 1,
+            first_context_score: 0.0,
+            second_context_score: 0.0,
+        });
+    }
+    let transcript_reference = transcript_reference.ok_or_else(|| {
+        SpeechError::Unavailable(
+            "Kestrel cannot select a repeated music pass without the authoritative lyrics.".into(),
+        )
+    })?;
+    let first = select_context_candidate(0.0, context.source_duration, &segments, &words);
+    let second =
+        select_context_candidate(context.second_start, context.second_end, &segments, &words);
+    let (selected_context_copy, selected, first_context_score, second_context_score) =
+        select_music_context_candidate(transcript_reference, first, second);
+    Ok(WhisperTranscriptionResult {
+        text: selected.text,
+        segments: selected.segments,
+        words: selected.words,
+        selected_context_copy,
+        first_context_score,
+        second_context_score,
+    })
+}
+
+fn validate_whisper_context(
+    context: &WhisperContextMetadata,
+    expected: WhisperContextMode,
+) -> Result<(), SpeechError> {
+    let values_are_safe = context.source_duration.is_finite()
+        && context.second_start.is_finite()
+        && context.second_end.is_finite()
+        && context.seam_seconds.is_finite()
+        && context.source_duration > 0.0
+        && context.source_duration <= 24.0 * 60.0 * 60.0
+        && context.second_start >= 0.0
+        && context.second_end >= context.second_start
+        && context.second_end <= 24.0 * 60.0 * 60.0
+        && context.seam_seconds >= 0.0;
+    let duration_matches =
+        (context.second_end - context.second_start - context.source_duration).abs() <= 0.05;
+    let mode_matches = context.mode == expected.as_str();
+    let single_boundary_matches = expected != WhisperContextMode::Single
+        || (context.second_start <= 0.05 && context.seam_seconds <= 0.05);
+    let repeated_boundary_matches = expected != WhisperContextMode::RepeatedMusic
+        || (context.source_duration <= MAX_MUSIC_CONTEXT_SOURCE_SECONDS
+            && context.second_start >= context.source_duration
+            && (context.seam_seconds - MUSIC_REPEAT_CONTEXT_SEAM_SECONDS).abs() <= 0.05
+            && (context.second_start - context.source_duration - context.seam_seconds).abs()
+                <= 0.05);
+    if values_are_safe
+        && duration_matches
+        && mode_matches
+        && single_boundary_matches
+        && repeated_boundary_matches
+    {
+        Ok(())
+    } else {
+        Err(SpeechError::Unavailable(
+            "ComfyUI Whisper returned an unsafe or mismatched context boundary.".into(),
+        ))
+    }
+}
+
+fn select_context_candidate(
+    source_start: f64,
+    source_end: f64,
+    segments: &[SpeechTiming],
+    words: &[SpeechTiming],
+) -> WhisperTranscriptionResult {
+    let selected_words = words
+        .iter()
+        .filter_map(|word| rebase_context_timing(word, source_start, source_end))
+        .collect::<Vec<_>>();
+    let selected_segments = segments
+        .iter()
+        .filter_map(|segment| {
+            let crosses_boundary = segment.start < source_start || segment.end > source_end;
+            let rebased = rebase_context_timing(segment, source_start, source_end)?;
+            let value = if crosses_boundary {
+                let boundary_words = words
+                    .iter()
+                    .filter(|word| {
+                        let midpoint = (word.start + word.end) / 2.0;
+                        midpoint >= source_start
+                            && midpoint <= source_end
+                            && midpoint >= segment.start
+                            && midpoint <= segment.end
+                    })
+                    .map(|word| word.value.trim())
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !boundary_words.is_empty() {
+                    boundary_words
+                } else {
+                    segment.value.clone()
+                }
+            } else {
+                segment.value.clone()
+            };
+            (!value.trim().is_empty()).then_some(SpeechTiming { value, ..rebased })
+        })
+        .collect::<Vec<_>>();
+    let text = if selected_segments.is_empty() {
+        selected_words
+            .iter()
+            .map(|word| word.value.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        selected_segments
+            .iter()
+            .map(|segment| segment.value.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    WhisperTranscriptionResult {
         text,
-        parse_timing("4", "segment")?,
-        parse_timing("5", "word")?,
-    ))
+        segments: selected_segments,
+        words: selected_words,
+        selected_context_copy: 0,
+        first_context_score: 0.0,
+        second_context_score: 0.0,
+    }
+}
+
+fn select_music_context_candidate(
+    lyrics: &str,
+    first: WhisperTranscriptionResult,
+    second: WhisperTranscriptionResult,
+) -> (u8, WhisperTranscriptionResult, f64, f64) {
+    let reference = lyric_reference_tokens(lyrics);
+    let first_score = music_candidate_score(&reference, &first);
+    let second_score = music_candidate_score(&reference, &second);
+    if second_score > first_score + 0.01 {
+        (2, second, first_score, second_score)
+    } else {
+        (1, first, first_score, second_score)
+    }
+}
+
+fn lyric_reference_tokens(lyrics: &str) -> Vec<String> {
+    lyrics
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !is_music_section_heading(line))
+        .flat_map(transcript_tokens)
+        .take(MAX_MUSIC_SCORING_TOKENS)
+        .collect()
+}
+
+fn transcript_tokens(value: &str) -> Vec<String> {
+    value
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|character| character.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn music_candidate_score(reference: &[String], candidate: &WhisperTranscriptionResult) -> f64 {
+    let candidate_text = if candidate.words.is_empty() {
+        candidate.text.clone()
+    } else {
+        candidate
+            .words
+            .iter()
+            .map(|word| word.value.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut candidate_tokens = transcript_tokens(&candidate_text);
+    candidate_tokens.truncate(MAX_MUSIC_SCORING_TOKENS);
+    let full_score = ordered_token_f1(reference, &candidate_tokens);
+    let reference_opening = &reference[..reference.len().min(48)];
+    let candidate_opening = &candidate_tokens[..candidate_tokens.len().min(64)];
+    let opening_score = ordered_token_f1(reference_opening, candidate_opening);
+    full_score * 0.7 + opening_score * 0.3
+}
+
+fn ordered_token_f1(left: &[String], right: &[String]) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let mut previous = vec![0_usize; right.len() + 1];
+    let mut current = vec![0_usize; right.len() + 1];
+    for left_token in left {
+        for (index, right_token) in right.iter().enumerate() {
+            current[index + 1] = if left_token == right_token {
+                previous[index] + 1
+            } else {
+                current[index].max(previous[index + 1])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+        current.fill(0);
+    }
+    let overlap = previous[right.len()] as f64;
+    2.0 * overlap / (left.len() + right.len()) as f64
+}
+
+fn rebase_context_timing(
+    timing: &SpeechTiming,
+    source_start: f64,
+    source_end: f64,
+) -> Option<SpeechTiming> {
+    if timing.end <= source_start || timing.start >= source_end {
+        return None;
+    }
+    let start = timing.start.max(source_start).min(source_end) - source_start;
+    let end = timing.end.max(source_start).min(source_end) - source_start;
+    Some(SpeechTiming {
+        value: timing.value.clone(),
+        start,
+        end: end.max(start),
+    })
 }
 
 fn deterministic_seed(request: &SpeechSynthesisRequest, voice: &VoiceConditioning) -> u64 {
@@ -2196,6 +2565,44 @@ fn bounded_prefix(value: &str, maximum: usize) -> String {
     value[..boundary].into()
 }
 
+fn music_opening_prompt(lyrics: &str) -> String {
+    let mut prompt = String::new();
+    let mut lyric_lines = 0_usize;
+    for line in lyrics.lines().map(str::trim) {
+        if line.is_empty() || is_music_section_heading(line) {
+            continue;
+        }
+        let separator_bytes = usize::from(!prompt.is_empty());
+        if prompt.len() + separator_bytes >= MAX_MUSIC_OPENING_PROMPT_BYTES {
+            break;
+        }
+        let remaining = MAX_MUSIC_OPENING_PROMPT_BYTES - prompt.len() - separator_bytes;
+        let fragment = bounded_prefix(line, remaining);
+        if fragment.is_empty() {
+            break;
+        }
+        if !prompt.is_empty() {
+            prompt.push('\n');
+        }
+        prompt.push_str(&fragment);
+        lyric_lines += 1;
+        if lyric_lines >= MAX_MUSIC_OPENING_PROMPT_LINES || fragment.len() < line.len() {
+            break;
+        }
+    }
+    prompt
+}
+
+fn is_music_section_heading(line: &str) -> bool {
+    if line.len() > 96 {
+        return false;
+    }
+    let delimited = [('[', ']'), ('{', '}'), ('(', ')')];
+    delimited
+        .iter()
+        .any(|(start, end)| line.starts_with(*start) && line.ends_with(*end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2380,14 +2787,47 @@ mod tests {
         assert_eq!(models[0].id, "whisper:large-v3-turbo");
 
         let request = transcription_request();
-        let graph = whisper_graph(&request, "kestrel_speech/recording.webm");
+        let graph = whisper_graph(
+            &request,
+            "kestrel_speech/recording.webm",
+            WhisperContextMode::Single,
+        );
         assert_eq!(graph["1"]["class_type"], "LoadAudio");
         assert_eq!(graph["2"]["class_type"], "KestrelWhisper");
         assert_eq!(graph["2"]["inputs"]["model"], "large-v3-turbo");
         assert_eq!(graph["2"]["inputs"]["language"], "auto");
+        assert_eq!(graph["2"]["inputs"]["context_mode"], "single");
         assert_eq!(graph["3"]["class_type"], "PreviewAny");
         assert_eq!(graph["4"]["inputs"]["source"], json!(["2", 1]));
         assert_eq!(graph["5"]["inputs"]["source"], json!(["2", 2]));
+        assert_eq!(graph["6"]["inputs"]["source"], json!(["2", 3]));
+
+        let repeated = whisper_graph(
+            &request,
+            "kestrel_speech/music.flac",
+            WhisperContextMode::RepeatedMusic,
+        );
+        assert_eq!(repeated["2"]["inputs"]["context_mode"], "music-repeat");
+    }
+
+    #[test]
+    fn live_whisper_contract_rejects_a_three_output_adapter_until_restart() {
+        let old = json!({"KestrelWhisper": {
+            "input": {"required": {"audio": ["AUDIO"]}},
+            "output": ["STRING", "STRING", "STRING"],
+            "output_name": ["transcript", "segments_json", "words_json"]
+        }});
+        assert!(!whisper_node_contract_is_current(&old));
+
+        let current = json!({"KestrelWhisper": {
+            "input": {"required": {
+                "audio": ["AUDIO"],
+                "context_mode": [["single", "music-repeat"], {"default": "single"}]
+            }},
+            "output": ["STRING", "STRING", "STRING", "STRING"],
+            "output_name": ["transcript", "segments_json", "words_json", "context_json"]
+        }});
+        assert!(whisper_node_contract_is_current(&current));
     }
 
     #[test]
@@ -2395,20 +2835,106 @@ mod tests {
         let entry = json!({"outputs": {
             "3": {"text": ["Good morning."]},
             "4": {"text": ["[{\"value\":\"Good morning.\",\"start\":0.0,\"end\":1.2}]"]},
-            "5": {"text": ["[{\"value\":\"Good\",\"start\":0.0,\"end\":0.5},{\"value\":\"morning.\",\"start\":0.5,\"end\":1.2}]"]}
+            "5": {"text": ["[{\"value\":\"Good\",\"start\":0.0,\"end\":0.5},{\"value\":\"morning.\",\"start\":0.5,\"end\":1.2}]"]},
+            "6": {"text": ["{\"mode\":\"single\",\"sourceDuration\":1.2,\"secondStart\":0.0,\"secondEnd\":1.2,\"seamSeconds\":0.0}"]}
         }});
-        let (text, segments, words) = parse_whisper_output(&entry).unwrap();
-        assert_eq!(text, "Good morning.");
-        assert_eq!(segments.len(), 1);
-        assert_eq!(words.len(), 2);
-        assert_eq!(words[1].value, "morning.");
+        let result = parse_whisper_output(&entry, WhisperContextMode::Single, None).unwrap();
+        assert_eq!(result.text, "Good morning.");
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.words.len(), 2);
+        assert_eq!(result.words[1].value, "morning.");
 
         let unsafe_entry = json!({"outputs": {
             "3": {"text": ["Bad"]},
             "4": {"text": ["[{\"value\":\"Bad\",\"start\":2.0,\"end\":1.0}]"]},
-            "5": {"text": ["[]"]}
+            "5": {"text": ["[]"]},
+            "6": {"text": ["{\"mode\":\"single\",\"sourceDuration\":2.0,\"secondStart\":0.0,\"secondEnd\":2.0,\"seamSeconds\":0.0}"]}
         }});
-        assert!(parse_whisper_output(&unsafe_entry).is_err());
+        assert!(parse_whisper_output(&unsafe_entry, WhisperContextMode::Single, None).is_err());
+    }
+
+    #[test]
+    fn repeated_music_context_keeps_only_copy_two_and_rebases_its_opening() {
+        let entry = json!({"outputs": {
+            "3": {"text": ["discarded first copy tail Opening now second discarded suffix"]},
+            "4": {"text": ["[{\"value\":\"discarded first copy\",\"start\":0.0,\"end\":3.0},{\"value\":\"tail Opening now\",\"start\":9.8,\"end\":11.0},{\"value\":\"second\",\"start\":12.0,\"end\":13.0},{\"value\":\"discarded suffix\",\"start\":19.0,\"end\":20.0}]"]},
+            "5": {"text": ["[{\"value\":\"tail\",\"start\":9.8,\"end\":9.95},{\"value\":\"Opening\",\"start\":10.0,\"end\":10.5},{\"value\":\"now\",\"start\":10.5,\"end\":11.0},{\"value\":\"second\",\"start\":12.0,\"end\":13.0},{\"value\":\"suffix\",\"start\":19.0,\"end\":19.5}]"]},
+            "6": {"text": ["{\"mode\":\"music-repeat\",\"sourceDuration\":9.0,\"secondStart\":10.0,\"secondEnd\":19.0,\"seamSeconds\":1.0}"]}
+        }});
+        let result = parse_whisper_output(
+            &entry,
+            WhisperContextMode::RepeatedMusic,
+            Some("Opening now second"),
+        )
+        .unwrap();
+        assert_eq!(result.selected_context_copy, 2);
+        assert_eq!(result.text, "Opening now second");
+        assert_eq!(result.segments.len(), 2);
+        assert_eq!(result.segments[0].value, "Opening now");
+        assert_eq!(result.segments[0].start, 0.0);
+        assert_eq!(result.words.len(), 3);
+        assert_eq!(result.words[0].value, "Opening");
+        assert_eq!(result.words[0].start, 0.0);
+        assert!(result.segments.iter().all(|timing| timing.end <= 9.0));
+        assert!(result.words.iter().all(|timing| timing.end <= 9.0));
+    }
+
+    #[test]
+    fn repeated_music_selector_rejects_tail_context_that_skips_the_opening_verse() {
+        let candidate = |text: &str| WhisperTranscriptionResult {
+            text: text.into(),
+            segments: vec![SpeechTiming {
+                value: text.into(),
+                start: 15.0,
+                end: 29.0,
+            }],
+            words: text
+                .split_whitespace()
+                .enumerate()
+                .map(|(index, value)| SpeechTiming {
+                    value: value.into(),
+                    start: 15.0 + index as f64 * 0.2,
+                    end: 15.2 + index as f64 * 0.2,
+                })
+                .collect(),
+            selected_context_copy: 0,
+            first_context_score: 0.0,
+            second_context_score: 0.0,
+        };
+        let lyrics = "[Verse]\nI am the stone that holds the night\nA glowing square in the endless void\n[Chorus]\nHold the weight of the galaxies";
+        let first = candidate(
+            "I am the stone that holds the night A glowing square in the endless void Hold the weight of the galaxies",
+        );
+        let second = candidate("Hold the weight of the galaxies");
+        let (selected_copy, selected, first_score, second_score) =
+            select_music_context_candidate(lyrics, first, second);
+        assert_eq!(selected_copy, 1);
+        assert!(selected.text.starts_with("I am the stone"));
+        assert!(first_score > second_score);
+
+        let first = candidate("unrelated opening noise");
+        let second = candidate(
+            "I am the stone that holds the night A glowing square in the endless void Hold the weight of the galaxies",
+        );
+        let (selected_copy, _, first_score, second_score) =
+            select_music_context_candidate(lyrics, first, second);
+        assert_eq!(selected_copy, 2);
+        assert!(second_score > first_score);
+    }
+
+    #[test]
+    fn music_prompt_keeps_only_a_bounded_opening_lyric_excerpt() {
+        let lyrics = "[Intro]\n(whispered)\nFirst lyric line\nSecond lyric line\n[Chorus]\nThird lyric line\nFourth lyric line\nFifth lyric line";
+        assert_eq!(
+            music_opening_prompt(lyrics),
+            "First lyric line\nSecond lyric line\nThird lyric line\nFourth lyric line"
+        );
+
+        let multibyte = format!("{} trailing text", "歌".repeat(400));
+        let prompt = music_opening_prompt(&multibyte);
+        assert!(prompt.len() <= MAX_MUSIC_OPENING_PROMPT_BYTES);
+        assert!(prompt.is_char_boundary(prompt.len()));
+        assert!(multibyte.starts_with(&prompt));
     }
 
     #[test]

@@ -30,7 +30,7 @@ const KJ_TINY_VAE_BYTES: u64 = 8_999;
 const TAEH3_REVISION: &str = "62f7591f59dfbb4c3c02b7a621d180a9eeaba26c";
 const CHATTERBOX_NODE_REVISION: &str = "f0300cf84ee1b8fc9cbd38cb68cb3bace1895063";
 const CHATTERBOX_MODEL_REVISION: &str = "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd";
-const KESTREL_WHISPER_ADAPTER_REVISION: &str = "kestrel-whisper-v1";
+const KESTREL_WHISPER_ADAPTER_REVISION: &str = "kestrel-whisper-v2";
 const MUSCRIPTOR_PACKAGE: &str = "muscriptor==0.3.0";
 const MUSCRIPTOR_SETUP_REVISION: &str = "muscriptor-0.3.0-uv-0.11.30-cu128-v1";
 const MUSCRIPTOR_MODEL_BYTES: u64 = 5_465_642_136;
@@ -3323,6 +3323,9 @@ mod tests {
             fs::read_to_string(root.path().join("custom_nodes/Kestrel-Whisper/nodes.py")).unwrap();
         assert!(node.contains("class KestrelWhisper"));
         assert!(node.contains("EXPECTED_MODELS"));
+        assert!(node.contains("MUSIC_CONTEXT_MODE"));
+        assert!(node.contains("carry_initial_prompt"));
+        assert!(node.contains("source_audio, seam, source_audio"));
         assert!(node.contains("/kestrel/speech/free"));
         assert!(!node.contains("http://"));
         assert!(!node.contains("https://"));

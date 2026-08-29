@@ -2,12 +2,43 @@
 
 Status: **do not replace the current path without an acceptance failure.** Extended producer
 testing in August 2026 found Kestrel's installed Whisper lyric sync correct in approximately 99% of
-the tested material. That result is not a general benchmark, but it is strong evidence that another
-runtime, model download, and maintenance surface are not presently justified.
+material after the opening window, but also exposed a repeatable cold-start weakness in the first
+several seconds. Kestrel now hardens that opening without adding another runtime or model download.
+The later-song result is not a general benchmark, but it remains strong evidence that another
+maintenance surface is not presently justified.
 
 This note records the preferred fallback so a future maintainer does not have to restart the model
 and licensing investigation if dense arrangements, new languages, or a changed generator cause a
 repeatable regression.
+
+## Current cold-start hardening
+
+Music lyric sync uses the `music-repeat` mode of Kestrel's owned Whisper adapter. It converts the
+immutable take to mono 16 kHz once and transcribes `take + one second of silence + take`. The first
+copy gives Whisper decoded lyric context before it encounters the opening again; the silence makes
+that second opening an explicit song boundary. This is text-context conditioning, not persistent
+learning of the first copy's audio features.
+
+The initial prompt is not the complete lyric sheet. Kestrel removes bracketed section headings and
+keeps at most the first four lyric lines and 512 UTF-8 bytes. The adapter carries that bounded
+opening excerpt while preserving room for Whisper's recent decoded text. Ordinary dictation and
+spoken-audio alignment continue to use the single-copy path.
+
+The adapter returns the source duration, seam, and second-copy interval as typed metadata. Rust
+rejects a missing, mismatched, non-finite, or out-of-range boundary and independently extracts both
+copies into original-take time. It scores their ordered token coverage against the authoritative
+generated lyrics, including a separately weighted opening window. Copy two is selected only when
+its score is materially higher; otherwise the stable first copy wins. This guard is necessary
+because recent tail lyrics can occasionally make a context-conditioned second opening jump ahead
+to a chorus. Boundary-crossing cues are rebuilt from only in-range words. The durable lyric-sync
+receipt records the strategy, copy count, selected copy, both candidate scores, and seam. Scoring is
+bounded to 4,096 tokens per side. Generated music is limited to five minutes; the adapter allows a
+30-second container margin and fails explicitly above that bound rather than making an unbounded
+duplicate allocation.
+
+This pass costs roughly twice the Whisper time of a single transcription. If it does not recover a
+repeatable dense opening, do not stack more heuristic ASR passes. Use the activation gate below to
+evaluate isolated-vocal forced alignment against the authoritative generated lyrics.
 
 ## Activation gate
 

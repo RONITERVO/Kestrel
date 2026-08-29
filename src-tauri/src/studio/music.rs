@@ -906,6 +906,12 @@ impl MusicStudio {
         };
         let segment_count = transcription.segments.len();
         let word_count = transcription.words.len();
+        let transcription_strategy = transcription.strategy.clone();
+        let context_copies = transcription.context_copies;
+        let context_seam_seconds = transcription.context_seam_seconds;
+        let selected_context_copy = transcription.selected_context_copy;
+        let first_context_score = transcription.first_context_score;
+        let second_context_score = transcription.second_context_score;
         let now = Utc::now().to_rfc3339();
         let document = normalize_lyrics_document(
             MusicLyricsDocument {
@@ -939,6 +945,12 @@ impl MusicStudio {
                 "transcript": transcription.text,
                 "segmentCount": segment_count,
                 "wordCount": word_count,
+                "transcriptionStrategy": transcription_strategy,
+                "contextCopies": context_copies,
+                "contextSeamSeconds": context_seam_seconds,
+                "selectedContextCopy": selected_context_copy,
+                "firstContextScore": first_context_score,
+                "secondContextScore": second_context_score,
                 "theme": theme,
                 "network": "disabled"
             }),
@@ -2628,6 +2640,12 @@ mod tests {
                             end: 4.0,
                         },
                     ],
+                    strategy: "whisper-repeat-context-v1".into(),
+                    context_copies: 2,
+                    context_seam_seconds: 1.0,
+                    selected_context_copy: 2,
+                    first_context_score: 0.4,
+                    second_context_score: 0.8,
                 },
             )
             .unwrap();

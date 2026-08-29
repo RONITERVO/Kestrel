@@ -25,6 +25,9 @@ EXPECTED_MODELS = {
 _MODEL = None
 _MODEL_NAME = None
 _MODEL_LOCK = threading.Lock()
+MUSIC_CONTEXT_MODE = "music-repeat"
+MUSIC_CONTEXT_SEAM_SECONDS = 1.0
+MAX_MUSIC_CONTEXT_SOURCE_SECONDS = 330.0
 
 
 def _available_models():
@@ -114,22 +117,45 @@ class KestrelWhisper:
                 "model": (_available_models(),),
                 "language": ("STRING", {"default": "auto", "multiline": False}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
+                "context_mode": (["single", MUSIC_CONTEXT_MODE], {"default": "single"}),
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING")
-    RETURN_NAMES = ("transcript", "segments_json", "words_json")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("transcript", "segments_json", "words_json", "context_json")
     FUNCTION = "transcribe"
     CATEGORY = "Kestrel/Audio"
 
-    def transcribe(self, audio, model, language="auto", prompt=""):
+    def transcribe(self, audio, model, language="auto", prompt="", context_mode="single"):
         selected = str(model).strip()
         if selected not in _available_models():
             raise ValueError("Kestrel Whisper model selection is not installed")
+        mode = str(context_mode).strip()
+        if mode not in ("single", MUSIC_CONTEXT_MODE):
+            raise ValueError("Kestrel Whisper received an unsupported context mode")
+        source_audio = _audio_mono_16khz(audio)
+        source_duration = float(source_audio.shape[0]) / 16000.0
+        second_start = 0.0
+        transcription_audio = source_audio
+        if mode == MUSIC_CONTEXT_MODE:
+            if source_duration > MAX_MUSIC_CONTEXT_SOURCE_SECONDS:
+                raise ValueError(
+                    "Kestrel's repeated music context is limited to 330 seconds of source audio"
+                )
+            seam = np.zeros(int(MUSIC_CONTEXT_SEAM_SECONDS * 16000), dtype=np.float32)
+            # The first copy lets Whisper learn the singer, vocabulary, and recent lyric style.
+            # Silence gives the decoder an unambiguous song boundary before the saved copy.
+            transcription_audio = np.concatenate((source_audio, seam, source_audio))
+            second_start = source_duration + MUSIC_CONTEXT_SEAM_SECONDS
+        prompt_text = str(prompt).strip() or None
         result = _load_model(selected).transcribe(
-            _audio_mono_16khz(audio),
+            transcription_audio,
             language=None if str(language).strip().lower() in ("", "auto") else str(language).strip(),
-            initial_prompt=str(prompt).strip() or None,
+            initial_prompt=prompt_text,
+            condition_on_previous_text=True,
+            # Music mode uses only a bounded opening excerpt. Carrying it leaves room for recent
+            # decoded lyrics while keeping the song's opening vocabulary available at copy two.
+            carry_initial_prompt=mode == MUSIC_CONTEXT_MODE and prompt_text is not None,
             word_timestamps=True,
             fp16=torch.cuda.is_available(),
             verbose=False,
@@ -158,6 +184,17 @@ class KestrelWhisper:
             str(result.get("text", "")).strip(),
             json.dumps(segments, ensure_ascii=False, separators=(",", ":")),
             json.dumps(words, ensure_ascii=False, separators=(",", ":")),
+            json.dumps(
+                {
+                    "mode": mode,
+                    "sourceDuration": source_duration,
+                    "secondStart": second_start,
+                    "secondEnd": second_start + source_duration,
+                    "seamSeconds": MUSIC_CONTEXT_SEAM_SECONDS if mode == MUSIC_CONTEXT_MODE else 0.0,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
         )
 
 
