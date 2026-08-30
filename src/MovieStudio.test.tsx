@@ -200,8 +200,8 @@ describe("Kestrel Movie Studio", () => {
 
   it("presents a one-prompt offline production path", async () => {
     render(<MovieStudio advancedEnabled models={[baselineModel]} selectedModelId={baselineModel.id} onError={vi.fn()} />);
-    expect(screen.getByText(/Shape the production brief together/i)).toBeInTheDocument();
-    expect(screen.getByText(/drafts, reviews, and repairs/i)).toBeInTheDocument();
+    expect(screen.getByText(/Shape the production brief or paste a manuscript/i)).toBeInTheDocument();
+    expect(screen.getByText(/stays with planning and each bounded H3 production batch/i)).toBeInTheDocument();
     expect(screen.queryByText(/Wikipedia/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ask Director to plan/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Write plan myself/i })).toBeEnabled();
@@ -222,8 +222,8 @@ describe("Kestrel Movie Studio", () => {
     expect(screen.getByText("Per-model exceptions")).toBeInTheDocument();
     expect(screen.getByText("Live reasoning stream")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Advanced production controls/i }));
-    expect(screen.getByLabelText("Maximum clips")).toHaveAttribute("max", "96");
-    expect(screen.getByLabelText("Thinking mode")).toHaveValue("max");
+    expect(screen.getByLabelText("Maximum clips")).toHaveAttribute("max", "999");
+    expect(screen.getByLabelText("Thinking mode")).toHaveValue("low");
     expect(screen.getByLabelText("ComfyUI root")).toHaveValue("C:\\Configured\\ComfyUI");
     expect(screen.getByLabelText("Reference image fidelity")).toHaveValue("match");
     expect(screen.getByLabelText("This production context window")).toHaveValue(32_768);
@@ -262,7 +262,7 @@ describe("Kestrel Movie Studio", () => {
     fireEvent.change(meaning, { target: { value: "continue" } });
     expect(screen.getByRole("button", { name: /Continue exact draft/i })).toBeEnabled();
     expect(screen.getByText(/Nothing is inferred/i)).toBeInTheDocument();
-    expect(screen.getByLabelText("Movie brief")).toHaveAttribute("maxlength", "65536");
+    expect(screen.getByLabelText("Movie brief")).toHaveAttribute("maxlength", "4194304");
     fireEvent.click(screen.getByRole("button", { name: /ImagesGenerate visual assets/i }));
     expect(screen.getByLabelText("Image description model")).toHaveValue("story-large");
   });

@@ -143,12 +143,16 @@ The project directory is the source of truth. Important planning files include:
 | `project.json` | Recoverable current project state |
 | `planning-control.json` and recovery copy | Pending directions and graceful checkpoint request |
 | `agent-workspace/BRIEF.md` | Current authoritative producer brief |
+| `agent-workspace/source/NNNN.md` | Ordered read-only chunks of an exact long-form producer manuscript; never copied wholesale into every model turn |
+| `agent-workspace/STORY-MEMORY.md` and `OUTLINE.md` | Director-maintained bounded adaptation memory and production-unit outline that survive context rollover |
 | `agent-workspace/REFERENCES.md` | Text-only immutable reference manifest |
 | `agent-workspace/PRODUCER-NOTES.md` | Deduplicated live producer directions |
 | `agent-workspace/movie.json` and `scenes/*.json` | Model-editable plan source compiled by native code |
 | `agent-workspace/state.json` | Workspace revision and clean-check gate |
 | `agent-workspace/agent-transcript*.json` | Lossless accepted conversation by context session |
 | `agent-workspace/agent-last-request.json` | Exact last planning request envelope for audit |
+| `agent-workspace/production/batch-*/` | Exact continuing-Director request, response, and native check for each bounded pre-render batch |
+| `agent-workspace/production/quality/clip-*/` | Native stream check, exact opening/middle/ending PNG hashes, configured visual-critic decision, and bounded retry receipt for one H3 master |
 | `agent-workspace/generative-edits/<request>/` | Exact task/context, candidate revisions, native-check state, transcript, fresh review, and accepted result |
 | `generations/transition-*/graph.json` and `receipt.json` | Exact endpoint hashes, H3 graph, seed, placement decision, and immutable output hash |
 | `agent-workspace/generative-edits/<request>/endpoint-frames/*.png` | Exact bounded endpoint pixels shown to the selected local Frame Analyst |
@@ -157,6 +161,38 @@ The project directory is the source of truth. Important planning files include:
 
 Atomic replacement and recovery copies are deliberate. Do not trade them for in-memory convenience.
 The advanced UI reads bounded redacted views; the unmodified files remain available as durable truth.
+
+## Long-form directing and rendering
+
+The exact producer prompt may be a short idea or a multi-megabyte manuscript. Long input is split at
+UTF-8 boundaries into ordered read-only `source/NNNN.md` files. The planning model reads those files
+through the existing typed workspace tool and maintains `STORY-MEMORY.md` plus `OUTLINE.md`; the app
+never truncates the durable manuscript or sends the entire book on every turn. Fresh authoritative
+turns contain the brief, durable memories, a bounded whole-film scene catalog, and only recent full
+scene files. Older scenes and manuscript chunks remain explicitly readable on demand.
+
+Independent review is performed in bounded film-global scene batches for long plans. After producer
+approval, production alternates between the one local language-model runtime and H3: the Director
+checks and may refine exactly one still-unrendered scene, releases its inference lease and process,
+then H3 renders that one audiovisual master. Native code releases H3, verifies the video stream,
+audio stream, and duration, and—when the pinned Reviewer has a verified local vision projector—shows
+it exact opening, middle, and ending PNGs. A material rejection feeds observable findings and positive
+prompt repairs into the next Director turn; at most two retries are attempted. Every prior attempt is
+preserved as a version and the latest result advances after the third attempt so an imperfect scene
+cannot loop forever. A text-only Reviewer is recorded honestly as native verification without a
+pixel claim.
+
+Producer references are a movie-wide immutable library rather than a one-graph allowance. New image,
+video, or exact-audio media may be attached while production is active; the project checkpoint lock
+finishes the current one-scene Director/H3 step and updates `REFERENCES.md` before the next Director
+turn. H3's limits of 9 pictures, 3 videos, and 3 audio signals are validated per scene. Written scene
+direction remains a complete picture-and-sound specification. An optional audio reference is passed
+as exact media after that direction and is never interpreted as a voice type, timbre example, or
+replacement for spoken text.
+
+Every checkpoint is durable, native-validated, and visible in project history. Cancellation or a
+failure preserves all completed masters and resumes at the first incomplete scene; it never silently
+resumes on application restart.
 
 ## Generative edit lifecycle
 

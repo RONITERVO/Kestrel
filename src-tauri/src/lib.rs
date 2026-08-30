@@ -46,7 +46,7 @@ use models::{
     ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
     DeveloperRepairReport, DeveloperRepairRequest, ProfileTransfer, ResearchReport,
     ResearchSettings, ResumeComputerTaskRequest, RunResearchRequest, StartChatRequest,
-    SystemSnapshot,
+    SystemSnapshot, ThinkingLevel,
 };
 use runtime::RuntimeManager;
 use serde_json::Value;
@@ -65,7 +65,8 @@ use studio::{
     MovieCopilotRequest, MovieEdit, MovieFl2vTransitionRequest, MovieGenerationAgentRequest,
     MovieGenerationProposal, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
     MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
-    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieRenderState,
+    AddMovieReferencesRequest, MoviePlanningSnapshot, MovieProject, MovieReferenceImport,
+    MovieRenderState,
     MovieRuntimePolicyRequest, MovieStudio, MovieSummary, MusicLyricsRequest,
     MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
     MusicSummary, PromptDraftJob, PromptDraftRequest, RepairMusicLyricsRangeRequest,
@@ -719,6 +720,19 @@ async fn pick_movie_reference_files(
 }
 
 #[tauri::command]
+async fn add_movie_references(
+    request: AddMovieReferencesRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    state
+        .studio
+        .add_references(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn list_movie_image_assets(
     state: State<'_, AppState>,
 ) -> Result<Vec<MovieImageAssetGeneration>, String> {
@@ -829,6 +843,17 @@ fn select_default_studio_model<'a>(
     qualifications: &ModelQualificationStore,
     settings: &ControlSettings,
 ) -> Result<Option<&'a ModelInfo>, String> {
+    for model in models.iter().filter(|model| {
+        model
+            .name
+            .to_ascii_lowercase()
+            .replace([' ', '-', '_'], "")
+            .contains("qwen3.8")
+    }) {
+        if qualifications.assess(model, settings)?.studio_ready {
+            return Ok(Some(model));
+        }
+    }
     if let Some(selected) =
         selected_model_id.and_then(|id| models.iter().find(|model| model.id == id))
     {
@@ -902,9 +927,17 @@ fn resolve_movie_model_roles(
         }
     }
     let mut director_binding = model_binding(director, &director_compatibility);
-    director_binding.thinking_level = request.director_thinking_level;
+    director_binding.thinking_level = Some(
+        request
+            .director_thinking_level
+            .unwrap_or(ThinkingLevel::Low),
+    );
     let mut reviewer_binding = model_binding(reviewer, &reviewer_compatibility);
-    reviewer_binding.thinking_level = request.reviewer_thinking_level;
+    reviewer_binding.thinking_level = Some(
+        request
+            .reviewer_thinking_level
+            .unwrap_or(ThinkingLevel::Low),
+    );
     Ok(MovieModelRoles {
         director: director_binding,
         reviewer: reviewer_binding,
@@ -1144,17 +1177,17 @@ fn spawn_movie(
         let managed = app.state::<AppState>();
         let _guard = WorkGuard(&managed.work_active);
         let result: Result<(), String> = async {
+            let (_, runtime_settings, models) = studio_model_context(&managed).await?;
+            let pinned = managed.studio.get(&id).map_err(|error| error.to_string())?;
+            let (director_model_id, reviewer_model_id) = project_model_ids(
+                &pinned,
+                &models,
+                &runtime_settings,
+                &managed.model_qualifications,
+                research.advanced_mode || runtime_settings.advanced_mode,
+            )?;
             if needs_plan {
                 release_all_comfy_memory(&managed).await;
-                let (_, runtime_settings, models) = studio_model_context(&managed).await?;
-                let project = managed.studio.get(&id).map_err(|error| error.to_string())?;
-                let (director_model_id, reviewer_model_id) = project_model_ids(
-                    &project,
-                    &models,
-                    &runtime_settings,
-                    &managed.model_qualifications,
-                    research.advanced_mode || runtime_settings.advanced_mode,
-                )?;
                 managed
                     .runtime
                     .stop_managed()
@@ -1184,17 +1217,110 @@ fn spawn_movie(
                     return Ok(());
                 }
             }
-            release_all_comfy_memory(&managed).await;
-            managed
-                .runtime
-                .stop_managed()
-                .await
-                .map_err(|error| error.to_string())?;
-            managed
-                .studio
-                .render(&id, &cancel, Some(&app))
-                .await
-                .map_err(|error| error.to_string())?;
+            loop {
+                let project = managed.studio.get(&id).map_err(|error| error.to_string())?;
+                if project.status == "complete" {
+                    break;
+                }
+                if project
+                    .clips
+                    .iter()
+                    .any(|clip| clip.quality_status == "pending")
+                {
+                    release_all_comfy_memory(&managed).await;
+                    managed
+                        .runtime
+                        .stop_managed()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    managed
+                        .studio
+                        .review_pending_rendered_clip(
+                            &id,
+                            MovieModelRuntime {
+                                runtime: &managed.runtime,
+                                models: &models,
+                                settings: &runtime_settings,
+                                director_model_id: &director_model_id,
+                                reviewer_model_id: &reviewer_model_id,
+                            },
+                            &cancel,
+                            Some(&app),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    managed
+                        .runtime
+                        .stop_managed()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    continue;
+                }
+                // H3 and the Director deliberately alternate on the single GPU.  No language
+                // model lease survives into rendering and no Comfy model survives into a
+                // continuing Director checkpoint.
+                release_all_comfy_memory(&managed).await;
+                managed
+                    .runtime
+                    .stop_managed()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                managed
+                    .studio
+                    .direct_next_render_batch(
+                        &id,
+                        MovieModelRuntime {
+                            runtime: &managed.runtime,
+                            models: &models,
+                            settings: &runtime_settings,
+                            director_model_id: &director_model_id,
+                            reviewer_model_id: &reviewer_model_id,
+                        },
+                        &cancel,
+                        Some(&app),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                managed
+                    .runtime
+                    .stop_managed()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let rendered = managed
+                    .studio
+                    .render_next_batch(&id, &cancel, Some(&app))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if rendered.phase == "quality-review" {
+                    release_all_comfy_memory(&managed).await;
+                    managed
+                        .runtime
+                        .stop_managed()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    managed
+                        .studio
+                        .review_pending_rendered_clip(
+                            &id,
+                            MovieModelRuntime {
+                                runtime: &managed.runtime,
+                                models: &models,
+                                settings: &runtime_settings,
+                                director_model_id: &director_model_id,
+                                reviewer_model_id: &reviewer_model_id,
+                            },
+                            &cancel,
+                            Some(&app),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    managed
+                        .runtime
+                        .stop_managed()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+            }
             Ok(())
         }
         .await;
@@ -4288,6 +4414,7 @@ pub fn run() {
             get_movie,
             get_movie_render_state,
             pick_movie_reference_files,
+            add_movie_references,
             list_movie_image_assets,
             start_movie_image_asset,
             cancel_movie_image_asset,

@@ -10,6 +10,7 @@ use crate::{
     models::{ControlSettings, ResearchSettings, ThinkingLevel},
     runtime::{ModelConnection, RuntimeManager},
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -90,15 +91,17 @@ pub use prompt_collaboration::{
     validate_request as validate_prompt_draft_request, PromptDraftJob, PromptDraftRequest,
 };
 
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 9;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 pub(super) const MUSIC_COMFY_BASE: &str = "http://127.0.0.1:8189";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
-pub(super) const MAX_MOVIE_PROMPT_BYTES: usize = 64 * 1024;
-const MAX_PLAN_EXCHANGE_BYTES: usize = 2 * 1024 * 1024;
+/// The exact producer manuscript is durable input, not a model-turn payload.  Four MiB is large
+/// enough for a long novel while still keeping project recovery and JSON replacement bounded.
+pub(super) const MAX_MOVIE_PROMPT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PLAN_EXCHANGE_BYTES: usize = 16 * 1024 * 1024;
 const PLAN_EXCHANGE_FORMAT: &str = "kestrel.movie-plan";
 const PLAN_EXCHANGE_VERSION: u32 = 1;
 const MAX_REFERENCE_SECONDS: f64 = 15.1;
@@ -106,6 +109,10 @@ const MIN_H3_PROMPT_WORDS: usize = 120;
 const MAX_H3_PROMPT_WORDS: usize = 450;
 const MOVIE_AGENT_SESSION_STEPS: u32 = 96;
 const MAX_MOVIE_AGENT_SESSIONS: u32 = 8;
+/// One H3 master is the smallest useful production checkpoint.  Keeping this at one lets the
+/// Director incorporate the newest durable result and any newly attached producer reference
+/// before committing GPU time to the following scene.
+const DIRECTED_RENDER_BATCH_SIZE: usize = 1;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const MIN_TIMELINE_SOURCE_SECONDS: f32 = 0.1;
@@ -201,6 +208,27 @@ struct IndependentReviewRequest<'a> {
     cancel: &'a CancellationToken,
     app: Option<&'a AppHandle>,
     position: (u32, u32),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectedRenderBatch {
+    summary: String,
+    #[serde(default)]
+    continuity_notes: Vec<String>,
+    clips: Vec<PlannedClip>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderedSceneReview {
+    approved: bool,
+    score: u32,
+    summary: String,
+    #[serde(default)]
+    visible_problems: Vec<String>,
+    #[serde(default)]
+    prompt_repairs: Vec<String>,
 }
 
 fn media_program(name: &str) -> PathBuf {
@@ -534,6 +562,13 @@ pub struct ProducerReferenceRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AddMovieReferencesRequest {
+    pub id: String,
+    pub references: Vec<ProducerReferenceRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MovieReferenceAsset {
     pub id: String,
     pub name: String,
@@ -650,7 +685,7 @@ fn default_steps() -> u32 {
     20
 }
 fn default_max_clips() -> u32 {
-    12
+    240
 }
 fn default_temperature() -> f32 {
     0.7
@@ -662,7 +697,7 @@ fn default_top_k() -> u32 {
     20
 }
 fn default_thinking() -> u32 {
-    MOVIE_THINKING_BUDGET
+    2_048
 }
 fn default_output() -> u32 {
     32_768
@@ -694,7 +729,10 @@ impl MovieSettings {
         }
         self.clip_seconds = self.clip_seconds.clamp(5.0, 15.0);
         self.steps = self.steps.clamp(1, if advanced { 100 } else { 40 });
-        self.max_clips = self.max_clips.clamp(1, if advanced { 96 } else { 24 });
+        // Three-digit durable scene filenames intentionally define the hard ceiling.  This is a
+        // safety limit, not a target: the Director chooses the scene count requested by the
+        // producer.  At 15 seconds per H3 scene, 480 scenes permits a two-hour standard project.
+        self.max_clips = self.max_clips.clamp(1, if advanced { 999 } else { 480 });
         self.temperature = self.temperature.clamp(0.0, 2.0);
         self.top_p = self.top_p.clamp(0.05, 1.0);
         self.top_k = self.top_k.clamp(1, 200);
@@ -808,6 +846,12 @@ pub struct RenderedClip {
     pub error: String,
     #[serde(default)]
     pub versions: Vec<ClipVersion>,
+    #[serde(default)]
+    pub quality_status: String,
+    #[serde(default)]
+    pub quality_attempts: u32,
+    #[serde(default)]
+    pub quality_detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -975,6 +1019,40 @@ pub struct MovieExport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MovieDirectorCheckpoint {
+    pub id: String,
+    pub created_at: String,
+    pub first_clip: u32,
+    pub last_clip: u32,
+    pub model_id: String,
+    pub status: String,
+    pub summary: String,
+    #[serde(default)]
+    pub continuity_notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieVisualReviewCheckpoint {
+    pub id: String,
+    pub created_at: String,
+    pub clip_id: String,
+    pub clip_number: u32,
+    pub attempt: u32,
+    pub model_id: String,
+    pub model_name: String,
+    pub status: String,
+    pub score: u32,
+    pub summary: String,
+    #[serde(default)]
+    pub visible_problems: Vec<String>,
+    #[serde(default)]
+    pub prompt_repairs: Vec<String>,
+    pub native_media_check: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MovieProject {
     pub schema_version: u32,
     pub id: String,
@@ -1013,6 +1091,10 @@ pub struct MovieProject {
     pub producer_feedback: Vec<ProducerFeedbackRecord>,
     #[serde(default)]
     pub copilot_history: Vec<MovieCopilotTurn>,
+    #[serde(default)]
+    pub director_checkpoints: Vec<MovieDirectorCheckpoint>,
+    #[serde(default)]
+    pub visual_review_checkpoints: Vec<MovieVisualReviewCheckpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1349,9 +1431,9 @@ impl MovieStudio {
         {
             return Err(StudioError::Invalid(
                 if producer_authored {
-                    "optional movie notes must not exceed 64 KiB"
+                    "optional movie notes must not exceed 4 MiB"
                 } else {
-                    "movie prompt must be between 3 characters and 64 KiB"
+                    "movie prompt must be between 3 characters and 4 MiB"
                 }
                 .into(),
             ));
@@ -1363,7 +1445,7 @@ impl MovieStudio {
         fs::create_dir_all(folder.join("raw"))?;
         fs::create_dir_all(folder.join("exports"))?;
         fs::create_dir_all(folder.join("references"))?;
-        let references = match self.materialize_references(&id, references) {
+        let references = match self.materialize_references(&id, references, &[]) {
             Ok(references) => references,
             Err(error) => {
                 let _ = fs::remove_dir_all(&folder);
@@ -1448,6 +1530,8 @@ impl MovieStudio {
             producer_approved_at: String::new(),
             producer_feedback: Vec::new(),
             copilot_history: Vec::new(),
+            director_checkpoints: Vec::new(),
+            visual_review_checkpoints: Vec::new(),
         };
         write_json_atomic(
             &folder.join("request.json"),
@@ -1493,13 +1577,17 @@ impl MovieStudio {
         &self,
         project_id: &str,
         requests: Vec<ProducerReferenceRequest>,
+        existing: &[MovieReference],
     ) -> Result<Vec<MovieReference>, StudioError> {
-        let mut seen = HashSet::new();
+        let mut seen = existing
+            .iter()
+            .map(|reference| reference.asset_id.clone())
+            .collect::<HashSet<_>>();
         let mut prepared = Vec::new();
         for request in requests {
             if !seen.insert(request.asset_id.clone()) {
                 return Err(StudioError::Invalid(
-                    "the same producer reference cannot be attached twice".into(),
+                    "this producer reference is already attached to the movie".into(),
                 ));
             }
             let description = request.description.trim();
@@ -1536,31 +1624,27 @@ impl MovieStudio {
             }
             prepared.push((asset, request));
         }
-        let images = prepared
-            .iter()
-            .filter(|(asset, _)| asset.kind == "image")
-            .count();
-        let videos = prepared
-            .iter()
-            .filter(|(asset, _)| asset.kind == "video")
-            .count();
+        // H3 limits apply to one graph, not to a long-lived movie.  A feature film may accumulate
+        // many immutable identities over time; native plan validation bounds the references
+        // selected for each individual scene.
         let embedded_audio = prepared
             .iter()
             .filter(|(asset, request)| asset.kind == "video" && request.use_embedded_audio)
             .count();
-        let standalone_audio = prepared
-            .iter()
-            .filter(|(asset, _)| asset.kind == "audio")
-            .count();
-        if images > 9 || videos > 3 || embedded_audio + standalone_audio > 3 {
-            return Err(StudioError::Invalid(
-                "H3 supports at most 9 pictures, 3 videos, and 3 audio signals per movie".into(),
-            ));
-        }
         let project_root = self.project_dir(project_id).join("references");
-        let mut picture_index = 0usize;
-        let mut video_index = 0usize;
-        let mut embedded_index = 0usize;
+        let mut picture_index = existing
+            .iter()
+            .filter(|reference| reference.kind == "image")
+            .count();
+        let mut video_index = existing
+            .iter()
+            .filter(|reference| reference.kind == "video")
+            .count();
+        let existing_audio = existing
+            .iter()
+            .filter(|reference| reference.kind == "audio" || reference.use_embedded_audio)
+            .count();
+        let mut embedded_index = existing_audio;
         let mut standalone_index = 0usize;
         let mut result = Vec::with_capacity(prepared.len());
         for (asset, request) in prepared {
@@ -1589,7 +1673,7 @@ impl MovieStudio {
                 }
                 "audio" => {
                     standalone_index += 1;
-                    let index = embedded_audio + standalone_index;
+                    let index = existing_audio + embedded_audio + standalone_index;
                     (
                         format!("<Audio {index}>"),
                         String::new(),
@@ -1627,6 +1711,48 @@ impl MovieStudio {
             });
         }
         Ok(result)
+    }
+
+    /// Attach immutable producer media to an in-progress production.  The per-project lock makes
+    /// this wait for the current Director or one-scene H3 checkpoint, so a project replacement can
+    /// never race the new reference.  The next continuing-Director turn sees the updated manifest
+    /// and may place it only on still-unrendered scenes.
+    pub async fn add_references(
+        &self,
+        request: AddMovieReferencesRequest,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(&request.id)?;
+        let _guard = lock.lock().await;
+        let mut project = self.get(&request.id)?;
+        if request.references.is_empty() {
+            return Err(StudioError::Invalid(
+                "choose at least one image, video, or exact audio reference".into(),
+            ));
+        }
+        if next_unrendered_clip(&project).is_none() && !project.clips.is_empty() {
+            return Err(StudioError::Invalid(
+                "all H3 masters are already complete; add media while a future scene still exists, or create a versioned scene repair"
+                    .into(),
+            ));
+        }
+        let additions =
+            self.materialize_references(&request.id, request.references, &project.references)?;
+        let added = additions.len();
+        project.references.extend(additions);
+        write_json_atomic(
+            &self.project_dir(&request.id).join("references.json"),
+            &project.references,
+        )?;
+        let workspace = self.project_dir(&request.id).join("agent-workspace");
+        if workspace.is_dir() {
+            movie_agent::write_reference_manifest(&workspace, &project.references)?;
+        }
+        project.detail = format!(
+            "Added {added} immutable producer reference(s). The continuing Director will place them in the next appropriate unrendered scene."
+        );
+        self.persist_emit(&mut project, app)?;
+        Ok(project)
     }
 
     pub fn list(&self) -> Result<Vec<MovieSummary>, StudioError> {
@@ -2102,6 +2228,9 @@ impl MovieStudio {
                 path: String::new(),
                 error: String::new(),
                 versions: Vec::new(),
+                quality_status: String::new(),
+                quality_attempts: 0,
+                quality_detail: String::new(),
             })
             .collect();
         project.edit.clips = project
@@ -2392,6 +2521,9 @@ impl MovieStudio {
                 path: String::new(),
                 error: String::new(),
                 versions: Vec::new(),
+                quality_status: String::new(),
+                quality_attempts: 0,
+                quality_detail: String::new(),
             })
             .collect();
         project.edit.clips = project
@@ -2644,133 +2776,165 @@ impl MovieStudio {
         &self,
         request: IndependentReviewRequest<'_>,
     ) -> Result<MovieCodeReview, StudioError> {
-        let payload = json!({
-            "exactProducerBrief": request.prompt,
-            "producerReferences": request.references.iter().map(|reference| json!({
-                "assetId": reference.asset_id,
-                "kind": reference.kind,
-                "description": reference.description,
-                "useEmbeddedAudio": reference.use_embedded_audio,
-                "embeddedAudioDescription": reference.embedded_audio_description,
-            })).collect::<Vec<_>>(),
-            "completeSubmittedPlan": request.plan,
-        });
-        let messages = vec![
-            json!({"role":"system","content":prompts::independent_reviewer_system()}),
-            json!({"role":"user","content":payload.to_string()}),
-        ];
-        write_json_atomic(
-            &self
-                .project_dir(request.project_id)
-                .join("agent-workspace")
-                .join("independent-review-input.json"),
-            &json!({
-                "messages": sanitize_chat_messages(&messages),
-                "toolName": "submit_movie_code_review",
-                "schema": code_review_schema(),
-            }),
-        )?;
         let mut review_settings = request.settings.clone();
         review_settings.temperature = 0.1;
         review_settings.top_p = 0.9;
         review_settings.top_k = 20;
         review_settings.max_output_tokens = 32_768;
-        let audit_path = self
-            .project_dir(request.project_id)
-            .join("agent-workspace")
-            .join("agent-last-request.json");
-        let mut on_event = |event| match event {
-            agent_protocol::StreamEvent::Content(token) => self.emit_reviewer_planning(
-                request.project_id,
-                PlanningEventKind::Token,
-                PlanningStage::ModelText,
-                token,
-                request.position,
-                request.app,
-            ),
-            agent_protocol::StreamEvent::Reasoning(token) => self.emit_reviewer_planning(
-                request.project_id,
-                PlanningEventKind::Reasoning,
-                PlanningStage::Thinking,
-                token,
-                request.position,
-                request.app,
-            ),
-            agent_protocol::StreamEvent::ToolArgumentsStarted => self.emit_reviewer_planning(
-                request.project_id,
-                PlanningEventKind::Activity,
-                PlanningStage::Planning,
-                "The independent Reviewer is streaming its structured whole-film findings.",
-                request.position,
-                request.app,
-            ),
-            agent_protocol::StreamEvent::ToolArguments(fragment) => self.emit_reviewer_planning(
-                request.project_id,
-                PlanningEventKind::AdvancedToken,
-                PlanningStage::ToolArguments,
-                fragment,
-                request.position,
-                request.app,
-            ),
-            agent_protocol::StreamEvent::AttemptStarted { attempt, maximum } => self
-                .emit_reviewer_planning(
+        let workspace = self.project_dir(request.project_id).join("agent-workspace");
+        let review_brief = compact_review_brief(&workspace, request.prompt)?;
+        let batch_size = if request.plan.clips.len() > 24 || request.prompt.len() > 64 * 1024 {
+            12
+        } else {
+            request.plan.clips.len().max(1)
+        };
+        let mut review = MovieCodeReview {
+            summary: String::new(),
+            issues: Vec::new(),
+        };
+        let mut inputs = Vec::new();
+        for (batch_index, start) in (0..request.plan.clips.len())
+            .step_by(batch_size)
+            .enumerate()
+        {
+            check_cancel(request.cancel)?;
+            let end = (start + batch_size).min(request.plan.clips.len());
+            let scenes = request.plan.clips[start..end]
+                .iter()
+                .enumerate()
+                .map(|(offset, clip)| json!({"filmClipNumber":start + offset + 1,"clip":clip}))
+                .collect::<Vec<_>>();
+            let payload = json!({
+                "producerBriefOrDurableAdaptationMemory": review_brief,
+                "producerReferences": request.references.iter().map(|reference| json!({
+                    "assetId": reference.asset_id,
+                    "kind": reference.kind,
+                    "description": reference.description,
+                })).collect::<Vec<_>>(),
+                "wholeFilmContract": {
+                    "title":request.plan.title,
+                    "logline":request.plan.logline,
+                    "creativeDirection":request.plan.creative_direction,
+                    "continuityBible":request.plan.continuity_bible,
+                    "totalScenes":request.plan.clips.len(),
+                },
+                "reviewBatch":{"firstFilmClip":start + 1,"lastFilmClip":end,"scenes":scenes},
+                "instruction":"Review every supplied scene against the whole-film contract and durable adaptation memory. clipNumber findings must use filmClipNumber, never a batch-local number. Do not require an audio reference for speech and do not infer dialogue from one."
+            });
+            let messages = vec![
+                json!({"role":"system","content":prompts::independent_reviewer_system()}),
+                json!({"role":"user","content":payload.to_string()}),
+            ];
+            inputs.push(
+                json!({"batch":batch_index + 1,"messages":sanitize_chat_messages(&messages)}),
+            );
+            let audit_path = workspace.join(format!(
+                "independent-review-request-{:04}.json",
+                batch_index + 1
+            ));
+            let mut on_event = |event| match event {
+                agent_protocol::StreamEvent::Content(token) => self.emit_reviewer_planning(
                     request.project_id,
-                    PlanningEventKind::Activity,
-                    PlanningStage::Planning,
-                    format!("Reviewer submission attempt {attempt} of {maximum}"),
+                    PlanningEventKind::Token,
+                    PlanningStage::ModelText,
+                    token,
                     request.position,
                     request.app,
                 ),
-            agent_protocol::StreamEvent::SubmissionInvalid(detail) => self.emit_reviewer_planning(
-                request.project_id,
-                PlanningEventKind::Activity,
-                PlanningStage::Planning,
-                detail,
-                request.position,
-                request.app,
-            ),
-            agent_protocol::StreamEvent::Terminal {
-                detail,
-                completion_marker_seen,
-                finish_reason,
-                ..
-            } => self.emit_reviewer_planning(
-                request.project_id,
-                PlanningEventKind::Activity,
-                PlanningStage::Planning,
-                agent_protocol::terminal_detail(
-                    &detail,
-                    completion_marker_seen,
-                    finish_reason.as_deref(),
+                agent_protocol::StreamEvent::Reasoning(token) => self.emit_reviewer_planning(
+                    request.project_id,
+                    PlanningEventKind::Reasoning,
+                    PlanningStage::Thinking,
+                    token,
+                    request.position,
+                    request.app,
                 ),
-                request.position,
-                request.app,
-            ),
-        };
-        let review: MovieCodeReview = agent_protocol::complete_tool_submission(
-            &self.http,
-            ToolSubmissionRequest {
-                connection: request.connection,
-                initial_messages: &messages,
-                tool_name: "submit_movie_code_review",
-                tool_description: "Submit only the independent whole-film review after comparing every scene with the exact producer brief and references.",
-                response_format: code_review_schema(),
-                settings: &review_settings,
-                runtime_max_output_tokens: request.runtime_max_output_tokens,
-                label: "independent movie code review",
-                audit_path: Some(&audit_path),
-                cancel: Some(request.cancel),
-                on_event: Some(&mut on_event),
-            },
-        )
-        .await?;
-        write_json_atomic(
-            &self
-                .project_dir(request.project_id)
-                .join("agent-workspace")
-                .join("independent-review-result.json"),
-            &review,
-        )?;
+                agent_protocol::StreamEvent::ToolArguments(fragment) => self
+                    .emit_reviewer_planning(
+                        request.project_id,
+                        PlanningEventKind::AdvancedToken,
+                        PlanningStage::ToolArguments,
+                        fragment,
+                        request.position,
+                        request.app,
+                    ),
+                agent_protocol::StreamEvent::AttemptStarted { attempt, maximum } => self
+                    .emit_reviewer_planning(
+                        request.project_id,
+                        PlanningEventKind::Activity,
+                        PlanningStage::Planning,
+                        format!(
+                            "Reviewer batch {} submission attempt {attempt} of {maximum}",
+                            batch_index + 1
+                        ),
+                        request.position,
+                        request.app,
+                    ),
+                agent_protocol::StreamEvent::SubmissionInvalid(detail) => self
+                    .emit_reviewer_planning(
+                        request.project_id,
+                        PlanningEventKind::Activity,
+                        PlanningStage::Planning,
+                        detail,
+                        request.position,
+                        request.app,
+                    ),
+                agent_protocol::StreamEvent::Terminal {
+                    detail,
+                    completion_marker_seen,
+                    finish_reason,
+                    ..
+                } => self.emit_reviewer_planning(
+                    request.project_id,
+                    PlanningEventKind::Activity,
+                    PlanningStage::Planning,
+                    agent_protocol::terminal_detail(
+                        &detail,
+                        completion_marker_seen,
+                        finish_reason.as_deref(),
+                    ),
+                    request.position,
+                    request.app,
+                ),
+                agent_protocol::StreamEvent::ToolArgumentsStarted => self.emit_reviewer_planning(
+                    request.project_id,
+                    PlanningEventKind::Activity,
+                    PlanningStage::Planning,
+                    format!(
+                        "The independent Reviewer is checking film scenes {}-{}.",
+                        start + 1,
+                        end
+                    ),
+                    request.position,
+                    request.app,
+                ),
+            };
+            let batch: MovieCodeReview = agent_protocol::complete_tool_submission(
+                &self.http,
+                ToolSubmissionRequest {
+                    connection: request.connection,
+                    initial_messages: &messages,
+                    tool_name: "submit_movie_code_review",
+                    tool_description: "Submit only the independent review for every film-global scene number in this bounded batch.",
+                    response_format: code_review_schema(),
+                    settings: &review_settings,
+                    runtime_max_output_tokens: request.runtime_max_output_tokens,
+                    label: "independent movie code review batch",
+                    audit_path: Some(&audit_path),
+                    cancel: Some(request.cancel),
+                    on_event: Some(&mut on_event),
+                },
+            ).await?;
+            if !batch.summary.trim().is_empty() {
+                if !review.summary.is_empty() {
+                    review.summary.push(' ');
+                }
+                review.summary.push_str(batch.summary.trim());
+            }
+            review.issues.extend(batch.issues);
+        }
+        write_json_atomic(&workspace.join("independent-review-input.json"), &inputs)?;
+        write_json_atomic(&workspace.join("independent-review-result.json"), &review)?;
         self.emit_reviewer_planning(
             request.project_id,
             PlanningEventKind::Token,
@@ -2782,12 +2946,180 @@ impl MovieStudio {
         Ok(review)
     }
 
+    /// Revisit the next small run of approved scenes immediately before H3 renders them.  The
+    /// Director sees durable story memory, actual completed-scene status, and neighboring handoff
+    /// states.  It may refine only the still-unrendered batch; native plan checks remain the final
+    /// authority and the exact request/response is preserved beside the project.
+    pub async fn direct_next_render_batch(
+        &self,
+        id: &str,
+        model_runtime: MovieModelRuntime<'_>,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
+        let mut project = self.get(id)?;
+        ensure_producer_render_approval(&project)?;
+        let current_plan = project
+            .plan
+            .clone()
+            .ok_or_else(|| StudioError::Invalid("project has no saved plan".into()))?;
+        let Some(first) = next_unrendered_clip(&project) else {
+            return Ok(project);
+        };
+        let last = (first + DIRECTED_RENDER_BATCH_SIZE).min(current_plan.clips.len());
+        let production_root = self
+            .project_dir(id)
+            .join("agent-workspace")
+            .join("production")
+            .join(format!("batch-{:04}-{:04}", first + 1, last));
+        fs::create_dir_all(&production_root)?;
+        let context = production_director_context(
+            &self.project_dir(id),
+            &project,
+            &current_plan,
+            first,
+            last,
+        )?;
+        let messages = vec![
+            json!({"role":"system","content":"You are Kestrel's continuing offline movie Director. Work on the one exact upcoming scene and return it with the same id. Read the durable story memory, completed-scene status, neighboring continuity, producer references, style, pacing, dialogue, and H3's 5-15 second boundary. Preserve story events and approved intent. Make the renderer direction a complete audiovisual instruction: give picture and sound equal specificity, direct the full local timeline, quote spoken words, and name intentional silence. Image and video references establish visible or motion identity. An audio reference is optional exact media that H3 receives after the written direction; preserve that supplied audio and describe its intended timing against the picture. The text direction remains complete when there is no reference."}),
+            json!({"role":"user","content":context}),
+        ];
+        write_json_atomic(
+            &production_root.join("director-input.json"),
+            &json!({"messages":sanitize_chat_messages(&messages),"schema":directed_render_batch_schema(last - first)}),
+        )?;
+        project.phase = "director-checkpoint".into();
+        project.detail = format!(
+            "The Director is checking production continuity for scenes {}-{} before H3 receives them.",
+            first + 1,
+            last
+        );
+        self.persist_emit(&mut project, app)?;
+
+        let effective = project
+            .settings
+            .runtime_settings_for(model_runtime.settings, model_runtime.director_model_id);
+        let lease = tokio::select! {
+            result = model_runtime.runtime.lease_model(
+                model_runtime.director_model_id,
+                model_runtime.models,
+                &effective,
+                app,
+            ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
+            _ = cancel.cancelled() => return Err(StudioError::Cancelled),
+        };
+        let mut director_settings = project.settings.clone();
+        director_settings.thinking_budget = project
+            .model_roles
+            .director
+            .thinking_level
+            .unwrap_or(effective.thinking_level)
+            .budget_tokens(32_768);
+        director_settings.max_output_tokens = director_settings.max_output_tokens.min(24_576);
+        let directed: DirectedRenderBatch = agent_protocol::complete_tool_submission(
+            &self.http,
+            ToolSubmissionRequest {
+                connection: &lease.connection,
+                initial_messages: &messages,
+                tool_name: "submit_directed_render_batch",
+                tool_description: "Submit the complete checked upcoming production batch with unchanged clip ids and order.",
+                response_format: directed_render_batch_schema(last - first),
+                settings: &director_settings,
+                runtime_max_output_tokens: effective.max_output_tokens,
+                label: "continuing movie Director production checkpoint",
+                audit_path: Some(&production_root.join("director-request.json")),
+                cancel: Some(cancel),
+                on_event: None,
+            },
+        )
+        .await?;
+        drop(lease);
+        write_json_atomic(&production_root.join("director-response.json"), &directed)?;
+        validate_directed_render_batch(&directed, &current_plan.clips[first..last])?;
+
+        let mut revised_plan = current_plan.clone();
+        for (offset, clip) in directed.clips.iter().cloned().enumerate() {
+            revised_plan.clips[first + offset] = clip;
+        }
+        prepare_producer_plan(&project, &mut revised_plan)?;
+        let issues = prompt_quality_issues(&revised_plan, &project.references);
+        if !issues.is_empty() {
+            write_json_atomic(&production_root.join("native-check.json"), &issues)?;
+            return Err(StudioError::Planning(format!(
+                "the continuing Director's scenes {}-{} failed native production checks: {}",
+                first + 1,
+                last,
+                issues.join(" ")
+            )));
+        }
+        revised_plan.quality_review = current_plan.quality_review;
+        for index in first..last {
+            let planned = &revised_plan.clips[index];
+            let rendered = project.clips.get_mut(index).ok_or_else(|| {
+                StudioError::Invalid(format!("rendered scene record {} is missing", index + 1))
+            })?;
+            rendered.title.clone_from(&planned.title);
+            rendered.prompt.clone_from(&planned.prompt);
+            rendered.duration_seconds = planned.duration_seconds;
+        }
+        project.plan = Some(revised_plan.clone());
+        project.director_checkpoints.push(MovieDirectorCheckpoint {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            first_clip: (first + 1) as u32,
+            last_clip: last as u32,
+            model_id: model_runtime.director_model_id.into(),
+            status: "approved-for-render".into(),
+            summary: truncate(directed.summary.trim(), 4_000),
+            continuity_notes: directed
+                .continuity_notes
+                .into_iter()
+                .map(|note| truncate(note.trim(), 1_000))
+                .filter(|note| !note.is_empty())
+                .take(24)
+                .collect(),
+        });
+        project.detail = format!(
+            "The Director checked scenes {}-{} against current production memory. H3 can render this bounded batch.",
+            first + 1,
+            last
+        );
+        write_json_atomic(&self.project_dir(id).join("plan.json"), &revised_plan)?;
+        self.persist_emit(&mut project, app)?;
+        Ok(project)
+    }
+
+    #[allow(dead_code)]
     pub async fn render(
         &self,
         id: &str,
         cancel: &CancellationToken,
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
+        self.render_bounded(id, None, cancel, app).await
+    }
+
+    pub async fn render_next_batch(
+        &self,
+        id: &str,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        self.render_bounded(id, Some(DIRECTED_RENDER_BATCH_SIZE), cancel, app)
+            .await
+    }
+
+    async fn render_bounded(
+        &self,
+        id: &str,
+        maximum_new_clips: Option<usize>,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
         let mut project = self.get(id)?;
         ensure_producer_render_approval(&project)?;
         self.live_previews.clear_movie(id);
@@ -2797,6 +3129,7 @@ impl MovieStudio {
             .plan
             .clone()
             .ok_or_else(|| StudioError::Invalid("project has no saved plan".into()))?;
+        let mut rendered_this_pass = 0usize;
         for (index, planned) in plan.clips.iter().enumerate() {
             check_cancel(cancel)?;
             let rendered_clip = project.clips.get(index).ok_or_else(|| {
@@ -2805,7 +3138,24 @@ impl MovieStudio {
             if rendered_clip.status == "complete" && Path::new(&rendered_clip.path).is_file() {
                 continue;
             }
+            if maximum_new_clips.is_some_and(|maximum| rendered_this_pass >= maximum) {
+                break;
+            }
             let seed = rendered_clip.seed;
+            let attempt = rendered_clip.quality_attempts.saturating_add(1);
+            let prior_version = (attempt > 1
+                && !rendered_clip.path.is_empty()
+                && Path::new(&rendered_clip.path).is_file())
+            .then(|| ClipVersion {
+                id: format!("quality-attempt-{:02}", attempt - 1),
+                created_at: Utc::now().to_rfc3339(),
+                title: rendered_clip.title.clone(),
+                prompt: rendered_clip.prompt.clone(),
+                duration_seconds: rendered_clip.duration_seconds,
+                seed: rendered_clip.seed,
+                path: rendered_clip.path.clone(),
+            });
+            let variant = (attempt > 1).then(|| format!("quality-attempt-{attempt:02}"));
             project.phase = "rendering".into();
             project.detail = format!(
                 "Rendering clip {} of {} — {}",
@@ -2828,7 +3178,10 @@ impl MovieStudio {
                     index,
                     seed,
                     cancel,
-                    ClipRenderContext { variant: None, app },
+                    ClipRenderContext {
+                        variant: variant.as_deref(),
+                        app,
+                    },
                 )
                 .await
             {
@@ -2842,8 +3195,17 @@ impl MovieStudio {
                     clip.status = "complete".into();
                     clip.path = path;
                     clip.error.clear();
+                    if let Some(version) = prior_version {
+                        clip.versions.push(version);
+                    }
+                    clip.quality_status = "pending".into();
+                    clip.quality_attempts = attempt;
+                    clip.quality_detail =
+                        "Awaiting native media verification and the configured visual review."
+                            .into();
                     self.extract_last_frame(&project, index).await?;
                     self.persist_emit(&mut project, app)?;
+                    rendered_this_pass += 1;
                 }
                 Err(error) => {
                     let clip = project.clips.get_mut(index).ok_or_else(|| {
@@ -2859,6 +3221,21 @@ impl MovieStudio {
                 }
             }
         }
+        if maximum_new_clips.is_some() && rendered_this_pass > 0 {
+            project.phase = "quality-review".into();
+            project.detail = "H3 preserved one new audiovisual master. Kestrel is releasing the renderer, verifying its audio/video streams, and preparing the configured visual critic before the Director advances.".into();
+            self.persist_emit(&mut project, app)?;
+            return Ok(project);
+        }
+        if next_unrendered_clip(&project).is_some() {
+            project.phase = "director-checkpoint".into();
+            project.detail = format!(
+                "H3 completed {} new scene(s). The Director will check the next bounded production batch before rendering continues.",
+                rendered_this_pass
+            );
+            self.persist_emit(&mut project, app)?;
+            return Ok(project);
+        }
         project.phase = "assembling".into();
         project.detail =
             "Joining the untouched H3 masters into a review cut without trimming or replacing audio."
@@ -2869,6 +3246,281 @@ impl MovieStudio {
         project.status = "complete".into();
         project.phase = "complete".into();
         project.detail = "The untouched H3 review cut is ready. Producer edits are opt-in and every source master remains preserved.".into();
+        self.persist_emit(&mut project, app)?;
+        Ok(project)
+    }
+
+    /// Inspect exactly one newly preserved master before the Director advances.  A vision-capable
+    /// Reviewer receives three exact local PNGs; a text-only Reviewer still records the native
+    /// stream/duration verification explicitly.  Rejections are bounded to two retries and their
+    /// concrete repair notes enter the next continuing-Director checkpoint.
+    pub async fn review_pending_rendered_clip(
+        &self,
+        id: &str,
+        model_runtime: MovieModelRuntime<'_>,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<MovieProject, StudioError> {
+        let lock = self.project_lock(id)?;
+        let _guard = lock.lock().await;
+        let mut project = self.get(id)?;
+        let Some(index) = project
+            .clips
+            .iter()
+            .position(|clip| clip.quality_status == "pending")
+        else {
+            return Ok(project);
+        };
+        check_cancel(cancel)?;
+        let planned = project
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.clips.get(index))
+            .cloned()
+            .ok_or_else(|| StudioError::Invalid("quality review scene is absent from the approved plan".into()))?;
+        let rendered = project.clips[index].clone();
+        let native = probe_rendered_master(Path::new(&rendered.path), planned.duration_seconds).await?;
+        let reviewer = model_runtime
+            .models
+            .iter()
+            .find(|model| model.id == model_runtime.reviewer_model_id)
+            .ok_or_else(|| {
+                StudioError::Invalid(
+                    "the project's configured Reviewer is no longer in the local model catalog"
+                        .into(),
+                )
+            })?;
+        let review_root = self
+            .project_dir(id)
+            .join("agent-workspace")
+            .join("production")
+            .join("quality")
+            .join(format!(
+                "clip-{:04}-attempt-{:02}",
+                index + 1,
+                rendered.quality_attempts
+            ));
+        fs::create_dir_all(&review_root)?;
+        write_json_atomic(&review_root.join("native-media-check.json"), &native)?;
+        project.phase = "quality-review".into();
+        project.detail = format!(
+            "Checking scene {} attempt {} before the Director advances.",
+            index + 1,
+            rendered.quality_attempts
+        );
+        self.persist_emit(&mut project, app)?;
+
+        let mut review = if reviewer.supports_vision && reviewer.mmproj_path.is_some() {
+            let mut content = vec![json!({
+                "type":"text",
+                "text":format!(
+                    "Review this exact H3 master against its approved scene direction. Three ordered local frames are supplied: opening, middle, ending. Judge visible prompt adherence, character/object identity, anatomy and geometry, composition, lighting, motion progression inferred across the samples, and continuity of the ending handoff. Approve small harmless variation. Reject only a concrete defect worth another long H3 render. Native media verification: {}. Scene direction: {}",
+                    native.summary,
+                    planned.prompt
+                )
+            })];
+            let times = [
+                0.15_f64.min((planned.duration_seconds as f64 * 0.25).max(0.01)),
+                planned.duration_seconds as f64 / 2.0,
+                (planned.duration_seconds as f64 - 0.12).max(0.01),
+            ];
+            let labels = ["OPENING", "MIDDLE", "ENDING"];
+            let mut frame_receipts = Vec::new();
+            for (position, (label, time)) in labels.into_iter().zip(times).enumerate() {
+                let path = review_root.join(format!("frame-{}.png", position + 1));
+                extract_exact_frame(Path::new(&rendered.path), time, &path).await?;
+                let bytes = fs::read(&path)?;
+                if bytes.is_empty() || bytes.len() > 16 * 1024 * 1024 {
+                    return Err(StudioError::Render(format!(
+                        "scene {} {label} review frame is empty or exceeds 16 MiB",
+                        index + 1
+                    )));
+                }
+                let mut hasher = Sha256::new();
+                hasher.update(&bytes);
+                let sha256 = format!("{:x}", hasher.finalize());
+                frame_receipts.push(json!({
+                    "label":label,
+                    "timeSeconds":time,
+                    "path":path,
+                    "bytes":bytes.len(),
+                    "sha256":sha256,
+                }));
+                content.push(json!({"type":"text","text":format!("{label} FRAME at {time:.3} seconds")}));
+                content.push(json!({
+                    "type":"image_url",
+                    "image_url":{"url":format!("data:image/png;base64,{}", STANDARD.encode(bytes))}
+                }));
+            }
+            let messages = vec![
+                json!({"role":"system","content":"You are Kestrel's conservative local visual dailies critic. Inspect only supplied pixels and native verification. Return a concise production decision. visibleProblems contains directly observable defects. promptRepairs contains positive renderer-direction changes that address rejected defects. A retry is expensive, so approve a usable scene and reject only material failures."}),
+                json!({"role":"user","content":content}),
+            ];
+            write_json_atomic(
+                &review_root.join("visual-review-input.json"),
+                &json!({
+                    "modelId":reviewer.id,
+                    "modelName":reviewer.name,
+                    "plannedScene":planned,
+                    "frames":frame_receipts,
+                    "nativeMediaCheck":native,
+                    "schema":rendered_scene_review_schema(),
+                }),
+            )?;
+            let effective = project.settings.runtime_settings_for(
+                model_runtime.settings,
+                model_runtime.reviewer_model_id,
+            );
+            let lease = tokio::select! {
+                result = model_runtime.runtime.lease_model(
+                    model_runtime.reviewer_model_id,
+                    model_runtime.models,
+                    &effective,
+                    app,
+                ) => result.map_err(|error| StudioError::Planning(error.to_string()))?,
+                _ = cancel.cancelled() => return Err(StudioError::Cancelled),
+            };
+            let mut settings = project.settings.clone();
+            settings.temperature = 0.1;
+            settings.top_p = 0.9;
+            settings.top_k = 20;
+            settings.max_output_tokens = settings.max_output_tokens.min(4_096);
+            settings.thinking_budget = project
+                .model_roles
+                .reviewer
+                .thinking_level
+                .unwrap_or(ThinkingLevel::Low)
+                .budget_tokens(settings.max_output_tokens);
+            let result = agent_protocol::complete_tool_submission(
+                &self.http,
+                ToolSubmissionRequest {
+                    connection: &lease.connection,
+                    initial_messages: &messages,
+                    tool_name: "submit_rendered_scene_review",
+                    tool_description: "Submit the bounded visual dailies decision for this exact H3 scene master.",
+                    response_format: rendered_scene_review_schema(),
+                    settings: &settings,
+                    runtime_max_output_tokens: effective.max_output_tokens,
+                    label: "rendered H3 scene visual review",
+                    audit_path: None,
+                    cancel: Some(cancel),
+                    on_event: None,
+                },
+            )
+            .await?;
+            drop(lease);
+            result
+        } else {
+            RenderedSceneReview {
+                approved: native.passed,
+                score: if native.passed { 100 } else { 0 },
+                summary: if native.passed {
+                    format!(
+                        "Native picture, audio, and duration checks passed. {} is text-only, so pixel critique was explicitly skipped.",
+                        reviewer.name
+                    )
+                } else {
+                    native.summary.clone()
+                },
+                visible_problems: Vec::new(),
+                prompt_repairs: Vec::new(),
+            }
+        };
+        if review.score > 100 || !has_meaningful_prose(&review.summary, 3) {
+            return Err(StudioError::Planning(
+                "the visual Reviewer returned an invalid score or empty decision".into(),
+            ));
+        }
+        if !native.passed {
+            review.approved = false;
+            review.visible_problems.push(native.summary.clone());
+            review
+                .prompt_repairs
+                .push("Regenerate a native H3 master with both a video stream and its complete audio stream through the requested endpoint.".into());
+        }
+        review.visible_problems = review
+            .visible_problems
+            .into_iter()
+            .map(|value| truncate(value.trim(), 1_000))
+            .filter(|value| !value.is_empty())
+            .take(12)
+            .collect();
+        review.prompt_repairs = review
+            .prompt_repairs
+            .into_iter()
+            .map(|value| truncate(value.trim(), 1_000))
+            .filter(|value| !value.is_empty())
+            .take(12)
+            .collect();
+        if !review.approved && review.visible_problems.is_empty() {
+            return Err(StudioError::Planning(
+                "the visual Reviewer rejected the scene without naming an observable problem"
+                    .into(),
+            ));
+        }
+        let retry = !review.approved && rendered.quality_attempts < 3;
+        let accepted_at_limit = !review.approved && !retry;
+        let status = if retry {
+            "retry-requested"
+        } else if accepted_at_limit {
+            "accepted-at-limit"
+        } else if reviewer.supports_vision && reviewer.mmproj_path.is_some() {
+            "approved"
+        } else {
+            "native-verified"
+        };
+        let detail = format!(
+            "{}{}{}",
+            review.summary.trim(),
+            if review.visible_problems.is_empty() { "" } else { " Visible findings: " },
+            review.visible_problems.join(" ")
+        );
+        {
+            let clip = &mut project.clips[index];
+            clip.quality_status = status.into();
+            clip.quality_detail = truncate(&detail, 8_000);
+            if retry {
+                clip.status = "retry-requested".into();
+            }
+        }
+        project.visual_review_checkpoints.push(MovieVisualReviewCheckpoint {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            clip_id: rendered.id,
+            clip_number: (index + 1) as u32,
+            attempt: rendered.quality_attempts,
+            model_id: reviewer.id.clone(),
+            model_name: reviewer.name.clone(),
+            status: status.into(),
+            score: review.score,
+            summary: truncate(review.summary.trim(), 4_000),
+            visible_problems: review.visible_problems,
+            prompt_repairs: review.prompt_repairs,
+            native_media_check: native.summary,
+        });
+        write_json_atomic(&review_root.join("visual-review-result.json"), &project.visual_review_checkpoints.last())?;
+        project.phase = if retry {
+            "director-checkpoint".into()
+        } else {
+            "quality-approved".into()
+        };
+        project.detail = if retry {
+            format!(
+                "The visual critic found a material issue in scene {} attempt {}. The continuing Director will apply the recorded repair before one bounded retry.",
+                index + 1,
+                rendered.quality_attempts
+            )
+        } else if accepted_at_limit {
+            format!(
+                "Scene {} reached its three-attempt quality budget. The latest master and every prior attempt are preserved; production is advancing.",
+                index + 1
+            )
+        } else {
+            format!(
+                "Scene {} passed its configured quality checkpoint. The Director can advance to the next production unit.",
+                index + 1
+            )
+        };
         self.persist_emit(&mut project, app)?;
         Ok(project)
     }
@@ -3369,6 +4021,9 @@ impl MovieStudio {
             path: target_mp4,
             error: String::new(),
             versions: Vec::new(),
+            quality_status: "producer-generated".into(),
+            quality_attempts: 1,
+            quality_detail: "Created through an explicit producer generative edit.".into(),
         };
         project.clips.push(new_clip);
         let previous_edit = project.edit.clone();
@@ -3635,8 +4290,8 @@ impl MovieStudio {
         } else {
             format!(
                 "{}\n\n{}",
-                bound_reference_prompt(&graph_references),
-                planned.prompt
+                planned.prompt,
+                bound_reference_prompt(&graph_references)
             )
         };
         let preview_available = self.comfy_preview_available().await;
@@ -4686,7 +5341,7 @@ fn plan_for_exchange(
 fn parse_plan_exchange_json(text: &str) -> Result<Value, StudioError> {
     if text.trim().is_empty() || text.len() > MAX_PLAN_EXCHANGE_BYTES {
         return Err(StudioError::Invalid(
-            "pasted plan JSON must be between 1 byte and 2 MiB".into(),
+            "pasted plan JSON must be between 1 byte and 16 MiB".into(),
         ));
     }
     let trimmed = text.trim();
@@ -4806,6 +5461,159 @@ fn check_cancel(cancel: &CancellationToken) -> Result<(), StudioError> {
     } else {
         Ok(())
     }
+}
+
+fn next_unrendered_clip(project: &MovieProject) -> Option<usize> {
+    project.clips.iter().position(|clip| {
+        clip.status != "complete" || clip.path.is_empty() || !Path::new(&clip.path).is_file()
+    })
+}
+
+fn compact_review_brief(workspace: &Path, prompt: &str) -> Result<String, StudioError> {
+    if prompt.len() <= 64 * 1024 {
+        return Ok(prompt.to_owned());
+    }
+    let mut memory = String::from(
+        "This is a long-form adaptation. The exact manuscript remains preserved in ordered source chunks. Review against the Director's durable adaptation memory and outline below.\n",
+    );
+    for name in ["BRIEF.md", "STORY-MEMORY.md", "OUTLINE.md"] {
+        let path = workspace.join(name);
+        match fs::read(&path) {
+            Ok(bytes) => {
+                if bytes.len() > 96 * 1024 {
+                    return Err(StudioError::Invalid(format!(
+                        "{name} exceeds the 96 KiB review-memory limit"
+                    )));
+                }
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| StudioError::Invalid(format!("{name} is not valid UTF-8")))?;
+                memory.push_str(&format!("\n===== {name} =====\n{text}\n"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if memory.len() > 256 * 1024 {
+        return Err(StudioError::Invalid(
+            "durable long-form adaptation memory exceeds 256 KiB; checkpoint a more compact STORY-MEMORY.md and OUTLINE.md before review"
+                .into(),
+        ));
+    }
+    Ok(memory)
+}
+
+fn production_director_context(
+    project_root: &Path,
+    project: &MovieProject,
+    plan: &MoviePlan,
+    first: usize,
+    last: usize,
+) -> Result<String, StudioError> {
+    let workspace = project_root.join("agent-workspace");
+    let read_memory = |name: &str| -> Result<Option<String>, StudioError> {
+        let path = workspace.join(name);
+        match fs::read(&path) {
+            Ok(bytes) => {
+                if bytes.len() > 96 * 1024 {
+                    return Err(StudioError::Invalid(format!(
+                        "{name} exceeds the 96 KiB production-memory limit"
+                    )));
+                }
+                Ok(Some(String::from_utf8(bytes).map_err(|_| {
+                    StudioError::Invalid(format!("{name} is not valid UTF-8"))
+                })?))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    };
+    let brief = read_memory("BRIEF.md")?.unwrap_or_else(|| {
+        if project.prompt.len() <= 64 * 1024 {
+            project.prompt.clone()
+        } else {
+            "The exact long-form manuscript is preserved in the agent workspace source chunks."
+                .into()
+        }
+    });
+    let story_memory = read_memory("STORY-MEMORY.md")?.unwrap_or_default();
+    let outline = read_memory("OUTLINE.md")?.unwrap_or_default();
+    let neighbor_start = first.saturating_sub(2);
+    let neighbor_end = (last + 2).min(plan.clips.len());
+    let completed = project
+        .clips
+        .iter()
+        .map(|clip| {
+            json!({
+                "id":clip.id,
+                "status":clip.status,
+                "masterPreserved":!clip.path.is_empty() && Path::new(&clip.path).is_file(),
+                "qualityStatus":clip.quality_status,
+                "qualityAttempts":clip.quality_attempts,
+                "qualityDetail":clip.quality_detail,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "producerBrief": brief,
+        "durableStoryMemory": story_memory,
+        "durableOutline": outline,
+        "movie": {
+            "title": plan.title,
+            "logline": plan.logline,
+            "audience": plan.audience,
+            "creativeDirection": plan.creative_direction,
+            "continuityBible": plan.continuity_bible,
+        },
+        "producerReferences": project.references.iter().map(|reference| json!({
+            "assetId":reference.asset_id,
+            "kind":reference.kind,
+            "description":reference.description,
+        })).collect::<Vec<_>>(),
+        "completedSceneStatus": completed,
+        "recentVisualReviews": project.visual_review_checkpoints.iter().rev().take(6).collect::<Vec<_>>(),
+        "neighboringApprovedScenes": plan.clips[neighbor_start..neighbor_end],
+        "upcomingBatch": plan.clips[first..last],
+        "batchContract": {
+            "firstScene": first + 1,
+            "lastScene": last,
+            "exactClipCount": last - first,
+            "renderer": "MiniMax H3 native picture and sound",
+        }
+    })
+    .to_string())
+}
+
+fn validate_directed_render_batch(
+    directed: &DirectedRenderBatch,
+    expected: &[PlannedClip],
+) -> Result<(), StudioError> {
+    if !has_meaningful_prose(&directed.summary, 3) || directed.summary.len() > 4_000 {
+        return Err(StudioError::Planning(
+            "the continuing Director returned no usable batch summary".into(),
+        ));
+    }
+    if directed.clips.len() != expected.len() {
+        return Err(StudioError::Planning(format!(
+            "the continuing Director returned {} clips for a {}-clip production batch",
+            directed.clips.len(),
+            expected.len()
+        )));
+    }
+    for (offset, (actual, expected)) in directed.clips.iter().zip(expected).enumerate() {
+        if actual.id != expected.id {
+            return Err(StudioError::Planning(format!(
+                "the continuing Director changed clip identity at batch position {}",
+                offset + 1
+            )));
+        }
+        if actual.source_refs != expected.source_refs {
+            return Err(StudioError::Planning(format!(
+                "the continuing Director changed manuscript/source provenance for {}",
+                expected.id
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -5042,6 +5850,13 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
                 issues.push(format!("Clip {} prompt lacks {label}.", index + 1));
             }
         }
+        let audio_dimensions = audio_direction_dimensions(&lower);
+        if audio_dimensions < 3 {
+            issues.push(format!(
+                "Clip {} gives sound only {audio_dimensions} concrete production dimension(s). Build an equally directed soundtrack with at least three applicable dimensions: ambience or room tone; foreground action/foley; dialogue, narration, or explicit no speech; music or intentional no music; and spatial perspective, dynamics, or silence. Time those choices against the picture through the exact endpoint.",
+                index + 1
+            ));
+        }
         if !has_timed_structure(&lower) {
             issues.push(format!(
                 "Clip {} prompt lacks timed shot or beat structure.",
@@ -5165,20 +5980,31 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
                 ));
             }
         }
-        let native_audio_count = clip
+        let selected_native_references = clip
             .reference_ids
             .iter()
-            .filter(|reference_id| {
-                references.iter().any(|reference| {
-                    reference.asset_id.as_str() == reference_id.as_str()
-                        && reference.kind == "audio"
-                })
+            .filter_map(|reference_id| {
+                references
+                    .iter()
+                    .find(|reference| reference.asset_id.as_str() == reference_id.as_str())
             })
+            .collect::<Vec<_>>();
+        let native_picture_count = selected_native_references
+            .iter()
+            .filter(|reference| reference.kind == "image")
             .count();
-        if native_audio_count > 1 {
+        let native_video_count = selected_native_references
+            .iter()
+            .filter(|reference| reference.kind == "video")
+            .count();
+        let native_audio_count = selected_native_references
+            .iter()
+            .filter(|reference| reference.kind == "audio" || reference.use_embedded_audio)
+            .count();
+        if native_picture_count > 9 || native_video_count > 3 || native_audio_count > 3 {
             issues.push(format!(
-                "Clip {} selects multiple exact native-audio tracks; use one deterministic clip soundtrack.",
-                index + 1
+                "Clip {} selects {native_picture_count} pictures, {native_video_count} videos, and {native_audio_count} exact audio signals. One H3 scene accepts at most 9 pictures, 3 videos, and 3 audio signals; keep the movie-wide reference library, but choose only the media needed for this scene.",
+                index + 1,
             ));
         }
     }
@@ -5218,20 +6044,73 @@ fn prompt_quality_issues(plan: &MoviePlan, references: &[MovieReference]) -> Vec
             }
         }
     }
-    let selected = plan
-        .clips
-        .iter()
-        .flat_map(|clip| clip.reference_ids.iter())
-        .collect::<HashSet<_>>();
-    for reference in references {
-        if !selected.contains(&reference.asset_id) {
-            issues.push(format!(
-                "Producer reference {} is never assigned to a clip.",
-                reference.asset_id
-            ));
-        }
-    }
     issues
+}
+
+fn audio_direction_dimensions(prompt: &str) -> usize {
+    let contains_any = |markers: &[&str]| markers.iter().any(|marker| prompt.contains(marker));
+    [
+        contains_any(&[
+            "ambience",
+            "ambient",
+            "room tone",
+            "environmental sound",
+            "wind",
+            "rain",
+            "crowd",
+            "traffic",
+            "birds",
+        ]),
+        contains_any(&[
+            "foley",
+            "sound effect",
+            "footstep",
+            "rustle",
+            "creak",
+            "impact",
+            "engine",
+            "breath",
+            "cloth",
+        ]),
+        contains_any(&[
+            "dialogue",
+            "voice",
+            "speech",
+            "narration",
+            "narrator",
+            "no spoken",
+            "no speech",
+            "wordless",
+        ]),
+        contains_any(&[
+            "music",
+            "score",
+            "orchestral",
+            "melody",
+            "rhythm",
+            "no music",
+            "unscored",
+        ]),
+        contains_any(&[
+            "foreground",
+            "background",
+            "distant",
+            "near-field",
+            "diegetic",
+            "spatial",
+            "stereo",
+            "sound perspective",
+            "mix",
+            "silence",
+            "silent",
+            "quiet",
+            "crescendo",
+            "fade",
+        ]),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count()
 }
 
 fn producer_intent_issues(
@@ -5397,40 +6276,45 @@ fn producer_intent_issues(
             }
         }
     }
-    for reference in references.iter().filter(|reference| {
-        reference.kind == "audio" && audio_reference_describes_speech(&reference.description)
-    }) {
-        for (index, clip) in plan
-            .clips
-            .iter()
-            .enumerate()
-            .filter(|(_, clip)| clip.reference_ids.contains(&reference.asset_id))
-        {
-            let lower = clip.prompt.to_ascii_lowercase();
-            let assigns_voice = [
-                "attached voice",
-                "supplied voice",
-                "reference voice",
-                "voice reference",
-                "voice identity",
-                "voice/timbre",
-                "vocal timbre",
-                "speaker's voice",
-                "speaker’s voice",
-            ]
-            .iter()
-            .any(|marker| lower.contains(marker));
-            if !assigns_voice || !has_quoted_spoken_line(&clip.prompt) {
-                issues.push(format!(
-                    "Producer audio reference {} is described as speech or a voice, but clip {} does not both assign the supplied voice/timbre and state exact dialogue in quotation marks. H3 uses audio as generative voice conditioning rather than guaranteed waveform playback. Add a literal role sentence such as: Use the supplied voice reference as the speaker's voice identity and vocal timbre. Then give the speaker short exact words that fit the native {:.1}s scene so H3 does not invent or garble narration. Do not trim, mux, replace, or pad the generated master.",
-                    reference.asset_id,
-                    index + 1,
-                    clip.duration_seconds
-                ));
-            }
-        }
-    }
     issues
+}
+
+fn directed_render_batch_schema(clip_count: usize) -> Value {
+    let clip_schema = json!({
+        "type":"object","additionalProperties":false,"properties":{
+            "id":{"type":"string","maxLength":80},
+            "title":{"type":"string","maxLength":4000},
+            "purpose":{"type":"string","maxLength":8000},
+            "durationSeconds":{"type":"number","minimum":5,"maximum":15},
+            "prompt":{"type":"string","minLength":20,"maxLength":65536},
+            "continuityIn":{"type":"string","maxLength":8000},
+            "continuityOut":{"type":"string","maxLength":8000},
+            "transition":{"type":"string","maxLength":2000},
+            "usePreviousFrame":{"type":"boolean"},
+            "sourceRefs":{"type":"array","maxItems":128,"items":{"type":"string","maxLength":200}},
+            "referenceIds":{"type":"array","maxItems":15,"items":{"type":"string","maxLength":128}}
+        },
+        "required":["id","title","purpose","durationSeconds","prompt","continuityIn","continuityOut","transition","usePreviousFrame","sourceRefs","referenceIds"]
+    });
+    json!({"type":"json_schema","json_schema":{"name":"kestrel_directed_render_batch","strict":true,"schema":{
+        "type":"object","additionalProperties":false,"properties":{
+            "summary":{"type":"string","minLength":3,"maxLength":4000},
+            "continuityNotes":{"type":"array","maxItems":24,"items":{"type":"string","maxLength":1000}},
+            "clips":{"type":"array","minItems":clip_count,"maxItems":clip_count,"items":clip_schema}
+        },"required":["summary","continuityNotes","clips"]
+    }}})
+}
+
+fn rendered_scene_review_schema() -> Value {
+    json!({"type":"json_schema","json_schema":{"name":"kestrel_rendered_scene_review","strict":true,"schema":{
+        "type":"object","additionalProperties":false,"properties":{
+            "approved":{"type":"boolean"},
+            "score":{"type":"integer","minimum":0,"maximum":100},
+            "summary":{"type":"string","minLength":3,"maxLength":4000},
+            "visibleProblems":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":1000}},
+            "promptRepairs":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":1000}}
+        },"required":["approved","score","summary","visibleProblems","promptRepairs"]
+    }}})
 }
 
 fn is_identity_reference_description(description: &str) -> bool {
@@ -5762,22 +6646,6 @@ fn clip_is_independent_subject_free(clip: &PlannedClip, subjects: &[String]) -> 
             .any(|marker| description.contains(marker))
         });
     explicitly_absent || !subjects.iter().any(|subject| description.contains(subject))
-}
-
-fn audio_reference_describes_speech(description: &str) -> bool {
-    let lower = description.to_ascii_lowercase();
-    [
-        "voice",
-        "spoken",
-        "speech",
-        "dialogue",
-        "dialog",
-        "narration",
-        "narrator",
-        "vocal",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
 }
 
 fn directs_unquoted_speech(direction: &str) -> bool {
@@ -6214,6 +7082,84 @@ pub async fn extract_exact_frame(
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeRenderedMediaCheck {
+    passed: bool,
+    has_video: bool,
+    has_audio: bool,
+    duration_seconds: f64,
+    expected_duration_seconds: f32,
+    summary: String,
+}
+
+async fn probe_rendered_master(
+    path: &Path,
+    expected_duration_seconds: f32,
+) -> Result<NativeRenderedMediaCheck, StudioError> {
+    let output = tokio::process::Command::new(media_program("ffprobe"))
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(StudioError::Render(format!(
+            "cannot verify the preserved H3 master with FFprobe: {}",
+            truncate(&String::from_utf8_lossy(&output.stderr), 500)
+        )));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    let streams = value
+        .get("streams")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let has_video = streams
+        .iter()
+        .any(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("video"));
+    let has_audio = streams
+        .iter()
+        .any(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("audio"));
+    let duration_seconds = value
+        .pointer("/format/duration")
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or_default();
+    let duration_matches =
+        (duration_seconds - expected_duration_seconds as f64).abs() <= 0.9;
+    let passed = has_video && has_audio && duration_matches;
+    let summary = format!(
+        "FFprobe found {}video, {}audio, and {:.3}s duration for a {:.3}s direction{}.",
+        if has_video { "a " } else { "no " },
+        if has_audio { "a complete " } else { "no " },
+        duration_seconds,
+        expected_duration_seconds,
+        if duration_matches {
+            ""
+        } else {
+            " (outside the 0.9s native tolerance)"
+        }
+    );
+    Ok(NativeRenderedMediaCheck {
+        passed,
+        has_video,
+        has_audio,
+        duration_seconds,
+        expected_duration_seconds,
+        summary,
+    })
+}
+
 struct H3GraphRequest<'a> {
     prompt: &'a str,
     width: u32,
@@ -6578,7 +7524,7 @@ fn probe_reference(path: &Path, kind: &str) -> Result<ReferenceProbe, StudioErro
     }
     if kind == "audio" && !(0.2..=MAX_REFERENCE_SECONDS).contains(&duration) {
         return Err(StudioError::Invalid(format!(
-            "{} is {:.2}s; trim H3 audio references to 0.2-15 seconds for predictable conditioning",
+            "{} is {:.2}s; provide exact H3 audio references between 0.2 and 15 seconds",
             reference_name(path),
             duration
         )));
@@ -7114,10 +8060,7 @@ mod tests {
         .validate(true)
         .unwrap();
         assert_eq!(settings_max.thinking_budget, MOVIE_THINKING_BUDGET);
-        assert_eq!(
-            MovieSettings::default().thinking_budget,
-            MOVIE_THINKING_BUDGET
-        );
+        assert_eq!(MovieSettings::default().thinking_budget, 2_048);
     }
 
     #[test]
@@ -7889,8 +8832,9 @@ mod tests {
     fn movie_planner_has_no_research_tools_and_keeps_a_bounded_contract() {
         let prompt = movie_agent_prompt();
         assert!(!prompt.contains("Wikipedia"));
-        assert!(prompt.split_whitespace().count() < 120);
-        assert!(prompt.contains("Kestrel Studio Director"));
+        assert!(prompt.split_whitespace().count() < 200);
+        assert!(prompt.contains("Kestrel Studio"));
+        assert!(prompt.contains("continuing local Movie Director"));
         assert!(prompt.contains("movie_workspace"));
         let tools = MovieAgentWorkspace::tools();
         assert_eq!(tools.as_array().unwrap().len(), 1);
@@ -7905,7 +8849,7 @@ mod tests {
             &MovieSettings::default(),
             32_768,
         );
-        assert_eq!(request["thinking_budget_tokens"], MOVIE_THINKING_BUDGET);
+        assert_eq!(request["thinking_budget_tokens"], 2_048);
         assert_eq!(request["max_tokens"], 32_768);
         assert_eq!(request["tool_choice"], "required");
         assert_eq!(request["parallel_tool_calls"], false);
@@ -8340,7 +9284,7 @@ mod tests {
     }
 
     #[test]
-    fn spoken_audio_reference_requires_voice_assignment_and_exact_dialogue() {
+    fn audio_reference_does_not_force_dialogue_or_voice_assignment() {
         let reference = MovieReference {
             asset_id: "memory-voice".into(),
             tag: "<Audio 1>".into(),
@@ -8354,7 +9298,7 @@ mod tests {
             height: 0,
             has_audio: true,
             path: "memory.wav".into(),
-            description: "A spoken voice reference for the flashback narrator.".into(),
+            description: "An exact recorded warning that plays during the flashback.".into(),
             use_embedded_audio: false,
             embedded_audio_description: String::new(),
             generation: None,
@@ -8383,11 +9327,10 @@ mod tests {
         };
         assert!(
             producer_intent_issues("Make a film", &plan, std::slice::from_ref(&reference))
-                .join(" ")
-                .contains("state exact dialogue in quotation marks")
+                .is_empty()
         );
 
-        plan.clips[0].prompt = "Use the supplied voice reference as the narrator's vocal timbre. The narrator says exactly: \"Listen first, then look.\" Jungle ambience remains underneath.".into();
+        plan.clips[0].prompt = "Play the supplied warning exactly as provided during the flashback; time the remembered clearing and jungle ambience around that immutable recording.".into();
         assert!(producer_intent_issues("Make a film", &plan, &[reference]).is_empty());
     }
 
@@ -8660,6 +9603,22 @@ mod tests {
         assert!(directs_unquoted_speech(
             "No dialogue. The dog whispers into the darkness."
         ));
+    }
+
+    #[test]
+    fn soundtrack_detail_gate_requires_multiple_concrete_audio_dimensions() {
+        assert_eq!(audio_direction_dimensions("sound continues"), 0);
+        assert_eq!(
+            audio_direction_dimensions(
+                "Quiet room tone sits behind close footsteps and cloth foley. No dialogue or narration. A restrained score fades into silence at the endpoint."
+            ),
+            5
+        );
+        assert_eq!(
+            directed_render_batch_schema(1)
+                .pointer("/json_schema/schema/properties/clips/items/properties/referenceIds/maxItems"),
+            Some(&json!(15))
+        );
     }
 
     #[test]
@@ -9086,7 +10045,7 @@ mod tests {
                             },
                             ProducerReferenceRequest {
                                 asset_id: audio_id.clone(),
-                                description: "This spoken voice and vocal-timbre reference belongs only in the film's flashback scene. Use its speaker identity for short original dialogue stated exactly in the clip prompt. Do not assign it to a present-day scene or to any other clip.".into(),
+                                description: "This exact spoken recording belongs only in the film's flashback scene. Preserve the supplied audio itself and direct the flashback picture around its timing. Do not assign it to a present-day scene or to any other clip.".into(),
                                 use_embedded_audio: false,
                                 embedded_audio_description: String::new(),
                             },
@@ -9850,6 +10809,9 @@ mod tests {
                 path: path.to_string_lossy().into_owned(),
                 error: String::new(),
                 versions: Vec::new(),
+                quality_status: "legacy".into(),
+                quality_attempts: 1,
+                quality_detail: String::new(),
             })
             .collect();
         let assembled = studio.assemble_default(&project).await.unwrap();

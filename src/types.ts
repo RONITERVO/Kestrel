@@ -401,6 +401,9 @@ export interface RenderedClip {
   path: string;
   error: string;
   versions: ClipVersion[];
+  qualityStatus?: string;
+  qualityAttempts?: number;
+  qualityDetail?: string;
 }
 
 export interface ClipVersion {
@@ -619,6 +622,38 @@ export interface MovieModelRoles {
   reviewer: MovieModelBinding;
 }
 
+export interface AddMovieReferencesRequest {
+  id: string;
+  references: ProducerReferenceRequest[];
+}
+
+export interface MovieDirectorCheckpoint {
+  id: string;
+  createdAt: string;
+  firstClip: number;
+  lastClip: number;
+  modelId: string;
+  status: string;
+  summary: string;
+  continuityNotes: string[];
+}
+
+export interface MovieVisualReviewCheckpoint {
+  id: string;
+  createdAt: string;
+  clipId: string;
+  clipNumber: number;
+  attempt: number;
+  modelId: string;
+  modelName: string;
+  status: string;
+  score: number;
+  summary: string;
+  visibleProblems: string[];
+  promptRepairs: string[];
+  nativeMediaCheck: string;
+}
+
 export interface MovieProject {
   schemaVersion: number;
   id: string;
@@ -645,6 +680,8 @@ export interface MovieProject {
   producerApprovedAt: string;
   producerFeedback: ProducerFeedbackRecord[];
   copilotHistory: MovieCopilotTurn[];
+  directorCheckpoints?: MovieDirectorCheckpoint[];
+  visualReviewCheckpoints?: MovieVisualReviewCheckpoint[];
 }
 
 export interface ProducerDirection {

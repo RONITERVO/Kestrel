@@ -64,6 +64,7 @@ import type {
   MovieRenderPreviewEvent,
   MovieRenderState,
   MovieReferenceImport,
+  AddMovieReferencesRequest,
   ModelDownloadRecord,
   ModelDownloadRequest,
   ModelDownloadInspection,
@@ -241,6 +242,11 @@ export async function getMovie(id: string): Promise<MovieProject> {
 export async function pickMovieReferenceFiles(): Promise<MovieReferenceImport> {
   if (!isTauri()) return { references: [], failures: [] };
   return invoke<MovieReferenceImport>("pick_movie_reference_files");
+}
+
+export async function addMovieReferences(request: AddMovieReferencesRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Adding production references requires the desktop application.");
+  return invoke<MovieProject>("add_movie_references", { request });
 }
 
 export async function listMovieImageAssets(): Promise<MovieImageAssetGeneration[]> {

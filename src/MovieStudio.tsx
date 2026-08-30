@@ -6,7 +6,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
-  approveMoviePlan, cancelMovie, cancelMovieImageAsset, cancelMovieRender, checkpointMoviePlanning,
+  addMovieReferences, approveMoviePlan, cancelMovie, cancelMovieImageAsset, cancelMovieRender, checkpointMoviePlanning,
   cancelMovieCopilot, cancelMoviePromptDraft, directMoviePlanning, getMovie, getMovieCopilotReceipt, getMoviePlanExchangePrompt, getMoviePlanning, getMovieRenderState, listMovieImageAssets, listMovies, movieMediaUrl,
   listStudioModelCompatibility,
   onMovieCopilot, onMovieImageAsset, onMoviePlanning, onMovieProject, onMoviePromptDraft, onMovieRenderPreview, pickMovieReferenceFiles, renderMovieEdit,
@@ -40,6 +40,10 @@ type ActivePromptDraft = { requestId: string; field: PromptField; mode: PromptDr
 type LaunchWorkspace = "story" | "images" | "references" | "setup";
 type ProjectWorkspace = "plan" | "generate" | "edit" | "deliver";
 
+function isQwen38Model(model: ModelInfo): boolean {
+  return model.name.toLowerCase().replace(/[\s_-]/g, "").includes("qwen3.8");
+}
+
 function sameMovieEdit(left: MovieEdit, right: MovieEdit): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -49,12 +53,12 @@ const defaultSettings: MovieSettings = {
   height: 768,
   clipSeconds: 5,
   steps: 20,
-  maxClips: 12,
+  maxClips: 240,
   seed: 0,
   temperature: 0.45,
   topP: 0.9,
   topK: 20,
-  thinkingBudget: 32768,
+  thinkingBudget: 2048,
   maxOutputTokens: 32768,
   comfyRoot: "",
   refImageSize: "match",
@@ -77,10 +81,10 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
   const [pauseAfterPlan, setPauseAfterPlan] = useState(true);
   const [promptModelId, setPromptModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
   const [promptThinkingLevel, setPromptThinkingLevel] = useState<ThinkingLevel | "default">("default");
-  const [directorModelId, setDirectorModelId] = useState(() => selectedModelId ?? models[0]?.id ?? "");
-  const [directorThinkingLevel, setDirectorThinkingLevel] = useState<ThinkingLevel | "default">("default");
+  const [directorModelId, setDirectorModelId] = useState(() => models.find(isQwen38Model)?.id ?? selectedModelId ?? models[0]?.id ?? "");
+  const [directorThinkingLevel, setDirectorThinkingLevel] = useState<ThinkingLevel | "default">("low");
   const [reviewerModelId, setReviewerModelId] = useState("");
-  const [reviewerThinkingLevel, setReviewerThinkingLevel] = useState<ThinkingLevel | "default">("default");
+  const [reviewerThinkingLevel, setReviewerThinkingLevel] = useState<ThinkingLevel | "default">("low");
   const [modelCompatibility, setModelCompatibility] = useState<ModelCompatibility[]>([]);
   const [qualifyingModelId, setQualifyingModelId] = useState("");
   const [storyDraftMode, setStoryDraftMode] = useState<PromptDraftMode>("develop");
@@ -138,12 +142,18 @@ export function MovieStudio({ initialComfyRoot, advancedEnabled, models = [], se
       setModelCompatibility(resolved);
       const usable = (id: string) => models.some((model) => model.id === id)
         && (advancedEnabled || resolved.some((entry) => entry.modelId === id && entry.studioReady));
-      const preferred = [selectedModelId, ...resolved.filter((entry) => entry.studioReady).map((entry) => entry.modelId), models[0]?.id]
+      const qwen38 = models.find((model) => isQwen38Model(model) && usable(model.id));
+      const preferred = [qwen38?.id, selectedModelId, ...resolved.filter((entry) => entry.studioReady).map((entry) => entry.modelId), models[0]?.id]
         .find((id): id is string => Boolean(id) && usable(id!))
         ?? models[0]?.id
         ?? "";
-      setDirectorModelId((current) => usable(current) ? current : preferred);
-      setReviewerModelId((current) => !current || usable(current) ? current : "");
+      setDirectorModelId((current) => {
+        const currentModel = models.find((model) => model.id === current);
+        if (usable(current) && (!currentModel?.name.toLowerCase().includes("bonsai") || !qwen38)) return current;
+        return preferred;
+      });
+      const visionReviewer = models.find((model) => model.supportsVision && usable(model.id));
+      setReviewerModelId((current) => usable(current) ? current : visionReviewer?.id ?? "");
     }).catch((error) => {
       if (active) onError(`Studio model compatibility could not be loaded: ${String(error)}`);
     });
@@ -643,10 +653,10 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     </nav>
     <div className={`studio-workspace-body launch-${workspace}`}>
     {workspace === "story" && <section className="launch-workspace-panel story-room">
-      <div className="studio-room-heading"><span><small>Producer + local language model</small><strong>Shape the production brief together</strong></span><em>{prompt.length.toLocaleString()} / 65,536 characters</em></div>
+      <div className="studio-room-heading"><span><small>Producer + local language model</small><strong>Shape the production brief or paste a manuscript</strong></span><em>{prompt.length.toLocaleString()} / 4,194,304 characters</em></div>
     <div className="movie-prompt-box">
-      <textarea aria-label="Movie brief" autoFocus maxLength={65536} value={prompt} readOnly={storyWriting} onChange={(event) => onPrompt(event.target.value)} placeholder="Write or paste your story here—even an A4-length brief—or ask any local model to develop an idea…" />
-      <div><span><Check size={14} /> Your pinned Director drafts, reviews, and repairs every H3 scene prompt</span><small>Existing text can be treated as notes or an exact draft.</small></div>
+      <textarea aria-label="Movie brief" autoFocus maxLength={4194304} value={prompt} readOnly={storyWriting} onChange={(event) => onPrompt(event.target.value)} placeholder="Write a short idea or paste a complete book. The Director builds durable story memory and production units instead of trying to hold the whole movie in one response…" />
+      <div><span><Check size={14} /> Your pinned Director stays with planning and each bounded H3 production batch</span><small>The exact manuscript remains durable while model context stays bounded.</small></div>
     </div>
     <PromptAssistBar label="Movie brief" existing={prompt} mode={storyDraftMode} models={models} modelId={promptModelId} thinkingLevel={promptThinkingLevel} onThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings}
       active={storyWriting} disabled={busy || imageGenerating || (promptBusy && !storyWriting)} status={promptFieldMatches(statusField, { kind: "story" }) ? promptDraftStatus : ""}
@@ -664,7 +674,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
             "Preserve explicit characters, locations, events, tone, ending, reference intent, duration, dialogue, and constraints from the producer.",
             "Resolve ambiguity conservatively; do not add renderer JSON, scene IDs, or implementation commentary.",
           ],
-          context: { existingText: prompt, existingTextMeaning: prompt.trim() ? storyDraftMode : "empty-invent-a-story", maximumCharacters: 65_536 },
+          context: { existingText: prompt, existingTextMeaning: prompt.trim() ? storyDraftMode : "empty-invent-a-story", maximumCharacters: 4_194_304 },
           resultTemplate: { text: "Complete editable movie brief" },
         })}
         parseResponse={(text) => parseExternalTextResult(text, "movie-brief")}
@@ -690,7 +700,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
           <ReferencePreview reference={reference} />
           <div className="movie-reference-copy"><div className="movie-reference-meta"><span>{labels.join(" + ")}</span><strong>{reference.name}</strong><button aria-label={`Remove ${reference.name}`} disabled={promptBusy} onClick={() => onReferences(references.filter((item) => item.assetId !== reference.assetId))}><X /></button></div>
             <small>{reference.kind}{reference.durationSeconds > 0 ? ` · ${reference.durationSeconds.toFixed(1)}s` : ` · ${reference.width}×${reference.height}`}</small>
-            <label>How should the Director place this?<textarea aria-label={`Describe ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" })} value={reference.description} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, description: event.target.value } : item))} placeholder={reference.kind === "image" ? "Character identity, costume, palette, composition, or style…" : reference.kind === "video" ? "Motion, camera move, pacing, continuation, or temporal structure…" : "Where this exact clip audio belongs: dialogue performance, music, rhythm, ambience, or effects…"} /></label>
+            <label>How should the Director place this?<textarea aria-label={`Describe ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" })} value={reference.description} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, description: event.target.value } : item))} placeholder={reference.kind === "image" ? "Character identity, costume, palette, composition, or style…" : reference.kind === "video" ? "Motion, camera move, pacing, continuation, or temporal structure…" : "Where this exact supplied audio enters, what picture it accompanies, and how the scene is timed around it…"} /></label>
             <PromptAssistBar compact label={`${reference.kind} reference`} existing={reference.description} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "description")] ?? "develop"} models={models} modelId={promptModelId} thinkingLevel={promptThinkingLevel} onThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings}
               active={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" })}
               disabled={busy || imageGenerating || (promptBusy && !promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "description" }))}
@@ -716,7 +726,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
                 parseResponse={(text) => parseExternalTextResult(text, "movie-reference-description", 4_000)}
                 onApply={(text) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, description: text } : item))}
               />} />
-            {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" disabled={promptBusy} checked={reference.useEmbeddedAudio} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Use the video's existing audio as native clip audio</label>{reference.useEmbeddedAudio && <><label>Where should this audio be used?<input aria-label={`Describe audio from ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })} value={reference.embeddedAudioDescription} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="The scenes or beats where this exact audio belongs…" /></label><PromptAssistBar compact label={`audio from ${reference.name}`} existing={reference.embeddedAudioDescription} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop"} models={models} modelId={promptModelId} thinkingLevel={promptThinkingLevel} onThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings}
+            {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" disabled={promptBusy} checked={reference.useEmbeddedAudio} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Attach the video's exact audio after the written direction</label>{reference.useEmbeddedAudio && <><label>Where should this exact audio play?<input aria-label={`Describe audio from ${reference.name}`} maxLength={4000} readOnly={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })} value={reference.embeddedAudioDescription} onChange={(event) => onReferences(references.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="Timing against the picture; H3 receives and preserves this supplied audio exactly…" /></label><PromptAssistBar compact label={`audio from ${reference.name}`} existing={reference.embeddedAudioDescription} mode={referenceDraftModes[referenceDraftKey(reference.assetId, "embeddedAudioDescription")] ?? "develop"} models={models} modelId={promptModelId} thinkingLevel={promptThinkingLevel} onThinkingLevel={onPromptThinkingLevel} controlSettings={controlSettings}
               active={promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" })}
               disabled={busy || imageGenerating || (promptBusy && !promptFieldMatches(promptDraftActive?.field, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }))}
               status={promptFieldMatches(statusField, { kind: "referenceDescription", assetId: reference.assetId, part: "embeddedAudioDescription" }) ? promptDraftStatus : ""}
@@ -763,7 +773,7 @@ function MovieLaunch({ prompt, settings, references, advanced, advancedEnabled, 
     <button className="movie-advanced-toggle" onClick={() => onAdvanced(!advanced)}><Settings2 size={14} /> Advanced production controls <ChevronDown className={advanced ? "open" : ""} size={14} /></button>
     {advanced && <div className="movie-advanced">
       <NumberField label="Clip seconds" value={settings.clipSeconds} min={5} max={15} step={1} onChange={(value) => onSettings({ ...settings, clipSeconds: value })} />
-      <NumberField label="Maximum clips" value={settings.maxClips} min={1} max={advancedEnabled ? 96 : 24} step={1} onChange={(value) => onSettings({ ...settings, maxClips: value })} />
+      <NumberField label="Maximum clips" value={settings.maxClips} min={1} max={advancedEnabled ? 999 : 480} step={1} onChange={(value) => onSettings({ ...settings, maxClips: value })} />
       <NumberField label="Sampling steps" value={settings.steps} min={1} max={advancedEnabled ? 100 : 40} step={1} onChange={(value) => onSettings({ ...settings, steps: value })} />
       <NumberField label="Seed (0 = random)" value={settings.seed} min={0} max={Number.MAX_SAFE_INTEGER} step={1} onChange={(value) => onSettings({ ...settings, seed: value })} />
       <NumberField label="Temperature" value={settings.temperature} min={0} max={2} step={0.05} onChange={(value) => onSettings({ ...settings, temperature: value })} />
@@ -821,7 +831,7 @@ function StudioModelRoles({ models, compatibility, directorModelId, reviewerMode
         : "Check required";
   const optionLabel = (model: ModelInfo) => {
     const entry = byId(model.id);
-    return `${model.name}${model.quantization ? ` · ${model.quantization}` : ""} · ${badge(entry)}`;
+    return `${model.name}${model.supportsVision ? " · vision" : ""}${model.quantization ? ` · ${model.quantization}` : ""} · ${badge(entry)}`;
   };
   return <div className="studio-model-roles">
     <div className="studio-model-role-heading"><span><small>Offline production models</small><strong>Pin the creative team to this project</strong></span><p>Kestrel loads one local model at a time. A different reviewer is swapped in only after the Director returns its GPU lease.</p></div>
@@ -859,8 +869,8 @@ function StudioModelRoles({ models, compatibility, directorModelId, reviewerMode
       <em className={`model-tier ${director?.studioReady ? "ready" : "warning"}`}>{badge(director)} · {director?.detail ?? "Waiting for the local model catalog."}</em>
     </label>
     <label>
-      <span>Independent reviewer</span>
-      <small>Fresh context after the Director submits</small>
+      <span>Independent reviewer + dailies critic</span>
+      <small>Fresh text review after planning; a vision model also inspects opening, middle, and ending frames after every H3 master</small>
       <div className="studio-role-select-row" style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <select
           aria-label="Independent reviewer model"
@@ -1183,9 +1193,11 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
           onSave={() => void runProjectAction(() => saveMoviePlan(project.id, draftPlan))}
           onRevise={(feedback) => runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return reviseMoviePlan(project.id, feedback); })}
           onApprove={() => void runProjectAction(async () => { await saveMoviePlan(project.id, draftPlan); return approveMoviePlan(project.id); })} />}
-        {project.plan && project.status !== "awaiting-review" && !planningLive && <><div className="studio-room-heading"><span><small>Approved production plan</small><strong>Producer-owned creative contract for picture and sound</strong></span><em>{project.plan.clips.length} scenes</em></div><section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Plan validation</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "review" : "reviews"}. {project.plan.qualityReview.verdict}</p></article></section></>}
+        {project.plan && project.status !== "awaiting-review" && !planningLive && <><div className="studio-room-heading"><span><small>Approved production plan</small><strong>Producer-owned creative contract for picture and sound</strong></span><em>{project.plan.clips.length} scenes</em></div><section className="movie-plan-overview"><article><span className="eyebrow">Creative direction</span><p>{project.plan.creativeDirection}</p></article><article><span className="eyebrow">Continuity bible</span><ul>{project.plan.continuityBible.map((rule) => <li key={rule}>{rule}</li>)}</ul></article><article><span className="eyebrow">Plan validation</span><p>{project.plan.qualityReview.score}/100 after {project.plan.qualityReview.attempts} {project.plan.qualityReview.attempts === 1 ? "review" : "reviews"}. {project.plan.qualityReview.verdict}</p></article></section>{(project.directorCheckpoints?.length ?? 0) > 0 && <section className="movie-plan-overview"><article><span className="eyebrow">Continuing Director</span><p>{project.directorCheckpoints?.length} bounded production {project.directorCheckpoints?.length === 1 ? "checkpoint" : "checkpoints"} completed. The newest covered scenes {project.directorCheckpoints?.at(-1)?.firstClip}-{project.directorCheckpoints?.at(-1)?.lastClip}.</p><small>{project.directorCheckpoints?.at(-1)?.summary}</small></article></section>}</>}
       </section>}
       {mountedWorkspaces.has("generate") && <section className="project-generate-room retained-studio-workspace" hidden={workspace !== "generate"} aria-hidden={workspace !== "generate"}>
+        {(project.visualReviewCheckpoints?.length ?? 0) > 0 && <section className="movie-plan-overview"><article><span className="eyebrow">Latest dailies checkpoint</span><p>Scene {project.visualReviewCheckpoints?.at(-1)?.clipNumber}, attempt {project.visualReviewCheckpoints?.at(-1)?.attempt} · {project.visualReviewCheckpoints?.at(-1)?.status} · {project.visualReviewCheckpoints?.at(-1)?.score}/100</p><small>{project.visualReviewCheckpoints?.at(-1)?.summary}</small></article></section>}
+        <ProductionReferenceAdder project={project} disabled={busy || working} onProject={onProject} onError={onError} />
         <MovieGenerationRoom
           project={project}
           edit={edit}
@@ -1212,6 +1224,65 @@ function MovieProjectView({ project, edit, busy, advancedEnabled, models, select
     </div>
     {copilotOpen && workspace !== "plan" && workspace !== "generate" && <ProducerCopilot project={project} edit={edit} workspace={workspace} models={models} selectedModelId={selectedModelId} advancedEnabled={advancedEnabled} controlSettings={controlSettings} onEdit={onEdit} onHistory={onCopilotHistory} onClose={() => setCopilotOpen(false)} onError={onError} />}
   </div>;
+}
+
+function ProductionReferenceAdder({ project, disabled, onProject, onError }: {
+  project: MovieProject;
+  disabled: boolean;
+  onProject: (project: MovieProject) => void;
+  onError: (message: string) => void;
+}) {
+  const [drafts, setDrafts] = useState<PendingMovieReference[]>([]);
+  const [working, setWorking] = useState(false);
+  useEffect(() => setDrafts([]), [project.id]);
+
+  const attach = async () => {
+    setWorking(true);
+    try {
+      const imported = await pickMovieReferenceFiles();
+      if (imported.failures.length) onError(imported.failures.join("\n"));
+      const known = new Set([...project.references.map((reference) => reference.assetId), ...drafts.map((reference) => reference.assetId)]);
+      setDrafts((current) => [...current, ...imported.references
+        .filter((asset) => !known.has(asset.id))
+        .map((asset) => ({ ...asset, assetId: asset.id, description: "", useEmbeddedAudio: false, embeddedAudioDescription: "" }))]);
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const save = async () => {
+    if (!referencesReady(drafts)) return;
+    setWorking(true);
+    try {
+      const next = await addMovieReferences({
+        id: project.id,
+        references: drafts.map(({ assetId, description, useEmbeddedAudio, embeddedAudioDescription }) => ({
+          assetId, description, useEmbeddedAudio, embeddedAudioDescription,
+        })),
+      });
+      setDrafts([]);
+      onProject(next);
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return <section className="movie-reference-builder movie-production-reference-adder">
+    <div className="movie-reference-heading"><div><span className="eyebrow">Live producer references</span><strong>Add identities and exact media as the production evolves</strong><small>The current one-scene checkpoint finishes safely, then the Director sees this immutable reference before directing the next H3 scene.</small></div><button disabled={disabled || working || project.status === "complete"} onClick={() => void attach()}><Paperclip /> Attach image, video, or exact audio</button></div>
+    {project.references.length > 0 && <small>{project.references.length} reference{project.references.length === 1 ? "" : "s"} currently in durable Director memory.</small>}
+    {drafts.length > 0 && <div className="movie-reference-grid">{drafts.map((reference) => <article className="movie-reference-card" key={reference.assetId}>
+      <ReferencePreview reference={reference} />
+      <div className="movie-reference-copy">
+        <div className="movie-reference-meta"><span>{reference.kind === "audio" ? "EXACT AUDIO" : reference.kind.toUpperCase()}</span><strong>{reference.name}</strong><button aria-label={`Remove ${reference.name}`} disabled={working} onClick={() => setDrafts((current) => current.filter((item) => item.assetId !== reference.assetId))}><X /></button></div>
+        <label>Director placement<textarea maxLength={4000} value={reference.description} onChange={(event) => setDrafts((current) => current.map((item) => item.assetId === reference.assetId ? { ...item, description: event.target.value } : item))} placeholder={reference.kind === "audio" ? "Where this exact audio enters, what picture it accompanies, and how the scene is timed around it…" : "Which new character, object, place, composition, or motion this establishes…"} /></label>
+        {reference.kind === "video" && reference.hasAudio && <><label className="movie-audio-toggle"><input type="checkbox" checked={reference.useEmbeddedAudio} onChange={(event) => setDrafts((current) => current.map((item) => item.assetId === reference.assetId ? { ...item, useEmbeddedAudio: event.target.checked } : item))} /> Attach this video's exact audio after the written scene direction</label>{reference.useEmbeddedAudio && <label>Exact audio placement<input maxLength={4000} value={reference.embeddedAudioDescription} onChange={(event) => setDrafts((current) => current.map((item) => item.assetId === reference.assetId ? { ...item, embeddedAudioDescription: event.target.value } : item))} placeholder="Timing against the picture; preserve the supplied audio exactly…" /></label>}</>}
+      </div>
+    </article>)}</div>}
+    {drafts.length > 0 && <button className="accent" disabled={disabled || working || !referencesReady(drafts)} onClick={() => void save()}>{working ? <LoaderCircle className="spin" /> : <Save />} Add to continuing Director memory</button>}
+  </section>;
 }
 
 function preferredProjectWorkspace(project: MovieProject): ProjectWorkspace {

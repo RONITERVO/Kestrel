@@ -12,6 +12,8 @@ use std::{
 };
 
 const MAX_WORKSPACE_FILE_BYTES: usize = 96 * 1024;
+const INLINE_BRIEF_BYTES: usize = 64 * 1024;
+const MANUSCRIPT_CHUNK_BYTES: usize = 48 * 1024;
 const PRODUCER_NOTES_HEADER: &str = "# Live producer direction\n\nThese dated notes are authoritative and were added through Kestrel's planning room.\n";
 const PRODUCER_DIRECTION_MARKER_PREFIX: &str = "\n<!-- kestrel-direction:";
 const MAX_READ_MANY_BYTES: usize = 256 * 1024;
@@ -190,6 +192,11 @@ impl MovieAgentWorkspace {
         if self.root.join("movie.json").is_file() {
             paths.push("movie.json".into());
         }
+        for durable_memory in ["STORY-MEMORY.md", "OUTLINE.md"] {
+            if self.root.join(durable_memory).is_file() {
+                paths.push(durable_memory.into());
+            }
+        }
         let mut scene_paths = fs::read_dir(self.root.join("scenes"))?
             .filter_map(Result::ok)
             .filter(|entry| entry.path().is_file())
@@ -201,9 +208,11 @@ impl MovieAgentWorkspace {
             })
             .collect::<Vec<_>>();
         scene_paths.sort();
-        paths.extend(scene_paths);
 
-        let mut snapshot = text(PromptId::MovieAuthoritativeMemory);
+        let mut snapshot = text(PromptId::MovieAuthoritativeMemory).replace(
+            "movie.json and every scene below are the complete current story",
+            "movie.json, STORY-MEMORY.md, OUTLINE.md, the bounded scene catalog, and recent full scenes are the current production memory; source and older scene files remain available through list/read",
+        );
         for path in paths {
             let section = format!("\n===== {path} =====\n{}\n", self.read_file(&path)?);
             if snapshot
@@ -218,6 +227,33 @@ impl MovieAgentWorkspace {
             }
             snapshot.push_str(&section);
         }
+        if !scene_paths.is_empty() {
+            snapshot.push_str("\n===== SCENE CATALOG =====\n");
+            for path in &scene_paths {
+                let clip: PlannedClip = serde_json::from_slice(&fs::read(self.root.join(path))?)?;
+                let line = format!(
+                    "{} | {} | {} | IN: {} | OUT: {}\n",
+                    path,
+                    bounded_line(&clip.title, 80),
+                    bounded_line(&clip.purpose, 160),
+                    bounded_line(&clip.continuity_in, 120),
+                    bounded_line(&clip.continuity_out, 120),
+                );
+                if snapshot.len().saturating_add(line.len()) > MAX_READ_MANY_BYTES - 32 * 1024 {
+                    snapshot.push_str("[Catalog continues in the durable scenes directory; use list/read for the required range.]\n");
+                    break;
+                }
+                snapshot.push_str(&line);
+            }
+            snapshot.push_str("\n===== RECENT FULL SCENES =====\n");
+            for path in scene_paths.iter().rev().take(4).rev() {
+                let section = format!("\n===== {path} =====\n{}\n", self.read_file(path)?);
+                if snapshot.len().saturating_add(section.len()) > MAX_READ_MANY_BYTES {
+                    break;
+                }
+                snapshot.push_str(&section);
+            }
+        }
         Ok(snapshot)
     }
 
@@ -231,11 +267,25 @@ impl MovieAgentWorkspace {
         producer_feedback: Option<&str>,
     ) -> Result<Self, StudioError> {
         fs::create_dir_all(root.join("scenes"))?;
+        fs::create_dir_all(root.join("source"))?;
         write_text_atomic(&root.join("README.md"), &workspace_readme(settings))?;
-        let brief = if let Some(feedback) = producer_feedback {
-            format!("# Producer brief\n\n{prompt}\n\n# Current producer feedback\n\n{feedback}\n")
+        let brief_body = if prompt.len() <= INLINE_BRIEF_BYTES {
+            prompt.to_owned()
         } else {
-            format!("# Producer brief\n\n{prompt}\n")
+            let chunks = write_manuscript_chunks(&root.join("source"), prompt)?;
+            format!(
+                "The producer supplied a long-form manuscript of {} UTF-8 bytes. Its exact text is preserved in {} ordered, read-only files named source/NNNN.md. Read them in order. Maintain a compact, faithful adaptation memory in STORY-MEMORY.md and a production-unit outline in OUTLINE.md as you work; those two files survive context rollovers. Never replace manuscript events with invented events. Scene sourceRefs may name the manuscript chunks that support that scene.\n\n{}",
+                prompt.len(),
+                chunks.len(),
+                chunks.join("\n")
+            )
+        };
+        let brief = if let Some(feedback) = producer_feedback {
+            format!(
+                "# Producer brief\n\n{brief_body}\n\n# Current producer feedback\n\n{feedback}\n"
+            )
+        } else {
+            format!("# Producer brief\n\n{brief_body}\n")
         };
         write_text_atomic(&root.join("BRIEF.md"), &brief)?;
         write_text_atomic(
@@ -263,6 +313,10 @@ impl MovieAgentWorkspace {
     }
 
     pub(super) fn tools() -> Value {
+        let content_description = format!(
+            "{} For STORY-MEMORY.md and OUTLINE.md, supply a complete plain Markdown string instead of a JSON object.",
+            text(PromptId::MovieWorkspaceContent)
+        );
         json!([{
             "type": "function",
             "function": {
@@ -274,8 +328,8 @@ impl MovieAgentWorkspace {
                     "properties": {
                         "action": {"type":"string","enum":["list","read","read_many","write","write_batch","delete","check","submit"]},
                         "path": {"type":"string","description":text(PromptId::MovieWorkspacePath)},
-                        "content": {"type":"object","description":text(PromptId::MovieWorkspaceContent)},
-                        "files": {"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"object","description":text(PromptId::MovieWorkspaceContent)}},"required":["path"]},"description":text(PromptId::MovieWorkspaceFiles)}
+                        "content": {"description":content_description.clone()},
+                        "files": {"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"description":content_description}},"required":["path"]},"description":text(PromptId::MovieWorkspaceFiles)}
                     },
                     "required": ["action"]
                 }
@@ -547,6 +601,20 @@ impl MovieAgentWorkspace {
         if self.root.join("movie.json").is_file() {
             files.push("movie.json".into());
         }
+        for durable_memory in ["STORY-MEMORY.md", "OUTLINE.md"] {
+            if self.root.join(durable_memory).is_file() {
+                files.push(durable_memory.into());
+            }
+        }
+        if let Ok(entries) = fs::read_dir(self.root.join("source")) {
+            for entry in entries.flatten() {
+                if entry.path().is_file() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        files.push(format!("source/{name}"));
+                    }
+                }
+            }
+        }
         if let Ok(entries) = fs::read_dir(self.root.join("scenes")) {
             for entry in entries.flatten() {
                 if entry.path().is_file() {
@@ -783,6 +851,16 @@ fn workspace_reference_manifest(references: &[MovieReference]) -> String {
     output
 }
 
+pub(super) fn write_reference_manifest(
+    workspace_root: &Path,
+    references: &[MovieReference],
+) -> Result<(), StudioError> {
+    write_text_atomic(
+        &workspace_root.join("REFERENCES.md"),
+        &workspace_reference_manifest(references),
+    )
+}
+
 fn normalized_workspace_reference_id(reference: &MovieReference, index: usize) -> String {
     let mut id = String::new();
     let mut separator = false;
@@ -834,7 +912,12 @@ fn validate_write(path: &str, content: &str) -> Result<(), StudioError> {
 }
 
 fn canonical_workspace_content(path: &str, content: &str) -> Result<String, StudioError> {
-    if path == "movie.json" {
+    if matches!(path, "STORY-MEMORY.md" | "OUTLINE.md") {
+        if content.trim().is_empty() {
+            return Err(StudioError::Invalid(format!("{path} cannot be empty")));
+        }
+        Ok(content.to_owned())
+    } else if path == "movie.json" {
         serde_json::from_str::<MovieMetadata>(content)
             .and_then(|value| serde_json::to_string_pretty(&value))
             .map_err(|error| {
@@ -857,13 +940,20 @@ fn readable_path(path: &str) -> Result<String, StudioError> {
     let path = path.trim().replace('\\', "/");
     if matches!(
         path.as_str(),
-        "README.md" | "BRIEF.md" | "REFERENCES.md" | "PRODUCER-NOTES.md" | "movie.json"
+        "README.md"
+            | "BRIEF.md"
+            | "REFERENCES.md"
+            | "PRODUCER-NOTES.md"
+            | "STORY-MEMORY.md"
+            | "OUTLINE.md"
+            | "movie.json"
     ) || scene_path_is_valid(&path)
+        || manuscript_path_is_valid(&path)
     {
         Ok(path)
     } else {
         Err(StudioError::Invalid(
-            "path must be README.md, BRIEF.md, REFERENCES.md, PRODUCER-NOTES.md, movie.json, or scenes/NNN.json"
+            "path must be a listed workspace document, source/NNNN.md manuscript chunk, or scenes/NNN.json"
                 .into(),
         ))
     }
@@ -871,11 +961,15 @@ fn readable_path(path: &str) -> Result<String, StudioError> {
 
 fn writable_path(path: &str) -> Result<String, StudioError> {
     let path = path.trim().replace('\\', "/");
-    if path == "movie.json" || scene_path_is_valid(&path) {
+    if matches!(
+        path.as_str(),
+        "movie.json" | "STORY-MEMORY.md" | "OUTLINE.md"
+    ) || scene_path_is_valid(&path)
+    {
         Ok(path)
     } else {
         Err(StudioError::Invalid(
-            "only movie.json and scenes/NNN.json are writable".into(),
+            "only movie.json, STORY-MEMORY.md, OUTLINE.md, and scenes/NNN.json are writable".into(),
         ))
     }
 }
@@ -888,6 +982,52 @@ fn scene_path_is_valid(path: &str) -> bool {
         return false;
     };
     number.len() == 3 && number.bytes().all(|byte| byte.is_ascii_digit()) && number != "000"
+}
+
+fn manuscript_path_is_valid(path: &str) -> bool {
+    let Some(name) = path.strip_prefix("source/") else {
+        return false;
+    };
+    let Some(number) = name.strip_suffix(".md") else {
+        return false;
+    };
+    number.len() == 4 && number.bytes().all(|byte| byte.is_ascii_digit()) && number != "0000"
+}
+
+fn write_manuscript_chunks(root: &Path, prompt: &str) -> Result<Vec<String>, StudioError> {
+    let mut names = Vec::new();
+    let mut start = 0;
+    while start < prompt.len() {
+        let mut end = start
+            .saturating_add(MANUSCRIPT_CHUNK_BYTES)
+            .min(prompt.len());
+        while end > start && !prompt.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            return Err(StudioError::Invalid(
+                "the producer manuscript could not be split at a UTF-8 boundary".into(),
+            ));
+        }
+        let name = format!("{:04}.md", names.len() + 1);
+        write_text_atomic(&root.join(&name), &prompt[start..end])?;
+        names.push(format!("source/{name}"));
+        start = end;
+    }
+    Ok(names)
+}
+
+fn bounded_line(value: &str, maximum: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= maximum {
+        compact
+    } else {
+        compact
+            .chars()
+            .take(maximum.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    }
 }
 
 fn write_text_atomic(path: &Path, content: &str) -> Result<(), StudioError> {
@@ -1054,6 +1194,59 @@ mod tests {
             .read_file("PRODUCER-NOTES.md")
             .unwrap()
             .contains("red suitcase"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn long_manuscript_is_exactly_preserved_in_bounded_read_only_chunks() {
+        let root = temp_workspace();
+        let manuscript = (0..18_000)
+            .map(|index| format!("Chapter beat {index}: lanterns cross the river.\n"))
+            .collect::<String>();
+        let mut workspace = MovieAgentWorkspace::open(
+            root.clone(),
+            &manuscript,
+            "",
+            &MovieSettings::default(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let listing = workspace.list_files().unwrap();
+        assert!(listing.contains("source/0001.md"));
+        assert!(!workspace
+            .read_file("BRIEF.md")
+            .unwrap()
+            .contains("Chapter beat 17999"));
+        let mut restored = String::new();
+        for path in listing.lines().filter(|path| path.starts_with("source/")) {
+            let chunk = workspace.read_file(path).unwrap();
+            assert!(chunk.len() <= MANUSCRIPT_CHUNK_BYTES);
+            restored.push_str(&chunk);
+        }
+        assert_eq!(restored, manuscript);
+        workspace
+            .write_file(
+                "STORY-MEMORY.md",
+                "The lantern crossing is the durable adaptation spine.",
+            )
+            .unwrap();
+        let memory = workspace.authoritative_story_memory().unwrap();
+        assert!(memory.contains("durable adaptation spine"));
+        assert!(!memory.contains("Chapter beat 17999"));
+        assert!(workspace
+            .execute(
+                serde_json::from_value(json!({
+                    "action":"write",
+                    "path":"source/0001.md",
+                    "content":"tamper"
+                }))
+                .unwrap()
+            )
+            .message
+            .contains("only movie.json"));
         fs::remove_dir_all(root).unwrap();
     }
 
