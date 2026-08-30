@@ -48,7 +48,6 @@ import {
   openTaskArtifact,
   pickContextFiles,
   pickLocalModelFolder,
-  releaseAiMemory,
   resumeComputerTask,
   saveControlSettings,
   scanLocalModels,
@@ -116,7 +115,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   const [taskAnswer, setTaskAnswer] = useState("");
   const [access, setAccess] = useState<"workspace" | "full">("workspace");
   const [working, setWorking] = useState<
-    "scan" | "start" | "stop" | "release" | "save" | "task" | "attach" | null
+    "scan" | "start" | "stop" | "save" | "task" | "attach" | null
   >(null);
   const [stoppingTask, setStoppingTask] = useState(false);
   const [runtimeProgress, setRuntimeProgress] = useState<string | null>(null);
@@ -747,30 +746,6 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     }
   };
 
-  const releaseMemory = async () => {
-    if (
-      !window.confirm(
-        "Release all AI memory controlled by Kestrel? This safely cancels active Kestrel work, stops its managed local model and media runtimes, and removes abandoned Kestrel model processes. Other model apps are left alone.",
-      )
-    )
-      return;
-    pendingRedirectRef.current = null;
-    setWorking("release");
-    try {
-      const next = await releaseAiMemory();
-      onChanged(next);
-      setStream(null);
-      chatRequestRef.current = null;
-      taskRunRef.current = null;
-      if (task) setTask(await getComputerTask(task.id));
-      await refreshHistory();
-    } catch (cause) {
-      onError(String(cause));
-    } finally {
-      setWorking(null);
-    }
-  };
-
   const save = async () => {
     if (!enginePathHasValidName) {
       onError(
@@ -1371,21 +1346,6 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
           </div>
         )}
         <p className="runtime-detail">{control.runtime.detail}</p>
-        <button
-          className="release-memory"
-          disabled={working === "release"}
-          onClick={() => void releaseMemory()}
-        >
-          {working === "release" ? (
-            <LoaderCircle className="spin" />
-          ) : (
-            <CircleStop />
-          )}
-          <span>
-            <strong>Release AI memory</strong>
-            <small>Stop Kestrel-managed model and media runtimes</small>
-          </span>
-        </button>
         <section className="inspector-section inspector-mode-settings">
           <h2>{kind === "chat" ? "Chat generation" : "Computer model limits"}</h2>
           <div className="inline-runtime-settings inspector-setting-grid">

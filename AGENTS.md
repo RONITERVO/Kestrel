@@ -31,6 +31,7 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `profile.rs`: bounded portable setup import/export; never restore developer paths or Full Access.
 - `config.rs`: recoverable settings and explicit Bonsai runtime application.
 - `services.rs`: installed Bonsai/Kiwix scripts and live GPU telemetry.
+- `gpu_memory.rs`: bounded producer-triggered NVIDIA process preview and guarded VRAM cleanup.
 - `studio.rs`: durable Bonsai movie direction, bounded archive tools, immutable producer references, direct ComfyUI H3 fl2va/ref2va graphs, recovery, media, and FFmpeg edits.
 - `developer.rs`: optional Codex maintainer plus fixed offline diagnostics.
 

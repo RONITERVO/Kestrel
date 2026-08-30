@@ -4,6 +4,7 @@ import {
   BookOpen,
   Check,
   Clapperboard,
+  ChevronDown,
   ChevronRight,
   CircleStop,
   Clock3,
@@ -36,10 +37,11 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   bootstrap,
   cancelResearch,
+  cleanVram,
   applyModelRuntime,
   exportSetupProfileText,
   exportPromptPackText,
@@ -56,6 +58,7 @@ import {
   pickPromptPackFile,
   openStandalone,
   prepareServices,
+  previewVramCleanup,
   releaseAiMemory,
   resetPromptPack,
   revealLibrary,
@@ -82,6 +85,7 @@ import type {
   AppSnapshot,
   ControlSettings,
   ControlSnapshot,
+  GpuMemoryProcess,
   ProgressStage,
   ReportSummary,
   ResearchProgress,
@@ -90,6 +94,8 @@ import type {
   ServiceState,
   SystemSnapshot,
   ThinkingLevel,
+  VramCleanupPreview,
+  VramCleanupResult,
 } from "./types";
 
 const emptyProgress: ResearchProgress = {
@@ -132,6 +138,7 @@ function App() {
   const [progress, setProgress] = useState<ResearchProgress | null>(null);
   const [activity, setActivity] = useState<ResearchProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [vramCleanup, setVramCleanup] = useState<VramCleanupPreview | null>(null);
   const [view, setView] = useState<AppView>("research");
   const [mountedViews, setMountedViews] = useState<Set<AppView>>(() => new Set(["research"]));
   const handleError = useCallback((message: string) => setError(message), []);
@@ -213,6 +220,49 @@ function App() {
     setSidebarOpen(false);
   };
 
+  const cleanCompetingGpuMemory = useCallback(async (): Promise<string> => {
+    setError(null);
+    const preview = await previewVramCleanup();
+    if (preview.gpu) {
+      setSnapshot((current) => current
+        ? { ...current, control: { ...current.control, gpu: preview.gpu } }
+        : current);
+    }
+    if (!preview.candidates.length && !preview.exclusions.length) return "VRAM ready";
+    setVramCleanup(preview);
+    return "";
+  }, []);
+
+  const applyVramCleanup = useCallback(async (approvedPids: number[]): Promise<VramCleanupResult> => {
+    setError(null);
+    const result = await cleanVram(approvedPids);
+    if (result.afterGpu) {
+      setSnapshot((current) => current
+        ? { ...current, control: { ...current.control, gpu: result.afterGpu } }
+        : current);
+    }
+    if (result.failed.length) {
+      const failures = result.failed
+        .slice(0, 4)
+        .map((failure) => `${failure.process.name}: ${failure.detail}`)
+        .join(" ");
+      setError(`VRAM cleanup was only partly completed. ${failures}`);
+    }
+    return result;
+  }, []);
+
+  const releaseKestrelAiMemory = useCallback(async (): Promise<string> => {
+    if (!window.confirm("Release all AI memory controlled by Kestrel? Active local work will stop; unrelated applications are left alone.")) return "";
+    setError(null);
+    const control = await releaseAiMemory();
+    setSnapshot((current) => current ? {
+      ...current,
+      control,
+      status: { ...current.status, modelRuntime: "stopped" },
+    } : current);
+    return "AI memory released";
+  }, []);
+
   if (!snapshot) return <AppBoot error={error} onRetry={refresh} />;
 
   return (
@@ -223,6 +273,10 @@ function App() {
         onView={showView}
         onMenu={() => setSidebarOpen((value) => !value)}
         onNew={() => setNewResearchOpen(true)}
+        gpu={snapshot.control.gpu}
+        onCleanVram={cleanCompetingGpuMemory}
+        onReleaseAiMemory={releaseKestrelAiMemory}
+        onError={handleError}
         onPrepare={async () => {
           setProgress(emptyProgress);
           try {
@@ -297,6 +351,11 @@ function App() {
           </section>}
         </main>
       </div>
+      {vramCleanup && <VramCleanupDialog
+        preview={vramCleanup}
+        onClose={() => setVramCleanup(null)}
+        onClean={applyVramCleanup}
+      />}
       {newResearchOpen && <NewResearchDialog advancedEnabled={snapshot.settings.advancedMode} onClose={() => setNewResearchOpen(false)} onSubmit={handleResearch} />}
       {progress && (
         <ProgressPanel
@@ -330,6 +389,10 @@ function AppHeader({
   onMenu,
   onNew,
   onPrepare,
+  gpu,
+  onCleanVram,
+  onReleaseAiMemory,
+  onError,
 }: {
   status: AppSnapshot["status"];
   view: AppView;
@@ -337,6 +400,10 @@ function AppHeader({
   onMenu: () => void;
   onNew: () => void;
   onPrepare: () => void;
+  gpu: AppSnapshot["control"]["gpu"];
+  onCleanVram: () => Promise<string>;
+  onReleaseAiMemory: () => Promise<string>;
+  onError: (message: string) => void;
 }) {
   const allReady = status.modelRuntime === "ready" && status.wikipedia === "ready";
   const sectionLabel = view === "setup" ? "Setup" : view === "control" ? "Control plane" : view === "studio" ? "Movie Studio" : view === "image" ? "Image Studio" : view === "music" ? "Music Production" : view === "developer" ? "Developer" : view === "system" ? "System" : "Research";
@@ -365,11 +432,226 @@ function AppHeader({
       </div>
       <div className="header-actions">
         <InferenceSpeedIndicator />
+        <GpuMemoryActions gpu={gpu} onClean={onCleanVram} onRelease={onReleaseAiMemory} onError={onError} />
         {!allReady && <button className="quiet-button" onClick={onPrepare}>Prepare services</button>}
         {view === "research" && <button className="primary-button compact" onClick={onNew}><Plus size={16} /> New research</button>}
       </div>
     </header>
   );
+}
+
+function GpuMemoryActions({
+  gpu,
+  onClean,
+  onRelease,
+  onError,
+}: {
+  gpu: AppSnapshot["control"]["gpu"];
+  onClean: () => Promise<string>;
+  onRelease: () => Promise<string>;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState<"clean" | "release" | null>(null);
+  const [feedback, setFeedback] = useState("");
+  const menuRef = useRef<HTMLDetailsElement>(null);
+
+  useEffect(() => {
+    if (!feedback) return;
+    const timer = window.setTimeout(() => setFeedback(""), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [feedback]);
+
+  const run = async (kind: "clean" | "release") => {
+    menuRef.current?.removeAttribute("open");
+    setBusy(kind);
+    try {
+      const message = await (kind === "clean" ? onClean() : onRelease());
+      if (message) setFeedback(message);
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return <div className={`header-memory-actions ${feedback ? "has-feedback" : ""}`}>
+    <button
+      type="button"
+      className="header-memory-clean"
+      disabled={busy !== null}
+      title="Preview and close competing GPU applications"
+      onClick={() => void run("clean")}
+    >
+      {busy === "clean" ? <LoaderCircle className="spin" /> : <MemoryStick />}
+      <span>{feedback || "Clean VRAM"}</span>
+    </button>
+    <details className="header-memory-menu" ref={menuRef}>
+      <summary
+        aria-label="GPU memory options"
+        aria-disabled={busy !== null}
+        title="GPU memory options"
+        onClick={(event) => { if (busy) event.preventDefault(); }}
+      ><ChevronDown /></summary>
+      <div className="header-memory-popover" role="menu" aria-label="GPU memory actions">
+        <div className="header-memory-summary">
+          <MemoryStick />
+          <span><strong>GPU memory</strong><small>{gpu ? `${formatMib(gpu.freeMib)} free of ${formatMib(gpu.totalMib)}` : "NVIDIA telemetry unavailable"}</small></span>
+        </div>
+        <p>Clean other GPU apps before loading a model so Kestrel can keep the full workload in VRAM.</p>
+        <button type="button" role="menuitem" disabled={busy !== null} onClick={() => void run("clean")}>
+          <Sparkles /><span><strong>Clean competing apps</strong><small>Preview exactly what will close</small></span>
+        </button>
+        <button type="button" role="menuitem" disabled={busy !== null} onClick={() => void run("release")}>
+          <CircleStop /><span><strong>Release Kestrel AI memory</strong><small>Stop Kestrel model and media runtimes</small></span>
+        </button>
+      </div>
+    </details>
+  </div>;
+}
+
+function VramCleanupDialog({
+  preview,
+  onClose,
+  onClean,
+}: {
+  preview: VramCleanupPreview;
+  onClose: () => void;
+  onClean: (approvedPids: number[]) => Promise<VramCleanupResult>;
+}) {
+  const [selectedPids, setSelectedPids] = useState<Set<number>>(
+    () => new Set(preview.candidates.map((process) => process.pid)),
+  );
+  const [advanced, setAdvanced] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<VramCleanupResult | null>(null);
+  const overridable = preview.exclusions.filter((item) => item.canInclude).length;
+  const critical = preview.exclusions.length - overridable;
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [busy, onClose]);
+
+  const setSelected = (pid: number, selected: boolean) => {
+    setSelectedPids((current) => {
+      const next = new Set(current);
+      if (selected) next.add(pid);
+      else next.delete(pid);
+      return next;
+    });
+  };
+
+  const submit = async () => {
+    if (!selectedPids.size) return;
+    setBusy(true);
+    setError("");
+    try {
+      setResult(await onClean([...selectedPids]));
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <div className="vram-cleanup-overlay">
+    <section className="vram-cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="vram-cleanup-title">
+      <header>
+        <div className="vram-cleanup-symbol"><MemoryStick /></div>
+        <div><span className="eyebrow">Producer GPU maintenance</span><h2 id="vram-cleanup-title">Choose what Clean VRAM closes</h2><p>Uncheck anything you want to keep open. Unsaved work in selected programs may be lost.</p></div>
+        <button type="button" aria-label="Close VRAM cleanup" disabled={busy} onClick={onClose}><X /></button>
+      </header>
+
+      {result ? <div className="vram-cleanup-result" role="status">
+        <div className={result.failed.length ? "partial" : "complete"}>{result.failed.length ? <TriangleAlert /> : <Check />}</div>
+        <h3>{result.message}</h3>
+        {result.afterGpu && <p>{formatMib(result.afterGpu.freeMib)} of {formatMib(result.afterGpu.totalMib)} is now free.</p>}
+        {!!result.freedMib && <small>Observed VRAM released: {formatMib(result.freedMib)}</small>}
+        {!!result.failed.length && <ul>{result.failed.map((failure) => <li key={failure.process.pid}><strong>{failure.process.name}</strong><span>{failure.detail}</span></li>)}</ul>}
+      </div> : <div className="vram-cleanup-body">
+        <div className="vram-cleanup-meter">
+          <MemoryStick /><span><strong>{preview.gpu ? `${formatMib(preview.gpu.freeMib)} free` : "GPU memory detected"}</strong><small>{preview.gpu ? `${formatMib(preview.gpu.usedMib)} used on ${preview.gpu.name}` : "Per-process memory is unavailable on this driver"}</small></span>
+          <b>{selectedPids.size} selected</b>
+        </div>
+
+        <section className="vram-process-section" aria-labelledby="vram-default-list">
+          <div className="vram-process-heading"><span><strong id="vram-default-list">Ready to clean</strong><small>Selected automatically; uncheck to exclude</small></span><b>{preview.candidates.length}</b></div>
+          <div className="vram-process-list">
+            {preview.candidates.map((process) => <VramProcessChoice
+              key={process.pid}
+              process={process}
+              checked={selectedPids.has(process.pid)}
+              label={`Clean ${process.name} PID ${process.pid}`}
+              selectedLabel="Will close"
+              idleLabel="Keep open"
+              onChange={(selected) => setSelected(process.pid, selected)}
+            />)}
+            {!preview.candidates.length && <p className="vram-empty-list">Nothing is selected automatically. Open Advanced to inspect protected GPU processes.</p>}
+          </div>
+        </section>
+
+        <section className="vram-advanced-section">
+          <button type="button" className="vram-advanced-toggle" aria-expanded={advanced} onClick={() => setAdvanced((value) => !value)}>
+            <Wrench /><span><strong>Advanced exclusions</strong><small>{overridable} can be included · {critical} always protected</small></span><ChevronDown />
+          </button>
+          {advanced && <div className="vram-process-list advanced" aria-label="Automatically excluded GPU processes">
+            {preview.exclusions.map((item) => <VramProcessChoice
+              key={item.process.pid}
+              process={item.process}
+              checked={item.canInclude && selectedPids.has(item.process.pid)}
+              disabled={!item.canInclude}
+              label={item.canInclude ? `Include ${item.process.name} PID ${item.process.pid}` : `Always protect ${item.process.name} PID ${item.process.pid}`}
+              selectedLabel="Included"
+              idleLabel={item.canInclude ? "Excluded" : "Always protected"}
+              reason={item.reason}
+              onChange={item.canInclude ? (selected) => setSelected(item.process.pid, selected) : undefined}
+            />)}
+            {!preview.exclusions.length && <p className="vram-empty-list">No processes were automatically excluded.</p>}
+          </div>}
+        </section>
+        {error && <div className="vram-cleanup-error" role="alert"><TriangleAlert />{error}</div>}
+      </div>}
+
+      <footer>
+        {result ? <><span>{result.terminated.length} closed · {result.failed.length} need attention</span><button type="button" className="primary-button" onClick={onClose}>Done</button></> : <>
+          <span>{selectedPids.size ? `${selectedPids.size} process${selectedPids.size === 1 ? "" : "es"} will close` : "Nothing selected"}</span>
+          <button type="button" className="quiet-button" disabled={busy} onClick={onClose}>Cancel</button>
+          <button type="button" className="primary-button" disabled={busy || !selectedPids.size} onClick={() => void submit()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Clean {selectedPids.size || "VRAM"}</button>
+        </>}
+      </footer>
+    </section>
+  </div>;
+}
+
+function VramProcessChoice({
+  process,
+  checked,
+  disabled = false,
+  label,
+  selectedLabel,
+  idleLabel,
+  reason,
+  onChange,
+}: {
+  process: GpuMemoryProcess;
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  selectedLabel: string;
+  idleLabel: string;
+  reason?: string;
+  onChange?: (selected: boolean) => void;
+}) {
+  return <label className={`vram-process-choice ${disabled ? "critical" : ""} ${checked ? "selected" : ""}`}>
+    <input type="checkbox" aria-label={label} checked={checked} disabled={disabled} onChange={(event) => onChange?.(event.currentTarget.checked)} />
+    <span className="vram-process-check">{disabled ? <ShieldCheck /> : checked ? <Check /> : null}</span>
+    <span className="vram-process-copy"><strong>{process.name}</strong><small>{process.kind} · PID {process.pid}{process.memoryMib ? ` · ${formatMib(process.memoryMib)}` : " · VRAM amount unavailable"}</small>{reason && <em>{reason}</em>}<code title={process.executablePath}>{process.executablePath}</code></span>
+    <b>{checked ? selectedLabel : idleLabel}</b>
+  </label>;
 }
 
 function InferenceSpeedIndicator() {
@@ -619,7 +901,7 @@ function SystemConsole({ visible, initialSettings, initialControl, onSaved, onCo
   const [controlDraft, setControlDraft] = useState(initialControl);
   const [tab, setTab] = useState<"models" | "research" | "prompts" | "portable">("models");
   const [overrideModelId, setOverrideModelId] = useState(initialControl.selectedModelId ?? "");
-  const [busy, setBusy] = useState<"save-models" | "save-research" | "apply" | "release" | "export" | "import" | "refresh-profile" | "save-prompts" | "reset-prompts" | "export-prompts" | "import-prompts" | "reload-prompts" | null>(null);
+  const [busy, setBusy] = useState<"save-models" | "save-research" | "apply" | "export" | "import" | "refresh-profile" | "save-prompts" | "reset-prompts" | "export-prompts" | "import-prompts" | "reload-prompts" | null>(null);
   const [profilePath, setProfilePath] = useState("");
   const [profileText, setProfileText] = useState("");
   const [profileStatus, setProfileStatus] = useState("");
@@ -733,18 +1015,6 @@ function SystemConsole({ visible, initialSettings, initialControl, onSaved, onCo
       setBusy(null);
     }
   };
-  const releaseMemory = async () => {
-    if (!window.confirm("Release all AI memory controlled by Kestrel? Active local work will stop; unrelated model applications are left alone.")) return;
-    setBusy("release");
-    try {
-      await releaseAiMemory();
-      await refreshSystem();
-    } catch (cause) {
-      onError(String(cause));
-    } finally {
-      setBusy(null);
-    }
-  };
   const refreshProfileText = async () => {
     setBusy("refresh-profile");
     try {
@@ -832,7 +1102,7 @@ function SystemConsole({ visible, initialSettings, initialControl, onSaved, onCo
       <div className="system-console-top">
         <header className="system-hero">
           <div><span className="eyebrow">One runtime policy · every local model</span><h1>System</h1><p>Choose app-wide defaults once. Explicit per-model and workspace settings override them without creating a second server or a hidden model-specific control path.</p></div>
-          <div className="system-hero-actions"><button className="quiet-button" disabled={!!busy} onClick={() => void releaseMemory()}>{busy === "release" ? <LoaderCircle className="spin" size={15}/> : <CircleStop size={15}/>} Release AI memory</button><button className="quiet-button" onClick={() => void refreshSystem()}><RefreshCw size={15} /> Refresh</button></div>
+          <div className="system-hero-actions"><button className="quiet-button" onClick={() => void refreshSystem()}><RefreshCw size={15} /> Refresh</button></div>
         </header>
 
       <section className="telemetry-grid" aria-label="Live system telemetry">

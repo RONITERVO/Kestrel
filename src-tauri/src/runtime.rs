@@ -231,6 +231,17 @@ impl RuntimeManager {
             .collect()
     }
 
+    /// The active managed process remains protected from producer-triggered competing-app cleanup.
+    /// This is intentionally a passive ownership lookup and does not perform a health probe.
+    pub async fn owned_process_id(&self) -> Option<u32> {
+        self.process
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|process| process.snapshot.pid)
+            .filter(|pid| *pid != 0)
+    }
+
     pub async fn lease_research(
         self: &Arc<Self>,
         model_id: &str,

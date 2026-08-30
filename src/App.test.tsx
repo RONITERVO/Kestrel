@@ -13,6 +13,12 @@ const profileApi = vi.hoisted(() => ({
   importSetupProfileText: vi.fn(),
 }));
 
+const memoryApi = vi.hoisted(() => ({
+  previewVramCleanup: vi.fn(),
+  cleanVram: vi.fn(),
+  releaseAiMemory: vi.fn(),
+}));
+
 vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
   exportSetupProfile: profileApi.exportSetupProfile,
@@ -20,6 +26,9 @@ vi.mock("./api", async (importOriginal) => ({
   getSetupProfileText: profileApi.getSetupProfileText,
   importSetupProfile: profileApi.importSetupProfile,
   importSetupProfileText: profileApi.importSetupProfileText,
+  previewVramCleanup: memoryApi.previewVramCleanup,
+  cleanVram: memoryApi.cleanVram,
+  releaseAiMemory: memoryApi.releaseAiMemory,
 }));
 
 beforeEach(() => {
@@ -28,6 +37,23 @@ beforeEach(() => {
   profileApi.getSetupProfileText.mockReset().mockResolvedValue(JSON.stringify({ schemaVersion: 1, app: "Kestrel" }, null, 2));
   profileApi.importSetupProfile.mockReset().mockResolvedValue(demoSnapshot);
   profileApi.importSetupProfileText.mockReset().mockResolvedValue(demoSnapshot);
+  memoryApi.previewVramCleanup.mockReset().mockResolvedValue({
+    gpu: demoSnapshot.control.gpu,
+    candidates: [],
+    exclusions: [],
+    candidateMemoryMib: 0,
+    protectedProcessCount: 0,
+  });
+  memoryApi.cleanVram.mockReset().mockResolvedValue({
+    attempted: [],
+    terminated: [],
+    failed: [],
+    beforeGpu: demoSnapshot.control.gpu,
+    afterGpu: demoSnapshot.control.gpu,
+    freedMib: 0,
+    message: "VRAM is ready.",
+  });
+  memoryApi.releaseAiMemory.mockReset().mockResolvedValue(demoSnapshot.control);
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
 });
 
@@ -105,6 +131,85 @@ describe("Kestrel research experience", () => {
     expect((await screen.findByLabelText("Editable portable setup JSON") as HTMLTextAreaElement).value).toContain('"schemaVersion": 1');
     fireEvent.click(screen.getByRole("button", { name: /^Research$/i }));
     expect(await screen.findByText("Your research")).toBeInTheDocument();
+  });
+
+  it("puts safe VRAM cleanup and Kestrel memory release in the shared header", async () => {
+    const competing = {
+      pid: 9123,
+      name: "ollama.exe",
+      executablePath: "C:\\Other AI\\ollama.exe",
+      memoryMib: 4096,
+      kind: "AI / compute",
+    };
+    const keptOpen = {
+      pid: 9222,
+      name: "Photos.exe",
+      executablePath: "C:\\Program Files\\WindowsApps\\Photos.exe",
+      memoryMib: 0,
+      kind: "GPU application",
+    };
+    const advancedApp = {
+      pid: 9333,
+      name: "chrome.exe",
+      executablePath: "C:\\Program Files\\Google\\Chrome\\chrome.exe",
+      memoryMib: 512,
+      kind: "GPU application",
+    };
+    const criticalProcess = {
+      pid: 9444,
+      name: "dwm.exe",
+      executablePath: "C:\\Windows\\System32\\dwm.exe",
+      memoryMib: 0,
+      kind: "GPU application",
+    };
+    memoryApi.previewVramCleanup.mockResolvedValue({
+      gpu: demoSnapshot.control.gpu,
+      candidates: [competing, keptOpen],
+      exclusions: [
+        { process: advancedApp, reason: "Excluded by default to protect everyday apps and producer workspaces.", canInclude: true },
+        { process: criticalProcess, reason: "This is a Windows system process.", canInclude: false },
+      ],
+      candidateMemoryMib: competing.memoryMib + keptOpen.memoryMib,
+      protectedProcessCount: 2,
+    });
+    memoryApi.cleanVram.mockResolvedValue({
+      attempted: [competing, advancedApp],
+      terminated: [competing, advancedApp],
+      failed: [],
+      beforeGpu: demoSnapshot.control.gpu,
+      afterGpu: { ...demoSnapshot.control.gpu!, usedMib: 7032, freeMib: 4912 },
+      freedMib: 4096,
+      message: "Closed 2 competing GPU processes.",
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Clean VRAM" }));
+    expect(await screen.findByRole("dialog", { name: "Choose what Clean VRAM closes" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Clean ollama.exe PID 9123")).toBeChecked();
+    fireEvent.click(screen.getByLabelText("Clean Photos.exe PID 9222"));
+    expect(screen.getByLabelText("Clean Photos.exe PID 9222")).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: /Advanced exclusions/i }));
+    expect(screen.getByLabelText("Include chrome.exe PID 9333")).not.toBeChecked();
+    fireEvent.click(screen.getByLabelText("Include chrome.exe PID 9333"));
+    expect(screen.getByLabelText("Always protect dwm.exe PID 9444")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Clean 2" }));
+    await waitFor(() => expect(memoryApi.cleanVram).toHaveBeenCalledWith([competing.pid, advancedApp.pid]));
+    expect(await screen.findByText("Closed 2 competing GPU processes.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog", { name: "Choose what Clean VRAM closes" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("GPU memory options"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Release Kestrel AI memory/i }));
+    await waitFor(() => expect(memoryApi.releaseAiMemory).toHaveBeenCalledTimes(1));
+    expect(confirm).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /^System$/i }));
+    await screen.findByRole("heading", { name: "System" });
+    expect(document.querySelector(".system-hero-actions")?.textContent).toContain("Refresh");
+    expect(document.querySelector(".system-hero-actions")?.textContent).not.toContain("Release");
+    expect(document.querySelector(".release-memory")).not.toBeInTheDocument();
   });
 
   it("keeps every section in the shared one-window workspace frame", async () => {

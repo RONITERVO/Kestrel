@@ -5,6 +5,7 @@ mod attachments;
 mod chat;
 mod config;
 mod developer;
+mod gpu_memory;
 mod hardware_profiles;
 mod harness;
 mod html;
@@ -51,6 +52,7 @@ use runtime::RuntimeManager;
 use serde_json::Value;
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -2775,6 +2777,75 @@ async fn get_system_snapshot(state: State<'_, AppState>) -> Result<SystemSnapsho
     system_console_snapshot(&state).await
 }
 
+async fn gpu_cleanup_protection(
+    state: &AppState,
+) -> Result<gpu_memory::GpuProcessProtection, String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let mut protected_pids = vec![std::process::id()];
+    if let Some(pid) = state.runtime.owned_process_id().await {
+        protected_pids.push(pid);
+    }
+    let protected_roots = [
+        research.install_root,
+        research.bonsai_root,
+        research.comfy_root,
+    ]
+    .into_iter()
+    .filter(|path| !path.trim().is_empty())
+    .map(PathBuf::from)
+    .collect::<Vec<_>>();
+    let mut protected_paths = [
+        control.engine_path,
+        research.ffmpeg_path,
+        research.ffprobe_path,
+    ]
+    .into_iter()
+    .filter(|path| !path.trim().is_empty())
+    .map(PathBuf::from)
+    .collect::<Vec<_>>();
+    if let Ok(path) = std::env::current_exe() {
+        protected_paths.push(path);
+    }
+    Ok(gpu_memory::GpuProcessProtection::new(
+        protected_pids,
+        protected_roots,
+        protected_paths,
+    ))
+}
+
+#[tauri::command]
+async fn preview_vram_cleanup(
+    state: State<'_, AppState>,
+) -> Result<gpu_memory::VramCleanupPreview, String> {
+    let protection = gpu_cleanup_protection(&state).await?;
+    gpu_memory::preview(&protection, services::gpu_snapshot().await)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn clean_vram(
+    expected_pids: Vec<u32>,
+    state: State<'_, AppState>,
+) -> Result<gpu_memory::VramCleanupResult, String> {
+    if expected_pids.len() > 256 {
+        return Err("VRAM cleanup rejected more than 256 approved process IDs".into());
+    }
+    let _guard = claim_workspace(&state)?;
+    let protection = gpu_cleanup_protection(&state).await?;
+    let approved_pids = expected_pids.into_iter().collect();
+    gpu_memory::clean(&protection, &approved_pids)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn get_control_snapshot(
     probe_developer: Option<bool>,
@@ -4276,6 +4347,8 @@ pub fn run() {
             open_standalone_report,
             reveal_library,
             get_system_snapshot,
+            preview_vram_cleanup,
+            clean_vram,
             get_control_snapshot,
             get_proven_hardware_profiles,
             scan_local_models,
