@@ -1,7 +1,7 @@
 use crate::models::{ControlSettings, ResearchSettings};
 use futures_util::StreamExt;
 use reqwest::{header, Client, StatusCode};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -14,6 +14,11 @@ use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
+
+pub use kestrel_app_core::{
+    SetupComponent, SetupInstallRequest, SetupLocations, SetupModelAsset, SetupProgress,
+    SetupSnapshot,
+};
 
 const BONSAI_REVISION: &str = "abbae723028d71be674e71e1a71201a6f43fab22";
 const BONSAI_RELEASE: &str = "prism-b9596-9fcaed7";
@@ -44,85 +49,6 @@ const SPEECH_PYTHON_PACKAGES: [&str; 5] = [
     "soundfile==0.14.0",
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupComponent {
-    pub id: String,
-    pub label: String,
-    pub status: String,
-    pub detail: String,
-    pub path: String,
-    pub download_bytes: u64,
-    pub optional: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupModelAsset {
-    pub id: String,
-    pub component: String,
-    pub label: String,
-    pub file_name: String,
-    pub bytes: u64,
-    pub recognized: bool,
-    pub installed_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupSnapshot {
-    pub ready: bool,
-    pub install_root: String,
-    pub available_bytes: u64,
-    pub gpu_name: Option<String>,
-    pub gpu_memory_bytes: u64,
-    pub components: Vec<SetupComponent>,
-    pub model_assets: Vec<SetupModelAsset>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupLocations {
-    pub install_root: String,
-    pub bonsai_root: String,
-    pub engine_path: String,
-    pub wikipedia_zim_path: String,
-    pub kiwix_server_path: String,
-    pub comfy_root: String,
-    pub ffmpeg_path: String,
-    pub ffprobe_path: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupInstallRequest {
-    pub component: String,
-    pub install_root: String,
-    #[serde(default = "compact_wikipedia")]
-    pub wikipedia_edition: String,
-    #[serde(default)]
-    pub accept_ideogram_non_commercial_license: bool,
-    #[serde(default)]
-    pub whisper_checkpoint_path: String,
-    #[serde(default)]
-    pub muscriptor_checkpoint_path: String,
-    #[serde(default)]
-    pub accept_muscriptor_non_commercial_license: bool,
-    #[serde(default)]
-    pub existing_model_paths: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupProgress {
-    pub component: String,
-    pub stage: String,
-    pub detail: String,
-    pub downloaded_bytes: u64,
-    pub total_bytes: u64,
-    pub bytes_per_second: u64,
-}
-
 #[derive(Debug, Error)]
 pub enum SetupError {
     #[error("setup path must be an absolute folder: {0}")]
@@ -149,10 +75,6 @@ pub enum SetupError {
     Json(#[from] serde_json::Error),
     #[error("setup request failed: {0}")]
     Request(#[from] reqwest::Error),
-}
-
-fn compact_wikipedia() -> String {
-    "compact".into()
 }
 
 pub fn snapshot(

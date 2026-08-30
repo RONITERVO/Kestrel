@@ -1,7 +1,10 @@
 /node_modules/
 /dist/
+/apps/desktop/node_modules/
+/apps/desktop/dist/
 /release/
 /src-tauri/target/
+/target/
 /src-tauri/gen/
 *.log
 *.pdb

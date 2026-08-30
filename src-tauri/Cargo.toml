@@ -42,6 +42,7 @@ tokio-tungstenite = { version = "0.28", default-features = false, features = ["c
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 zip = { version = "6", default-features = false, features = ["deflate"] }
+kestrel-app-core = { path = "../crates/app-core" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Power"] }

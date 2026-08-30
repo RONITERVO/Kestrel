@@ -18,12 +18,12 @@ import {
   normalizeVadSettings,
   VoiceActivityDetector,
   type VadSettings,
-} from "../src/voiceActivityDetection";
+} from "../apps/desktop/src/features/speech/voiceActivityDetection";
 import {
   advanceLiveTranscriptionCheckpoint,
   completeRecordingBlob,
   LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS,
-} from "../src/LocalSpeechControls";
+} from "../apps/desktop/src/features/speech/LocalSpeechControls";
 
 export interface AudioSegment {
   durationSec: number;

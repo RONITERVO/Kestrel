@@ -17,7 +17,9 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 
 ## Backend map
 
+- `crates/app-core`: Rust-owned durable/core IPC contracts and generated TypeScript source of truth.
 - `lib.rs`: Tauri commands, strict research lock, state boundaries.
+- `models.rs`: compatibility re-export only; new application contracts belong in `crates/app-core`.
 - `runtime.rs`: attach/start/stop model runtime and single inference lease.
 - `attachments.rs`: content-addressed local files, bounded extraction, and capability-gated media blocks.
 - `chat.rs`: cancellable SSE chat stream; never add tools here.
@@ -34,6 +36,18 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `gpu_memory.rs`: bounded producer-triggered NVIDIA process preview and guarded VRAM cleanup.
 - `studio.rs`: durable Bonsai movie direction, bounded archive tools, immutable producer references, direct ComfyUI H3 fl2va/ref2va graphs, recovery, media, and FFmpeg edits.
 - `developer.rs`: optional Codex maintainer plus fixed offline diagnostics.
+
+## Frontend map
+
+- `apps/desktop/src/app`: desktop composition, navigation, and global styling.
+- `apps/desktop/src/features`: feature-owned UI and view-only helpers.
+- `apps/desktop/src/shared`: reusable presentation components without application authority.
+- `apps/desktop/src/platform`: Tauri IPC adapter.
+- `apps/desktop/src/contracts`: generated-contract facade and shrinking legacy quarantine.
+- `packages/generated-bindings`: generated from Rust; never edit by hand.
+
+TypeScript never owns application truth. New durable state or IPC-visible contracts must originate
+in Rust and be generated with `npm run bindings:generate`; do not add them to the quarantine.
 
 Prefer small typed modules, fixed command argument arrays, bounded reads, loopback-only URLs, recoverable file replacement, and actionable errors. Never directly execute model text: parse tool JSON, require absolute paths, resolve it through the selected access policy, reject wildcards, use argument arrays without a shell, and persist the result.
 

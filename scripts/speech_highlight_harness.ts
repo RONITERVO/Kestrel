@@ -28,13 +28,13 @@ import {
   normalizedSpeechText,
   type ResearchSpeechScope,
   type ResearchSpeechPassage,
-} from "../src/researchSpeechContent";
+} from "../apps/desktop/src/features/research/researchSpeechContent";
 import {
   parseMarkdownBlocks,
   collectCandidateBlocks,
   getBlockSpeechHighlight,
   renderInlineMarkdown,
-} from "../src/MarkdownContent";
+} from "../apps/desktop/src/shared/components/MarkdownContent";
 import {
   wordTimings,
   getActiveWordIndex,
@@ -48,8 +48,8 @@ import {
   speechPlaybackEnd,
   type HighlightResolution,
   type SpeechProgressState,
-} from "../src/spokenHighlight";
-import type { ResearchReport, SpeechTiming } from "../src/types";
+} from "../apps/desktop/src/shared/components/spokenHighlight";
+import type { ResearchReport, SpeechTiming } from "../apps/desktop/src/contracts/index";
 
 export interface SimulationAnomaly {
   type: "MISSING_HIGHLIGHT" | "MULTIPLE_HIGHLIGHTS" | "RAW_MARKDOWN_LEAK" | "UNEXPECTED_WORD" | "WATCHDOG_STALL" | "MANGLED_SPEECH_TEXT";

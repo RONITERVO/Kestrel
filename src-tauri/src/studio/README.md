@@ -274,7 +274,9 @@ or output rights.
 - `WorkspaceOutcome` drives orchestration and producer status. Its human-readable `message` is model
   feedback, not a control channel.
 - `PlanningEventKind` and `PlanningStage` are serialized Rust enums mirrored exactly by
-  `src/types.ts`. Adding a variant requires updating both sides and the wire-name test.
+  `apps/desktop/src/contracts/index.ts` while the Studio DTO quarantine is migrated to generated
+  Rust bindings. Adding a variant requires updating the Rust wire name and its boundary test; do
+  not add a new handwritten TypeScript contract.
 - Tool schemas remain JSON because they are sent over the OpenAI-compatible protocol, but model
   arguments must deserialize into native types before use.
 
