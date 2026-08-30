@@ -137,8 +137,10 @@ pub(crate) struct RuntimePolicyLimits {
 pub(crate) fn runtime_policy_limits(advanced: bool) -> RuntimePolicyLimits {
     static LIMITS: OnceLock<RuntimePolicyLimitsFile> = OnceLock::new();
     let limits = LIMITS.get_or_init(|| {
-        serde_json::from_str(include_str!("../../src/runtimePolicyLimits.json"))
-            .expect("the shared runtime policy limits must be valid JSON")
+        serde_json::from_str(include_str!(
+            "../../apps/desktop/src/features/control/runtimePolicyLimits.json"
+        ))
+        .expect("the shared runtime policy limits must be valid JSON")
     });
     let tier = if advanced {
         limits.advanced

@@ -15,6 +15,8 @@ use std::{
 };
 use walkdir::WalkDir;
 
+pub use kestrel_app_core::ModelInfo;
+
 // Version 2 invalidates catalogs that inferred vision support from an unverified projector path.
 const CATALOG_SCHEMA_VERSION: u32 = 2;
 const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
@@ -140,26 +142,6 @@ pub fn merge_catalogs(cached: Vec<ModelInfo>, refreshed: Vec<ModelInfo>) -> Vec<
     let mut models: Vec<_> = by_id.into_values().collect();
     models.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     models
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelInfo {
-    pub id: String,
-    pub name: String,
-    pub path: String,
-    pub source: String,
-    pub bytes: u64,
-    pub architecture: Option<String>,
-    pub context_length: Option<u64>,
-    pub chat_template: bool,
-    pub quantization: Option<String>,
-    pub mmproj_path: Option<String>,
-    #[serde(default)]
-    pub supports_vision: bool,
-    #[serde(default)]
-    pub supports_audio: bool,
-    pub recommendation: String,
 }
 
 pub fn default_roots(extra: &[String], bonsai_root: &str) -> Vec<PathBuf> {

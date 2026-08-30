@@ -1,26 +1,5 @@
-use serde::{Deserialize, Serialize};
-
 use crate::models::ThinkingLevel;
-
-/// A proven, empirically benchmarked hardware configuration for a specific local model, quantization, and GPU VRAM tier.
-/// Explicitly discloses the tested quantization so larger quants (which require more VRAM) do not falsely match.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProvenHardwareProfile {
-    pub id: String,
-    pub model_pattern: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub quantization_pattern: Option<String>,
-    pub display_name: String,
-    pub min_vram_mib: u32,
-    pub max_vram_mib: Option<u32>,
-    pub recommended_context_window: u32,
-    pub recommended_max_output_tokens: u32,
-    pub recommended_thinking_level: ThinkingLevel,
-    pub recommended_threads: u32,
-    pub description: String,
-    pub proven_speed_notes: String,
-}
+pub use kestrel_app_core::ProvenHardwareProfile;
 
 /// Returns all built-in empirically benchmarked hardware profiles.
 pub fn all_proven_profiles() -> Vec<ProvenHardwareProfile> {

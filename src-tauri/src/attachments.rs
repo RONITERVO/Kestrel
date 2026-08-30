@@ -7,6 +7,7 @@
 
 use crate::model::ModelInfo;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+pub use kestrel_app_core::ContextAttachment;
 use quick_xml::{events::Event, Reader};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -75,22 +76,6 @@ impl MediaCache {
             },
         );
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ContextAttachment {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub mime_type: String,
-    pub bytes: u64,
-    pub sha256: String,
-    pub stored_path: String,
-    pub extracted_chars: usize,
-    pub context_mode: String,
-    pub note: String,
-    pub created_at: String,
 }
 
 #[derive(Debug, Clone)]

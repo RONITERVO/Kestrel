@@ -1,0 +1,31 @@
+{
+  "name": "@kestrel/desktop",
+  "private": true,
+  "version": "0.17.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@kestrel/generated-bindings": "0.17.0",
+    "@tauri-apps/api": "^2.8.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.5",
+    "jsdom": "^29.0.1",
+    "typescript": "~5.7.2",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
+  }
+}

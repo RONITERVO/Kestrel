@@ -1,0 +1,2107 @@
+import {
+  AudioLines,
+  Bot,
+  Check,
+  ChevronRight,
+  CircleStop,
+  Clipboard,
+  Download,
+  FileCode2,
+  FileText,
+  FolderOpen,
+  History,
+  Image,
+  LoaderCircle,
+  MessageSquarePlus,
+  MonitorCog,
+  Paperclip,
+  Play,
+  RefreshCw,
+  Search,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Trash2,
+  Wrench,
+  X,
+  Zap,
+  ZapOff,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { MarkdownContent } from "../../shared/components/MarkdownContent";
+import { type SpeechProgressState } from "../../shared/components/spokenHighlight";
+import { useInferenceTelemetryReporter } from "../control/InferenceTelemetry";
+import { SpeechDictationButton, SpeechPlaybackButton } from "../speech/LocalSpeechControls";
+import {
+  cancelChatStream,
+  deleteChatSession,
+  getChatSession,
+  getComputerTask,
+  getControlSnapshot,
+  listChatSessions,
+  listComputerTasks,
+  onChatStream,
+  onComputerTaskEvent,
+  onRuntimeProgress,
+  openContextAttachment,
+  openTaskArtifact,
+  pickContextFiles,
+  pickLocalModelFolder,
+  resumeComputerTask,
+  saveControlSettings,
+  scanLocalModels,
+  startChatStream,
+  startComputerTask,
+  startLocalModel,
+  stopComputerTask,
+  stopLocalModel,
+} from "../../platform/api";
+import type {
+  ChatMessage,
+  ChatSession,
+  ChatSessionSummary,
+  ChatStreamEvent,
+  ComputerTaskEvent,
+  ComputerTaskRun,
+  ComputerTaskSummary,
+  ContextAttachment,
+  ControlSnapshot,
+  SpeechRecordingAttachment,
+  ThinkingLevel,
+} from "../../contracts/index";
+
+type Props = {
+  control: ControlSnapshot;
+  onChanged: (control: ControlSnapshot) => void;
+  onError: (message: string) => void;
+  visible?: boolean;
+};
+
+type WorkKind = "chat" | "task";
+
+export function OfflineWorkspace({ control, onChanged, onError, visible = true }: Props) {
+  const [kind, setKind] = useState<WorkKind>("chat");
+  const [selectedId, setSelectedId] = useState(
+    control.settings.selectedModelId ?? control.models[0]?.id ?? "",
+  );
+  const [filter, setFilter] = useState("");
+  const [settings, setSettings] = useState(control.settings);
+  const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
+  const [session, setSession] = useState<ChatSession | null>(null);
+  const [draft, setDraft] = useState("");
+  const [chatDictating, setChatDictating] = useState(false);
+  const [chatAttachments, setChatAttachments] = useState<ContextAttachment[]>(
+    [],
+  );
+  const pendingVoiceRecordingRef = useRef<SpeechRecordingAttachment | null>(null);
+  const [stream, setStream] = useState<{
+    requestId: string;
+    phase: string;
+    content: string;
+    reasoning: string;
+    notice?: string;
+    thinkingLevel?: string;
+    startedAt?: number;
+    data?: Record<string, unknown>;
+    metrics?: Record<string, unknown>;
+  } | null>(null);
+  const [tasks, setTasks] = useState<ComputerTaskSummary[]>([]);
+  const [task, setTask] = useState<ComputerTaskRun | null>(null);
+  const [objective, setObjective] = useState("");
+  const [taskAttachments, setTaskAttachments] = useState<ContextAttachment[]>(
+    [],
+  );
+  const [taskAnswer, setTaskAnswer] = useState("");
+  const [access, setAccess] = useState<"workspace" | "full">("workspace");
+  const [working, setWorking] = useState<
+    "scan" | "start" | "stop" | "save" | "task" | "attach" | null
+  >(null);
+  const [stoppingTask, setStoppingTask] = useState(false);
+  const [runtimeProgress, setRuntimeProgress] = useState<string | null>(null);
+  const [newRoot, setNewRoot] = useState("");
+  const selected = control.models.find((model) => model.id === selectedId);
+  const selectedOverride = settings.modelOverrides.find((item) => item.modelId === selectedId);
+  const effectiveContext = selectedOverride?.contextWindow ?? settings.contextWindow;
+  const effectiveMaxOutput = selectedOverride?.maxOutputTokens ?? settings.maxOutputTokens;
+  const effectiveThinkingLevel: ThinkingLevel = selectedOverride?.thinkingLevel ?? settings.thinkingLevel ?? "high";
+  const [chatThinkingLevel, setChatThinkingLevel] = useState<ThinkingLevel | "default">("default");
+  const [taskThinkingLevel, setTaskThinkingLevel] = useState<ThinkingLevel | "default">("default");
+  const chatRequestRef = useRef<string | null>(null);
+  const pendingRedirectRef = useRef<{
+    message: string;
+    attachments: ContextAttachment[];
+    recording?: SpeechRecordingAttachment;
+  } | null>(null);
+  const chatTerminalRef = useRef<{ kind: string; content?: string } | null>(
+    null,
+  );
+  const latestChatRef = useRef({ selected, settings, session });
+  const taskRunRef = useRef<string | null>(null);
+  const latestTaskRef = useRef<ComputerTaskRun | null>(task);
+  const taskStartingRef = useRef(false);
+  const earlyTaskEventsRef = useRef<ComputerTaskEvent[]>([]);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const onChangedRef = useRef(onChanged);
+  const enginePathHasValidName = /(?:^|[\\/])llama-server\.exe$/i.test(
+    settings.enginePath.trim(),
+  );
+  const visibleModels = useMemo(
+    () =>
+      control.models.filter((model) =>
+        `${model.name} ${model.source} ${model.quantization ?? ""}`
+          .toLowerCase()
+          .includes(filter.toLowerCase()),
+      ),
+    [control.models, filter],
+  );
+
+  const refreshHistory = async () => {
+    const [nextSessions, nextTasks] = await Promise.all([
+      listChatSessions(),
+      listComputerTasks(),
+    ]);
+    setSessions(nextSessions);
+    setTasks(nextTasks);
+  };
+
+  useEffect(() => {
+    setSettings(control.settings);
+  }, [control.settings]);
+  useEffect(() => {
+    onChangedRef.current = onChanged;
+  }, [onChanged]);
+  useEffect(() => {
+    latestChatRef.current = { selected, settings, session };
+  }, [selected, settings, session]);
+  useEffect(() => {
+    latestTaskRef.current = task;
+  }, [task]);
+  useEffect(() => {
+    void refreshHistory().catch(() => undefined);
+    let unmounted = false;
+    let chatDispose: (() => void) | undefined;
+    let taskDispose: (() => void) | undefined;
+    let runtimeDispose: (() => void) | undefined;
+    void onChatStream(handleChatEvent).then((dispose) => {
+      if (unmounted) dispose();
+      else chatDispose = dispose;
+    });
+    void onComputerTaskEvent(handleTaskEvent).then((dispose) => {
+      if (unmounted) dispose();
+      else taskDispose = dispose;
+    });
+    void onRuntimeProgress((event) => setRuntimeProgress(event.detail)).then(
+      (dispose) => {
+        if (unmounted) dispose();
+        else runtimeDispose = dispose;
+      },
+    );
+    return () => {
+      unmounted = true;
+      chatDispose?.();
+      taskDispose?.();
+      runtimeDispose?.();
+    };
+    // Event handlers use refs and functional state updates, so they remain stable for this subscription.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    const refreshControl = () => void getControlSnapshot(false)
+      .then((next) => onChangedRef.current(next))
+      .catch(() => undefined);
+    refreshControl();
+    const timer = window.setInterval(refreshControl, 2_500);
+    return () => window.clearInterval(timer);
+  }, [visible]);
+
+  useEffect(() => {
+    if (typeof chatEndRef.current?.scrollIntoView === "function")
+      chatEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [session?.messages.length, stream?.content, stream?.reasoning]);
+
+  function handleChatEvent(event: ChatStreamEvent) {
+    if (chatRequestRef.current && event.requestId !== chatRequestRef.current)
+      return;
+    if (event.kind === "token" || event.kind === "reasoning") {
+      setStream((current) => ({
+        requestId: event.requestId,
+        phase: "generating",
+        startedAt: current?.startedAt ?? Date.now(),
+        content:
+          (current?.content ?? "") +
+          (event.kind === "token" ? (event.content ?? "") : ""),
+        reasoning:
+          (current?.reasoning ?? "") +
+          (event.kind === "reasoning" ? (event.content ?? "") : ""),
+        metrics: current?.metrics,
+        thinkingLevel: current?.thinkingLevel,
+      }));
+    } else if (event.kind === "metrics") {
+      setStream((current) =>
+        current ? { ...current, metrics: event.data } : current,
+      );
+    } else if (event.kind === "context") {
+      setStream((current) =>
+        current
+          ? { ...current, notice: event.content }
+          : {
+              requestId: event.requestId,
+              phase: "preparing context",
+              content: "",
+              reasoning: "",
+              notice: event.content,
+            },
+      );
+    } else if (event.kind === "queued" || event.kind === "started") {
+      const thinkingLevel = (event.data?.thinkingLevel as string) || undefined;
+      setStream((current) =>
+        current
+          ? {
+              ...current,
+              phase: event.kind,
+              startedAt: current.startedAt ?? (event.kind === "started" ? Date.now() : undefined),
+              thinkingLevel: thinkingLevel ?? current.thinkingLevel,
+            }
+          : {
+              requestId: event.requestId,
+              phase: event.kind,
+              content: "",
+              reasoning: "",
+              startedAt: event.kind === "started" ? Date.now() : undefined,
+              thinkingLevel,
+            },
+      );
+    } else if (["done", "cancelled", "error"].includes(event.kind)) {
+      chatTerminalRef.current = { kind: event.kind, content: event.content };
+      setStream((current) =>
+        current
+          ? {
+              ...current,
+              phase: event.kind === "done" ? "finishing" : event.kind,
+            }
+          : current,
+      );
+    } else if (event.kind === "settled") {
+      const terminal = chatTerminalRef.current;
+      chatTerminalRef.current = null;
+      void (async () => {
+        try {
+          const next = await getChatSession(event.sessionId);
+          setSession(next);
+          await refreshHistory();
+          setStream((current) =>
+            current?.requestId === event.requestId ? null : current,
+          );
+          chatRequestRef.current = null;
+          if (terminal?.kind === "error")
+            onError(
+              terminal.content ?? "The local generation stopped unexpectedly.",
+            );
+          const redirect = pendingRedirectRef.current;
+          pendingRedirectRef.current = null;
+          if (redirect)
+            await launchChat(redirect.message, next, redirect.attachments, redirect.recording);
+        } catch (cause) {
+          setStream(null);
+          chatRequestRef.current = null;
+          pendingRedirectRef.current = null;
+          onError(String(cause));
+        }
+      })();
+    }
+  }
+
+  function handleTaskEvent(event: ComputerTaskEvent) {
+    if (taskRunRef.current && event.runId !== taskRunRef.current) return;
+    if (taskStartingRef.current) {
+      earlyTaskEventsRef.current.push(event);
+      return;
+    }
+    if (latestTaskRef.current?.id !== event.runId) {
+      earlyTaskEventsRef.current.push(event);
+      return;
+    }
+    setTask((current) => {
+      if (current?.id !== event.runId) return current;
+      return {
+        ...current,
+        status: terminalTaskStatus(event.kind, current.status),
+        updatedAt: event.at,
+        events: [...current.events, event],
+        artifacts:
+          event.kind === "artifact" &&
+          event.data?.path &&
+          !current.artifacts.includes(event.data.path)
+            ? [...current.artifacts, event.data.path]
+            : current.artifacts,
+      };
+    });
+    if (
+      ["done", "cancelled", "error", "limit", "question"].includes(event.kind)
+    ) {
+      taskRunRef.current = null;
+      setStoppingTask(false);
+      setWorking(null);
+      void refreshHistory().catch(() => undefined);
+    }
+  }
+
+  const act = async (
+    next: typeof working,
+    action: () => Promise<ControlSnapshot>,
+  ) => {
+    setWorking(next);
+    try {
+      onChanged(await action());
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const openSession = async (summary: ChatSessionSummary) => {
+    if (stream) return;
+    try {
+      const next = await getChatSession(summary.id);
+      setSession(next);
+      setSelectedId(next.modelId);
+      setKind("chat");
+    } catch (cause) {
+      onError(String(cause));
+    }
+  };
+
+  const openTask = async (summary: ComputerTaskSummary) => {
+    if (taskRunRef.current) return;
+    try {
+      const next = await getComputerTask(summary.id);
+      setTask(next);
+      taskRunRef.current = ["running", "starting"].includes(next.status)
+        ? next.id
+        : null;
+      setKind("task");
+    } catch (cause) {
+      onError(String(cause));
+    }
+  };
+
+  const newConversation = () => {
+    if (stream) return;
+    setSession(null);
+    setChatAttachments([]);
+    chatRequestRef.current = null;
+    pendingRedirectRef.current = null;
+    setKind("chat");
+  };
+  const newTask = () => {
+    if (active) return;
+    setTask(null);
+    setObjective("");
+    setTaskAttachments([]);
+    setTaskAnswer("");
+    setKind("task");
+  };
+
+  async function launchChat(
+    message: string,
+    baseSession: ChatSession | null,
+    attachments: ContextAttachment[] = [],
+    recording?: SpeechRecordingAttachment,
+  ) {
+    const current = latestChatRef.current;
+    if (!current.selected) return;
+    const optimistic: ChatMessage = {
+      id: `pending-${Date.now()}`,
+      role: "user",
+      content: message || "Analyze the attached local context.",
+      attachments,
+      recording,
+      createdAt: new Date().toISOString(),
+    };
+    setSession(
+      baseSession
+        ? { ...baseSession, messages: [...baseSession.messages, optimistic] }
+        : baseSession,
+    );
+    try {
+      const started = await startChatStream({
+        sessionId: baseSession?.id,
+        modelId: current.selected.id,
+        message,
+        attachmentIds: attachments.map((item) => item.id),
+        recording,
+        temperature: 0.2,
+        topP: 0.9,
+        topK: 40,
+        maxOutputTokens: current.settings.modelOverrides.find((item) => item.modelId === current.selected?.id)?.maxOutputTokens ?? current.settings.maxOutputTokens,
+        thinkingLevel: chatThinkingLevel === "default" ? undefined : chatThinkingLevel,
+      });
+      chatRequestRef.current = started.requestId;
+      setSession(started.session);
+      setStream((current) =>
+        current?.requestId === started.requestId
+          ? current
+          : {
+              requestId: started.requestId,
+              phase: "queued",
+              content: "",
+              reasoning: "",
+            },
+      );
+      void refreshHistory();
+    } catch (cause) {
+      setSession(baseSession);
+      setChatAttachments(
+        (current) => mergeAttachments(current, attachments).attachments,
+      );
+      onError(String(cause));
+    }
+  }
+
+  function reconcileChatStop(requestId: string) {
+    window.setTimeout(() => {
+      if (chatRequestRef.current !== requestId) return;
+      void getControlSnapshot(false)
+        .then(async (snapshot) => {
+          if (
+            snapshot.runtime.inferenceBusy ||
+            chatRequestRef.current !== requestId
+          )
+            return;
+          let baseSession = latestChatRef.current.session;
+          const sessionId = baseSession?.id;
+          if (sessionId) {
+            const next = await getChatSession(sessionId);
+            setSession(next);
+            baseSession = next;
+          }
+          const redirect = pendingRedirectRef.current;
+          setStream(null);
+          chatRequestRef.current = null;
+          chatTerminalRef.current = null;
+          pendingRedirectRef.current = null;
+          await refreshHistory();
+          if (redirect)
+            await launchChat(
+              redirect.message,
+              baseSession,
+              redirect.attachments,
+              redirect.recording,
+            );
+        })
+        .catch((cause) => onError(String(cause)));
+    }, 5_000);
+  }
+
+  const send = async () => {
+    if (!selected || (!draft.trim() && chatAttachments.length === 0)) return;
+    const message = draft.trim();
+    const attachments = chatAttachments;
+    const recording = pendingVoiceRecordingRef.current;
+    pendingVoiceRecordingRef.current = null;
+    setDraft("");
+    setChatAttachments([]);
+    if (stream) {
+      pendingRedirectRef.current = { message, attachments, recording: recording ?? undefined };
+      setStream((current) =>
+        current ? { ...current, phase: "redirecting" } : current,
+      );
+      try {
+        await cancelChatStream(stream.requestId);
+        reconcileChatStop(stream.requestId);
+      } catch (cause) {
+        pendingRedirectRef.current = null;
+        setDraft(message);
+        setChatAttachments(attachments);
+        pendingVoiceRecordingRef.current = recording;
+        onError(String(cause));
+      }
+      return;
+    }
+    await launchChat(message, session, attachments, recording ?? undefined);
+  };
+
+  const cancelGeneration = async () => {
+    if (!stream) return;
+    setStream((current) =>
+      current ? { ...current, phase: "stopping" } : current,
+    );
+    try {
+      await cancelChatStream(stream.requestId);
+      reconcileChatStop(stream.requestId);
+    } catch (cause) {
+      onError(String(cause));
+    }
+  };
+
+  const continueGeneration = async () => {
+    if (stream) return;
+    await launchChat(
+      "Continue from the interrupted answer. Do not repeat completed material; first account for my latest instructions.",
+      session,
+    );
+  };
+
+  const attachFiles = async (target: WorkKind) => {
+    setWorking("attach");
+    try {
+      const result = await pickContextFiles();
+      const merged = mergeAttachments(
+        target === "chat" ? chatAttachments : taskAttachments,
+        result.attachments,
+      );
+      if (target === "chat") setChatAttachments(merged.attachments);
+      else setTaskAttachments(merged.attachments);
+      const failures = [...result.failures];
+      if (merged.rejected > 0) {
+        failures.push(
+          `${merged.rejected} file(s) exceeded the 12-file or 256 MiB message limit.`,
+        );
+      }
+      if (failures.length > 0) {
+        onError(`Some files were not attached:\n${failures.join("\n")}`);
+      }
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const addModelFolder = async () => {
+    setWorking("attach");
+    try {
+      const root = await pickLocalModelFolder();
+      if (root && !settings.extraModelRoots.includes(root)) {
+        const nextSettings = {
+          ...settings,
+          selectedModelId: selectedId || undefined,
+          extraModelRoots: [...settings.extraModelRoots, root],
+        };
+        setSettings(nextSettings);
+        const next = await saveControlSettings(nextSettings);
+        setSettings(next.settings);
+        onChanged(next);
+      }
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const removeSession = async (summary: ChatSessionSummary) => {
+    if (
+      !window.confirm(
+        `Archive “${summary.title}”? The JSON transcript is retained as a recoverable archive.`,
+      )
+    )
+      return;
+    try {
+      await deleteChatSession(summary.id);
+      if (session?.id === summary.id) setSession(null);
+      await refreshHistory();
+    } catch (cause) {
+      onError(String(cause));
+    }
+  };
+
+  const runTask = async () => {
+    if (!selected || (!objective.trim() && taskAttachments.length === 0))
+      return;
+    if (access === "full" && !settings.allowFullAccessAgent) {
+      onError(
+        "Full access is locked. Enable it in the Session Inspector and save the profile first.",
+      );
+      return;
+    }
+    if (
+      access === "full" &&
+      !window.confirm(
+        "Run this local model with full computer access? It may run programs and change files outside workspace folders. Every action is recorded, but the folder sandbox will not apply.",
+      )
+    )
+      return;
+    setWorking("task");
+    taskStartingRef.current = true;
+    try {
+      const run = await startComputerTask({
+        modelId: selected.id,
+        objective:
+          objective.trim() ||
+          "Analyze the attached local context and complete the implied task safely.",
+        attachmentIds: taskAttachments.map((item) => item.id),
+        access,
+        maxSteps: settings.agentMaxSteps,
+        maxOutputTokens: settings.agentMaxOutputTokens,
+        thinkingLevel: taskThinkingLevel === "default" ? undefined : taskThinkingLevel,
+      });
+      const early = earlyTaskEventsRef.current.filter(
+        (event) => event.runId === run.id,
+      );
+      earlyTaskEventsRef.current = earlyTaskEventsRef.current.filter(
+        (event) => event.runId !== run.id,
+      );
+      const terminal = early
+        .filter((event) =>
+          ["done", "cancelled", "error", "limit", "question"].includes(
+            event.kind,
+          ),
+        )
+        .at(-1);
+      taskRunRef.current = terminal ? null : run.id;
+      const initialized = {
+        ...run,
+        status: terminal
+          ? terminalTaskStatus(terminal.kind, run.status)
+          : run.status,
+        events: [...run.events, ...early],
+      };
+      latestTaskRef.current = initialized;
+      setTask(initialized);
+      taskStartingRef.current = false;
+      setWorking(null);
+      setObjective("");
+      setTaskAttachments([]);
+      void refreshHistory();
+    } catch (cause) {
+      taskStartingRef.current = false;
+      setWorking(null);
+      onError(String(cause));
+    }
+  };
+
+  const stopTask = async () => {
+    if (!task || stoppingTask) return;
+    setStoppingTask(true);
+    try {
+      await stopComputerTask(task.id);
+      window.setTimeout(() => setStoppingTask(false), 5_000);
+    } catch (cause) {
+      setStoppingTask(false);
+      onError(String(cause));
+    }
+  };
+
+  const resumeTask = async () => {
+    if (!task || !taskAnswer.trim()) return;
+    if (
+      task.access === "full" &&
+      !window.confirm(
+        "Continue this task with full computer access? The model may run programs and modify files outside workspace folders.",
+      )
+    )
+      return;
+    setWorking("task");
+    taskStartingRef.current = true;
+    try {
+      const next = await resumeComputerTask({
+        runId: task.id,
+        answer: taskAnswer.trim(),
+      });
+      const early = earlyTaskEventsRef.current.filter(
+        (event) => event.runId === next.id,
+      );
+      earlyTaskEventsRef.current = earlyTaskEventsRef.current.filter(
+        (event) => event.runId !== next.id,
+      );
+      const additional = early.filter(
+        (event) =>
+          !next.events.some(
+            (known) =>
+              known.at === event.at &&
+              known.kind === event.kind &&
+              known.title === event.title,
+          ),
+      );
+      const terminal = additional
+        .filter((event) =>
+          ["done", "cancelled", "error", "limit", "question"].includes(
+            event.kind,
+          ),
+        )
+        .at(-1);
+      taskRunRef.current = terminal ? null : next.id;
+      const initialized = {
+        ...next,
+        status: terminal
+          ? terminalTaskStatus(terminal.kind, next.status)
+          : next.status,
+        events: [...next.events, ...additional],
+      };
+      latestTaskRef.current = initialized;
+      setTask(initialized);
+      taskStartingRef.current = false;
+      setTaskAnswer("");
+      void refreshHistory();
+    } catch (cause) {
+      taskStartingRef.current = false;
+      onError(String(cause));
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const save = async () => {
+    if (!enginePathHasValidName) {
+      onError(
+        "The model engine path must end with llama-server.exe. Choose a verified local engine before saving.",
+      );
+      return;
+    }
+    setWorking("save");
+    try {
+      onChanged(
+        await saveControlSettings({
+          ...settings,
+          selectedModelId: selectedId || undefined,
+        }),
+      );
+    } catch (cause) {
+      onError(String(cause));
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const addRoot = () => {
+    const root = newRoot.trim();
+    if (root && !settings.agentWorkspaceRoots.includes(root))
+      setSettings({
+        ...settings,
+        agentWorkspaceRoots: [...settings.agentWorkspaceRoots, root],
+      });
+    setNewRoot("");
+  };
+  const updatePositiveSetting = (
+    key:
+      | "agentMaxSteps"
+      | "agentMaxOutputTokens",
+    value: string,
+  ) => {
+    const next = Number(value);
+    if (Number.isFinite(next) && next > 0)
+      setSettings((current) => ({ ...current, [key]: next }));
+  };
+  const updateSelectedRuntime = (
+    key: "contextWindow" | "maxOutputTokens" | "threads" | "thinkingLevel",
+    value: string | ThinkingLevel,
+  ) => {
+    if (!selectedId) return;
+    if (key === "thinkingLevel") {
+      setSettings((current) => {
+        const known = current.modelOverrides.find((item) => item.modelId === selectedId) ?? { modelId: selectedId };
+        return {
+          ...current,
+          modelOverrides: [
+            ...current.modelOverrides.filter((item) => item.modelId !== selectedId),
+            { ...known, thinkingLevel: value as ThinkingLevel },
+          ],
+        };
+      });
+      return;
+    }
+    const next = Number(value);
+    if (!Number.isFinite(next) || next <= 0) return;
+    setSettings((current) => {
+      const known = current.modelOverrides.find((item) => item.modelId === selectedId) ?? { modelId: selectedId };
+      return {
+        ...current,
+        modelOverrides: [
+          ...current.modelOverrides.filter((item) => item.modelId !== selectedId),
+          { ...known, [key]: next },
+        ],
+      };
+    });
+  };
+  const toggleSelectedRuntime = (enabled: boolean) => {
+    if (!selectedId) return;
+    setSettings((current) => ({
+      ...current,
+      modelOverrides: enabled
+        ? [
+            ...current.modelOverrides.filter((item) => item.modelId !== selectedId),
+            {
+              modelId: selectedId,
+              contextWindow: current.contextWindow,
+              maxOutputTokens: current.maxOutputTokens,
+              threads: current.threads,
+              thinkingLevel: current.thinkingLevel,
+            },
+          ]
+        : current.modelOverrides.filter((item) => item.modelId !== selectedId),
+    }));
+  };
+  const active = !!stream || !!taskRunRef.current;
+  const resumableAnswer =
+    !stream &&
+    session?.messages.at(-1)?.role === "assistant" &&
+    ["interrupted", "limited"].includes(session.messages.at(-1)?.status ?? "");
+  const gpu = control.gpu;
+
+  return (
+    <div className="control-plane offline-workspace" data-mode={kind}>
+      <aside className="model-drawer">
+        <div className="control-product">
+          <strong>KESTREL</strong>
+          <span>OFFLINE WORKSPACE</span>
+        </div>
+        <div className="work-mode-switch">
+          <button
+            className={kind === "chat" ? "active" : ""}
+            onClick={() => setKind("chat")}
+          >
+            <Bot /> Chat
+          </button>
+          <button
+            className={kind === "task" ? "active" : ""}
+            onClick={() => setKind("task")}
+          >
+            <MonitorCog /> Computer
+          </button>
+        </div>
+        <div className="model-search">
+          <Search size={14} />
+          <input
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Find a local model"
+          />
+        </div>
+        <div className="drawer-title">
+          <span>MODEL</span>
+          <button
+            title="Read-only rescan"
+            onClick={() => void act("scan", scanLocalModels)}
+          >
+            {working === "scan" ? (
+              <LoaderCircle className="spin" />
+            ) : (
+              <RefreshCw />
+            )}
+          </button>
+        </div>
+        <div className="control-models compact-models">
+          {visibleModels.map((model) => (
+            <button
+              key={model.id}
+              disabled={active}
+              className={selectedId === model.id ? "selected" : ""}
+              onClick={() => {
+                if (session && model.id !== session.modelId) newConversation();
+                setSelectedId(model.id);
+              }}
+            >
+              <Bot />
+              <span>
+                <strong>{model.name}</strong>
+                <small>
+                  {model.source} · {model.quantization ?? "GGUF"}
+                  {model.supportsVision ? " · vision" : ""}
+                  {model.supportsAudio ? " · audio" : ""}
+                </small>
+              </span>
+              {control.runtime.modelId === model.id && (
+                <i>{control.runtime.phase}</i>
+              )}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="drawer-model-add"
+          onClick={() => void addModelFolder()}
+          disabled={working === "attach"}
+        >
+          {working === "attach" ? <LoaderCircle className="spin" /> : <FolderOpen />}
+          Add local model folder
+        </button>
+        {settings.extraModelRoots.length > 0 && <div className="drawer-model-roots" aria-label="Additional model folders">
+          {settings.extraModelRoots.map((root) => <div key={root}>
+            <span title={root}>{root}</span>
+            <button
+              type="button"
+              aria-label={`Remove model folder ${root}`}
+              onClick={() => {
+                const nextSettings = {
+                  ...settings,
+                  selectedModelId: selectedId || undefined,
+                  extraModelRoots: settings.extraModelRoots.filter((value) => value !== root),
+                };
+                setSettings(nextSettings);
+                void saveControlSettings(nextSettings).then((next) => {
+                  setSettings(next.settings);
+                  onChanged(next);
+                }).catch((cause) => onError(String(cause)));
+              }}
+            ><X /></button>
+          </div>)}
+        </div>}
+        <div className="drawer-title">
+          <span>{kind === "chat" ? "CONVERSATIONS" : "TASK HISTORY"}</span>
+          {kind === "chat" && (
+            <button
+              title="New conversation"
+              disabled={!!stream}
+              onClick={newConversation}
+            >
+              <MessageSquarePlus />
+            </button>
+          )}
+        </div>
+        <div className="history-list">
+          {kind === "chat"
+            ? sessions.map((item) => (
+                <div
+                  key={item.id}
+                  className={session?.id === item.id ? "active" : ""}
+                >
+                  <button
+                    disabled={!!stream}
+                    onClick={() => void openSession(item)}
+                  >
+                    <span>{item.title}</span>
+                    <small>
+                      {item.messageCount} messages ·{" "}
+                      {relativeTime(item.updatedAt)}
+                    </small>
+                  </button>
+                  <button
+                    title="Archive conversation"
+                    disabled={!!stream}
+                    onClick={() => void removeSession(item)}
+                  >
+                    <Trash2 />
+                  </button>
+                </div>
+              ))
+            : tasks.map((item) => (
+                <button
+                  key={item.id}
+                  disabled={!!taskRunRef.current}
+                  className={task?.id === item.id ? "active" : ""}
+                  onClick={() => void openTask(item)}
+                >
+                  <span>{item.objective}</span>
+                  <small>
+                    {item.status} · {item.eventCount} events ·{" "}
+                    {relativeTime(item.updatedAt)}
+                  </small>
+                </button>
+              ))}
+        </div>
+        <div className="local-lock">
+          <ShieldCheck />
+          <span>
+            <strong>Offline execution</strong>
+            <small>
+              Loopback model · durable transcripts · one inference lease
+            </small>
+          </span>
+        </div>
+      </aside>
+
+      <section className="control-center">
+        <header className="control-top">
+          <div>
+            <span className="eyebrow">
+              {kind === "chat" ? "LOCAL CONVERSATION" : "VISIBLE COMPUTER WORK"}
+            </span>
+            <h1>
+              {kind === "chat"
+                ? (session?.title ?? selected?.name ?? "Choose a model")
+                : (task?.objective ?? "Computer Tasks")}
+            </h1>
+          </div>
+          <div className="control-actions">
+            {kind === "chat" ? (
+              <button
+                className="quiet-button"
+                disabled={!!stream}
+                onClick={newConversation}
+              >
+                <MessageSquarePlus /> New chat
+              </button>
+            ) : (
+              <>
+                <button
+                  className="quiet-button"
+                  disabled={!!stream}
+                  onClick={newConversation}
+                >
+                  <MessageSquarePlus /> New chat
+                </button>
+                <button
+                  className="quiet-button"
+                  disabled={active}
+                  onClick={newTask}
+                >
+                  <MessageSquarePlus /> New task
+                </button>
+              </>
+            )}
+            {control.runtime.phase === "ready" ? (
+              <button
+                className="quiet-button"
+                disabled={active}
+                onClick={() => void act("stop", stopLocalModel)}
+              >
+                {working === "stop" ? (
+                  <LoaderCircle className="spin" />
+                ) : (
+                  <CircleStop />
+                )}
+                {control.runtime.mode === "attached" ? "Detach" : "Stop"}
+              </button>
+            ) : (
+              <button
+                className="primary-button"
+                disabled={!selected || !!working}
+                onClick={() =>
+                  selected &&
+                  void act("start", () => startLocalModel(selected.id))
+                }
+              >
+                {working === "start" ? (
+                  <LoaderCircle className="spin" />
+                ) : (
+                  <Play />
+                )}{" "}
+                Load model
+              </button>
+            )}
+          </div>
+        </header>
+        {kind === "chat" ? (
+          <>
+            <div className="control-chat" aria-live="polite">
+              {working === "start" && runtimeProgress && (
+                <RuntimeNotice title="MODEL STARTUP" detail={runtimeProgress} />
+              )}{" "}
+              {session?.messages.length ? (
+                session.messages.map((message) => (
+                  <Message
+                    key={message.id}
+                    message={message}
+                    sessionId={session.id}
+                    model={selected?.name}
+                    onError={onError}
+                  />
+                ))
+              ) : (
+                <Welcome
+                  models={control.models.length}
+                  context={effectiveContext}
+                  freeMib={gpu?.freeMib}
+                />
+              )}{" "}
+              {stream && (
+                <article className="assistant streaming">
+                  <span>
+                    {selected?.name ?? "MODEL"}
+                    <i>{stream.phase}</i>
+                  </span>
+                  {stream.notice && (
+                    <div className="context-notice">{stream.notice}</div>
+                  )}
+                  {stream.reasoning ? (
+                    <details open={!stream.content} className="chat-reasoning-block">
+                      <summary>
+                        <span>Reasoning</span>
+                        <span className="thinking-level-badge">{(stream.thinkingLevel || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel)).toUpperCase()}</span>
+                        <small>live</small>
+                      </summary>
+                      <pre>{stream.reasoning}</pre>
+                    </details>
+                  ) : (stream.thinkingLevel === "off" || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel) === "off") && stream.phase !== "queued" ? (
+                    <div className="chat-thinking-off-indicator" style={{ display: "flex", alignItems: "center", gap: 6, margin: "6px 0", padding: "4px 8px", background: "rgba(30,35,30,0.5)", borderRadius: 4, border: "1px solid rgba(80,90,80,0.3)" }}>
+                      <span className="thinking-level-badge thinking-off-badge">THINKING OFF</span>
+                      <small style={{ color: "#8a948c", font: "8px var(--sans)" }}>Generating direct response without reasoning channel</small>
+                    </div>
+                  ) : null}
+                  <MarkdownContent
+                    value={
+                      stream.content ||
+                      (stream.phase === "queued"
+                        ? "Waiting for the inference slot…"
+                        : "")
+                    }
+                    streaming={stream.phase === "generating"}
+                  />
+                  <Metrics
+                    data={stream.metrics}
+                    content={stream.content}
+                    reasoning={stream.reasoning}
+                    startedAt={stream.startedAt}
+                    active={stream.phase === "generating"}
+                    modelName={selected?.name}
+                  />
+                </article>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+            {resumableAnswer && (
+              <div className="chat-resume">
+                <span>The partial answer is saved.</span>
+                <button onClick={() => void continueGeneration()}>
+                  <Play /> Continue answer
+                </button>
+              </div>
+            )}
+            <div className={`control-composer ${stream ? "steerable" : ""}`}>
+              {chatAttachments.length > 0 && (
+                <AttachmentShelf
+                  attachments={chatAttachments}
+                  removable
+                  onError={onError}
+                  onRemove={(id) =>
+                    setChatAttachments((items) =>
+                      items.filter((item) => item.id !== id),
+                    )
+                  }
+                />
+              )}
+              <div className="composer-toolbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 6px", fontSize: 11 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 6, color: "#8b948d", fontSize: 10 }}>
+                  <span>Thinking:</span>
+                  <select
+                    value={chatThinkingLevel}
+                    onChange={(e) => setChatThinkingLevel(e.target.value as ThinkingLevel | "default")}
+                    style={{ background: "#18201a", color: "#b0c0b4", border: "1px solid #334036", borderRadius: 4, padding: "1px 4px", fontSize: 10 }}
+                  >
+                    <option value="default">Model default ({effectiveThinkingLevel})</option>
+                    <option value="off">Off (direct)</option>
+                    <option value="low">Low reasoning</option>
+                    <option value="medium">Medium reasoning</option>
+                    <option value="high">High reasoning</option>
+                    <option value="max">Max reasoning</option>
+                  </select>
+                </span>
+              </div>
+              <div className="composer-row">
+                <button
+                  className="attach-button"
+                  title="Attach local context"
+                  disabled={
+                    control.runtime.phase !== "ready" ||
+                    !!taskRunRef.current ||
+                    working === "attach"
+                  }
+                  onClick={() => void attachFiles("chat")}
+                >
+                  {working === "attach" ? (
+                    <LoaderCircle className="spin" />
+                  ) : (
+                    <Paperclip />
+                  )}
+                </button>
+                <SpeechDictationButton
+                  sourceKind="chat"
+                  sourceId={session?.id ?? "chat-draft"}
+                  value={draft}
+                  onChange={setDraft}
+                  onRecordingComplete={(recording) => {
+                    pendingVoiceRecordingRef.current = recording;
+                  }}
+                  onActiveChange={setChatDictating}
+                  disabled={control.runtime.phase !== "ready" || !!taskRunRef.current || !!stream}
+                  label="Dictate message"
+                />
+                <textarea
+                  value={draft}
+                  readOnly={chatDictating}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (!chatDictating && event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void send();
+                    }
+                  }}
+                  placeholder={
+                    control.runtime.phase !== "ready"
+                      ? "Load a model to begin"
+                      : taskRunRef.current
+                        ? "Computer task is using the inference slot…"
+                        : stream
+                          ? "Add context or a message to redirect this answer…"
+                          : "Message the active local model…"
+                  }
+                  disabled={
+                    control.runtime.phase !== "ready" || !!taskRunRef.current
+                  }
+                />
+                {stream && !draft.trim() && chatAttachments.length === 0 ? (
+                  <button
+                    title="Stop generation"
+                    className="stop-generation"
+                    onClick={() => void cancelGeneration()}
+                  >
+                    <Square />
+                  </button>
+                ) : (
+                  <button
+                    title={
+                      stream ? "Send and redirect the current answer" : "Send"
+                    }
+                    onClick={() => void send()}
+                    disabled={
+                      (!draft.trim() && chatAttachments.length === 0) ||
+                      chatDictating ||
+                      control.runtime.phase !== "ready" ||
+                      !!taskRunRef.current
+                    }
+                  >
+                    {stream ? <Zap /> : <Send />}
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
+        ) : (
+          <ComputerTasks
+            run={task}
+            objective={objective}
+            attachments={taskAttachments}
+            answer={taskAnswer}
+            access={access}
+            ready={control.runtime.phase === "ready"}
+            running={!!taskRunRef.current}
+            stopping={stoppingTask}
+            resuming={working === "task"}
+            attaching={working === "attach"}
+            fullUnlocked={settings.allowFullAccessAgent}
+            onObjective={setObjective}
+            onRemoveAttachment={(id) =>
+              setTaskAttachments((items) =>
+                items.filter((item) => item.id !== id),
+              )
+            }
+            onAttach={() => void attachFiles("task")}
+            onAnswer={setTaskAnswer}
+            onAccess={setAccess}
+            onRun={() => void runTask()}
+            onResume={() => void resumeTask()}
+            onStop={() => void stopTask()}
+            thinkingLevel={taskThinkingLevel}
+            effectiveThinkingLevel={effectiveThinkingLevel}
+            onThinkingLevel={setTaskThinkingLevel}
+            onOpen={(path) => task && void openTaskArtifact(task.id, path)}
+            onError={onError}
+          />
+        )}
+      </section>
+
+      <aside className="control-inspector">
+        <span className="eyebrow">SESSION INSPECTOR</span>
+        <div className="control-metric-grid">
+          <Metric label="Runtime" value={control.runtime.phase} />
+          <Metric label="Ownership" value={control.runtime.mode} />
+          <Metric
+            label="Context"
+            value={
+              control.runtime.contextWindow
+                ? control.runtime.contextWindow.toLocaleString()
+                : "—"
+            }
+          />
+          <Metric
+            label="Media"
+            value={
+              selected?.supportsAudio
+                ? "Vision + audio"
+                : selected?.supportsVision
+                  ? "Vision"
+                  : "Text extraction"
+            }
+          />
+          <Metric
+            label="Inference"
+            value={
+              active
+                ? "Active here"
+                : control.runtime.inferenceBusy
+                  ? "Busy elsewhere"
+                  : "Available"
+            }
+          />
+        </div>
+        {gpu && (
+          <div className="control-memory">
+            <strong>{gpu.name}</strong>
+            <div>
+              <span
+                style={{
+                  width: `${Math.min(100, (gpu.usedMib / gpu.totalMib) * 100)}%`,
+                }}
+              />
+            </div>
+            <small>
+              {formatMib(gpu.usedMib)} used · {formatMib(gpu.freeMib)} free ·{" "}
+              {gpu.utilizationPercent}% compute
+            </small>
+          </div>
+        )}
+        <p className="runtime-detail">{control.runtime.detail}</p>
+        <section className="inspector-section inspector-mode-settings">
+          <h2>{kind === "chat" ? "Chat generation" : "Computer model limits"}</h2>
+          <div className="inline-runtime-settings inspector-setting-grid">
+            <label>
+              Context
+              <input
+                type="number"
+                disabled={!selectedOverride}
+                value={effectiveContext}
+                onChange={(event) =>
+                  updateSelectedRuntime("contextWindow", event.target.value)
+                }
+              />
+            </label>
+            <label>
+              Max output
+              <input
+                type="number"
+                disabled={!selectedOverride}
+                value={effectiveMaxOutput}
+                onChange={(event) =>
+                  updateSelectedRuntime("maxOutputTokens", event.target.value)
+                }
+              />
+            </label>
+            <label>
+              Thinking level
+              <select
+                disabled={!selectedOverride}
+                value={effectiveThinkingLevel}
+                onChange={(event) =>
+                  updateSelectedRuntime("thinkingLevel", event.target.value as ThinkingLevel)
+                }
+              >
+                <option value="off">Off (direct response)</option>
+                <option value="low">Low reasoning</option>
+                <option value="medium">Medium reasoning</option>
+                <option value="high">High reasoning</option>
+                <option value="max">Max reasoning</option>
+              </select>
+            </label>
+            <label className="check-line inspector-wide-setting">
+              <input
+                type="checkbox"
+                checked={!!selectedOverride}
+                disabled={!selectedId}
+                onChange={(event) => toggleSelectedRuntime(event.target.checked)}
+              />{" "}
+              Override selected model
+            </label>
+          </div>
+        </section>
+        {kind === "task" && <section className="inspector-section inspector-mode-settings">
+          <h2>Computer Tasks policy</h2>
+          <div className="inline-runtime-settings inspector-setting-grid">
+            <label>
+              Maximum steps
+              <input
+                type="number"
+                value={settings.agentMaxSteps}
+                onChange={(event) =>
+                  updatePositiveSetting("agentMaxSteps", event.target.value)
+                }
+              />
+            </label>
+            <label>
+              Output per decision
+              <input
+                type="number"
+                value={settings.agentMaxOutputTokens}
+                onChange={(event) =>
+                  updatePositiveSetting(
+                    "agentMaxOutputTokens",
+                    event.target.value,
+                  )
+                }
+              />
+            </label>
+            <label className="check-line danger-toggle">
+              <input
+                type="checkbox"
+                checked={settings.allowFullAccessAgent}
+                onChange={(event) => {
+                  if (
+                    !event.target.checked ||
+                    window.confirm(
+                      "Unlock full computer access? Tasks will be able to run programs and operate outside workspace folders after an additional per-task confirmation.",
+                    )
+                  )
+                    setSettings({
+                      ...settings,
+                      allowFullAccessAgent: event.target.checked,
+                    });
+                }}
+              />{" "}
+              Unlock full access
+            </label>
+            <div className="workspace-roots">
+              {settings.agentWorkspaceRoots.map((root) => (
+                <div key={root}>
+                  <span title={root}>{root}</span>
+                  <button
+                    onClick={() =>
+                      setSettings({
+                        ...settings,
+                        agentWorkspaceRoots:
+                          settings.agentWorkspaceRoots.filter(
+                            (value) => value !== root,
+                          ),
+                      })
+                    }
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              <span className="root-entry">
+                <label htmlFor="approved-folder">Approved folder</label>
+                <span>
+                  <input
+                    id="approved-folder"
+                    value={newRoot}
+                    onChange={(event) => setNewRoot(event.target.value)}
+                    placeholder="C:\Users\You\Work"
+                  />
+                  <button
+                    type="button"
+                    aria-label="Add approved folder"
+                    onClick={addRoot}
+                  >
+                    Add
+                  </button>
+                </span>
+              </span>
+            </div>
+          </div>
+        </section>}
+        {selectedOverride && settings.advancedMode && (
+          <div className="control-warning">
+            Invalid or oversized values can stop startup or exhaust VRAM.
+          </div>
+        )}
+        <button
+          className="quiet-button inspector-save"
+          disabled={!!working || active}
+          onClick={() => void save()}
+        >
+          {working === "save" ? <LoaderCircle className="spin" /> : <Check />}{" "}
+          Save complete profile
+        </button>
+        {control.runtime.launchArgs.length > 0 && (
+          <details className="launch-proof">
+            <summary>Exact engine launch</summary>
+            <pre>{control.runtime.launchArgs.join(" ")}</pre>
+          </details>
+        )}
+        <details className="launch-proof">
+          <summary>Live runtime feed · {control.runtimeLogs.length}</summary>
+          <pre>
+            {control.runtimeLogs.length
+              ? control.runtimeLogs
+                  .slice(-120)
+                  .map(
+                    (entry) =>
+                      `[${timeOnly(entry.at)} ${entry.stream}] ${entry.line}`,
+                  )
+                  .join("\n")
+              : "Attached runtimes do not expose process logs. Managed runtime output will appear here."}
+          </pre>
+        </details>
+      </aside>
+    </div>
+  );
+}
+
+function ComputerTasks({
+  run,
+  objective,
+  attachments,
+  answer,
+  access,
+  ready,
+  running,
+  stopping,
+  resuming,
+  attaching,
+  fullUnlocked,
+  thinkingLevel = "default",
+  effectiveThinkingLevel = "high",
+  onThinkingLevel,
+  onObjective,
+  onRemoveAttachment,
+  onAttach,
+  onAnswer,
+  onAccess,
+  onRun,
+  onResume,
+  onStop,
+  onOpen,
+  onError,
+}: {
+  run: ComputerTaskRun | null;
+  objective: string;
+  attachments: ContextAttachment[];
+  answer: string;
+  access: "workspace" | "full";
+  ready: boolean;
+  running: boolean;
+  stopping: boolean;
+  resuming: boolean;
+  attaching: boolean;
+  fullUnlocked: boolean;
+  thinkingLevel?: ThinkingLevel | "default";
+  effectiveThinkingLevel?: ThinkingLevel;
+  onThinkingLevel?: (level: ThinkingLevel | "default") => void;
+  onObjective: (value: string) => void;
+  onRemoveAttachment: (id: string) => void;
+  onAttach: () => void;
+  onAnswer: (value: string) => void;
+  onAccess: (value: "workspace" | "full") => void;
+  onRun: () => void;
+  onResume: () => void;
+  onStop: () => void;
+  onOpen: (path: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [dictating, setDictating] = useState(false);
+  const resumable =
+    !!run &&
+    ["waiting", "cancelled", "interrupted", "failed"].includes(run.status);
+  const question = run
+    ? [...run.events].reverse().find((event) => event.kind === "question")
+    : undefined;
+  return (
+    <div className="computer-workspace">
+      {!run || (!running && (objective || attachments.length > 0)) ? (
+        <section className="task-launch">
+          <div className="task-orbit">
+            <MonitorCog />
+          </div>
+          <span className="eyebrow">ACTUAL COMPUTER WORK</span>
+          <h2>Give the local model a bounded objective.</h2>
+          <p>
+            Every decision, tool call, result, error, and artifact stays visible
+            and is saved locally. Attachments become durable task context.
+            Decision-critical questions pause safely for your answer. Workspace
+            mode is the everyday default.
+          </p>
+          <div className="speech-input-wrap">
+            <textarea
+              value={objective}
+              readOnly={dictating}
+              onChange={(event) => onObjective(event.target.value)}
+              placeholder="Describe the outcome, or attach context and ask the model to inspect it."
+            />
+            <SpeechDictationButton sourceKind="task" sourceId={run?.id ?? "task-draft"} value={objective} onChange={onObjective} onActiveChange={setDictating} disabled={running} label="Dictate objective" />
+          </div>
+          {attachments.length > 0 && (
+            <AttachmentShelf
+              attachments={attachments}
+              removable
+              onRemove={onRemoveAttachment}
+              onError={onError}
+            />
+          )}
+          <button
+            className="context-attach"
+            disabled={attaching}
+            onClick={onAttach}
+          >
+            {attaching ? <LoaderCircle className="spin" /> : <Paperclip />}{" "}
+            Attach files as context
+          </button>
+          <div className="task-policy">
+            <button
+              className={access === "workspace" ? "active" : ""}
+              onClick={() => onAccess("workspace")}
+            >
+              <ShieldCheck />
+              <span>
+                <strong>Workspace</strong>
+                <small>Only approved folders</small>
+              </span>
+            </button>
+            <button
+              className={access === "full" ? "active danger" : ""}
+              disabled={!fullUnlocked}
+              onClick={() => onAccess("full")}
+            >
+              <Zap />
+              <span>
+                <strong>Full access</strong>
+                <small>
+                  {fullUnlocked
+                    ? "Programs and all files"
+                    : "Locked in profile"}
+                </small>
+              </span>
+            </button>
+            {onThinkingLevel && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", background: "#151c16", border: "1px solid #334036", borderRadius: 6, color: "#d0ded2", fontSize: 12 }}>
+                <span>Thinking:</span>
+                <select
+                  value={thinkingLevel}
+                  onChange={(e) => onThinkingLevel(e.target.value as ThinkingLevel | "default")}
+                  style={{ background: "#0e1410", color: "#b0c0b4", border: "1px solid #2f3e33", borderRadius: 4, padding: "4px 8px", fontSize: 12 }}
+                >
+                  <option value="default">Model default ({effectiveThinkingLevel})</option>
+                  <option value="off">Off (direct action)</option>
+                  <option value="low">Low reasoning</option>
+                  <option value="medium">Medium reasoning</option>
+                  <option value="high">High reasoning</option>
+                  <option value="max">Max reasoning</option>
+                </select>
+              </label>
+            )}
+          </div>
+          <button
+            className="primary-button task-run"
+            disabled={dictating || !ready || (!objective.trim() && attachments.length === 0)}
+            onClick={onRun}
+          >
+            <Play /> Start visible task
+          </button>
+        </section>
+      ) : (
+        <section className="task-run-view">
+          <header>
+            <div>
+              <span className="eyebrow">
+                {run.access.toUpperCase()} ACCESS · {run.status.toUpperCase()}
+              </span>
+              <h2>{run.objective}</h2>
+              {(run.attachments?.length ?? 0) > 0 && (
+                <AttachmentShelf
+                  attachments={run.attachments!}
+                  onError={onError}
+                />
+              )}
+            </div>
+            {running && (
+              <button
+                className="danger-button"
+                disabled={stopping}
+                onClick={onStop}
+              >
+                {stopping ? <LoaderCircle className="spin" /> : <Square />}{" "}
+                {stopping ? "Stopping…" : "Stop safely"}
+              </button>
+            )}
+          </header>
+          <div className="task-timeline" aria-live="polite">
+            {run.events.map((event, index) => (
+              <article
+                key={`${event.at}-${index}`}
+                className={`task-event ${event.kind}`}
+              >
+                <div className="event-glyph">
+                  {event.kind === "artifact" ? (
+                    <FileCode2 />
+                  ) : event.kind === "tool_start" ? (
+                    <Wrench />
+                  ) : event.kind === "thinking" || event.kind === "queued" ? (
+                    <LoaderCircle className="spin" />
+                  ) : event.kind === "done" ? (
+                    <Check />
+                  ) : (
+                    <ChevronRight />
+                  )}
+                </div>
+                <div>
+                  <header>
+                    <strong style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {event.title}
+                      {event.data?.thinkingLevel ? (
+                        <span className={`thinking-level-badge ${event.data.thinkingLevel === "off" ? "thinking-off-badge" : ""}`}>
+                          {String(event.data.thinkingLevel).toUpperCase()}
+                        </span>
+                      ) : null}
+                    </strong>
+                    <span>
+                      {event.step ? `Step ${event.step}` : "Setup"} ·{" "}
+                      {timeOnly(event.at)}
+                    </span>
+                  </header>
+                  <pre>{event.detail}</pre>
+                  {["done", "question"].includes(event.kind) && event.detail.trim() && (
+                    <SpeechPlaybackButton sourceKind="task" sourceId={run.id} passageId={`${event.kind}-${index}`} text={event.detail} label="Listen" />
+                  )}
+                  {event.kind === "artifact" && event.data?.path && (
+                    <button
+                      className="artifact-button"
+                      onClick={() => onOpen(event.data!.path!)}
+                    >
+                      <FolderOpen /> Open artifact
+                    </button>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+          {resumable && (
+            <section className="task-question">
+              <span className="eyebrow">
+                {run.status === "waiting"
+                  ? "YOUR DECISION"
+                  : "CONTINUE DURABLE TASK"}
+              </span>
+              <h3>
+                {question?.detail ?? "Add direction before the model resumes."}
+              </h3>
+              {question?.data?.options && (
+                <div className="question-options">
+                  {question.data.options.map((option, index) => (
+                    <button
+                      key={option}
+                      className={
+                        question.data?.recommendedIndex === index
+                          ? "recommended"
+                          : ""
+                      }
+                      onClick={() => onAnswer(option)}
+                    >
+                      {option}
+                      {question.data?.recommendedIndex === index && (
+                        <small>Recommended</small>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="speech-input-wrap"><textarea
+                value={answer}
+                readOnly={dictating}
+                onChange={(event) => onAnswer(event.target.value)}
+                placeholder="Answer or add a precise continuation instruction…"
+              /><SpeechDictationButton sourceKind="task" sourceId={run.id} value={answer} onChange={onAnswer} onActiveChange={setDictating} disabled={running || resuming} label="Dictate answer" /></div>
+              <button
+                className="primary-button"
+                disabled={dictating || !ready || !answer.trim() || resuming}
+                onClick={onResume}
+              >
+                {resuming ? <LoaderCircle className="spin" /> : <Play />} Resume
+                this task
+              </button>
+            </section>
+          )}
+          {run.artifacts.length > 0 && (
+            <footer className="artifact-shelf">
+              <span>
+                <FileCode2 /> {run.artifacts.length} artifact
+                {run.artifacts.length === 1 ? "" : "s"}
+              </span>
+              {run.artifacts.map((path) => (
+                <button key={path} onClick={() => onOpen(path)} title={path}>
+                  {fileName(path)}
+                </button>
+              ))}
+            </footer>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function Message({
+  message,
+  sessionId,
+  model,
+  onError,
+}: {
+  message: ChatMessage;
+  sessionId: string;
+  model?: string;
+  onError: (message: string) => void;
+}) {
+  const [speechProgress, setSpeechProgress] = useState<SpeechProgressState | null>(null);
+  const speaking = Boolean(speechProgress?.active);
+
+  return (
+    <article
+      className={`${message.role} ${speaking ? "speech-message-active" : ""}`}
+      id={`chat-message-${message.id}`}
+    >
+      <span>
+        {message.role === "user" ? "YOU" : (model ?? "MODEL")}
+        {message.status && (
+          <i>
+            {message.status === "limited"
+              ? "output limit · continuation available"
+              : "interrupted · partial saved"}
+          </i>
+        )}
+        <button
+          title="Copy message"
+          onClick={() => void navigator.clipboard.writeText(message.content)}
+        >
+          <Clipboard />
+        </button>
+      </span>
+      {(message.attachments?.length ?? 0) > 0 && (
+        <AttachmentShelf attachments={message.attachments!} onError={onError} />
+      )}{" "}
+      {message.reasoning && (
+        <details>
+          <summary>Reasoning</summary>
+          <pre>{message.reasoning}</pre>
+        </details>
+      )}
+      <MarkdownContent value={message.content} speechProgress={speechProgress} />
+      {message.content.trim() && (message.role !== "user" || Boolean(message.recording)) && (
+        <SpeechPlaybackButton
+          sourceKind="chat"
+          sourceId={sessionId}
+          passageId={message.id}
+          text={message.content}
+          recording={message.recording}
+          label="Listen"
+          onSpeechProgress={setSpeechProgress}
+        />
+      )}
+    </article>
+  );
+}
+
+function AttachmentShelf({
+  attachments,
+  removable = false,
+  onRemove,
+  onError,
+}: {
+  attachments: ContextAttachment[];
+  removable?: boolean;
+  onRemove?: (id: string) => void;
+  onError: (message: string) => void;
+}) {
+  return (
+    <div className="attachment-shelf">
+      {attachments.map((attachment) => (
+        <div
+          className={`attachment-chip ${attachment.kind}`}
+          key={attachment.id}
+          title={`${attachment.note}\n${attachment.sha256}`}
+        >
+          <button
+            className="attachment-open"
+            onClick={() =>
+              void openContextAttachment(attachment.id).catch((cause) =>
+                onError(String(cause)),
+              )
+            }
+          >
+            <AttachmentIcon attachment={attachment} />
+            <span>
+              <strong>{attachment.name}</strong>
+              <small>
+                {attachment.contextMode === "native_media"
+                  ? "native media"
+                  : attachment.contextMode === "metadata_only"
+                    ? "metadata only"
+                    : `${attachment.extractedChars.toLocaleString()} characters`}{" "}
+                · {formatBytes(attachment.bytes)}
+              </small>
+            </span>
+          </button>
+          {removable && (
+            <button
+              className="attachment-remove"
+              aria-label={`Remove ${attachment.name}`}
+              onClick={() => onRemove?.(attachment.id)}
+            >
+              <X />
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AttachmentIcon({ attachment }: { attachment: ContextAttachment }) {
+  if (attachment.kind === "image") return <Image />;
+  if (attachment.kind === "audio") return <AudioLines />;
+  return <FileText />;
+}
+
+function Metrics({
+  data,
+  content = "",
+  reasoning = "",
+  startedAt,
+  active = false,
+  modelName,
+}: {
+  data?: Record<string, unknown>;
+  content?: string;
+  reasoning?: string;
+  startedAt?: number;
+  active?: boolean;
+  modelName?: string;
+}) {
+  const usage = data?.usage as Record<string, number> | undefined;
+  const timings = data?.timings as Record<string, number> | undefined;
+
+  const [liveElapsed, setLiveElapsed] = useState(() =>
+    startedAt ? Math.max(0.1, (Date.now() - startedAt) / 1000) : 0,
+  );
+
+  useEffect(() => {
+    if (!active || !startedAt) return;
+    const timer = window.setInterval(() => {
+      setLiveElapsed(Math.max(0.1, (Date.now() - startedAt) / 1000));
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [active, startedAt]);
+
+  const totalChars = content.length + reasoning.length;
+  const estTotalTokens = Math.max(1, Math.round(totalChars / 3.8));
+  const estReasoningTokens = reasoning ? Math.round(reasoning.length / 3.8) : 0;
+  const estContentTokens = content ? Math.round(content.length / 3.8) : 0;
+
+  const actualTokens = usage?.completion_tokens ?? estTotalTokens;
+  useInferenceTelemetryReporter({
+    active,
+    text: reasoning + content,
+    exactTokenCount: usage?.completion_tokens,
+    exactTokensPerSecond: timings?.predicted_per_second,
+    modelName,
+  });
+
+  if (!active && !data && !totalChars) return null;
+
+  return (
+    <div className="generation-metrics">
+      <span className={active ? "live-metric" : ""}>
+        {actualTokens.toLocaleString()} tokens
+      </span>
+      {liveElapsed > 0 && (
+        <span>{liveElapsed.toFixed(1)}s</span>
+      )}
+      {reasoning.length > 0 && (
+        <span title={`Thinking: ~${estReasoningTokens} tok | Output: ~${estContentTokens} tok`}>
+          💭 {estReasoningTokens} think + {estContentTokens} ans
+        </span>
+      )}
+    </div>
+  );
+}
+function RuntimeNotice({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="runtime-feed">
+      <LoaderCircle className="spin" />
+      <span>
+        <strong>{title}</strong>
+        {detail}
+      </span>
+    </div>
+  );
+}
+function Welcome({
+  models,
+  context,
+  freeMib,
+}: {
+  models: number;
+  context: number;
+  freeMib?: number;
+}) {
+  return (
+    <div className="control-welcome">
+      <Sparkles />
+      <h2>Your private, persistent workspace.</h2>
+      <p>
+        Stream a conversation, review reasoning and metrics, or give the same
+        local model a visible computer task. Nothing is sent away.
+      </p>
+      <div>
+        <span>
+          <strong>{models}</strong> models
+        </span>
+        <span>
+          <strong>{context.toLocaleString()}</strong> context
+        </span>
+        <span>
+          <strong>{freeMib === undefined ? "—" : formatMib(freeMib)}</strong>{" "}
+          VRAM free
+        </span>
+      </div>
+    </div>
+  );
+}
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="control-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+export function terminalTaskStatus(kind: string, fallback: string) {
+  if (kind === "done") return "completed";
+  if (kind === "cancelled") return "cancelled";
+  if (kind === "question") return "waiting";
+  if (kind === "error" || kind === "limit") return "failed";
+  return fallback === "starting" ? "running" : fallback;
+}
+function relativeTime(value: string) {
+  const delta = Date.now() - new Date(value).getTime();
+  if (delta < 60_000) return "now";
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
+  return new Date(value).toLocaleDateString();
+}
+function timeOnly(value: string) {
+  return new Date(value).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+function fileName(path: string) {
+  return path.split(/[\\/]/).pop() ?? path;
+}
+function formatMib(value: number) {
+  return value >= 1024
+    ? `${(value / 1024).toFixed(1)} GiB`
+    : `${value.toLocaleString()} MiB`;
+}
+function formatBytes(value: number) {
+  if (value >= 1024 * 1024 * 1024)
+    return `${(value / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${value} B`;
+}
+export function mergeAttachments(
+  current: ContextAttachment[],
+  added: ContextAttachment[],
+) {
+  const attachments: ContextAttachment[] = [];
+  const seen = new Set<string>();
+  let bytes = 0;
+  let rejected = 0;
+  for (const attachment of [...current, ...added]) {
+    if (seen.has(attachment.id)) continue;
+    seen.add(attachment.id);
+    if (
+      attachments.length >= 12 ||
+      bytes + attachment.bytes > 256 * 1024 * 1024
+    ) {
+      rejected += 1;
+      continue;
+    }
+    attachments.push(attachment);
+    bytes += attachment.bytes;
+  }
+  return { attachments, rejected };
+}

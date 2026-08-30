@@ -1,5 +1,55 @@
 # Kestrel architecture
 
+## Repository and ownership
+
+Kestrel is a Rust-owned application with a React desktop view. The governing rule is:
+
+> **TypeScript never owns application truth.**
+
+Durable models, state transitions, retry policy, runtime/model state, scheduling decisions, asset
+metadata, persistence rules, FFmpeg operations, ComfyUI process ownership, and local-model
+orchestration belong in Rust. TypeScript may own only the current view: component state, forms,
+rendering, interaction, animation, and unapplied drafts. Cross-boundary types are generated from
+Rust and imported through the desktop contract facade.
+
+```text
+apps/
+  desktop/                  React view and Tauri frontend build
+    src/app/                composition, navigation, global styles
+    src/features/           feature-owned UI and view helpers
+    src/shared/             reusable presentation/collaboration components
+    src/platform/           typed IPC adapter
+    src/contracts/          generated-contract facade and shrinking legacy quarantine
+
+crates/
+  app-core/                 Rust-owned durable and IPC-visible core contracts/policies
+
+packages/
+  generated-bindings/       generated TypeScript; never hand-edited
+
+src-tauri/                  native composition root and domain implementations
+scripts/                    verification, binding generation, packaging, acceptance harnesses
+```
+
+`src-tauri` deliberately remains one composition crate while its most safety-sensitive authorities
+share the process-wide work lock and `RuntimeManager` inference semaphore. Splitting it into many
+crates before ports and ownership are explicit would hide cycles without creating isolation. New
+pure durable contracts go into `crates/app-core`; the next extraction candidates are research,
+workspace storage, runtime/model management, and Studio project models. FFmpeg and ComfyUI become
+adapter crates only when their process APIs no longer reach through Studio internals.
+
+The generated boundary is operational, not aspirational:
+
+1. Add or change the Rust type in `crates/app-core` and derive `TS`.
+2. Run `npm run bindings:generate`.
+3. Import it through `apps/desktop/src/contracts/index.ts`.
+4. `npm run check` rejects stale generated files, direct facade bypasses, duplicate legacy
+   declarations, and additions to the quarantined handwritten contract set.
+
+The quarantine currently contains pre-existing Studio, speech, download, and GPU DTOs. It may only
+shrink as those types move to Rust generation; adding a new handwritten application contract is an
+architecture-check failure.
+
 The executable is one Tauri application with ten explicit native authorities:
 
 ```text
