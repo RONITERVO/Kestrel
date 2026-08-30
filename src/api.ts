@@ -15,6 +15,7 @@ import type {
   ControlSettings,
   ControlSnapshot,
   DeveloperRepairReport,
+  GpuMemoryProcess,
   OperationProgress,
   ProfileTransfer,
   ResearchProgress,
@@ -82,6 +83,8 @@ import type {
   ImageGenerationEvent,
   ImageProject,
   ImageSummary,
+  VramCleanupPreview,
+  VramCleanupResult,
   StartMovieRequest,
   PromptDraftEvent,
   PromptDraftRequest,
@@ -122,6 +125,46 @@ export async function cancelResearch(jobId: string): Promise<void> {
 export async function prepareServices(): Promise<AppSnapshot> {
   if (!isTauri()) return demoSnapshot;
   return invoke<AppSnapshot>("prepare_services");
+}
+
+export async function previewVramCleanup(): Promise<VramCleanupPreview> {
+  if (!isTauri())
+    return {
+      gpu: demoSnapshot.control.gpu,
+      candidates: [],
+      exclusions: [],
+      candidateMemoryMib: 0,
+      protectedProcessCount: 0,
+    };
+  return invoke<VramCleanupPreview>("preview_vram_cleanup");
+}
+
+export async function cleanVram(expectedPids: number[]): Promise<VramCleanupResult> {
+  if (!isTauri())
+    return {
+      attempted: [],
+      terminated: [],
+      failed: [],
+      beforeGpu: demoSnapshot.control.gpu,
+      afterGpu: demoSnapshot.control.gpu,
+      freedMib: 0,
+      message: "VRAM is ready. No competing GPU applications needed to be closed.",
+    };
+  return invoke<VramCleanupResult>("clean_vram", { expectedPids });
+}
+
+export async function forceCleanVram(expectedProcesses: GpuMemoryProcess[]): Promise<VramCleanupResult> {
+  if (!isTauri())
+    return {
+      attempted: expectedProcesses,
+      terminated: expectedProcesses,
+      failed: [],
+      beforeGpu: demoSnapshot.control.gpu,
+      afterGpu: demoSnapshot.control.gpu,
+      freedMib: 0,
+      message: `Force closed ${expectedProcesses.length} competing GPU process${expectedProcesses.length === 1 ? "" : "es"}.`,
+    };
+  return invoke<VramCleanupResult>("force_clean_vram", { expectedProcesses });
 }
 
 export async function getSetupSnapshot(): Promise<SetupSnapshot> {

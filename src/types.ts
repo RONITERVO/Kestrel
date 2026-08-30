@@ -1604,6 +1604,45 @@ export interface GpuSnapshot {
   utilizationPercent: number;
 }
 
+export interface GpuMemoryProcess {
+  pid: number;
+  name: string;
+  executablePath: string;
+  memoryMib: number;
+  kind: string;
+}
+
+export interface VramCleanupPreview {
+  gpu?: GpuSnapshot;
+  candidates: GpuMemoryProcess[];
+  exclusions: GpuMemoryExclusion[];
+  candidateMemoryMib: number;
+  protectedProcessCount: number;
+}
+
+export interface GpuMemoryExclusion {
+  process: GpuMemoryProcess;
+  reason: string;
+  canInclude: boolean;
+}
+
+export interface GpuCleanupFailure {
+  process: GpuMemoryProcess;
+  detail: string;
+  canForceClose: boolean;
+  powershellCommand?: string;
+}
+
+export interface VramCleanupResult {
+  attempted: GpuMemoryProcess[];
+  terminated: GpuMemoryProcess[];
+  failed: GpuCleanupFailure[];
+  beforeGpu?: GpuSnapshot;
+  afterGpu?: GpuSnapshot;
+  freedMib: number;
+  message: string;
+}
+
 export interface RuntimeSnapshot {
   contextWindow: number;
   maxOutputTokens: number;

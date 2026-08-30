@@ -107,6 +107,26 @@ button:disabled { box-shadow: none !important; transform: none !important; }
 .quiet-button:hover,
 .app-header-control .quiet-button:hover,
 .app-header-studio .quiet-button:hover { color: #000; background: var(--surface-wash); transform: translate(1px,1px); box-shadow: 1px 1px 0 #000; }
+.header-memory-clean, .header-memory-menu > summary,
+.app-header-control .header-memory-clean, .app-header-control .header-memory-menu > summary,
+.app-header-studio .header-memory-clean, .app-header-studio .header-memory-menu > summary,
+.app-header-music .header-memory-clean, .app-header-music .header-memory-menu > summary { color: #111; border-color: #111; background: var(--tech-green-soft); }
+.header-memory-actions.has-feedback .header-memory-clean,
+.app-header-control .header-memory-actions.has-feedback .header-memory-clean,
+.app-header-studio .header-memory-actions.has-feedback .header-memory-clean,
+.app-header-music .header-memory-actions.has-feedback .header-memory-clean { color: #111; border-color: #111; background: var(--tech-green); }
+.header-memory-popover,
+.app-header-control .header-memory-popover,
+.app-header-studio .header-memory-popover,
+.app-header-music .header-memory-popover { color: #111; border: var(--tech-rule); background: #fff; box-shadow: 3px 3px 0 #111; }
+.header-memory-summary small, .header-memory-popover p, .header-memory-popover button small,
+.app-header-control .header-memory-summary small, .app-header-control .header-memory-popover p, .app-header-control .header-memory-popover button small,
+.app-header-studio .header-memory-summary small, .app-header-studio .header-memory-popover p, .app-header-studio .header-memory-popover button small,
+.app-header-music .header-memory-summary small, .app-header-music .header-memory-popover p, .app-header-music .header-memory-popover button small { color: #555d58; }
+.header-memory-popover button,
+.app-header-control .header-memory-popover button,
+.app-header-studio .header-memory-popover button,
+.app-header-music .header-memory-popover button { color: #111; border: 1px solid #111; background: #f5f6f2; }
 kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff; box-shadow: 1px 1px 0 #111; }
 
 /* Setup */
@@ -348,8 +368,6 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .control-memory > div { height: 7px; border: 1px solid #111; border-radius: 0; background: #fff; }
 .control-memory > div span { background: linear-gradient(90deg,var(--tech-blue),var(--tech-green),var(--tech-yellow),var(--tech-orange)); }
 .runtime-detail { color: #495155; }
-.release-memory { color: #111; border: var(--tech-rule); background: var(--tech-yellow); box-shadow: 2px 2px 0 #111; }
-.release-memory small { color: #493b11; }
 .inspector-section { border-top: 1px solid #111; }
 .inspector-section > h2, .inspector-section > summary { color: #111; }
 .inline-runtime-settings label, .control-inspector .inline-runtime-settings label { color: #41494d; }
