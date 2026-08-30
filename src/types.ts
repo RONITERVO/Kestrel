@@ -1629,6 +1629,8 @@ export interface GpuMemoryExclusion {
 export interface GpuCleanupFailure {
   process: GpuMemoryProcess;
   detail: string;
+  canForceClose: boolean;
+  powershellCommand?: string;
 }
 
 export interface VramCleanupResult {

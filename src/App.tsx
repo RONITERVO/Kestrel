@@ -9,6 +9,7 @@ import {
   CircleStop,
   Clock3,
   Code2,
+  Copy,
   Cpu,
   Download,
   ExternalLink,
@@ -42,6 +43,7 @@ import {
   bootstrap,
   cancelResearch,
   cleanVram,
+  forceCleanVram,
   applyModelRuntime,
   exportSetupProfileText,
   exportPromptPackText,
@@ -251,6 +253,20 @@ function App() {
     return result;
   }, []);
 
+  const forceVramCleanup = useCallback(async (expectedProcesses: GpuMemoryProcess[]): Promise<VramCleanupResult> => {
+    setError(null);
+    const result = await forceCleanVram(expectedProcesses);
+    if (result.afterGpu) {
+      setSnapshot((current) => current
+        ? { ...current, control: { ...current.control, gpu: result.afterGpu } }
+        : current);
+    }
+    if (result.failed.length) {
+      setError("Some processes still need an administrator PowerShell. Copy only the commands Kestrel provides in the cleanup result.");
+    }
+    return result;
+  }, []);
+
   const releaseKestrelAiMemory = useCallback(async (): Promise<string> => {
     if (!window.confirm("Release all AI memory controlled by Kestrel? Active local work will stop; unrelated applications are left alone.")) return "";
     setError(null);
@@ -355,6 +371,7 @@ function App() {
         preview={vramCleanup}
         onClose={() => setVramCleanup(null)}
         onClean={applyVramCleanup}
+        onForce={forceVramCleanup}
       />}
       {newResearchOpen && <NewResearchDialog advancedEnabled={snapshot.settings.advancedMode} onClose={() => setNewResearchOpen(false)} onSubmit={handleResearch} />}
       {progress && (
@@ -513,10 +530,12 @@ function VramCleanupDialog({
   preview,
   onClose,
   onClean,
+  onForce,
 }: {
   preview: VramCleanupPreview;
   onClose: () => void;
   onClean: (approvedPids: number[]) => Promise<VramCleanupResult>;
+  onForce: (expectedProcesses: GpuMemoryProcess[]) => Promise<VramCleanupResult>;
 }) {
   const [selectedPids, setSelectedPids] = useState<Set<number>>(
     () => new Set(preview.candidates.map((process) => process.pid)),
@@ -525,8 +544,10 @@ function VramCleanupDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<VramCleanupResult | null>(null);
+  const [copiedPid, setCopiedPid] = useState<number | null>(null);
   const overridable = preview.exclusions.filter((item) => item.canInclude).length;
   const critical = preview.exclusions.length - overridable;
+  const forceableFailures = result?.failed.filter((failure) => failure.canForceClose) ?? [];
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -558,6 +579,30 @@ function VramCleanupDialog({
     }
   };
 
+  const forceClose = async () => {
+    if (!forceableFailures.length) return;
+    const names = forceableFailures.slice(0, 3).map((failure) => failure.process.name).join(", ");
+    if (!window.confirm(`Force close ${forceableFailures.length} process${forceableFailures.length === 1 ? "" : "es"} (${names})? This uses GpuClean's force method. Unsaved work will be lost.`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      setResult(await onForce(forceableFailures.map((failure) => failure.process)));
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyPowerShell = async (pid: number, command: string) => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopiedPid(pid);
+    } catch (cause) {
+      setError(`Could not copy the PowerShell command: ${String(cause)}`);
+    }
+  };
+
   return <div className="vram-cleanup-overlay">
     <section className="vram-cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="vram-cleanup-title">
       <header>
@@ -566,12 +611,22 @@ function VramCleanupDialog({
         <button type="button" aria-label="Close VRAM cleanup" disabled={busy} onClick={onClose}><X /></button>
       </header>
 
-      {result ? <div className="vram-cleanup-result" role="status">
+      {result ? <div className="vram-cleanup-result">
         <div className={result.failed.length ? "partial" : "complete"}>{result.failed.length ? <TriangleAlert /> : <Check />}</div>
-        <h3>{result.message}</h3>
+        <h3 role="status">{result.message}</h3>
         {result.afterGpu && <p>{formatMib(result.afterGpu.freeMib)} of {formatMib(result.afterGpu.totalMib)} is now free.</p>}
         {!!result.freedMib && <small>Observed VRAM released: {formatMib(result.freedMib)}</small>}
-        {!!result.failed.length && <ul>{result.failed.map((failure) => <li key={failure.process.pid}><strong>{failure.process.name}</strong><span>{failure.detail}</span></li>)}</ul>}
+        {!!result.failed.length && <ul>{result.failed.map((failure) => <li key={failure.process.pid}>
+          <strong>{failure.process.name} <small>PID {failure.process.pid}</small></strong>
+          <span>{failure.detail}</span>
+          {failure.canForceClose && <em>Force close is an explicit second step and uses the same <code>taskkill /F</code> operation as GpuClean.</em>}
+          {failure.powershellCommand && <div className="vram-manual-command">
+            <span>Run in PowerShell as administrator</span>
+            <code>{failure.powershellCommand}</code>
+            <button type="button" className="quiet-button" onClick={() => void copyPowerShell(failure.process.pid, failure.powershellCommand!)}><Copy /> {copiedPid === failure.process.pid ? "Copied" : "Copy admin command"}</button>
+          </div>}
+        </li>)}</ul>}
+        {error && <div className="vram-cleanup-error" role="alert"><TriangleAlert />{error}</div>}
       </div> : <div className="vram-cleanup-body">
         <div className="vram-cleanup-meter">
           <MemoryStick /><span><strong>{preview.gpu ? `${formatMib(preview.gpu.freeMib)} free` : "GPU memory detected"}</strong><small>{preview.gpu ? `${formatMib(preview.gpu.usedMib)} used on ${preview.gpu.name}` : "Per-process memory is unavailable on this driver"}</small></span>
@@ -617,7 +672,7 @@ function VramCleanupDialog({
       </div>}
 
       <footer>
-        {result ? <><span>{result.terminated.length} closed · {result.failed.length} need attention</span><button type="button" className="primary-button" onClick={onClose}>Done</button></> : <>
+        {result ? <><span>{result.terminated.length} closed · {result.failed.length} need attention</span>{!!forceableFailures.length && <button type="button" className="vram-force-button" disabled={busy} onClick={() => void forceClose()}>{busy ? <LoaderCircle className="spin" /> : <TriangleAlert />} Force close {forceableFailures.length}</button>}<button type="button" className="primary-button" disabled={busy} onClick={onClose}>Done</button></> : <>
           <span>{selectedPids.size ? `${selectedPids.size} process${selectedPids.size === 1 ? "" : "es"} will close` : "Nothing selected"}</span>
           <button type="button" className="quiet-button" disabled={busy} onClick={onClose}>Cancel</button>
           <button type="button" className="primary-button" disabled={busy || !selectedPids.size} onClick={() => void submit()}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Clean {selectedPids.size || "VRAM"}</button>

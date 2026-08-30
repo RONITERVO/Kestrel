@@ -2847,6 +2847,21 @@ async fn clean_vram(
 }
 
 #[tauri::command]
+async fn force_clean_vram(
+    expected_processes: Vec<gpu_memory::GpuMemoryProcess>,
+    state: State<'_, AppState>,
+) -> Result<gpu_memory::VramCleanupResult, String> {
+    if expected_processes.len() > 256 {
+        return Err("VRAM force cleanup rejected more than 256 expected processes".into());
+    }
+    let _guard = claim_workspace(&state)?;
+    let protection = gpu_cleanup_protection(&state).await?;
+    gpu_memory::force_clean(&protection, &expected_processes)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn get_control_snapshot(
     probe_developer: Option<bool>,
     state: State<'_, AppState>,
@@ -4349,6 +4364,7 @@ pub fn run() {
             get_system_snapshot,
             preview_vram_cleanup,
             clean_vram,
+            force_clean_vram,
             get_control_snapshot,
             get_proven_hardware_profiles,
             scan_local_models,

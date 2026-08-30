@@ -4,7 +4,10 @@
 //! the driver, and never executes model output. Kestrel-owned, Windows-critical, undisclosed, and
 //! graphics-driver processes can never be cleaned here. Common apps are excluded by default but
 //! may be explicitly included through Advanced. Native code closes only the exact approved PIDs
-//! after revalidation and uses fixed command arguments.
+//! after revalidation and uses fixed command arguments. A process that survives the ordinary close
+//! request may be force-closed only through a second explicit action. That action matches
+//! GpuClean's `taskkill /PID <pid> /F` path; if it fails, Kestrel exposes that exact command for an
+//! administrator PowerShell instead of attempting a broader or less verifiable fallback.
 
 use crate::{models::GpuSnapshot, services};
 use serde::{Deserialize, Serialize};
@@ -152,6 +155,9 @@ pub struct GpuMemoryExclusion {
 pub struct GpuCleanupFailure {
     pub process: GpuMemoryProcess,
     pub detail: String,
+    pub can_force_close: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub powershell_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +187,12 @@ enum CleanupDisposition {
     Candidate,
     Excluded(String),
     Critical(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminationMode {
+    Graceful,
+    Force,
 }
 
 impl GpuProcessProtection {
@@ -271,11 +283,26 @@ pub async fn clean(
     protection: &GpuProcessProtection,
     approved_pids: &HashSet<u32>,
 ) -> Result<VramCleanupResult, GpuMemoryError> {
-    let before_gpu = services::gpu_snapshot().await;
     let attempted = select_approved(scan_gpu_processes().await?, protection, approved_pids);
+    run_cleanup(attempted, TerminationMode::Graceful).await
+}
+
+pub async fn force_clean(
+    protection: &GpuProcessProtection,
+    expected_processes: &[GpuMemoryProcess],
+) -> Result<VramCleanupResult, GpuMemoryError> {
+    let attempted = select_expected(scan_gpu_processes().await?, protection, expected_processes);
+    run_cleanup(attempted, TerminationMode::Force).await
+}
+
+async fn run_cleanup(
+    attempted: Vec<GpuMemoryProcess>,
+    mode: TerminationMode,
+) -> Result<VramCleanupResult, GpuMemoryError> {
+    let before_gpu = services::gpu_snapshot().await;
     let mut actions = Vec::with_capacity(attempted.len());
     for process in &attempted {
-        actions.push((process.clone(), terminate_process(process.pid).await));
+        actions.push((process.clone(), terminate_process(process.pid, mode).await));
     }
 
     if !actions.is_empty() {
@@ -298,11 +325,16 @@ pub async fn clean(
         match (still_present, action) {
             (false, _) if remaining.is_some() => terminated.push(process),
             (false, Ok(())) => terminated.push(process),
-            (true, Ok(())) => failed.push(GpuCleanupFailure {
+            (true, Ok(())) => failed.push(cleanup_failure(
                 process,
-                detail: "Windows accepted the close request, but the process still owns GPU memory. Close it from the application or Task Manager, then try again.".into(),
-            }),
-            (_, Err(detail)) => failed.push(GpuCleanupFailure { process, detail }),
+                if mode == TerminationMode::Force {
+                    "Windows accepted the force-close request, but the process still owns GPU memory. It may have restarted or may require administrator rights."
+                } else {
+                    "Windows accepted the close request, but the process still owns GPU memory. Force close it to match GpuClean's cleanup level."
+                },
+                mode,
+            )),
+            (_, Err(detail)) => failed.push(cleanup_failure(process, &detail, mode)),
         }
     }
     let after_gpu = services::gpu_snapshot().await;
@@ -320,6 +352,20 @@ pub async fn clean(
         freed_mib,
         message,
     })
+}
+
+fn cleanup_failure(
+    process: GpuMemoryProcess,
+    detail: &str,
+    mode: TerminationMode,
+) -> GpuCleanupFailure {
+    let forced = mode == TerminationMode::Force;
+    GpuCleanupFailure {
+        powershell_command: forced.then(|| powershell_force_command(process.pid)),
+        can_force_close: !forced,
+        process,
+        detail: detail.into(),
+    }
 }
 
 fn build_preview(
@@ -363,6 +409,34 @@ fn select_approved(
     processes
         .into_iter()
         .filter(|process| approved_pids.contains(&process.pid))
+        .filter(|process| {
+            !matches!(
+                protection.disposition(process),
+                CleanupDisposition::Critical(_)
+            )
+        })
+        .collect()
+}
+
+fn select_expected(
+    processes: Vec<GpuMemoryProcess>,
+    protection: &GpuProcessProtection,
+    expected_processes: &[GpuMemoryProcess],
+) -> Vec<GpuMemoryProcess> {
+    let expected = expected_processes
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect::<HashMap<_, _>>();
+    processes
+        .into_iter()
+        .filter(|process| {
+            expected.get(&process.pid).is_some_and(|expected| {
+                expected.name.eq_ignore_ascii_case(&process.name)
+                    && expected
+                        .executable_path
+                        .eq_ignore_ascii_case(&process.executable_path)
+            })
+        })
         .filter(|process| {
             !matches!(
                 protection.disposition(process),
@@ -450,18 +524,28 @@ fn parse_processes(output: &str) -> Result<Vec<GpuMemoryProcess>, GpuMemoryError
     Ok(processes)
 }
 
-async fn terminate_process(pid: u32) -> Result<(), String> {
+async fn terminate_process(pid: u32, mode: TerminationMode) -> Result<(), String> {
     #[cfg(windows)]
     let mut command = {
         let mut command = Command::new("taskkill.exe");
         command.args(["/PID", &pid.to_string()]);
+        if mode == TerminationMode::Force {
+            command.arg("/F");
+        }
         command.creation_flags(0x08000000);
         command
     };
     #[cfg(not(windows))]
     let mut command = {
         let mut command = Command::new("kill");
-        command.args(["-TERM", &pid.to_string()]);
+        command.args([
+            if mode == TerminationMode::Force {
+                "-KILL"
+            } else {
+                "-TERM"
+            },
+            &pid.to_string(),
+        ]);
         command
     };
     let output = command
@@ -476,6 +560,12 @@ async fn terminate_process(pid: u32) -> Result<(), String> {
             command_detail(&output)
         ))
     }
+}
+
+fn powershell_force_command(pid: u32) -> String {
+    // This is deliberately the same fixed force operation used by GpuClean. `pid` is a native
+    // integer, so no process-supplied text can enter the copyable command.
+    format!("taskkill.exe /PID {pid} /F")
 }
 
 fn cleanup_message(terminated: usize, failed: usize, gpu: Option<&GpuSnapshot>) -> String {
@@ -641,6 +731,54 @@ mod tests {
                 .map(|process| process.pid)
                 .collect::<Vec<_>>(),
             vec![7001, 7002]
+        );
+    }
+
+    #[test]
+    fn force_selection_requires_the_same_process_identity_and_still_rejects_critical_processes() {
+        let protection = GpuProcessProtection::new([7000], [], []);
+        let expected = vec![
+            process(7000, r"D:\Other\python.exe", 900),
+            process(7001, r"D:\Other\python.exe", 800),
+            process(7002, r"D:\Driver\nvcontainer.exe", 400),
+            process(7004, r"D:\Other\ollama.exe", 500),
+        ];
+        let selected = select_expected(
+            vec![
+                process(7000, r"D:\Other\python.exe", 900),
+                process(7001, r"D:\Different\python.exe", 800),
+                process(7002, r"D:\Driver\nvcontainer.exe", 400),
+                process(7003, r"D:\Other\ollama.exe", 500),
+                process(7004, r"D:\Other\ollama.exe", 500),
+            ],
+            &protection,
+            &expected,
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>(),
+            vec![7004]
+        );
+    }
+
+    #[test]
+    fn manual_force_command_appears_only_after_the_in_app_force_attempt() {
+        let process = process(21_352, r"D:\AI\python.exe", 4096);
+        let graceful = cleanup_failure(
+            process.clone(),
+            "This process can only be terminated forcefully.",
+            TerminationMode::Graceful,
+        );
+        assert!(graceful.can_force_close);
+        assert_eq!(graceful.powershell_command, None);
+
+        let forced = cleanup_failure(process, "Access is denied.", TerminationMode::Force);
+        assert!(!forced.can_force_close);
+        assert_eq!(
+            forced.powershell_command.as_deref(),
+            Some("taskkill.exe /PID 21352 /F")
         );
     }
 }

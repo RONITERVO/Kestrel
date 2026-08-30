@@ -15,6 +15,7 @@ import type {
   ControlSettings,
   ControlSnapshot,
   DeveloperRepairReport,
+  GpuMemoryProcess,
   OperationProgress,
   ProfileTransfer,
   ResearchProgress,
@@ -150,6 +151,20 @@ export async function cleanVram(expectedPids: number[]): Promise<VramCleanupResu
       message: "VRAM is ready. No competing GPU applications needed to be closed.",
     };
   return invoke<VramCleanupResult>("clean_vram", { expectedPids });
+}
+
+export async function forceCleanVram(expectedProcesses: GpuMemoryProcess[]): Promise<VramCleanupResult> {
+  if (!isTauri())
+    return {
+      attempted: expectedProcesses,
+      terminated: expectedProcesses,
+      failed: [],
+      beforeGpu: demoSnapshot.control.gpu,
+      afterGpu: demoSnapshot.control.gpu,
+      freedMib: 0,
+      message: `Force closed ${expectedProcesses.length} competing GPU process${expectedProcesses.length === 1 ? "" : "es"}.`,
+    };
+  return invoke<VramCleanupResult>("force_clean_vram", { expectedProcesses });
 }
 
 export async function getSetupSnapshot(): Promise<SetupSnapshot> {

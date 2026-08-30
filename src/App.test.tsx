@@ -16,6 +16,7 @@ const profileApi = vi.hoisted(() => ({
 const memoryApi = vi.hoisted(() => ({
   previewVramCleanup: vi.fn(),
   cleanVram: vi.fn(),
+  forceCleanVram: vi.fn(),
   releaseAiMemory: vi.fn(),
 }));
 
@@ -28,6 +29,7 @@ vi.mock("./api", async (importOriginal) => ({
   importSetupProfileText: profileApi.importSetupProfileText,
   previewVramCleanup: memoryApi.previewVramCleanup,
   cleanVram: memoryApi.cleanVram,
+  forceCleanVram: memoryApi.forceCleanVram,
   releaseAiMemory: memoryApi.releaseAiMemory,
 }));
 
@@ -45,6 +47,15 @@ beforeEach(() => {
     protectedProcessCount: 0,
   });
   memoryApi.cleanVram.mockReset().mockResolvedValue({
+    attempted: [],
+    terminated: [],
+    failed: [],
+    beforeGpu: demoSnapshot.control.gpu,
+    afterGpu: demoSnapshot.control.gpu,
+    freedMib: 0,
+    message: "VRAM is ready.",
+  });
+  memoryApi.forceCleanVram.mockReset().mockResolvedValue({
     attempted: [],
     terminated: [],
     failed: [],
@@ -210,6 +221,62 @@ describe("Kestrel research experience", () => {
     expect(document.querySelector(".system-hero-actions")?.textContent).toContain("Refresh");
     expect(document.querySelector(".system-hero-actions")?.textContent).not.toContain("Release");
     expect(document.querySelector(".release-memory")).not.toBeInTheDocument();
+  });
+
+  it("offers GpuClean-equivalent force close before a copyable administrator command", async () => {
+    const python = {
+      pid: 21352,
+      name: "python.exe",
+      executablePath: "D:\\AI\\python.exe",
+      memoryMib: 4096,
+      kind: "AI / compute",
+    };
+    memoryApi.previewVramCleanup.mockResolvedValue({
+      gpu: demoSnapshot.control.gpu,
+      candidates: [python],
+      exclusions: [],
+      candidateMemoryMib: python.memoryMib,
+      protectedProcessCount: 0,
+    });
+    memoryApi.cleanVram.mockResolvedValue({
+      attempted: [python],
+      terminated: [],
+      failed: [{
+        process: python,
+        detail: "This process can only be terminated forcefully.",
+        canForceClose: true,
+      }],
+      beforeGpu: demoSnapshot.control.gpu,
+      afterGpu: demoSnapshot.control.gpu,
+      freedMib: 0,
+      message: "Closed 0 competing GPU processes; 1 could not be closed.",
+    });
+    const powershellCommand = "taskkill.exe /PID 21352 /F";
+    memoryApi.forceCleanVram.mockResolvedValue({
+      attempted: [python],
+      terminated: [],
+      failed: [{
+        process: python,
+        detail: "Access is denied.",
+        canForceClose: false,
+        powershellCommand,
+      }],
+      beforeGpu: demoSnapshot.control.gpu,
+      afterGpu: demoSnapshot.control.gpu,
+      freedMib: 0,
+      message: "Closed 0 competing GPU processes; 1 could not be closed.",
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Clean VRAM" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Clean 1" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Force close 1" }));
+    await waitFor(() => expect(memoryApi.forceCleanVram).toHaveBeenCalledWith([python]));
+    expect(await screen.findByText(powershellCommand)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Copy admin command" }));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(powershellCommand));
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
   it("keeps every section in the shared one-window workspace frame", async () => {
