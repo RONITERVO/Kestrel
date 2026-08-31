@@ -13,7 +13,6 @@ mod kiwix;
 mod local_speech;
 mod model;
 mod model_download;
-mod model_roles;
 mod models;
 mod profile;
 mod prompt_catalog;
@@ -38,18 +37,18 @@ use model::{default_roots, merge_catalogs, ModelCatalogStore, ModelInfo};
 use model_download::{
     ModelDownloadInspection, ModelDownloadManager, ModelDownloadRecord, ModelDownloadRequest,
 };
-use model_roles::{
-    qualification_receipt, ModelCompatibility, ModelQualificationStore, STUDIO_PROTOCOL_REVISION,
-};
 use models::{
-    AppSnapshot, ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess,
-    ComputerTaskRequest, ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
-    DeveloperRepairReport, DeveloperRepairRequest, ProfileTransfer, ResearchReport,
-    ResearchSettings, ResumeComputerTaskRequest, RunResearchRequest, StartChatRequest,
+    AcceptMovieStoryRevisionRequest, AppSnapshot, AttachMovieProducerReferencesRequest,
+    ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess, ComputerTaskRequest,
+    ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
+    CreateMovieProducerProjectRequest, DeveloperRepairReport, DeveloperRepairRequest,
+    MovieProducerWorkspace, MovieStudioChatRequest, MovieStudioConversation, ProfileTransfer,
+    ResearchReport, ResearchSettings, ResetMovieStudioConversationRequest,
+    ResumeComputerTaskRequest, RunResearchRequest, SaveMovieScenesRequest,
+    SaveMovieStoryRevisionRequest, StartChatRequest, SummarizeMovieStudioConversationRequest,
     SystemSnapshot,
 };
 use runtime::RuntimeManager;
-use serde_json::Value;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -59,18 +58,14 @@ use std::{
     },
 };
 use store::ResearchStore;
+use studio::summarize_studio_conversation;
 use studio::{
     ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
-    ImageSummary, MovieClipRenderRequest, MovieCopilotJob, MovieCopilotReceipt,
-    MovieCopilotRequest, MovieEdit, MovieFl2vTransitionRequest, MovieGenerationAgentRequest,
-    MovieGenerationProposal, MovieImageAssetGeneration, MovieImageAssetRequest, MovieModelBinding,
-    MovieModelRoleRequest, MovieModelRoles, MovieModelRuntime, MoviePlan, MoviePlanFeedbackRequest,
-    MoviePlanningSnapshot, MovieProject, MovieReferenceImport, MovieRenderState,
-    MovieRuntimePolicyRequest, MovieStudio, MovieSummary, MusicLyricsRequest,
-    MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
-    MusicSummary, PromptDraftJob, PromptDraftRequest, RepairMusicLyricsRangeRequest,
-    SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, StartMovieRequest,
-    TranscribeMusicLyricsRequest,
+    ImageSummary, MovieEdit, MovieImageAssetGeneration, MovieImageAssetRequest, MovieProject,
+    MovieReferenceImport, MovieRenderState, MovieStudio, MovieStudioChatJob, MovieSummary,
+    MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject,
+    MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest, RepairMusicLyricsRangeRequest,
+    SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -89,7 +84,6 @@ struct AppState {
     control_settings: ControlSettingsStore,
     model_catalog: ModelCatalogStore,
     model_downloads: ModelDownloadManager,
-    model_qualifications: ModelQualificationStore,
     models: RwLock<Vec<ModelInfo>>,
     engine_candidates: RwLock<Vec<models::EngineCandidate>>,
     runtime: Arc<RuntimeManager>,
@@ -654,6 +648,309 @@ fn get_movie(id: String, state: State<'_, AppState>) -> Result<MovieProject, Str
 }
 
 #[tauri::command]
+async fn create_movie_producer_project(
+    request: CreateMovieProducerProjectRequest,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let models = state.models.read().await.clone();
+    let model = models
+        .iter()
+        .find(|model| model.id == request.collaborator_model_id)
+        .ok_or_else(|| {
+            "The selected Studio collaborator is no longer in the local model catalog.".to_string()
+        })?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .create_producer_project(
+            request,
+            &model.name,
+            research.advanced_mode || control.advanced_mode,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn attach_movie_producer_references(
+    request: AttachMovieProducerReferencesRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .attach_producer_references(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_movie_producer_workspace(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<MovieProducerWorkspace, String> {
+    state
+        .studio
+        .get_producer_workspace(&id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_movie_studio_conversation(
+    project_id: String,
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<MovieStudioConversation, String> {
+    state
+        .studio
+        .get_producer_conversation(&project_id, &conversation_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn save_movie_story_revision(
+    request: SaveMovieStoryRevisionRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProducerWorkspace, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .save_story_revision(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn accept_movie_story_revision(
+    request: AcceptMovieStoryRevisionRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProducerWorkspace, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .accept_story_revision(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn save_movie_scenes(
+    request: SaveMovieScenesRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProducerWorkspace, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .save_producer_scenes(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn reset_movie_studio_conversation(
+    request: ResetMovieStudioConversationRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieStudioConversation, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .reset_producer_conversation(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn summarize_movie_studio_conversation(
+    request: SummarizeMovieStudioConversationRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieStudioConversation, String> {
+    ensure_workspace_idle(&state)?;
+    let models = state.models.read().await.clone();
+    if !models.iter().any(|model| model.id == request.model_id) {
+        return Err(
+            "The selected Studio collaborator is no longer in the local model catalog.".into(),
+        );
+    }
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI job is already active.".to_string())?;
+    let _guard = WorkGuard(&state.work_active);
+    let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    summarize_studio_conversation(
+        &app,
+        &state.studio,
+        &state.runtime,
+        &models,
+        &settings,
+        &request,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn start_movie_studio_chat(
+    request: MovieStudioChatRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    ensure_workspace_idle(&state)?;
+    let models = state.models.read().await.clone();
+    if !models.iter().any(|model| model.id == request.model_id) {
+        return Err(
+            "The selected Studio collaborator is no longer in the local model catalog.".into(),
+        );
+    }
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI job is already active.".to_string())?;
+    let cancel = CancellationToken::new();
+    match state.interactive_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(request.request_id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("interactive job registry is unavailable".into());
+        }
+    }
+    let request_id = request.request_id.clone();
+    let event_request = request.clone();
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let managed = app_for_task.state::<AppState>();
+        let work_guard = WorkGuard(&managed.work_active);
+        let result = match managed.control_settings.load() {
+            Ok(settings) => {
+                MovieStudioChatJob {
+                    app: app_for_task.clone(),
+                    studio: managed.studio.clone(),
+                    runtime: managed.runtime.clone(),
+                    models,
+                    settings,
+                    request,
+                    cancel,
+                }
+                .run()
+                .await
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = result {
+            studio::emit_studio_chat_error(&app_for_task, &event_request, error);
+        }
+        if let Ok(mut jobs) = managed.interactive_jobs.lock() {
+            jobs.remove(&event_request.request_id);
+        }
+        drop(work_guard);
+        studio::emit_studio_chat_settled(&app_for_task, &event_request);
+    });
+    Ok(request_id)
+}
+
+#[tauri::command]
+fn cancel_movie_studio_chat(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable".to_string())?
+        .get(&request_id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_studio_prompt_draft(
+    request: PromptDraftRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    ensure_workspace_idle(&state)?;
+    let models = state.models.read().await.clone();
+    studio::validate_prompt_draft_request(&request, &models)?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI job is already active.".to_string())?;
+    let cancel = CancellationToken::new();
+    match state.interactive_jobs.lock() {
+        Ok(mut jobs) => {
+            jobs.insert(request.request_id.clone(), cancel.clone());
+        }
+        Err(_) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err("interactive job registry is unavailable".into());
+        }
+    }
+    let request_id = request.request_id.clone();
+    let event_request_id = request_id.clone();
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let managed = app_for_task.state::<AppState>();
+        let work_guard = WorkGuard(&managed.work_active);
+        let result = match managed.control_settings.load() {
+            Ok(settings) => {
+                PromptDraftJob {
+                    app: app_for_task.clone(),
+                    runtime: managed.runtime.clone(),
+                    models,
+                    settings,
+                    request,
+                    cancel,
+                }
+                .run()
+                .await
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = result {
+            studio::emit_prompt_draft_error(&app_for_task, &event_request_id, error);
+        }
+        if let Ok(mut jobs) = managed.interactive_jobs.lock() {
+            jobs.remove(&event_request_id);
+        }
+        drop(work_guard);
+        studio::emit_prompt_draft_settled(&app_for_task, &event_request_id);
+    });
+    Ok(request_id)
+}
+
+#[tauri::command]
+fn cancel_studio_prompt_draft(
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(cancel) = state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable".to_string())?
+        .get(&request_id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn get_movie_render_state(
     id: String,
     state: State<'_, AppState>,
@@ -797,815 +1094,6 @@ fn cancel_movie_image_asset(request_id: String, state: State<'_, AppState>) -> R
     Ok(())
 }
 
-async fn studio_model_context(
-    state: &AppState,
-) -> Result<(ResearchSettings, ControlSettings, Vec<ModelInfo>), String> {
-    let research = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let control = state
-        .control_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let models = state.models.read().await.clone();
-    Ok((research, control, models))
-}
-
-fn model_binding(model: &ModelInfo, compatibility: &ModelCompatibility) -> MovieModelBinding {
-    MovieModelBinding {
-        model_id: model.id.clone(),
-        model_name: model.name.clone(),
-        compatibility_tier: compatibility.tier.clone(),
-        protocol_revision: STUDIO_PROTOCOL_REVISION.into(),
-        bound_at: chrono::Utc::now().to_rfc3339(),
-        thinking_level: None,
-    }
-}
-
-fn select_default_studio_model<'a>(
-    models: &'a [ModelInfo],
-    selected_model_id: Option<&str>,
-    qualifications: &ModelQualificationStore,
-    settings: &ControlSettings,
-) -> Result<Option<&'a ModelInfo>, String> {
-    if let Some(selected) =
-        selected_model_id.and_then(|id| models.iter().find(|model| model.id == id))
-    {
-        if qualifications.assess(selected, settings)?.studio_ready {
-            return Ok(Some(selected));
-        }
-    }
-    Ok(models.first())
-}
-
-fn resolve_movie_model_roles(
-    request: &MovieModelRoleRequest,
-    producer_authored: bool,
-    advanced: bool,
-    models: &[ModelInfo],
-    settings: &ControlSettings,
-    qualifications: &ModelQualificationStore,
-) -> Result<MovieModelRoles, String> {
-    if models.is_empty() {
-        return if producer_authored {
-            Ok(MovieModelRoles::default())
-        } else {
-            Err("No local model is available for Studio planning. Download or scan a chat-template GGUF first.".into())
-        };
-    }
-    let director = if request.director_model_id.trim().is_empty() {
-        select_default_studio_model(
-            models,
-            settings.selected_model_id.as_deref(),
-            qualifications,
-            settings,
-        )?
-        .ok_or_else(|| "No local Studio director model is available.".to_string())?
-    } else {
-        models
-            .iter()
-            .find(|model| model.id == request.director_model_id)
-            .ok_or_else(|| {
-                "The selected Studio director is no longer in the local model catalog. Scan models again or choose another model.".to_string()
-            })?
-    };
-    let reviewer = if request.reviewer_model_id.trim().is_empty() {
-        director
-    } else {
-        models
-            .iter()
-            .find(|model| model.id == request.reviewer_model_id)
-            .ok_or_else(|| {
-                "The selected Studio reviewer is no longer in the local model catalog. Scan models again or choose another model.".to_string()
-            })?
-    };
-    let director_compatibility = qualifications.assess(director, settings)?;
-    let reviewer_compatibility = qualifications.assess(reviewer, settings)?;
-    for (role, compatibility) in [
-        ("director", &director_compatibility),
-        ("reviewer", &reviewer_compatibility),
-    ] {
-        if matches!(
-            compatibility.tier.as_str(),
-            "incompatible" | "limited-context"
-        ) {
-            return Err(format!(
-                "The selected Studio {role} cannot be used: {}",
-                compatibility.detail
-            ));
-        }
-        if !producer_authored && !advanced && !compatibility.studio_ready {
-            return Err(format!(
-                "The selected Studio {role} has not passed Kestrel's local protocol check. Run Check for Studio first, or enable Advanced mode for an explicitly supervised trial."
-            ));
-        }
-    }
-    let mut director_binding = model_binding(director, &director_compatibility);
-    director_binding.thinking_level = request.director_thinking_level;
-    let mut reviewer_binding = model_binding(reviewer, &reviewer_compatibility);
-    reviewer_binding.thinking_level = request.reviewer_thinking_level;
-    Ok(MovieModelRoles {
-        director: director_binding,
-        reviewer: reviewer_binding,
-    })
-}
-
-fn project_model_ids(
-    project: &MovieProject,
-    models: &[ModelInfo],
-    settings: &ControlSettings,
-    qualifications: &ModelQualificationStore,
-    advanced: bool,
-) -> Result<(String, String), String> {
-    let legacy_default = || {
-        settings
-            .selected_model_id
-            .as_deref()
-            .and_then(|id| models.iter().find(|model| model.id == id))
-            .or_else(|| models.first())
-            .map(|model| model.id.clone())
-            .ok_or_else(|| {
-                "This legacy Studio project has no pinned model. Select a local model in Control before resuming.".to_string()
-            })
-    };
-    let resolve = |role: &str, model_id: &str| -> Result<String, String> {
-        let resolved = if model_id.trim().is_empty() {
-            legacy_default()?
-        } else {
-            model_id.to_string()
-        };
-        let model = models
-            .iter()
-            .find(|model| model.id == resolved)
-            .ok_or_else(|| {
-                format!(
-                    "This project is pinned to a Studio {role} that is not currently available. Scan or restore the exact model before continuing; Kestrel will not silently substitute another model."
-                )
-            })?;
-        let compatibility = qualifications.assess(model, settings)?;
-        if matches!(
-            compatibility.tier.as_str(),
-            "incompatible" | "limited-context"
-        ) {
-            return Err(format!(
-                "The project's pinned Studio {role} cannot be used: {}",
-                compatibility.detail
-            ));
-        }
-        if !advanced && !compatibility.studio_ready {
-            return Err(format!(
-                "The project's pinned Studio {role} no longer has a valid local protocol receipt for the current engine and runtime profile. Run Check for Studio again before using agent help."
-            ));
-        }
-        Ok(resolved)
-    };
-    Ok((
-        resolve("director", &project.model_roles.director.model_id)?,
-        resolve("reviewer", &project.model_roles.reviewer.model_id)?,
-    ))
-}
-
-#[tauri::command]
-async fn list_studio_model_compatibility(
-    state: State<'_, AppState>,
-) -> Result<Vec<ModelCompatibility>, String> {
-    let (_, settings, models) = studio_model_context(&state).await?;
-    state.model_qualifications.assess_all(&models, &settings)
-}
-
-#[tauri::command]
-async fn qualify_studio_model(
-    model_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<ModelCompatibility, String> {
-    let _guard = claim_workspace(&state)?;
-    let (_, settings, models) = studio_model_context(&state).await?;
-    let model = models
-        .iter()
-        .find(|model| model.id == model_id)
-        .ok_or_else(|| "The selected model is no longer in the local catalog.".to_string())?;
-    let current = state.model_qualifications.assess(model, &settings)?;
-    if matches!(current.tier.as_str(), "incompatible" | "limited-context") {
-        return Err(current.detail);
-    }
-    release_all_comfy_memory(&state).await;
-    state
-        .runtime
-        .stop_managed()
-        .await
-        .map_err(|error| error.to_string())?;
-    let lease = state
-        .runtime
-        .lease_model(&model_id, &models, &settings, Some(&app))
-        .await
-        .map_err(|error| error.to_string())?;
-    let effective = settings.for_model(&model.id);
-    let checked = state
-        .studio
-        .qualify_model_protocol(&lease.connection, effective.max_output_tokens)
-        .await;
-    drop(lease);
-    let _ = state.runtime.stop_managed().await;
-    let (passed, checks, detail) = match checked {
-        Ok(checks) => (
-            true,
-            checks,
-            "Passed Kestrel's local structured Studio protocol check.".to_string(),
-        ),
-        Err(error) => (false, Vec::new(), error.to_string()),
-    };
-    state.model_qualifications.record(qualification_receipt(
-        model, &settings, passed, checks, detail,
-    )?)?;
-    state.model_qualifications.assess(model, &settings)
-}
-
-#[tauri::command]
-async fn start_movie(
-    request: StartMovieRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    let (research, runtime_settings, models) = studio_model_context(&state).await?;
-    let roles = resolve_movie_model_roles(
-        &request.model_roles,
-        false,
-        research.advanced_mode || runtime_settings.advanced_mode,
-        &models,
-        &runtime_settings,
-        &state.model_qualifications,
-    )?;
-    state
-        .work_active
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| {
-            "Chat, research, a computer task, or another movie production is already active."
-                .to_string()
-        })?;
-    let project = state
-        .studio
-        .create(
-            request,
-            research.advanced_mode || runtime_settings.advanced_mode,
-            roles,
-        )
-        .map_err(|error| {
-            state.work_active.store(false, Ordering::Release);
-            error.to_string()
-        })?;
-    let cancel = CancellationToken::new();
-    state
-        .movie_jobs
-        .lock()
-        .map_err(|_| {
-            state.work_active.store(false, Ordering::Release);
-            "movie job registry is unavailable".to_string()
-        })?
-        .insert(project.id.clone(), cancel.clone());
-    spawn_movie(app, project.id.clone(), research, cancel, true);
-    Ok(project)
-}
-
-#[tauri::command]
-async fn start_manual_movie(
-    request: StartMovieRequest,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    let (research, runtime_settings, models) = studio_model_context(&state).await?;
-    let roles = resolve_movie_model_roles(
-        &request.model_roles,
-        true,
-        research.advanced_mode || runtime_settings.advanced_mode,
-        &models,
-        &runtime_settings,
-        &state.model_qualifications,
-    )?;
-    let _guard = claim_workspace(&state)?;
-    state
-        .studio
-        .create_manual(
-            request,
-            research.advanced_mode || runtime_settings.advanced_mode,
-            roles,
-        )
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn resume_movie(
-    id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    ensure_workspace_idle(&state)?;
-    let project = state.studio.get(&id).map_err(|error| error.to_string())?;
-    if project.status == "awaiting-review" {
-        return Err(
-            "This production is paused for human review. Approve the structured plan to begin H3 rendering."
-                .into(),
-        );
-    }
-    let needs_plan = project.plan.is_none() || project.status == "planning-checkpoint";
-    state
-        .work_active
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another local AI job is already active.".to_string())?;
-    let project = state
-        .studio
-        .begin_resume(&id, Some(&app))
-        .map_err(|error| error.to_string())?;
-    let research = state.research_settings.load().map_err(|error| {
-        state.work_active.store(false, Ordering::Release);
-        error.to_string()
-    })?;
-    let cancel = CancellationToken::new();
-    state
-        .movie_jobs
-        .lock()
-        .map_err(|_| {
-            state.work_active.store(false, Ordering::Release);
-            "movie job registry is unavailable".to_string()
-        })?
-        .insert(id.clone(), cancel.clone());
-    spawn_movie(app, id, research, cancel, needs_plan);
-    Ok(project)
-}
-
-fn spawn_movie(
-    app: AppHandle,
-    id: String,
-    research: ResearchSettings,
-    cancel: CancellationToken,
-    needs_plan: bool,
-) {
-    tauri::async_runtime::spawn(async move {
-        let managed = app.state::<AppState>();
-        let _guard = WorkGuard(&managed.work_active);
-        let result: Result<(), String> = async {
-            if needs_plan {
-                release_all_comfy_memory(&managed).await;
-                let (_, runtime_settings, models) = studio_model_context(&managed).await?;
-                let project = managed.studio.get(&id).map_err(|error| error.to_string())?;
-                let (director_model_id, reviewer_model_id) = project_model_ids(
-                    &project,
-                    &models,
-                    &runtime_settings,
-                    &managed.model_qualifications,
-                    research.advanced_mode || runtime_settings.advanced_mode,
-                )?;
-                managed
-                    .runtime
-                    .stop_managed()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let planned = managed
-                    .studio
-                    .plan(
-                        &id,
-                        MovieModelRuntime {
-                            runtime: &managed.runtime,
-                            models: &models,
-                            settings: &runtime_settings,
-                            director_model_id: &director_model_id,
-                            reviewer_model_id: &reviewer_model_id,
-                        },
-                        &cancel,
-                        Some(&app),
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                if matches!(
-                    planned.status.as_str(),
-                    "awaiting-review" | "planning-checkpoint"
-                ) {
-                    let _ = managed.runtime.stop_managed().await;
-                    return Ok(());
-                }
-            }
-            release_all_comfy_memory(&managed).await;
-            managed
-                .runtime
-                .stop_managed()
-                .await
-                .map_err(|error| error.to_string())?;
-            managed
-                .studio
-                .render(&id, &cancel, Some(&app))
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok(())
-        }
-        .await;
-        release_all_comfy_memory(&managed).await;
-        if let Err(error) = result {
-            if cancel.is_cancelled() {
-                let _ = managed.studio.stop(&id, Some(&app));
-            } else {
-                managed.studio.fail(&id, error, Some(&app));
-            }
-        }
-        if let Ok(mut jobs) = managed.movie_jobs.lock() {
-            jobs.remove(&id);
-        };
-    });
-}
-
-#[tauri::command]
-fn cancel_movie(
-    id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    if let Some(cancel) = state
-        .movie_jobs
-        .lock()
-        .map_err(|_| "movie job registry is unavailable".to_string())?
-        .get(&id)
-    {
-        cancel.cancel();
-    }
-    state
-        .studio
-        .stop(&id, Some(&app))
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn get_movie_planning(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<MoviePlanningSnapshot, String> {
-    state
-        .studio
-        .planning_snapshot(&id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn direct_movie_planning(
-    id: String,
-    text: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MoviePlanningSnapshot, String> {
-    state
-        .studio
-        .queue_planning_direction(&id, &text, Some(&app))
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn checkpoint_movie_planning(
-    id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MoviePlanningSnapshot, String> {
-    state
-        .studio
-        .request_planning_checkpoint(&id, Some(&app))
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn start_movie_prompt_draft(
-    request: PromptDraftRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    ensure_workspace_idle(&state)?;
-    let models = state.models.read().await.clone();
-    studio::validate_prompt_draft_request(&request, &models)?;
-    state
-        .work_active
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another local AI job is already active.".to_string())?;
-    let cancel = CancellationToken::new();
-    match state.interactive_jobs.lock() {
-        Ok(mut jobs) => {
-            jobs.insert(request.request_id.clone(), cancel.clone());
-        }
-        Err(_) => {
-            state.work_active.store(false, Ordering::Release);
-            return Err("interactive job registry is unavailable".into());
-        }
-    }
-    let request_id = request.request_id.clone();
-    let event_request_id = request_id.clone();
-    let app_for_task = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let managed = app_for_task.state::<AppState>();
-        let work_guard = WorkGuard(&managed.work_active);
-        let result = match managed.control_settings.load() {
-            Ok(settings) => {
-                PromptDraftJob {
-                    app: app_for_task.clone(),
-                    runtime: managed.runtime.clone(),
-                    models,
-                    settings,
-                    request,
-                    cancel,
-                }
-                .run()
-                .await
-            }
-            Err(error) => Err(error.to_string()),
-        };
-        if let Err(error) = result {
-            studio::emit_prompt_draft_error(&app_for_task, &event_request_id, error);
-        }
-        if let Ok(mut jobs) = managed.interactive_jobs.lock() {
-            jobs.remove(&event_request_id);
-        }
-        drop(work_guard);
-        studio::emit_prompt_draft_settled(&app_for_task, &event_request_id);
-    });
-    Ok(request_id)
-}
-
-#[tauri::command]
-async fn start_movie_copilot(
-    request: MovieCopilotRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    ensure_workspace_idle(&state)?;
-    let models = state.models.read().await.clone();
-    let project = state
-        .studio
-        .get(&request.project_id)
-        .map_err(|error| error.to_string())?;
-    studio::validate_copilot_request(&request, &models, &project)?;
-    state
-        .work_active
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another local AI job is already active.".to_string())?;
-    let cancel = CancellationToken::new();
-    match state.interactive_jobs.lock() {
-        Ok(mut jobs) => {
-            jobs.insert(request.request_id.clone(), cancel.clone());
-        }
-        Err(_) => {
-            state.work_active.store(false, Ordering::Release);
-            return Err("interactive job registry is unavailable".into());
-        }
-    }
-    let request_id = request.request_id.clone();
-    let project_id = request.project_id.clone();
-    let event_request_id = request_id.clone();
-    let event_project_id = project_id.clone();
-    let app_for_task = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let managed = app_for_task.state::<AppState>();
-        let work_guard = WorkGuard(&managed.work_active);
-        let result = match managed.control_settings.load() {
-            Ok(settings) => {
-                MovieCopilotJob {
-                    app: app_for_task.clone(),
-                    studio: managed.studio.clone(),
-                    runtime: managed.runtime.clone(),
-                    models,
-                    settings,
-                    request,
-                    cancel,
-                }
-                .run()
-                .await
-            }
-            Err(error) => Err(error.to_string()),
-        };
-        if let Err(error) = result {
-            studio::emit_copilot_error(&app_for_task, &event_request_id, &event_project_id, error);
-        }
-        if let Ok(mut jobs) = managed.interactive_jobs.lock() {
-            jobs.remove(&event_request_id);
-        }
-        drop(work_guard);
-        studio::emit_copilot_settled(&app_for_task, &event_request_id, &event_project_id);
-    });
-    Ok(request_id)
-}
-
-#[tauri::command]
-fn cancel_movie_copilot(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(cancel) = state
-        .interactive_jobs
-        .lock()
-        .map_err(|_| "interactive job registry is unavailable".to_string())?
-        .get(&request_id)
-    {
-        cancel.cancel();
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn run_movie_generation_agent(
-    request: MovieGenerationAgentRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieGenerationProposal, String> {
-    let _guard = claim_workspace(&state)?;
-    let research = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let (_, runtime_settings, models) = studio_model_context(&state).await?;
-    let project = state
-        .studio
-        .get(&request.project_id)
-        .map_err(|error| error.to_string())?;
-    let (director_model_id, reviewer_model_id) = project_model_ids(
-        &project,
-        &models,
-        &runtime_settings,
-        &state.model_qualifications,
-        research.advanced_mode || runtime_settings.advanced_mode,
-    )?;
-    if let Some(frame_analyst_model_id) = request
-        .frame_analyst_model_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let model = models
-            .iter()
-            .find(|model| model.id == frame_analyst_model_id)
-            .ok_or_else(|| {
-                "The selected endpoint Frame Analyst is no longer in the local model catalog. Scan models again or choose another vision model.".to_string()
-            })?;
-        if !model.supports_vision || model.mmproj_path.is_none() {
-            return Err(format!(
-                "{} cannot inspect endpoint frames because it has no verified local vision projector.",
-                model.name
-            ));
-        }
-        let compatibility = state
-            .model_qualifications
-            .assess(model, &runtime_settings)?;
-        if matches!(
-            compatibility.tier.as_str(),
-            "incompatible" | "limited-context"
-        ) {
-            return Err(format!(
-                "The selected endpoint Frame Analyst cannot be used: {}",
-                compatibility.detail
-            ));
-        }
-        if !(research.advanced_mode || runtime_settings.advanced_mode || compatibility.studio_ready)
-        {
-            return Err(format!(
-                "{} has not passed Kestrel's local Studio protocol check. Run Check for Studio before using it for endpoint frame understanding.",
-                model.name
-            ));
-        }
-    }
-    let cancel = CancellationToken::new();
-    state
-        .interactive_jobs
-        .lock()
-        .map_err(|_| "interactive job registry is unavailable".to_string())?
-        .insert(request.request_id.clone(), cancel.clone());
-    let request_id = request.request_id.clone();
-    let result: Result<MovieGenerationProposal, String> = async {
-        state
-            .studio
-            .prepare_generation_agent(&request, Some(&app))
-            .map_err(|error| error.to_string())?;
-        release_all_comfy_memory(&state).await;
-        state
-            .runtime
-            .stop_managed()
-            .await
-            .map_err(|error| error.to_string())?;
-        state
-            .studio
-            .run_generation_agent(
-                &request,
-                MovieModelRuntime {
-                    runtime: &state.runtime,
-                    models: &models,
-                    settings: &runtime_settings,
-                    director_model_id: &director_model_id,
-                    reviewer_model_id: &reviewer_model_id,
-                },
-                &cancel,
-                Some(&app),
-            )
-            .await
-            .map_err(|error| error.to_string())
-    }
-    .await;
-    if let Err(error) = &result {
-        let _ = state
-            .studio
-            .record_generation_agent_failure(&request, error, Some(&app));
-    }
-    if let Ok(mut jobs) = state.interactive_jobs.lock() {
-        jobs.remove(&request_id);
-    }
-    let _ = state.runtime.stop_managed().await;
-    result
-}
-
-#[tauri::command]
-fn cancel_movie_generation_agent(
-    request_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    if let Some(cancel) = state
-        .interactive_jobs
-        .lock()
-        .map_err(|_| "interactive job registry is unavailable".to_string())?
-        .get(&request_id)
-    {
-        cancel.cancel();
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn get_movie_generation_agent_snapshot(
-    project_id: String,
-    request_id: String,
-    state: State<'_, AppState>,
-) -> Result<Value, String> {
-    let mut snapshot = state
-        .studio
-        .generation_agent_snapshot(&project_id, &request_id)
-        .map_err(|error| error.to_string())?;
-    let active = state
-        .interactive_jobs
-        .lock()
-        .map_err(|_| "interactive job registry is unavailable".to_string())?
-        .contains_key(&request_id);
-    snapshot["active"] = Value::Bool(active);
-    Ok(snapshot)
-}
-
-#[tauri::command]
-fn is_movie_generation_agent_active(
-    request_id: String,
-    state: State<'_, AppState>,
-) -> Result<bool, String> {
-    Ok(state
-        .interactive_jobs
-        .lock()
-        .map_err(|_| "interactive job registry is unavailable".to_string())?
-        .contains_key(&request_id))
-}
-
-#[tauri::command]
-fn get_latest_movie_generation_agent_snapshot(
-    project_id: String,
-    state: State<'_, AppState>,
-) -> Result<Option<Value>, String> {
-    let Some(request_id) = state
-        .studio
-        .latest_generation_agent_request_id(&project_id)
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-    let mut snapshot = state
-        .studio
-        .generation_agent_snapshot(&project_id, &request_id)
-        .map_err(|error| error.to_string())?;
-    let active = state
-        .interactive_jobs
-        .lock()
-        .map_err(|_| "interactive job registry is unavailable".to_string())?
-        .contains_key(&request_id);
-    snapshot["active"] = Value::Bool(active);
-    Ok(Some(snapshot))
-}
-
-#[tauri::command]
-fn get_movie_copilot_receipt(
-    project_id: String,
-    request_id: String,
-    state: State<'_, AppState>,
-) -> Result<MovieCopilotReceipt, String> {
-    state
-        .studio
-        .copilot_receipt(&project_id, &request_id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn cancel_movie_prompt_draft(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(cancel) = state
-        .interactive_jobs
-        .lock()
-        .map_err(|_| "interactive job registry is unavailable".to_string())?
-        .get(&request_id)
-    {
-        cancel.cancel();
-    }
-    Ok(())
-}
-
 #[tauri::command]
 async fn save_movie_edits(
     id: String,
@@ -1620,171 +1108,7 @@ async fn save_movie_edits(
 }
 
 #[tauri::command]
-async fn save_movie_plan(
-    id: String,
-    plan: MoviePlan,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    ensure_workspace_idle(&state)?;
-    state
-        .studio
-        .save_producer_plan(&id, plan, Some(&app))
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn set_movie_model_roles(
-    id: String,
-    model_roles: MovieModelRoleRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    let (research, runtime_settings, models) = studio_model_context(&state).await?;
-    let roles = resolve_movie_model_roles(
-        &model_roles,
-        false,
-        research.advanced_mode || runtime_settings.advanced_mode,
-        &models,
-        &runtime_settings,
-        &state.model_qualifications,
-    )?;
-    let _guard = claim_workspace(&state)?;
-    state
-        .studio
-        .set_model_roles(&id, roles, Some(&app))
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn set_movie_runtime_policy(
-    id: String,
-    policy: MovieRuntimePolicyRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    let research = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let control = state
-        .control_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let limits = studio::runtime_policy_limits(research.advanced_mode || control.advanced_mode);
-    if !(limits.minimum_context_window..=limits.maximum_context_window)
-        .contains(&policy.context_window)
-    {
-        return Err(format!(
-            "Project context must be between {} and {} tokens.",
-            limits.minimum_context_window, limits.maximum_context_window
-        ));
-    }
-    if !(limits.minimum_max_output_tokens..=limits.maximum_max_output_tokens)
-        .contains(&policy.max_output_tokens)
-    {
-        return Err(format!(
-            "Project output must be between {} and {} tokens.",
-            limits.minimum_max_output_tokens, limits.maximum_max_output_tokens
-        ));
-    }
-    let _guard = claim_workspace(&state)?;
-    state
-        .studio
-        .set_runtime_policy(&id, policy, Some(&app))
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn get_movie_plan_exchange_prompt(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    state
-        .studio
-        .movie_plan_exchange_prompt(&id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn parse_movie_plan_exchange(
-    id: String,
-    text: String,
-    state: State<'_, AppState>,
-) -> Result<MoviePlan, String> {
-    state
-        .studio
-        .parse_movie_plan_exchange(&id, &text)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn revise_movie_plan(
-    request: MoviePlanFeedbackRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    let _guard = claim_workspace(&state)?;
-    let research = state
-        .research_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    let (_, runtime_settings, models) = studio_model_context(&state).await?;
-    let project = state
-        .studio
-        .get(&request.id)
-        .map_err(|error| error.to_string())?;
-    let (director_model_id, reviewer_model_id) = project_model_ids(
-        &project,
-        &models,
-        &runtime_settings,
-        &state.model_qualifications,
-        research.advanced_mode || runtime_settings.advanced_mode,
-    )?;
-    release_all_comfy_memory(&state).await;
-    state
-        .runtime
-        .stop_managed()
-        .await
-        .map_err(|error| error.to_string())?;
-    let cancel = CancellationToken::new();
-    state
-        .movie_jobs
-        .lock()
-        .map_err(|_| "movie job registry is unavailable".to_string())?
-        .insert(request.id.clone(), cancel.clone());
-    let result: Result<MovieProject, String> = async {
-        state
-            .studio
-            .revise_with_producer_feedback(
-                &request.id,
-                &request.feedback,
-                MovieModelRuntime {
-                    runtime: &state.runtime,
-                    models: &models,
-                    settings: &runtime_settings,
-                    director_model_id: &director_model_id,
-                    reviewer_model_id: &reviewer_model_id,
-                },
-                &cancel,
-                Some(&app),
-            )
-            .await
-            .map_err(|error| error.to_string())
-    }
-    .await;
-    let _ = state.runtime.stop_managed().await;
-    if let Ok(mut jobs) = state.movie_jobs.lock() {
-        jobs.remove(&request.id);
-    }
-    result
-}
-
-#[tauri::command]
-async fn approve_movie_plan(
+async fn render_movie_scenes(
     id: String,
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1796,16 +1120,12 @@ async fn approve_movie_plan(
         .map_err(|_| "Another local AI job is already active.".to_string())?;
     let project = state
         .studio
-        .approve_producer_plan(&id, Some(&app))
+        .approve_producer_scenes(&id, Some(&app))
         .await
         .map_err(|error| {
             state.work_active.store(false, Ordering::Release);
             error.to_string()
         })?;
-    let research = state.research_settings.load().map_err(|error| {
-        state.work_active.store(false, Ordering::Release);
-        error.to_string()
-    })?;
     let cancel = CancellationToken::new();
     state
         .movie_jobs
@@ -1815,83 +1135,33 @@ async fn approve_movie_plan(
             "movie job registry is unavailable".to_string()
         })?
         .insert(id.clone(), cancel.clone());
-    spawn_movie(app, id, research, cancel, false);
+    spawn_movie_render(app, id, cancel);
     Ok(project)
 }
 
-#[tauri::command]
-async fn render_movie_clip_version(
-    request: MovieClipRenderRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    let _guard = claim_workspace(&state)?;
-    let _ = state.runtime.stop_managed().await;
-    let cancel = CancellationToken::new();
-    state
-        .movie_jobs
-        .lock()
-        .map_err(|_| "movie job registry is unavailable".to_string())?
-        .insert(request.id.clone(), cancel.clone());
-    let id = request.id.clone();
-    let result = state
-        .studio
-        .render_clip_version(request, &cancel, Some(&app))
-        .await
-        .map_err(|error| error.to_string());
-    if let Err(error) = &result {
-        state
+fn spawn_movie_render(app: AppHandle, id: String, cancel: CancellationToken) {
+    tauri::async_runtime::spawn(async move {
+        let managed = app.state::<AppState>();
+        let _guard = WorkGuard(&managed.work_active);
+        release_all_comfy_memory(&managed).await;
+        let _ = managed.runtime.stop_managed().await;
+        let result = managed
             .studio
-            .settle_audition_failure(&id, error, cancel.is_cancelled(), Some(&app));
-    }
-    if let Ok(mut jobs) = state.movie_jobs.lock() {
-        jobs.remove(&id);
-    }
-    result
-}
-
-#[tauri::command]
-async fn capture_movie_frame(
-    project_id: String,
-    anchor: studio::MovieFrameAnchor,
-    state: State<'_, AppState>,
-) -> Result<studio::MovieCapturedFrame, String> {
-    state
-        .studio
-        .capture_frame(&project_id, anchor)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn generate_movie_fl2v_transition(
-    request: MovieFl2vTransitionRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    let _guard = claim_workspace(&state)?;
-    let _ = state.runtime.stop_managed().await;
-    let cancel = CancellationToken::new();
-    state
-        .movie_jobs
-        .lock()
-        .map_err(|_| "movie job registry is unavailable".to_string())?
-        .insert(request.id.clone(), cancel.clone());
-    let id = request.id.clone();
-    let result = state
-        .studio
-        .render_fl2v_transition(request, &cancel, Some(&app))
-        .await
-        .map_err(|error| error.to_string());
-    if let Err(error) = &result {
-        state
-            .studio
-            .settle_audition_failure(&id, error, cancel.is_cancelled(), Some(&app));
-    }
-    if let Ok(mut jobs) = state.movie_jobs.lock() {
-        jobs.remove(&id);
-    }
-    result
+            .render(&id, &cancel, Some(&app))
+            .await
+            .map_err(|error| error.to_string());
+        release_all_comfy_memory(&managed).await;
+        if let Err(error) = result {
+            if cancel.is_cancelled() {
+                let _ = managed.studio.stop(&id, Some(&app));
+            } else {
+                managed.studio.fail(&id, error, Some(&app));
+            }
+        }
+        if let Ok(mut jobs) = managed.movie_jobs.lock() {
+            jobs.remove(&id);
+        };
+    });
 }
 
 #[tauri::command]
@@ -4186,8 +3456,6 @@ pub fn run() {
             let model_catalog = ModelCatalogStore::new(store.root());
             let model_downloads =
                 ModelDownloadManager::new(store.root()).map_err(|error| error.to_string())?;
-            let model_qualifications =
-                ModelQualificationStore::new(store.root()).map_err(|error| error.to_string())?;
             let models = model_catalog.load().unwrap_or_else(|error| {
                 eprintln!("Kestrel could not restore its disposable model catalog: {error}");
                 Vec::new()
@@ -4208,7 +3476,6 @@ pub fn run() {
                 control_settings,
                 model_catalog,
                 model_downloads,
-                model_qualifications,
                 models: RwLock::new(models),
                 engine_candidates: RwLock::new(engine_candidates),
                 runtime: Arc::new(RuntimeManager::new()),
@@ -4286,40 +3553,25 @@ pub fn run() {
             cancel_research,
             list_movies,
             get_movie,
+            create_movie_producer_project,
+            attach_movie_producer_references,
+            get_movie_producer_workspace,
+            get_movie_studio_conversation,
+            save_movie_story_revision,
+            accept_movie_story_revision,
+            save_movie_scenes,
+            reset_movie_studio_conversation,
+            summarize_movie_studio_conversation,
+            start_movie_studio_chat,
+            cancel_movie_studio_chat,
+            start_studio_prompt_draft,
+            cancel_studio_prompt_draft,
             get_movie_render_state,
             pick_movie_reference_files,
             list_movie_image_assets,
             start_movie_image_asset,
             cancel_movie_image_asset,
-            list_studio_model_compatibility,
-            qualify_studio_model,
-            start_movie,
-            start_manual_movie,
-            resume_movie,
-            cancel_movie,
-            get_movie_planning,
-            direct_movie_planning,
-            checkpoint_movie_planning,
-            start_movie_prompt_draft,
-            cancel_movie_prompt_draft,
-            start_movie_copilot,
-            cancel_movie_copilot,
-            get_movie_copilot_receipt,
-            run_movie_generation_agent,
-            cancel_movie_generation_agent,
-            get_movie_generation_agent_snapshot,
-            get_latest_movie_generation_agent_snapshot,
-            is_movie_generation_agent_active,
-            get_movie_plan_exchange_prompt,
-            parse_movie_plan_exchange,
-            save_movie_plan,
-            set_movie_model_roles,
-            set_movie_runtime_policy,
-            revise_movie_plan,
-            approve_movie_plan,
-            render_movie_clip_version,
-            capture_movie_frame,
-            generate_movie_fl2v_transition,
+            render_movie_scenes,
             cancel_movie_render,
             save_movie_edits,
             render_movie_edit,

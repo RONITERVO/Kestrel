@@ -36,26 +36,6 @@ pub enum PromptId {
     ResearchSynthesis,
     ResearchRetry,
     ResearchExpeditionRetry,
-    MovieAgentSystem,
-    MovieInitial,
-    MovieResume,
-    MovieContinue,
-    MovieFirstCheck,
-    MovieSecondCheck,
-    MovieSubmitBlocked,
-    MovieResponseCheckpoint,
-    MovieProducerDirection,
-    MovieReviewerSystem,
-    MovieGenerationFrameAnalystSystem,
-    MovieGenerationAgentSystem,
-    MovieGenerationReviewerSystem,
-    MovieGenerationInitial,
-    MovieGenerationResume,
-    MovieGenerationContinue,
-    MovieGenerationReviewRejected,
-    MovieCopilotSystem,
-    MovieCopilotTool,
-    MovieWorkspaceTool,
     StorySystem,
     ImageAssetSystem,
     ImageCompositionSystem,
@@ -73,8 +53,6 @@ pub enum PromptId {
     PromptMusicMissing,
     PromptAssetMetadata,
     ImageStillnessSuffix,
-    StudioQualificationSystem,
-    StudioQualificationUser,
     FinalStoryDevelop,
     FinalStoryContinue,
     FinalImageAssetDevelop,
@@ -87,7 +65,6 @@ pub enum PromptId {
     FinalMusicCaptionContinue,
     FinalMusicLyricsDevelop,
     FinalMusicLyricsContinue,
-    StudioSubmissionCorrection,
     ToolAskUser,
     ToolListDirectory,
     ToolReadFile,
@@ -104,24 +81,10 @@ pub enum PromptId {
     ResearchToolRead,
     ResearchToolSourceRef,
     ResearchToolSection,
-    MovieWorkspacePath,
-    MovieWorkspaceContent,
-    MovieWorkspaceFiles,
-    StudioSourceRefs,
-    StudioReferenceIds,
-    StudioPlanAudience,
-    StudioContinuityBible,
-    StudioQualificationTool,
-    MovieCopilotRequest,
-    MovieReferenceManifest,
-    MovieAuthoritativeMemory,
-    MovieWorkspaceContract,
-    MovieWorkspaceReferencesEmpty,
-    MovieWorkspaceReferencesIntro,
 }
 
 impl PromptId {
-    pub const ALL: [Self; 96] = [
+    pub const ALL: [Self; 59] = [
         Self::ChatSystem,
         Self::ComputerSystem,
         Self::ComputerAttachmentNotice,
@@ -136,26 +99,6 @@ impl PromptId {
         Self::ResearchSynthesis,
         Self::ResearchRetry,
         Self::ResearchExpeditionRetry,
-        Self::MovieAgentSystem,
-        Self::MovieInitial,
-        Self::MovieResume,
-        Self::MovieContinue,
-        Self::MovieFirstCheck,
-        Self::MovieSecondCheck,
-        Self::MovieSubmitBlocked,
-        Self::MovieResponseCheckpoint,
-        Self::MovieProducerDirection,
-        Self::MovieReviewerSystem,
-        Self::MovieGenerationFrameAnalystSystem,
-        Self::MovieGenerationAgentSystem,
-        Self::MovieGenerationReviewerSystem,
-        Self::MovieGenerationInitial,
-        Self::MovieGenerationResume,
-        Self::MovieGenerationContinue,
-        Self::MovieGenerationReviewRejected,
-        Self::MovieCopilotSystem,
-        Self::MovieCopilotTool,
-        Self::MovieWorkspaceTool,
         Self::StorySystem,
         Self::ImageAssetSystem,
         Self::ImageCompositionSystem,
@@ -173,8 +116,6 @@ impl PromptId {
         Self::PromptMusicMissing,
         Self::PromptAssetMetadata,
         Self::ImageStillnessSuffix,
-        Self::StudioQualificationSystem,
-        Self::StudioQualificationUser,
         Self::FinalStoryDevelop,
         Self::FinalStoryContinue,
         Self::FinalImageAssetDevelop,
@@ -187,7 +128,6 @@ impl PromptId {
         Self::FinalMusicCaptionContinue,
         Self::FinalMusicLyricsDevelop,
         Self::FinalMusicLyricsContinue,
-        Self::StudioSubmissionCorrection,
         Self::ToolAskUser,
         Self::ToolListDirectory,
         Self::ToolReadFile,
@@ -204,20 +144,6 @@ impl PromptId {
         Self::ResearchToolRead,
         Self::ResearchToolSourceRef,
         Self::ResearchToolSection,
-        Self::MovieWorkspacePath,
-        Self::MovieWorkspaceContent,
-        Self::MovieWorkspaceFiles,
-        Self::StudioSourceRefs,
-        Self::StudioReferenceIds,
-        Self::StudioPlanAudience,
-        Self::StudioContinuityBible,
-        Self::StudioQualificationTool,
-        Self::MovieCopilotRequest,
-        Self::MovieReferenceManifest,
-        Self::MovieAuthoritativeMemory,
-        Self::MovieWorkspaceContract,
-        Self::MovieWorkspaceReferencesEmpty,
-        Self::MovieWorkspaceReferencesIntro,
     ];
 
     pub const fn key(self) -> &'static str {
@@ -236,26 +162,6 @@ impl PromptId {
             Self::ResearchSynthesis => "research.synthesis",
             Self::ResearchRetry => "research.retry",
             Self::ResearchExpeditionRetry => "research.expedition_retry",
-            Self::MovieAgentSystem => "movie.agent.system",
-            Self::MovieInitial => "movie.agent.initial",
-            Self::MovieResume => "movie.agent.resume",
-            Self::MovieContinue => "movie.agent.continue",
-            Self::MovieFirstCheck => "movie.agent.first_check",
-            Self::MovieSecondCheck => "movie.agent.second_check",
-            Self::MovieSubmitBlocked => "movie.agent.submit_blocked",
-            Self::MovieResponseCheckpoint => "movie.agent.response_checkpoint",
-            Self::MovieProducerDirection => "movie.agent.producer_direction",
-            Self::MovieReviewerSystem => "movie.reviewer.system",
-            Self::MovieGenerationFrameAnalystSystem => "movie.generation.frame_analyst.system",
-            Self::MovieGenerationAgentSystem => "movie.generation.agent.system",
-            Self::MovieGenerationReviewerSystem => "movie.generation.reviewer.system",
-            Self::MovieGenerationInitial => "movie.generation.initial",
-            Self::MovieGenerationResume => "movie.generation.resume",
-            Self::MovieGenerationContinue => "movie.generation.continue",
-            Self::MovieGenerationReviewRejected => "movie.generation.review_rejected",
-            Self::MovieCopilotSystem => "movie.copilot.system",
-            Self::MovieCopilotTool => "movie.copilot.tool",
-            Self::MovieWorkspaceTool => "movie.workspace.tool",
             Self::StorySystem => "collaboration.story.system",
             Self::ImageAssetSystem => "collaboration.image_asset.system",
             Self::ImageCompositionSystem => "collaboration.image_composition.system",
@@ -273,8 +179,6 @@ impl PromptId {
             Self::PromptMusicMissing => "collaboration.context.music_missing",
             Self::PromptAssetMetadata => "collaboration.asset_metadata",
             Self::ImageStillnessSuffix => "image.h3.stillness_suffix",
-            Self::StudioQualificationSystem => "studio.qualification.system",
-            Self::StudioQualificationUser => "studio.qualification.user",
             Self::FinalStoryDevelop => "collaboration.final.story.develop",
             Self::FinalStoryContinue => "collaboration.final.story.continue",
             Self::FinalImageAssetDevelop => "collaboration.final.image_asset.develop",
@@ -287,7 +191,6 @@ impl PromptId {
             Self::FinalMusicCaptionContinue => "collaboration.final.music_caption.continue",
             Self::FinalMusicLyricsDevelop => "collaboration.final.music_lyrics.develop",
             Self::FinalMusicLyricsContinue => "collaboration.final.music_lyrics.continue",
-            Self::StudioSubmissionCorrection => "studio.submission_correction",
             Self::ToolAskUser => "computer.tool.ask_user",
             Self::ToolListDirectory => "computer.tool.list_directory",
             Self::ToolReadFile => "computer.tool.read_file",
@@ -304,20 +207,6 @@ impl PromptId {
             Self::ResearchToolRead => "research.tool.read_source",
             Self::ResearchToolSourceRef => "research.tool.source_ref",
             Self::ResearchToolSection => "research.tool.section",
-            Self::MovieWorkspacePath => "movie.workspace.path",
-            Self::MovieWorkspaceContent => "movie.workspace.content",
-            Self::MovieWorkspaceFiles => "movie.workspace.files",
-            Self::StudioSourceRefs => "studio.schema.source_refs",
-            Self::StudioReferenceIds => "studio.schema.reference_ids",
-            Self::StudioPlanAudience => "studio.schema.audience",
-            Self::StudioContinuityBible => "studio.schema.continuity_bible",
-            Self::StudioQualificationTool => "studio.qualification.tool",
-            Self::MovieCopilotRequest => "movie.copilot.request",
-            Self::MovieReferenceManifest => "movie.reference_manifest",
-            Self::MovieAuthoritativeMemory => "movie.authoritative_memory",
-            Self::MovieWorkspaceContract => "movie.workspace.contract",
-            Self::MovieWorkspaceReferencesEmpty => "movie.workspace.references_empty",
-            Self::MovieWorkspaceReferencesIntro => "movie.workspace.references_intro",
         }
     }
 }
@@ -584,6 +473,8 @@ fn parse_and_upgrade(value: &str) -> Result<PromptPack, String> {
         .iter()
         .map(|id| id.key())
         .collect::<BTreeSet<_>>();
+    pack.prompts
+        .retain(|key, _| required.contains(key.as_str()) || !is_retired_prompt_key(key));
     if let Some(key) = pack
         .prompts
         .keys()
@@ -596,6 +487,13 @@ fn parse_and_upgrade(value: &str) -> Result<PromptPack, String> {
         pack.prompts.entry(key).or_insert(value);
     }
     parse_and_validate(&serde_json::to_string(&pack).map_err(|error| error.to_string())?)
+}
+
+fn is_retired_prompt_key(key: &str) -> bool {
+    key.starts_with("movie.")
+        || key.starts_with("studio.qualification.")
+        || key.starts_with("studio.schema.")
+        || key == "studio.submission_correction"
 }
 
 fn placeholders(value: &str) -> BTreeSet<String> {
@@ -671,12 +569,12 @@ mod tests {
     fn rejects_template_edits_that_drop_runtime_placeholders() {
         let mut pack = default_pack();
         pack.prompts.insert(
-            PromptId::StudioQualificationUser.key().into(),
-            "No nonce here.".into(),
+            PromptId::ComputerSystem.key().into(),
+            "No runtime values here.".into(),
         );
         assert!(parse_and_validate(&serde_json::to_string(&pack).unwrap())
             .unwrap_err()
-            .contains("nonce"));
+            .contains("access_label"));
     }
 
     #[test]
@@ -689,7 +587,9 @@ mod tests {
     #[test]
     fn older_same_version_packs_gain_new_default_entries() {
         let mut pack = default_pack();
-        pack.prompts.remove(PromptId::StudioQualificationTool.key());
+        pack.prompts.remove(PromptId::PromptMusicMissing.key());
+        pack.prompts
+            .insert("movie.retired.custom".into(), "retired custom text".into());
         assert_eq!(
             parse_and_upgrade(&serde_json::to_string(&pack).unwrap())
                 .unwrap()

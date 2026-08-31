@@ -1,7 +1,7 @@
 //! Shared OpenAI-compatible server-sent-event decoding for Studio model features.
 //!
 //! Network ownership and producer-facing events remain with each feature. This module owns the
-//! wire-level contract so Director planning, prompt collaboration, and Producer Copilot cannot
+//! wire-level contract so story chat, scene chat, and prompt drafting cannot
 //! silently diverge in how they handle fragmented UTF-8, completion markers, or malformed data.
 
 use serde_json::Value;

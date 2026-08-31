@@ -6,10 +6,10 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
-  cancelImageGeneration, cancelMoviePromptDraft, createImageProject, getImageProject,
+  cancelImageGeneration, cancelStudioPromptDraft, createImageProject, getImageProject,
   imageMediaUrl, listImageProjects, onImageGeneration, onImageProjectUpdated,
-  onMoviePromptDraft, revealImageProject, saveImageProject, startImageGeneration,
-  startMoviePromptDraft,
+  onStudioPromptDraft, revealImageProject, saveImageProject, startImageGeneration,
+  startStudioPromptDraft,
 } from "../../../platform/api";
 import { appendModelThinking, ModelThinkingStream } from "../../control/ModelThinkingStream";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "../../control/ModelRuntimePolicy";
@@ -114,7 +114,7 @@ export function ImageStudio({
         void refresh(event.projectId).catch((error) => onError(String(error)));
       }
     }).then((cleanup) => disposed ? cleanup() : cleanups.push(cleanup));
-    void onMoviePromptDraft((event) => {
+    void onStudioPromptDraft((event) => {
       if (event.kind === "error") onError(event.content ?? "The local image collaborator stopped.");
       setCollaboration((current) => {
         if (!current || current.id !== event.requestId) return current;
@@ -205,7 +205,7 @@ export function ImageStudio({
     const effectiveLevel = thinkingLevel !== "default" ? thinkingLevel : effectiveThinkingLevelForModel(controlSettings, modelId);
     setCollaboration({ id, text: "", reasoning: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model", thinkingLevel: effectiveLevel });
     try {
-      await startMoviePromptDraft({
+      await startStudioPromptDraft({
         requestId: id,
         modelId,
         target: "imageComposition",
@@ -485,7 +485,7 @@ export function ImageStudio({
       </div>}
     </aside>
 
-    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} outputText={collaboration.text} active={assistantBusy} inferenceActive={assistantBusy && collaboration.status !== "queued"} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>Proposed production settings</strong><pre>{collaboration.text || (assistantBusy ? "The structured proposal will stream here when the model begins its answer…" : "No structured proposal was returned.")}</pre></section></div><footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt, null, 2)}</pre></details>}</footer></section>}
+    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} outputText={collaboration.text} active={assistantBusy} inferenceActive={assistantBusy && collaboration.status !== "queued"} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>Proposed production settings</strong><pre>{collaboration.text || (assistantBusy ? "The structured proposal will stream here when the model begins its answer…" : "No structured proposal was returned.")}</pre></section></div><footer>{assistantBusy ? <button onClick={() => void cancelStudioPromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt, null, 2)}</pre></details>}</footer></section>}
     {newOpen && <NewImageDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
   </div>;
 }

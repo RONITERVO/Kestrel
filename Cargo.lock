@@ -1907,7 +1907,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-app-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "directories",
  "serde",
@@ -1917,7 +1917,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-local"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",

@@ -3,7 +3,7 @@
 //! These types describe durable data and the native IPC boundary. TypeScript bindings are
 //! generated from this crate; the desktop application must not maintain handwritten mirrors.
 
-use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
+use serde::{de::Error as _, ser::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use ts_rs::TS;
 
@@ -984,6 +984,376 @@ pub struct ResearchDraft {
     pub open_questions: Vec<String>,
 }
 
+/// The two intentionally separate local-model conversations in Movie Studio.
+///
+/// Story conversations own prose revisions. Scene conversations own H3 prompt drafting. Neither
+/// conversation receives filesystem tools, rendering authority, or producer reference choices.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieStudioConversationKind {
+    Story,
+    Scenes,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieStudioMessageRole {
+    Producer,
+    Collaborator,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieStoryRevisionOrigin {
+    Producer,
+    Collaborator,
+    Imported,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieStudioConversationMode {
+    Continue,
+    Fresh,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieSceneFrameSourceKind {
+    PreviousScene,
+    ReferenceImage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieSceneFrameSource {
+    pub kind: MovieSceneFrameSourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub asset_id: Option<String>,
+}
+
+/// Producer-owned reference selection for one scene.
+///
+/// The local model never receives or writes this structure. Kestrel binds these selections to the
+/// native H3 graph and adds the required renderer text immediately before rendering.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieSceneReferenceSelection {
+    pub asset_id: String,
+    pub use_visual: bool,
+    pub use_audio: bool,
+    #[serde(default)]
+    pub guidance: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieSceneDraft {
+    pub id: String,
+    pub revision: u32,
+    pub title: String,
+    pub purpose: String,
+    pub duration_seconds: f32,
+    pub h3_prompt: String,
+    pub continuity_in: String,
+    pub continuity_out: String,
+    pub transition: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub first_frame: Option<MovieSceneFrameSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_frame: Option<MovieSceneFrameSource>,
+    #[serde(default)]
+    pub references: Vec<MovieSceneReferenceSelection>,
+    pub story_revision_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStoryRevision {
+    pub id: String,
+    pub number: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent_revision_id: Option<String>,
+    pub created_at: String,
+    pub origin: MovieStoryRevisionOrigin,
+    pub instruction: String,
+    pub markdown: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub accepted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioMessage {
+    pub id: String,
+    pub created_at: String,
+    pub role: MovieStudioMessageRole,
+    pub markdown: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub story_revision_id: Option<String>,
+    #[serde(default)]
+    pub selected_scene_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioConversationSummary {
+    pub id: String,
+    pub kind: MovieStudioConversationKind,
+    pub created_at: String,
+    pub updated_at: String,
+    pub story_revision_id: String,
+    pub title: String,
+    pub summary: String,
+    pub message_count: usize,
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioConversation {
+    pub id: String,
+    pub kind: MovieStudioConversationKind,
+    pub created_at: String,
+    pub updated_at: String,
+    pub story_revision_id: String,
+    pub title: String,
+    pub summary: String,
+    pub archived: bool,
+    #[serde(default)]
+    pub messages: Vec<MovieStudioMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieProducerWorkspace {
+    pub schema_version: u32,
+    pub project_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_story_revision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub accepted_story_revision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_story_conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_scene_conversation_id: Option<String>,
+    #[serde(default)]
+    pub story_revisions: Vec<MovieStoryRevision>,
+    #[serde(default)]
+    pub conversations: Vec<MovieStudioConversationSummary>,
+    #[serde(default)]
+    pub scenes: Vec<MovieSceneDraft>,
+    pub scene_revision: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioChatRequest {
+    pub request_id: String,
+    pub project_id: String,
+    pub kind: MovieStudioConversationKind,
+    pub mode: MovieStudioConversationMode,
+    #[ts(optional)]
+    pub conversation_id: Option<String>,
+    pub model_id: String,
+    pub instruction: String,
+    #[ts(optional)]
+    pub story_revision_id: Option<String>,
+    #[serde(default)]
+    pub selected_scene_ids: Vec<String>,
+    #[ts(optional)]
+    pub thinking_level: Option<ThinkingLevel>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioChatEvent {
+    pub request_id: String,
+    pub project_id: String,
+    pub conversation_id: String,
+    pub kind: MovieStudioConversationKind,
+    #[ts(
+        type = "\"queued\" | \"started\" | \"token\" | \"reasoning\" | \"complete\" | \"cancelled\" | \"error\" | \"settled\""
+    )]
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thinking_level: Option<ThinkingLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub story_revision: Option<MovieStoryRevision>,
+    #[serde(default)]
+    pub changed_scene_ids: Vec<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SaveMovieStoryRevisionRequest {
+    pub project_id: String,
+    #[ts(optional)]
+    pub parent_revision_id: Option<String>,
+    pub markdown: String,
+    #[serde(default)]
+    pub instruction: String,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AcceptMovieStoryRevisionRequest {
+    pub project_id: String,
+    pub revision_id: String,
+    pub conversation_mode: MovieStudioConversationMode,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SaveMovieScenesRequest {
+    pub project_id: String,
+    pub expected_revision: u64,
+    pub scenes: Vec<MovieSceneDraft>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ResetMovieStudioConversationRequest {
+    pub project_id: String,
+    pub conversation_id: String,
+    pub keep_summary: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SummarizeMovieStudioConversationRequest {
+    pub project_id: String,
+    pub conversation_id: String,
+    pub model_id: String,
+    #[ts(optional)]
+    pub thinking_level: Option<ThinkingLevel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieProducerProjectSettings {
+    pub width: u32,
+    pub height: u32,
+    pub clip_seconds: f32,
+    pub steps: u32,
+    pub max_clips: u32,
+    #[serde(
+        deserialize_with = "deserialize_javascript_safe_u64",
+        serialize_with = "serialize_javascript_safe_u64"
+    )]
+    pub seed: u64,
+    pub thinking_budget: u32,
+    pub max_output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_window: Option<u32>,
+    pub comfy_root: String,
+    pub ref_image_size: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieProducerReferenceRequest {
+    pub asset_id: String,
+    pub description: String,
+    pub include_embedded_audio: bool,
+    pub embedded_audio_description: String,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CreateMovieProducerProjectRequest {
+    pub starting_material: String,
+    pub collaborator_model_id: String,
+    #[ts(optional)]
+    pub thinking_level: Option<ThinkingLevel>,
+    pub settings: MovieProducerProjectSettings,
+    #[serde(default)]
+    pub references: Vec<MovieProducerReferenceRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AttachMovieProducerReferencesRequest {
+    pub project_id: String,
+    pub references: Vec<MovieProducerReferenceRequest>,
+}
+
+const JAVASCRIPT_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+fn deserialize_javascript_safe_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
+    if value > JAVASCRIPT_MAX_SAFE_INTEGER {
+        return Err(D::Error::custom(format!(
+            "seed must be at most {JAVASCRIPT_MAX_SAFE_INTEGER} so JavaScript can preserve it exactly"
+        )));
+    }
+    Ok(value)
+}
+
+fn serialize_javascript_safe_u64<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if *value > JAVASCRIPT_MAX_SAFE_INTEGER {
+        return Err(S::Error::custom(format!(
+            "seed must be at most {JAVASCRIPT_MAX_SAFE_INTEGER} so JavaScript can preserve it exactly"
+        )));
+    }
+    serializer.serialize_u64(*value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,5 +1389,74 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn absent_movie_studio_options_are_omitted_but_present_values_are_preserved() {
+        let mut scene = MovieSceneDraft {
+            id: "scene-one".into(),
+            revision: 1,
+            title: "Arrival".into(),
+            purpose: String::new(),
+            duration_seconds: 5.0,
+            h3_prompt: "A wide arrival shot.".into(),
+            continuity_in: String::new(),
+            continuity_out: String::new(),
+            transition: "cut".into(),
+            first_frame: None,
+            last_frame: None,
+            references: Vec::new(),
+            story_revision_id: "story-one".into(),
+            created_at: "2026-08-31T10:00:00Z".into(),
+            updated_at: "2026-08-31T10:00:00Z".into(),
+        };
+        let absent = serde_json::to_value(&scene).unwrap();
+        assert!(absent.get("firstFrame").is_none());
+        assert!(absent.get("lastFrame").is_none());
+
+        scene.first_frame = Some(MovieSceneFrameSource {
+            kind: MovieSceneFrameSourceKind::ReferenceImage,
+            asset_id: Some("image-one".into()),
+        });
+        let present = serde_json::to_value(&scene).unwrap();
+        assert_eq!(present["firstFrame"]["assetId"], "image-one");
+
+        let restored: MovieSceneDraft = serde_json::from_value(absent).unwrap();
+        assert!(restored.first_frame.is_none());
+        assert!(restored.last_frame.is_none());
+    }
+
+    #[test]
+    fn movie_producer_seed_stays_within_javascript_safe_integer_range() {
+        let settings = serde_json::json!({
+            "width": 1344,
+            "height": 768,
+            "clipSeconds": 5.0,
+            "steps": 20,
+            "maxClips": 12,
+            "seed": JAVASCRIPT_MAX_SAFE_INTEGER,
+            "thinkingBudget": 32768,
+            "maxOutputTokens": 32768,
+            "comfyRoot": "",
+            "refImageSize": "match"
+        });
+        let mut parsed: MovieProducerProjectSettings =
+            serde_json::from_value(settings.clone()).unwrap();
+        assert_eq!(parsed.seed, JAVASCRIPT_MAX_SAFE_INTEGER);
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["seed"],
+            JAVASCRIPT_MAX_SAFE_INTEGER
+        );
+
+        let mut unsafe_settings = settings;
+        unsafe_settings["seed"] = serde_json::json!(JAVASCRIPT_MAX_SAFE_INTEGER + 1);
+        let error = serde_json::from_value::<MovieProducerProjectSettings>(unsafe_settings)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("JavaScript can preserve it exactly"));
+
+        parsed.seed = JAVASCRIPT_MAX_SAFE_INTEGER + 1;
+        let error = serde_json::to_value(&parsed).unwrap_err().to_string();
+        assert!(error.contains("JavaScript can preserve it exactly"));
     }
 }
