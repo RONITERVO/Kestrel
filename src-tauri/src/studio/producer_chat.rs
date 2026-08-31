@@ -838,11 +838,17 @@ fn scene_response_schema() -> Value {
 
 fn clean_story_markdown(value: &str) -> String {
     let trimmed = value.trim();
-    if trimmed.starts_with("```markdown") && trimmed.ends_with("```") {
-        return trimmed[11..trimmed.len() - 3].trim().into();
+    if let Some(markdown) = trimmed
+        .strip_prefix("```markdown")
+        .and_then(|value| value.strip_suffix("```"))
+    {
+        return markdown.trim().into();
     }
-    if trimmed.starts_with("```") && trimmed.ends_with("```") {
-        return trimmed[3..trimmed.len() - 3].trim().into();
+    if let Some(markdown) = trimmed
+        .strip_prefix("```")
+        .and_then(|value| value.strip_suffix("```"))
+    {
+        return markdown.trim().into();
     }
     trimmed.into()
 }
@@ -1019,6 +1025,8 @@ mod tests {
             clean_story_markdown("```markdown\n# The Harbor\n\nA treatment.\n```"),
             "# The Harbor\n\nA treatment."
         );
+        assert_eq!(clean_story_markdown("```"), "```");
+        assert_eq!(clean_story_markdown("```markdown```"), "");
         assert!(STORY_SYSTEM.contains("complete replacement document"));
         assert!(!STORY_SYSTEM.contains("JSON"));
     }

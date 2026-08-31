@@ -38,6 +38,17 @@ pub(super) struct PreparedStudioTurn {
     pub scenes: Vec<MovieSceneDraft>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SceneHistorySnapshot<'a> {
+    schema_version: u32,
+    scene_revision: u64,
+    scenes: &'a [MovieSceneDraft],
+    /// Render state before this scene revision was applied. This keeps masters and versions for
+    /// removed scenes recoverable without returning them to the active plan.
+    previous_rendered_clips: &'a [RenderedClip],
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct SceneTextDraft {
     pub title: String,
@@ -537,7 +548,7 @@ impl MovieStudio {
         )?;
         workspace.scene_revision = workspace.scene_revision.saturating_add(1);
         workspace.updated_at = now.clone();
-        self.persist_scene_snapshot(&workspace)?;
+        self.persist_scene_snapshot(&workspace, &project.clips)?;
         let mut conversation = self.get_producer_conversation(project_id, conversation_id)?;
         conversation.updated_at = now;
         conversation.messages.push(MovieStudioMessage {
@@ -616,7 +627,6 @@ impl MovieStudio {
             scenes: Vec::new(),
             scene_revision: 0,
         };
-        self.save_producer_workspace(&workspace)?;
         Ok(workspace)
     }
 
@@ -787,7 +797,7 @@ impl MovieStudio {
         workspace.scene_revision = workspace.scene_revision.saturating_add(1);
         workspace.scenes = scenes;
         workspace.updated_at = Utc::now().to_rfc3339();
-        self.persist_scene_snapshot(&workspace)?;
+        self.persist_scene_snapshot(&workspace, &project.clips)?;
         self.save_producer_workspace(&workspace)?;
         self.sync_scene_plan(&project.id, &workspace, app)?;
         self.emit_producer_workspace(&workspace, app);
@@ -1018,6 +1028,7 @@ impl MovieStudio {
     fn persist_scene_snapshot(
         &self,
         workspace: &MovieProducerWorkspace,
+        previous_rendered_clips: &[RenderedClip],
     ) -> Result<(), StudioError> {
         let path = self
             .producer_root(&workspace.project_id)
@@ -1028,7 +1039,15 @@ impl MovieStudio {
                 "scene revision already exists; no producer work was overwritten".into(),
             ));
         }
-        write_recoverable_json(&path, &workspace.scenes)
+        write_recoverable_json(
+            &path,
+            &SceneHistorySnapshot {
+                schema_version: 1,
+                scene_revision: workspace.scene_revision,
+                scenes: &workspace.scenes,
+                previous_rendered_clips,
+            },
+        )
     }
 
     fn sync_scene_plan(
@@ -1585,6 +1604,20 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn reading_a_missing_producer_workspace_does_not_persist_it() {
+        let root = tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let path = studio.producer_workspace_path(&project.id);
+
+        let workspace = studio.get_producer_workspace(&project.id).unwrap();
+
+        assert_eq!(workspace.project_id, project.id);
+        assert!(!path.exists());
+        assert!(!path.with_extension("json.backup").exists());
+    }
+
     #[tokio::test]
     async fn every_story_save_creates_an_immutable_revision() {
         let root = tempdir().unwrap();
@@ -1775,7 +1808,7 @@ mod tests {
 
         scene.revision = 2;
         scene.h3_prompt = "[0s-5s] A slow push toward the lamp. No dialogue.".into();
-        studio
+        let revised = studio
             .save_producer_scenes(
                 SaveMovieScenesRequest {
                     project_id: project.id.clone(),
@@ -1792,6 +1825,30 @@ mod tests {
         assert_eq!(updated.clips[0].versions.len(), 1);
         assert!(updated.clips[0].versions[0]
             .path
+            .ends_with("old-master.mp4"));
+
+        let removed = studio
+            .save_producer_scenes(
+                SaveMovieScenesRequest {
+                    project_id: project.id.clone(),
+                    expected_revision: revised.scene_revision,
+                    scenes: Vec::new(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(studio.get(&project.id).unwrap().clips.is_empty());
+        let history_path = studio
+            .producer_root(&project.id)
+            .join("scene-history")
+            .join(format!("{:010}.json", removed.scene_revision));
+        let history: serde_json::Value =
+            serde_json::from_slice(&fs::read(history_path).unwrap()).unwrap();
+        assert_eq!(history["previousRenderedClips"][0]["id"], scene_id);
+        assert!(history["previousRenderedClips"][0]["versions"][0]["path"]
+            .as_str()
+            .unwrap()
             .ends_with("old-master.mp4"));
     }
 

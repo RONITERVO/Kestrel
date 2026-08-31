@@ -71,11 +71,15 @@ function summary(): MovieSummary {
   return { id: "movie-one", title: "Tomorrow's Weather", status: "awaiting-review", phase: "story-draft", updatedAt: "2026-08-31T10:00:00Z", clipCount: 0, finalPath: "" };
 }
 
-async function openFixture(nextProject = project(), nextWorkspace = workspace()) {
+async function openFixture(
+  nextProject = project(),
+  nextWorkspace = workspace(),
+  nextConversation = conversation,
+) {
   vi.mocked(api.listMovies).mockResolvedValue([summary()]);
   vi.mocked(api.getMovie).mockResolvedValue(nextProject);
   vi.mocked(api.getMovieProducerWorkspace).mockResolvedValue(nextWorkspace);
-  vi.mocked(api.getMovieStudioConversation).mockResolvedValue(conversation);
+  vi.mocked(api.getMovieStudioConversation).mockResolvedValue(nextConversation);
   render(<MovieStudio advancedEnabled models={[model]} selectedModelId={model.id} onError={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", { name: /Tomorrow's Weather/i }));
   await screen.findByText("Producer-owned story, scenes, media choices, and H3 masters");
@@ -126,8 +130,7 @@ describe("producer-owned Movie Studio", () => {
     };
     const nextWorkspace = workspace({ acceptedStoryRevisionId: "story-one", activeSceneConversationId: "conversation-scenes", scenes: [scene], sceneRevision: 1 });
     const nextProject = project({ references: [reference], plan: { title: "Tomorrow's Weather", logline: "", audience: "", creativeDirection: "", continuityBible: [], sourceCredits: [], qualityReview: { attempts: 0, score: 0, verdict: "Producer-owned" }, clips: [{ id: scene.id, title: scene.title, purpose: scene.purpose, durationSeconds: 5, prompt: scene.h3Prompt, continuityIn: scene.continuityIn, continuityOut: scene.continuityOut, transition: "Cut", usePreviousFrame: false, sourceRefs: [], referenceIds: [], firstFrameReferenceId: "", lastFrameReferenceId: "", referenceSelections: [] }] } });
-    vi.mocked(api.getMovieStudioConversation).mockResolvedValue({ ...conversation, id: "conversation-scenes", kind: "scenes" });
-    await openFixture(nextProject, nextWorkspace);
+    await openFixture(nextProject, nextWorkspace, { ...conversation, id: "conversation-scenes", kind: "scenes" });
     expect(screen.getByText(/You choose the model context/i)).toBeInTheDocument();
     const include = screen.getByLabelText(/Include The forecast in scene chat context/i);
     const visual = screen.getByLabelText(/Visual \/ motion/i);
