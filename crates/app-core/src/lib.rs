@@ -984,6 +984,330 @@ pub struct ResearchDraft {
     pub open_questions: Vec<String>,
 }
 
+/// The two intentionally separate local-model conversations in Movie Studio.
+///
+/// Story conversations own prose revisions. Scene conversations own H3 prompt drafting. Neither
+/// conversation receives filesystem tools, rendering authority, or producer reference choices.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieStudioConversationKind {
+    Story,
+    Scenes,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieStudioMessageRole {
+    Producer,
+    Collaborator,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieStoryRevisionOrigin {
+    Producer,
+    Collaborator,
+    Imported,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieStudioConversationMode {
+    Continue,
+    Fresh,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieSceneFrameSourceKind {
+    PreviousScene,
+    ReferenceImage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieSceneFrameSource {
+    pub kind: MovieSceneFrameSourceKind,
+    #[ts(optional)]
+    pub asset_id: Option<String>,
+}
+
+/// Producer-owned reference selection for one scene.
+///
+/// The local model never receives or writes this structure. Kestrel binds these selections to the
+/// native H3 graph and adds the required renderer text immediately before rendering.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieSceneReferenceSelection {
+    pub asset_id: String,
+    pub use_visual: bool,
+    pub use_audio: bool,
+    #[serde(default)]
+    pub guidance: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieSceneDraft {
+    pub id: String,
+    pub revision: u32,
+    pub title: String,
+    pub purpose: String,
+    pub duration_seconds: f32,
+    pub h3_prompt: String,
+    pub continuity_in: String,
+    pub continuity_out: String,
+    pub transition: String,
+    #[ts(optional)]
+    pub first_frame: Option<MovieSceneFrameSource>,
+    #[ts(optional)]
+    pub last_frame: Option<MovieSceneFrameSource>,
+    #[serde(default)]
+    pub references: Vec<MovieSceneReferenceSelection>,
+    pub story_revision_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStoryRevision {
+    pub id: String,
+    pub number: u32,
+    #[ts(optional)]
+    pub parent_revision_id: Option<String>,
+    pub created_at: String,
+    pub origin: MovieStoryRevisionOrigin,
+    pub instruction: String,
+    pub markdown: String,
+    #[ts(optional)]
+    pub accepted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioMessage {
+    pub id: String,
+    pub created_at: String,
+    pub role: MovieStudioMessageRole,
+    pub markdown: String,
+    #[ts(optional)]
+    pub story_revision_id: Option<String>,
+    #[serde(default)]
+    pub selected_scene_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioConversationSummary {
+    pub id: String,
+    pub kind: MovieStudioConversationKind,
+    pub created_at: String,
+    pub updated_at: String,
+    pub story_revision_id: String,
+    pub title: String,
+    pub summary: String,
+    pub message_count: usize,
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioConversation {
+    pub id: String,
+    pub kind: MovieStudioConversationKind,
+    pub created_at: String,
+    pub updated_at: String,
+    pub story_revision_id: String,
+    pub title: String,
+    pub summary: String,
+    pub archived: bool,
+    #[serde(default)]
+    pub messages: Vec<MovieStudioMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieProducerWorkspace {
+    pub schema_version: u32,
+    pub project_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[ts(optional)]
+    pub active_story_revision_id: Option<String>,
+    #[ts(optional)]
+    pub accepted_story_revision_id: Option<String>,
+    #[ts(optional)]
+    pub active_story_conversation_id: Option<String>,
+    #[ts(optional)]
+    pub active_scene_conversation_id: Option<String>,
+    #[serde(default)]
+    pub story_revisions: Vec<MovieStoryRevision>,
+    #[serde(default)]
+    pub conversations: Vec<MovieStudioConversationSummary>,
+    #[serde(default)]
+    pub scenes: Vec<MovieSceneDraft>,
+    pub scene_revision: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioChatRequest {
+    pub request_id: String,
+    pub project_id: String,
+    pub kind: MovieStudioConversationKind,
+    pub mode: MovieStudioConversationMode,
+    #[ts(optional)]
+    pub conversation_id: Option<String>,
+    pub model_id: String,
+    pub instruction: String,
+    #[ts(optional)]
+    pub story_revision_id: Option<String>,
+    #[serde(default)]
+    pub selected_scene_ids: Vec<String>,
+    #[ts(optional)]
+    pub thinking_level: Option<ThinkingLevel>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieStudioChatEvent {
+    pub request_id: String,
+    pub project_id: String,
+    pub conversation_id: String,
+    pub kind: MovieStudioConversationKind,
+    #[ts(
+        type = "\"queued\" | \"started\" | \"token\" | \"reasoning\" | \"complete\" | \"cancelled\" | \"error\" | \"settled\""
+    )]
+    pub event: String,
+    #[ts(optional)]
+    pub content: Option<String>,
+    #[ts(optional)]
+    pub model_name: Option<String>,
+    #[ts(optional)]
+    pub thinking_level: Option<ThinkingLevel>,
+    #[ts(optional)]
+    pub story_revision: Option<MovieStoryRevision>,
+    #[serde(default)]
+    pub changed_scene_ids: Vec<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SaveMovieStoryRevisionRequest {
+    pub project_id: String,
+    #[ts(optional)]
+    pub parent_revision_id: Option<String>,
+    pub markdown: String,
+    #[serde(default)]
+    pub instruction: String,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AcceptMovieStoryRevisionRequest {
+    pub project_id: String,
+    pub revision_id: String,
+    pub conversation_mode: MovieStudioConversationMode,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SaveMovieScenesRequest {
+    pub project_id: String,
+    pub expected_revision: u64,
+    pub scenes: Vec<MovieSceneDraft>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ResetMovieStudioConversationRequest {
+    pub project_id: String,
+    pub conversation_id: String,
+    pub keep_summary: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SummarizeMovieStudioConversationRequest {
+    pub project_id: String,
+    pub conversation_id: String,
+    pub model_id: String,
+    #[ts(optional)]
+    pub thinking_level: Option<ThinkingLevel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieProducerProjectSettings {
+    pub width: u32,
+    pub height: u32,
+    pub clip_seconds: f32,
+    pub steps: u32,
+    pub max_clips: u32,
+    pub seed: u64,
+    pub thinking_budget: u32,
+    pub max_output_tokens: u32,
+    #[ts(optional)]
+    pub context_window: Option<u32>,
+    pub comfy_root: String,
+    pub ref_image_size: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieProducerReferenceRequest {
+    pub asset_id: String,
+    pub description: String,
+    pub include_embedded_audio: bool,
+    pub embedded_audio_description: String,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CreateMovieProducerProjectRequest {
+    pub starting_material: String,
+    pub collaborator_model_id: String,
+    #[ts(optional)]
+    pub thinking_level: Option<ThinkingLevel>,
+    pub settings: MovieProducerProjectSettings,
+    #[serde(default)]
+    pub references: Vec<MovieProducerReferenceRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AttachMovieProducerReferencesRequest {
+    pub project_id: String,
+    pub references: Vec<MovieProducerReferenceRequest>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

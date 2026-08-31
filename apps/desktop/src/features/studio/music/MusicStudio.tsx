@@ -6,10 +6,10 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  cancelLocalSpeech, cancelMoviePromptDraft, cancelMusicGeneration, createMusicLyricsDraft, createMusicProject, draftLyricsFromAudioRange, getMusicLyricsDocument, getMusicProject,
-  exportMusicMidi, getMusicMidiDocument, listMusicProjects, musicMediaUrl, onMoviePromptDraft, onMusicGeneration,
+  cancelLocalSpeech, cancelStudioPromptDraft, cancelMusicGeneration, createMusicLyricsDraft, createMusicProject, draftLyricsFromAudioRange, getMusicLyricsDocument, getMusicProject,
+  exportMusicMidi, getMusicMidiDocument, listMusicProjects, musicMediaUrl, onStudioPromptDraft, onMusicGeneration,
   onLocalSpeechProgress, onMusicProjectUpdated, pickSetupFile, repairMusicLyricsRange, revealMusicProject, saveMusicLyricsDocument, saveMusicProject,
-  revealMusicMidi, saveMusicMidiDocument, startMoviePromptDraft, startMusicGeneration,
+  revealMusicMidi, saveMusicMidiDocument, startStudioPromptDraft, startMusicGeneration,
   transcribeMusicLyrics, transcribeMusicMidi, translateMusicLyrics,
 } from "../../../platform/api";
 import { appendModelThinking, ModelThinkingStream } from "../../control/ModelThinkingStream";
@@ -124,7 +124,7 @@ export function MusicStudio({
     void onLocalSpeechProgress((event) => {
       if (event.jobId === lyricsJobId.current) setLyricsStatus(event.detail);
     }).then((cleanup) => disposed ? cleanup() : cleanups.push(cleanup));
-    void onMoviePromptDraft((event) => {
+    void onStudioPromptDraft((event) => {
       if (event.kind === "error") onError(event.content ?? "The local music collaborator stopped.");
       setCollaboration((current) => {
         if (!current || current.id !== event.requestId) return current;
@@ -313,7 +313,7 @@ export function MusicStudio({
     const effectiveLevel = thinkingLevel !== "default" ? thinkingLevel : effectiveThinkingLevelForModel(controlSettings, modelId);
     setCollaboration({ id, target, mode: draftMode, base, text: "", reasoning: "", status: "queued", modelName: models.find((model) => model.id === modelId)?.name ?? "Local model", thinkingLevel: effectiveLevel });
     try {
-      await startMoviePromptDraft({
+      await startStudioPromptDraft({
         requestId: id,
         modelId,
         target,
@@ -733,7 +733,7 @@ export function MusicStudio({
       {collaboration && <section className="music-collaboration-sheet">
         <header><span><Sparkles /><strong>{collaboration.target === "musicCaption" ? "Description proposal" : "Lyrics proposal"}</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header>
         <div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} outputText={collaboration.text} active={assistantBusy} inferenceActive={assistantBusy && collaboration.status !== "queued"} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>{collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}</strong><pre>{collaboration.text || (assistantBusy ? "The proposal will stream here when the model begins its answer…" : "No proposal was returned.")}</pre></section></div>
-        <footer>{assistantBusy ? <button onClick={() => void cancelMoviePromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt.exactRequest, null, 2)}</pre></details>}</footer>
+        <footer>{assistantBusy ? <button onClick={() => void cancelStudioPromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt.exactRequest, null, 2)}</pre></details>}</footer>
       </section>}
 
       {midiOpen && midiDocument && midiTake && <MusicMidiEditor document={midiDocument} takeLabel={`Take ${project.takes.findIndex((take) => take.id === midiTake.id) + 1}`} currentTime={currentTime} playing={playing} busy={midiBusy} onTogglePlay={togglePlay} onSeek={(seconds) => { if (audioRef.current) { audioRef.current.currentTime = Math.min(midiTake.durationSeconds, Math.max(0, seconds)); setCurrentTime(audioRef.current.currentTime); } }} onSave={saveMidi} onExport={exportMidi} onReveal={revealMidi} onClose={() => { setMidiOpen(false); setMidiDocument(undefined); }} />}

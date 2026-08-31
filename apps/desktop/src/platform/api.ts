@@ -39,27 +39,10 @@ import type {
   SetupLocations,
   SetupProgress,
   SetupSnapshot,
-  MovieClipRenderRequest,
-  MovieClipSuggestion,
-  MovieCopilotEvent,
-  MovieCopilotReceipt,
-  MovieCopilotRequest,
   MovieEdit,
-  MovieFl2vTransitionRequest,
-  MovieFrameAnchor,
-  MovieCapturedFrame,
-  MovieGenerationAgentEvent,
-  MovieGenerationAgentRequest,
-  MovieGenerationProposal,
   MovieImageAssetEvent,
   MovieImageAssetGeneration,
   MovieImageAssetRequest,
-  ModelCompatibility,
-  MoviePlan,
-  MovieModelRoleRequest,
-  MovieRuntimePolicyRequest,
-  MoviePlanningEvent,
-  MoviePlanningSnapshot,
   MovieProject,
   MovieRenderPreviewEvent,
   MovieRenderState,
@@ -68,6 +51,17 @@ import type {
   ModelDownloadRequest,
   ModelDownloadInspection,
   MovieSummary,
+  AttachMovieProducerReferencesRequest,
+  CreateMovieProducerProjectRequest,
+  MovieProducerWorkspace,
+  MovieStudioChatEvent,
+  MovieStudioChatRequest,
+  MovieStudioConversation,
+  AcceptMovieStoryRevisionRequest,
+  ResetMovieStudioConversationRequest,
+  SaveMovieScenesRequest,
+  SaveMovieStoryRevisionRequest,
+  SummarizeMovieStudioConversationRequest,
   MusicGenerationEvent,
   MusicLyricsDocument,
   MusicLyricsSaveResult,
@@ -85,7 +79,6 @@ import type {
   ImageSummary,
   VramCleanupPreview,
   VramCleanupResult,
-  StartMovieRequest,
   PromptDraftEvent,
   PromptDraftRequest,
   ThinkingLevel,
@@ -238,6 +231,75 @@ export async function getMovie(id: string): Promise<MovieProject> {
   return invoke<MovieProject>("get_movie", { id });
 }
 
+export async function createMovieProducerProject(request: CreateMovieProducerProjectRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
+  return invoke<MovieProject>("create_movie_producer_project", { request });
+}
+
+export async function attachMovieProducerReferences(request: AttachMovieProducerReferencesRequest): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Movie references require the desktop application.");
+  return invoke<MovieProject>("attach_movie_producer_references", { request });
+}
+
+export async function getMovieProducerWorkspace(id: string): Promise<MovieProducerWorkspace> {
+  if (!isTauri()) throw new Error("Movie producer workspaces require the desktop application.");
+  return invoke<MovieProducerWorkspace>("get_movie_producer_workspace", { id });
+}
+
+export async function getMovieStudioConversation(projectId: string, conversationId: string): Promise<MovieStudioConversation> {
+  if (!isTauri()) throw new Error("Movie Studio conversations require the desktop application.");
+  return invoke<MovieStudioConversation>("get_movie_studio_conversation", { projectId, conversationId });
+}
+
+export async function saveMovieStoryRevision(request: SaveMovieStoryRevisionRequest): Promise<MovieProducerWorkspace> {
+  if (!isTauri()) throw new Error("Story revisions require the desktop application.");
+  return invoke<MovieProducerWorkspace>("save_movie_story_revision", { request });
+}
+
+export async function acceptMovieStoryRevision(request: AcceptMovieStoryRevisionRequest): Promise<MovieProducerWorkspace> {
+  if (!isTauri()) throw new Error("Story acceptance requires the desktop application.");
+  return invoke<MovieProducerWorkspace>("accept_movie_story_revision", { request });
+}
+
+export async function saveMovieScenes(request: SaveMovieScenesRequest): Promise<MovieProducerWorkspace> {
+  if (!isTauri()) throw new Error("Scene cards require the desktop application.");
+  return invoke<MovieProducerWorkspace>("save_movie_scenes", { request });
+}
+
+export async function renderMovieScenes(id: string): Promise<MovieProject> {
+  if (!isTauri()) throw new Error("Local H3 rendering requires the desktop application.");
+  return invoke<MovieProject>("render_movie_scenes", { id });
+}
+
+export async function resetMovieStudioConversation(request: ResetMovieStudioConversationRequest): Promise<MovieStudioConversation> {
+  if (!isTauri()) throw new Error("Studio conversation controls require the desktop application.");
+  return invoke<MovieStudioConversation>("reset_movie_studio_conversation", { request });
+}
+
+export async function summarizeMovieStudioConversation(request: SummarizeMovieStudioConversationRequest): Promise<MovieStudioConversation> {
+  if (!isTauri()) throw new Error("Studio conversation summaries require the desktop application.");
+  return invoke<MovieStudioConversation>("summarize_movie_studio_conversation", { request });
+}
+
+export async function startMovieStudioChat(request: MovieStudioChatRequest): Promise<string> {
+  if (!isTauri()) throw new Error("Local Studio collaboration requires the desktop application.");
+  return invoke<string>("start_movie_studio_chat", { request });
+}
+
+export async function cancelMovieStudioChat(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_movie_studio_chat", { requestId });
+}
+
+export async function onMovieStudioChat(callback: (event: MovieStudioChatEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieStudioChatEvent>("movie-studio-chat", (event) => callback(event.payload));
+  return () => undefined;
+}
+
+export async function onMovieProducerWorkspace(callback: (workspace: MovieProducerWorkspace) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieProducerWorkspace>("movie-producer-workspace", (event) => callback(event.payload));
+  return () => undefined;
+}
+
 export async function pickMovieReferenceFiles(): Promise<MovieReferenceImport> {
   if (!isTauri()) return { references: [], failures: [] };
   return invoke<MovieReferenceImport>("pick_movie_reference_files");
@@ -265,11 +327,6 @@ export async function onMovieImageAsset(callback: (event: MovieImageAssetEvent) 
 export async function onMovieRenderPreview(callback: (event: MovieRenderPreviewEvent) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MovieRenderPreviewEvent>("movie-render-preview", (event) => callback(event.payload));
   return () => undefined;
-}
-
-export async function startMovie(request: StartMovieRequest): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
-  return invoke<MovieProject>("start_movie", { request });
 }
 
 export async function listMusicProjects(): Promise<MusicSummary[]> {
@@ -497,92 +554,18 @@ export function localSpeechMediaUrl(relativePath: string): string {
   return `http://kestrel-speech.localhost/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
 }
 
-export async function listStudioModelCompatibility(): Promise<ModelCompatibility[]> {
-  if (!isTauri()) return [];
-  return invoke<ModelCompatibility[]>("list_studio_model_compatibility");
-}
-
-export async function qualifyStudioModel(modelId: string): Promise<ModelCompatibility> {
-  if (!isTauri()) throw new Error("Studio model checks require the desktop application.");
-  return invoke<ModelCompatibility>("qualify_studio_model", { modelId });
-}
-
-export async function startManualMovie(request: StartMovieRequest): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
-  return invoke<MovieProject>("start_manual_movie", { request });
-}
-
-export async function resumeMovie(id: string): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
-  return invoke<MovieProject>("resume_movie", { id });
-}
-
-export async function cancelMovie(id: string): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Movie production requires the desktop application.");
-  return invoke<MovieProject>("cancel_movie", { id });
-}
-
-export async function startMoviePromptDraft(request: PromptDraftRequest): Promise<string> {
+export async function startStudioPromptDraft(request: PromptDraftRequest): Promise<string> {
   if (!isTauri()) throw new Error("Local prompt collaboration requires the desktop application.");
-  return invoke<string>("start_movie_prompt_draft", { request });
+  return invoke<string>("start_studio_prompt_draft", { request });
 }
 
-export async function cancelMoviePromptDraft(requestId: string): Promise<void> {
-  if (isTauri()) await invoke("cancel_movie_prompt_draft", { requestId });
+export async function cancelStudioPromptDraft(requestId: string): Promise<void> {
+  if (isTauri()) await invoke("cancel_studio_prompt_draft", { requestId });
 }
 
-export async function onMoviePromptDraft(callback: (event: PromptDraftEvent) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<PromptDraftEvent>("movie-prompt-draft", (event) => callback(event.payload));
+export async function onStudioPromptDraft(callback: (event: PromptDraftEvent) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<PromptDraftEvent>("studio-prompt-draft", (event) => callback(event.payload));
   return () => undefined;
-}
-
-export async function startMovieCopilot(request: MovieCopilotRequest): Promise<string> {
-  if (!isTauri()) throw new Error("The producer copilot requires the desktop application.");
-  return invoke<string>("start_movie_copilot", { request });
-}
-
-export async function cancelMovieCopilot(requestId: string): Promise<void> {
-  if (isTauri()) await invoke("cancel_movie_copilot", { requestId });
-}
-
-export async function onMovieCopilot(callback: (event: MovieCopilotEvent) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<MovieCopilotEvent>("movie-copilot", (event) => callback(event.payload));
-  return () => undefined;
-}
-
-export async function getMovieCopilotReceipt(projectId: string, requestId: string): Promise<MovieCopilotReceipt> {
-  if (!isTauri()) throw new Error("Copilot audit inspection requires the desktop application.");
-  return invoke<MovieCopilotReceipt>("get_movie_copilot_receipt", { projectId, requestId });
-}
-
-export async function getMoviePlanning(id: string): Promise<MoviePlanningSnapshot> {
-  if (!isTauri()) throw new Error("Movie planning requires the desktop application.");
-  return invoke<MoviePlanningSnapshot>("get_movie_planning", { id });
-}
-
-export async function directMoviePlanning(id: string, text: string): Promise<MoviePlanningSnapshot> {
-  if (!isTauri()) throw new Error("Live producer direction requires the desktop application.");
-  return invoke<MoviePlanningSnapshot>("direct_movie_planning", { id, text });
-}
-
-export async function checkpointMoviePlanning(id: string): Promise<MoviePlanningSnapshot> {
-  if (!isTauri()) throw new Error("Planning checkpoints require the desktop application.");
-  return invoke<MoviePlanningSnapshot>("checkpoint_movie_planning", { id });
-}
-
-export async function saveMoviePlan(id: string, plan: MoviePlan): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Producer plan editing requires the desktop application.");
-  return invoke<MovieProject>("save_movie_plan", { id, plan });
-}
-
-export async function reviseMoviePlan(id: string, feedback: string): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Studio plan revision requires the desktop application.");
-  return invoke<MovieProject>("revise_movie_plan", { request: { id, feedback } });
-}
-
-export async function approveMoviePlan(id: string): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Producer approval requires the desktop application.");
-  return invoke<MovieProject>("approve_movie_plan", { id });
 }
 
 export async function getMusicMidiDocument(projectId: string, takeId: string): Promise<MusicMidiSaveResult> {
@@ -604,63 +587,9 @@ export async function revealMusicMidi(projectId: string, takeId: string): Promis
   if (isTauri()) await invoke("reveal_music_midi", { request: { projectId, takeId } });
 }
 
-export async function setMovieModelRoles(id: string, modelRoles: MovieModelRoleRequest): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Studio model-role changes require the desktop application.");
-  return invoke<MovieProject>("set_movie_model_roles", { id, modelRoles });
-}
-
-export async function renderMovieClipVersion(request: MovieClipRenderRequest): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Scene version rendering requires the desktop application.");
-  return invoke<MovieProject>("render_movie_clip_version", { request });
-}
-
-export async function captureMovieFrame(projectId: string, anchor: MovieFrameAnchor): Promise<MovieCapturedFrame> {
-  if (!isTauri()) throw new Error("Frame capture requires the desktop application.");
-  return invoke<MovieCapturedFrame>("capture_movie_frame", { projectId, anchor });
-}
-
 export async function getMovieRenderState(id: string): Promise<MovieRenderState> {
   if (!isTauri()) return { active: false };
   return invoke<MovieRenderState>("get_movie_render_state", { id });
-}
-
-export async function setMovieRuntimePolicy(id: string, policy: MovieRuntimePolicyRequest): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("Studio local-model limits require the desktop application.");
-  return invoke<MovieProject>("set_movie_runtime_policy", { id, policy });
-}
-
-export async function runMovieGenerationAgent(request: MovieGenerationAgentRequest): Promise<MovieGenerationProposal> {
-  if (!isTauri()) throw new Error("Generative Director assistance requires the desktop application.");
-  return invoke<MovieGenerationProposal>("run_movie_generation_agent", { request });
-}
-
-export async function cancelMovieGenerationAgent(requestId: string): Promise<void> {
-  if (isTauri()) await invoke("cancel_movie_generation_agent", { requestId });
-}
-
-export async function getMovieGenerationAgentSnapshot(projectId: string, requestId: string): Promise<unknown> {
-  if (!isTauri()) throw new Error("Generative Director inspection requires the desktop application.");
-  return invoke("get_movie_generation_agent_snapshot", { projectId, requestId });
-}
-
-export async function getLatestMovieGenerationAgentSnapshot(projectId: string): Promise<unknown | null> {
-  if (!isTauri()) return null;
-  return invoke("get_latest_movie_generation_agent_snapshot", { projectId });
-}
-
-export async function isMovieGenerationAgentActive(requestId: string): Promise<boolean> {
-  if (!isTauri()) return false;
-  return invoke<boolean>("is_movie_generation_agent_active", { requestId });
-}
-
-export async function onMovieGenerationAgent(callback: (event: MovieGenerationAgentEvent) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<MovieGenerationAgentEvent>("movie-generation-agent", (event) => callback(event.payload));
-  return () => undefined;
-}
-
-export async function generateMovieFl2vTransition(request: MovieFl2vTransitionRequest): Promise<MovieProject> {
-  if (!isTauri()) throw new Error("H3 transition generation requires the desktop application.");
-  return invoke<MovieProject>("generate_movie_fl2v_transition", { request });
 }
 
 export async function cancelMovieRender(id: string): Promise<void> {
@@ -683,21 +612,6 @@ export async function revealMovie(id: string): Promise<void> {
 
 export async function onMovieProject(callback: (project: MovieProject) => void): Promise<UnlistenFn> {
   if (isTauri()) return listen<MovieProject>("movie-project", (event) => callback(event.payload));
-  return () => undefined;
-}
-
-export async function getMoviePlanExchangePrompt(id: string): Promise<string> {
-  if (!isTauri()) throw new Error("External plan exchange requires the desktop application.");
-  return invoke<string>("get_movie_plan_exchange_prompt", { id });
-}
-
-export async function parseMoviePlanExchange(id: string, text: string): Promise<MoviePlan> {
-  if (!isTauri()) throw new Error("External plan exchange requires the desktop application.");
-  return invoke<MoviePlan>("parse_movie_plan_exchange", { id, text });
-}
-
-export async function onMoviePlanning(callback: (event: MoviePlanningEvent) => void): Promise<UnlistenFn> {
-  if (isTauri()) return listen<MoviePlanningEvent>("movie-planning", (event) => callback(event.payload));
   return () => undefined;
 }
 
