@@ -1,7 +1,7 @@
 {
   "name": "@kestrel/desktop",
   "private": true,
-  "version": "0.17.0",
+  "version": "0.18.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@kestrel/generated-bindings": "0.17.0",
+    "@kestrel/generated-bindings": "0.18.0",
     "@tauri-apps/api": "^2.8.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
