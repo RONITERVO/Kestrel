@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { appendTimelineSource, formatTimecode, moveTimelineItem, splitTimelineItem, timelineItems } from "./MovieTimeline";
+import { createElement } from "react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { MovieTimeline, appendTimelineSource, formatTimecode, moveTimelineItem, splitTimelineItem, timelineItems } from "./MovieTimeline";
 import type { ClipEdit, MovieEdit, MovieProject } from "../../../contracts/index";
 
 const decision = (id: string, clipId: string, order: number): ClipEdit => ({
@@ -20,7 +22,30 @@ const movieEdit = (clips: ClipEdit[]): MovieEdit => ({
   clips, exportTitle: "Test", exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [],
 });
 
+afterEach(cleanup);
+
 describe("movie timeline decisions", () => {
+  it("keeps a two-hour timeline bounded while exposing later masters and track edits", () => {
+    const clips = Array.from({ length: 1440 }, (_, index) => ({ ...project.clips[1], id: `clip-${index}`, title: `Scene ${index + 1}`, index }));
+    const edit = movieEdit(clips.map((clip, index) => decision(`edit-${index}`, clip.id, index)));
+    const longProject: MovieProject = { ...project, title: "Two hours", clips, references: [], settings: {
+      width: 768, height: 448, clipSeconds: 5, steps: 20, maxClips: 4096, seed: 0,
+      temperature: .45, topP: .9, topK: 20, thinkingBudget: 32768,
+      maxOutputTokens: 32768, comfyRoot: "", refImageSize: "match",
+    }, edit };
+    const { container } = render(createElement(MovieTimeline, { project: longProject, value: edit, disabled: false, onChange: vi.fn() }));
+    expect(container.querySelectorAll(".editor-media-row")).toHaveLength(80);
+    expect(container.querySelectorAll(".picture .editor-track-canvas > button").length).toBeLessThan(20);
+    expect(container.querySelectorAll(".editor-ruler > span").length).toBeLessThan(40);
+    fireEvent.click(screen.getByRole("button", { name: "Next masters" }));
+    expect(container.querySelector(".editor-media-row strong")).toHaveTextContent("Scene 81");
+    const tracks = screen.getByLabelText("Timeline tracks");
+    fireEvent.scroll(tracks, { target: { scrollLeft: 720 * 5 * 68 } });
+    expect(container.querySelectorAll(".picture .editor-track-canvas > button").length).toBeLessThan(20);
+    expect(container.querySelector(".picture .editor-track-canvas")).toHaveTextContent("Scene 721");
+    expect(edit.clips).toHaveLength(1440);
+  });
+
   it("calculates edited duration from the selected immutable version", () => {
     const edit = decision("a", "one", 0);
     edit.sourceVersionId = "short";

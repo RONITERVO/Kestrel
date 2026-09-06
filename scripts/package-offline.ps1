@@ -14,16 +14,16 @@ $version = [string]$tauriConfig.version
 $extract_version = {
     param([string]$value)
     if (-not $value) { return $null }
-    $match = [regex]::Match($value.Trim(), "^(?<version>\\d+\\.\\d+\\.\\d+)(?:\\.0)?$")
+    $match = [regex]::Match($value.Trim(), '^(?<version>\d+\.\d+\.\d+)(?:\.0)?$')
     if (-not $match.Success) { return $null }
     return $match.Groups['version'].Value
 }
 
 function Get-KestrelArtifactVersion([string]$TargetPath, [string]$Role) {
     $item = Get-Item -LiteralPath $TargetPath
-    $candidates = @($item.VersionInfo.ProductVersion, $item.VersionInfo.FileVersion) | ForEach-Object -Process {
+    $candidates = @(@($item.VersionInfo.ProductVersion, $item.VersionInfo.FileVersion) | ForEach-Object -Process {
         & $extract_version $_
-    } | Where-Object { $_ }
+    } | Where-Object { $_ })
     $versionFromName = & $extract_version $item.Name
     if ($candidates.Count -gt 0) {
         return $candidates[0]

@@ -17,7 +17,7 @@ use super::{
     MAX_MOVIE_PROMPT_BYTES,
 };
 
-// Prompt collaboration is an explicit producer action and may need a long private reasoning pass
+// Prompt drafting is an explicit producer action and may need a long private reasoning pass
 // before any visible prose arrives. Use its tested ceiling when the configured runtime allows it,
 // while respecting the runtime's explicit output limit.
 const PROMPT_COLLABORATOR_MAX_TOKENS: u32 = 32_768;
@@ -638,7 +638,7 @@ fn emit(
     receipt: Option<PromptDraftReceipt>,
 ) {
     let _ = app.emit(
-        "movie-prompt-draft",
+        "studio-prompt-draft",
         PromptDraftEvent {
             request_id: request_id.into(),
             kind: kind.into(),

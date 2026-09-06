@@ -8,7 +8,7 @@ const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const desktopSource = join(repositoryRoot, "apps", "desktop", "src");
 const contractsPath = join(desktopSource, "contracts", "index.ts");
 const generatedRoot = join(repositoryRoot, "packages", "generated-bindings", "src");
-const legacyContractNamesHash = "a0aa4974c3b8d798edac4cbc7b1549bc1ee30ae49cf8d0f70d83d5799656b2ab";
+const legacyContractNamesHash = "1a80b3edc28d74615834d597108dc9269efb6e6a79a6373bd389711ffe4b0cea";
 
 function files(root, cursor = root) {
   return readdirSync(cursor, { withFileTypes: true }).flatMap((entry) => {

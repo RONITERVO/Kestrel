@@ -20,6 +20,30 @@ import type {
   Finding,
   GpuSnapshot,
   ManagedRuntimeSnapshot,
+  AttachMovieProducerReferencesRequest,
+  CreateMovieProducerProjectRequest,
+  MovieProducerProjectSettings,
+  MovieProducerReferenceRequest,
+  AcceptMovieStoryRevisionRequest,
+  MovieProducerWorkspace,
+  MovieSceneDraft,
+  MovieSceneFrameSource,
+  MovieSceneFrameSourceKind,
+  MovieSceneReferenceSelection,
+  MovieStoryRevision,
+  MovieStoryRevisionOrigin,
+  MovieStudioChatEvent,
+  MovieStudioChatRequest,
+  MovieStudioConversation,
+  MovieStudioConversationKind,
+  MovieStudioConversationMode,
+  MovieStudioConversationSummary,
+  MovieStudioMessage,
+  MovieStudioMessageRole,
+  ResetMovieStudioConversationRequest,
+  SaveMovieScenesRequest,
+  SaveMovieStoryRevisionRequest,
+  SummarizeMovieStudioConversationRequest,
   ModelInfo,
   ModelRuntimeOverride,
   ProfileTransfer,
@@ -68,6 +92,30 @@ export type {
   Finding,
   GpuSnapshot,
   ManagedRuntimeSnapshot,
+  AttachMovieProducerReferencesRequest,
+  CreateMovieProducerProjectRequest,
+  MovieProducerProjectSettings,
+  MovieProducerReferenceRequest,
+  AcceptMovieStoryRevisionRequest,
+  MovieProducerWorkspace,
+  MovieSceneDraft,
+  MovieSceneFrameSource,
+  MovieSceneFrameSourceKind,
+  MovieSceneReferenceSelection,
+  MovieStoryRevision,
+  MovieStoryRevisionOrigin,
+  MovieStudioChatEvent,
+  MovieStudioChatRequest,
+  MovieStudioConversation,
+  MovieStudioConversationKind,
+  MovieStudioConversationMode,
+  MovieStudioConversationSummary,
+  MovieStudioMessage,
+  MovieStudioMessageRole,
+  ResetMovieStudioConversationRequest,
+  SaveMovieScenesRequest,
+  SaveMovieStoryRevisionRequest,
+  SummarizeMovieStudioConversationRequest,
   ModelInfo,
   ModelRuntimeOverride,
   ProfileTransfer,
@@ -281,6 +329,9 @@ export interface PlannedClip {
   usePreviousFrame: boolean;
   sourceRefs: string[];
   referenceIds: string[];
+  firstFrameReferenceId: string;
+  lastFrameReferenceId: string;
+  referenceSelections: MovieSceneReferenceSelection[];
 }
 
 export interface MoviePlan {
@@ -325,88 +376,9 @@ export interface ClipVersion {
   path: string;
 }
 
-export interface ProducerFeedbackRecord {
-  createdAt: string;
-  scope: string;
-  clipId: string;
-  feedback: string;
-}
-
-export interface MovieClipSuggestion {
-  clipId: string;
-  summary: string;
-  checklist: string[];
-  clip: PlannedClip;
-}
-
-export interface MovieClipRenderRequest {
-  id: string;
-  suggestion: MovieClipSuggestion;
-  seed: number;
-}
-
-export interface MovieFrameAnchor {
-  editId: string;
-  timeSeconds: number;
-  label?: string;
-}
-
 export interface MovieRenderState {
   active: boolean;
   preview?: MovieRenderPreviewEvent;
-}
-
-export interface MovieCapturedFrame {
-  anchor: MovieFrameAnchor;
-  path: string;
-}
-
-export type MovieTransitionPosition = "before" | "between" | "after";
-export type MovieTransitionPlacement = "add_to_masters" | "insert_before_right" | "insert_after_left" | "replace_range";
-
-export interface MovieFl2vTransitionRequest {
-  id: string;
-  position: MovieTransitionPosition;
-  firstAnchor?: MovieFrameAnchor;
-  lastAnchor?: MovieFrameAnchor;
-  prompt: string;
-  durationSeconds: number;
-  seed?: number;
-  placement: MovieTransitionPlacement;
-}
-
-export type MovieGenerationTask =
-  | { kind: "shotVersion"; clipId: string; direction: string }
-  | { kind: "transition"; position: MovieTransitionPosition; firstAnchor?: MovieFrameAnchor; lastAnchor?: MovieFrameAnchor; direction: string; durationSeconds: number };
-
-export type MovieGenerationCandidate =
-  | { kind: "shotVersion"; clipId: string; clip: PlannedClip; checklist: string[] }
-  | { kind: "transition"; motionPrompt: string; durationSeconds: number; cameraMotion: string; subjectMotion: string; transitionNotes: string; checklist: string[] };
-
-export interface MovieGenerationAgentRequest {
-  requestId: string;
-  projectId: string;
-  task: MovieGenerationTask;
-  thinkingLevel?: ThinkingLevel;
-  frameAnalystModelId?: string;
-}
-
-export interface MovieGenerationProposal {
-  summary: string;
-  reviewSummary: string;
-  candidate: MovieGenerationCandidate;
-}
-
-export interface MovieGenerationAgentEvent {
-  sequence: number;
-  requestId: string;
-  projectId: string;
-  kind: "turn-start" | "reasoning" | "token" | "activity" | "advanced-token" | "complete" | string;
-  modelRole: "director" | "reviewer" | string;
-  content: string;
-  at: string;
-  completionMarkerSeen?: boolean;
-  finishReason?: string;
 }
 
 export interface ClipEdit {
@@ -444,55 +416,6 @@ export interface MovieEdit {
   markers: TimelineMarker[];
 }
 
-export type MovieCopilotWorkspace = "generate" | "edit" | "deliver";
-
-export interface MovieCopilotTurn {
-  id: string;
-  createdAt: string;
-  workspace: MovieCopilotWorkspace;
-  producerRequest: string;
-  modelId: string;
-  response: string;
-  status: string;
-  proposalSummary: string;
-}
-
-export interface MovieCopilotRequest {
-  requestId: string;
-  projectId: string;
-  modelId: string;
-  workspace: MovieCopilotWorkspace;
-  instruction: string;
-  edit: MovieEdit;
-  thinkingLevel?: ThinkingLevel;
-}
-
-export interface MovieCopilotReceipt {
-  systemPrompt: string;
-  messages: unknown[];
-  toolSchema: unknown;
-  exactRequest: unknown;
-  lintResult: string;
-}
-
-export interface MovieCopilotProposal {
-  summary: string;
-  changes: string[];
-  edit: MovieEdit;
-}
-
-export interface MovieCopilotEvent {
-  requestId: string;
-  projectId: string;
-  kind: "queued" | "started" | "reasoning" | "token" | "advanced-token" | "complete" | "cancelled" | "error" | "settled" | string;
-  content?: string;
-  modelName?: string;
-  thinkingLevel?: ThinkingLevel;
-  receipt?: MovieCopilotReceipt;
-  proposal?: MovieCopilotProposal;
-  at: string;
-}
-
 export interface MovieExport {
   id: string;
   createdAt: string;
@@ -503,32 +426,6 @@ export interface MovieExport {
   sha256: string;
   durationSeconds: number;
   clipCount: number;
-}
-
-export interface MovieModelRoleRequest {
-  directorModelId: string;
-  reviewerModelId: string;
-  directorThinkingLevel?: ThinkingLevel;
-  reviewerThinkingLevel?: ThinkingLevel;
-}
-
-export interface MovieRuntimePolicyRequest {
-  contextWindow: number;
-  maxOutputTokens: number;
-}
-
-export interface MovieModelBinding {
-  modelId: string;
-  modelName: string;
-  compatibilityTier: string;
-  protocolRevision: string;
-  boundAt: string;
-  thinkingLevel?: ThinkingLevel;
-}
-
-export interface MovieModelRoles {
-  director: MovieModelBinding;
-  reviewer: MovieModelBinding;
 }
 
 export interface MovieProject {
@@ -542,7 +439,6 @@ export interface MovieProject {
   createdAt: string;
   updatedAt: string;
   model: string;
-  modelRoles?: MovieModelRoles;
   renderer: string;
   settings: MovieSettings;
   references: MovieReference[];
@@ -555,57 +451,6 @@ export interface MovieProject {
   error: string;
   producerReviewRequired: boolean;
   producerApprovedAt: string;
-  producerFeedback: ProducerFeedbackRecord[];
-  copilotHistory: MovieCopilotTurn[];
-}
-
-export interface ProducerDirection {
-  id: string;
-  createdAt: string;
-  text: string;
-}
-
-export interface MoviePromptDocument {
-  id: string;
-  title: string;
-  category: string;
-  content: string;
-}
-
-export interface MoviePlanningSnapshot {
-  projectId: string;
-  checkpointRequested: boolean;
-  pendingDirections: ProducerDirection[];
-  promptDocuments: MoviePromptDocument[];
-  toolSchema: unknown;
-  lastRequest: unknown;
-  transcript: unknown;
-  currentText: string;
-  reviewerReview: MovieIndependentReview | null;
-}
-
-export interface MovieIndependentReviewIssue {
-  clipNumber: number;
-  category: string;
-  finding: string;
-  requiredFix: string;
-}
-
-export interface MovieIndependentReview {
-  summary: string;
-  issues: MovieIndependentReviewIssue[];
-}
-
-export interface MoviePlanningEvent {
-  projectId: string;
-  sequence: number;
-  kind: "token" | "advanced-token" | "reasoning" | "turn-start" | "turn-complete" | "activity" | "tool-result" | "direction-queued" | "checkpoint-requested" | "checkpoint-saved";
-  stage: "planning" | "thinking" | "producer" | "native-check" | "checkpoint" | "model-text" | "tool-arguments" | "list" | "read" | "read_many" | "write" | "write_batch" | "delete" | "check" | "submit";
-  text: string;
-  modelRole?: "reviewer";
-  session: number;
-  step: number;
-  createdAt: string;
 }
 
 export interface MovieSummary {
@@ -616,14 +461,6 @@ export interface MovieSummary {
   updatedAt: string;
   clipCount: number;
   finalPath: string;
-}
-
-export interface StartMovieRequest {
-  prompt: string;
-  settings: MovieSettings;
-  references: ProducerReferenceRequest[];
-  pauseAfterPlan: boolean;
-  modelRoles: MovieModelRoleRequest;
 }
 
 export interface ImageStyle {
@@ -1069,30 +906,6 @@ export interface SpeechProgress {
   passageId: string;
   stage: "cached" | "generating" | "transcribing" | "aligning" | "complete" | string;
   detail: string;
-}
-
-export interface ModelQualificationReceipt {
-  modelId: string;
-  modelName: string;
-  protocolRevision: string;
-  engineSha256: string;
-  contextWindow: number;
-  maxOutputTokens: number;
-  passed: boolean;
-  checks: string[];
-  detail: string;
-  checkedAt: string;
-}
-
-export interface ModelCompatibility {
-  modelId: string;
-  modelName: string;
-  tier: "release-validated" | "protocol-ready" | "unverified" | "limited-context" | "incompatible" | string;
-  studioReady: boolean;
-  requiresQualification: boolean;
-  detail: string;
-  protocolRevision: string;
-  receipt?: ModelQualificationReceipt;
 }
 
 export type PromptDraftTarget = "story" | "imageAsset" | "imageComposition" | "referenceDescription" | "musicCaption" | "musicLyrics";
