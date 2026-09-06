@@ -478,6 +478,7 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .producer-plan-desk,
 .movie-plan-overview article,
 .producer-scene-card,
+.producer-batch-controls,
 .external-plan-exchange,
 .scene-assistant-body {
   color: #111;
@@ -498,10 +499,10 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .prompt-assist-bar, .prompt-assist-bar.compact { background: #fff; }
 .prompt-assist-bar.active { border-color: #111; box-shadow: 3px 3px 0 var(--tech-orange); }
 .prompt-assist-copy strong, .image-asset-heading strong, .image-generation header strong,
-.movie-reference-heading strong, .movie-reference-meta strong, .producer-scene-card > header b,
+.movie-reference-heading strong, .movie-reference-meta strong, .producer-scene-card > fieldset > header b,
 .scene-suggestion h4, .movie-plan-overview strong { color: #111; font-family: var(--sans); font-weight: 850; }
 .prompt-assist-copy small, .image-asset-heading small, .image-generation header small,
-.movie-reference-heading small, .movie-reference-copy > small, .producer-scene-card > header small,
+.movie-reference-heading small, .movie-reference-copy > small, .producer-scene-card > fieldset > header small,
 .scene-assistant-body > p, .scene-suggestion ul, .movie-plan-overview p, .movie-plan-overview ul { color: #596064; }
 .prompt-assist-bar label, .image-asset-compose > label, .image-asset-controls > label:first-child,
 .image-asset-advanced label, .movie-reference-copy label, .producer-plan-desk label,
@@ -510,6 +511,8 @@ kbd { color: #111; border: 1px solid #111; border-radius: 3px; background: #fff;
 .movie-studio textarea,
 .movie-studio input:not([type="checkbox"]):not([type="range"]):not([type="file"]),
 .movie-studio select { color: #111; border-color: #111; background: #fff; }
+.producer-batch-controls, .producer-launch > label { color: #111; }
+.producer-batch-controls p, .producer-launch > label small { color: #596064; }
 .prompt-draft-receipt summary, .image-generation-receipt summary, .scene-assistant-toggle { color: #8b3305 !important; }
 .prompt-draft-receipt code, .prompt-draft-receipt pre,
 .image-generation-receipt code, .image-generation-receipt pre { color: #f4f8f6; border: 1px solid #111; background: #111416; }

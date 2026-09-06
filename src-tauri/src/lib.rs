@@ -840,7 +840,7 @@ async fn start_movie_studio_chat(
         let result = match managed.control_settings.load() {
             Ok(settings) => {
                 MovieStudioChatJob {
-                    app: app_for_task.clone(),
+                    app: Some(app_for_task.clone()),
                     studio: managed.studio.clone(),
                     runtime: managed.runtime.clone(),
                     models,

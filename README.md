@@ -16,6 +16,22 @@ The application has nine adjacent workspaces:
 
 There is no benchmarking, autonomous model lab, leaderboard, analytics, remote model fallback, or background web research.
 
+## Start a movie with a short idea
+
+Write as much or as little as a text message and choose **Create story sketch**. The local model
+writes the story; revise it by chatting or editing, then accept a revision. Choose **Draft distinct
+scenes** and a count from 1 to 4096. Each clip gets its own written scene, saved as the queue advances.
+Stop whenever needed and choose **Resume scene queue** later; reopening never starts it by itself.
+
+Review the cards and choose your references. Image, motion, and audio references can be combined
+within H3's limits; first/last frame conditioning uses a separate mode. The controls explain these
+choices and keep your existing selections until you change them. New movies use the faster
+768 × 448 setting; higher detail is an explicit choice. Render the approved cards, arrange the
+timeline, and export. Large scene lists and timelines keep only a bounded set of controls visible.
+
+The model supplies creative text. Kestrel handles the queue, saves, validation, and media operations,
+so a long production does not depend on a local agent coordinating tools or returning a whole batch.
+
 ## Maintainer layout
 
 Rust owns application truth; React owns the current view. The desktop lives in `apps/desktop`,
@@ -179,9 +195,9 @@ Live archive and model acceptance:
 cargo test --manifest-path src-tauri\Cargo.toml live_archive_search_and_read -- --ignored --nocapture
 cargo test --manifest-path src-tauri\Cargo.toml live_bonsai_research_creates_a_complete_offline_bundle -- --ignored --nocapture
 cargo test --manifest-path src-tauri\Cargo.toml live_solo_expedition_uses_shared_lanes_and_high_output_budget -- --ignored --nocapture
-cargo test --manifest-path src-tauri\Cargo.toml live_bonsai_movie_plan_clears_the_production_prompt_gate -- --ignored --nocapture
-cargo test --manifest-path src-tauri\Cargo.toml live_one_prompt_movie_produces_a_native_audio_first_cut -- --ignored --nocapture
-cargo test --manifest-path src-tauri\Cargo.toml live_one_prompt_movie_uses_native_picture_and_audio_references -- --ignored --nocapture
+cargo test --manifest-path src-tauri\Cargo.toml live_long_timeline_export_joins_groups_and_preserves_sources -- --ignored --nocapture
+# Set the explicit acceptance library/model variables described in RELEASING.md first:
+cargo test --manifest-path src-tauri\Cargo.toml live_local_producer_story_and_distinct_scene_queue -- --ignored --nocapture
 cargo test --manifest-path src-tauri\Cargo.toml live_ideogram_graph_preserves_a_full_resolution_png -- --ignored --nocapture
 ```
 

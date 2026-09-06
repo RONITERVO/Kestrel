@@ -1,6 +1,10 @@
 # Studio maintainer guide
 
-Kestrel Studio is producer-owned. Rust stores the creative record and performs every durable or
+Kestrel Studio is producer-owned. A producer can start with a text-message-length idea: the local
+model expands the creative writing, while the producer decides where references belong. Native
+code handles long queues because small local models should not be trusted to schedule a batch.
+Every clip in a queue receives a distinct written scene, rather than a repeated prompt variation.
+Rust stores the creative record and performs every durable or
 media-affecting operation; React renders an editable view of that record. Local-model prose is an
 unapplied suggestion until a typed native boundary saves it.
 
@@ -16,7 +20,8 @@ unapplied suggestion until a typed native boundary saves it.
   producer-owned scene IDs. It has no filesystem, renderer, reference, frame, or audio authority.
 - The producer chooses scene context explicitly. The accepted story is always included; only checked
   scene cards are sent in full. Reference assets, frame choices, and native H3 tags never enter scene
-  model context.
+  model context. Starting a distinct-scene queue also authorizes the four latest scenes written by
+  that queue as continuity context, as explained beside the queue controls.
 - `project.json`, producer workspaces, every story revision, scene-history snapshot, conversation,
   source object, master, edit decision, and export receipt are durable user data. Interrupted work is
   surfaced and partial collaborator text is preserved. It is never silently resumed or discarded.
@@ -32,6 +37,9 @@ unapplied suggestion until a typed native boundary saves it.
 | `studio.rs` | Movie project compatibility, reference store, H3 graphs, masters, edit/export facade | Conversation policy or React view state |
 | `producer.rs` | Recoverable producer workspace, immutable story revisions, scene cards/history, conversations, project-plan projection | Model HTTP or renderer execution |
 | `producer_chat.rs` | One-shot story/scene/summarization requests, strict scene-operation parsing, streaming events | Reference selection, frame selection, rendering, or arbitrary tools |
+| `producer/batch.rs` | Native queue validation, durable checkpoints and append receipts | Inference or automatic resume |
+| `producer_chat/batch.rs` | Fixed sequential one-scene requests using the shared inference gate | Model-selected scheduling, media selection or rendering |
+| `export.rs` | Bounded FFmpeg groups and manifest assembly | Creative decisions or source mutation |
 | `prompt_draft.rs` | Tool-free image/reference/music drafting from producer context | Applying proposals, movie-scene mutation, or rendering |
 | `model_stream.rs` | OpenAI-compatible SSE framing and explicit reasoning-channel extraction | Feature prompts, schemas, or persistence |
 | `image_assets.rs` | Durable H3 pseudo-image generations and exact graph/receipt provenance | Story or scene authority |
@@ -97,6 +105,9 @@ explicit. Summarization is a separate one-shot local inference and saves the res
 
 ## H3 rendering
 
+New movies default to 768 × 448. The producer can explicitly choose 1344 × 768 for more detail;
+runtime is hardware-dependent, so the UI does not promise a fixed number of minutes.
+
 Producer scene cards are the source of renderer direction. Native code appends exact audio and
 reference requirements immediately before graph construction. First/last frame conditioning and
 native reference conditioning use their distinct H3 graph paths and cannot be combined when H3 does
@@ -108,6 +119,28 @@ Never let UI state decide whether an old render still matches a scene.
 
 Preview frames are approximate process-local state. Starting a render clears the previous estimate;
 the preserved full-VAE master and receipts remain durable truth.
+
+## Long productions
+
+The producer can request 1–4096 distinct scenes in a native queue. Each inference requests exactly
+one new scene with a fixed duration and no media authority. A malformed or repeated prompt stops
+at that checkpoint without skipping a scene. Each completed scene and its queue progress are saved
+together in the recoverable workspace. Reopening never resumes inference. Resume preserves the
+original direction and accepted story and rejects changes made after the checkpoint.
+Reference-only changes during a pause retain the checkpoint because media never enters model
+context. Changing scene text, order, or the accepted story requires a new queue.
+
+Each append has an immutable receipt in `producer/scene-history/`; batch drafting does not save
+thousands of full historical copies of a long film. Starting another batch archives the previous
+queue record in `producer/draft-batches/`. Transcripts rotate every 16 scenes and remain on disk.
+The UI paginates scene cards, masters, and the timeline index. Timeline tracks and ruler ticks render
+only around the visible scroll window. Scene saves preserve repeated items and custom export titles.
+Ordinary scene-history snapshots also preserve the prior edit so scene removal remains recoverable.
+
+Exports support up to 4096 timeline items. Native code encodes groups of at most 16 inputs with
+file-based filter graphs, then joins them with a local concat manifest. Video is encoded once;
+FLAC intermediate audio avoids per-group AAC delay. Final AAC and optional loudness processing run
+over the whole cut. Only owned scratch files are removed; source masters and exports are immutable.
 
 ## Model transport
 

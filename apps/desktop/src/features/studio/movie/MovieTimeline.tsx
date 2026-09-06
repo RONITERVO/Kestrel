@@ -12,6 +12,7 @@ import {
 } from "../../../contracts/index";
 
 const FPS = 24;
+const MEDIA_PAGE_SIZE = 80;
 
 export interface TimelineItem {
   edit: ClipEdit;
@@ -28,10 +29,11 @@ type InspectorTab = "video" | "audio" | "info";
 type ViewerMode = "program" | "source";
 
 export function timelineItems(project: MovieProject, edit: MovieEdit): TimelineItem[] {
+  const clipsById = new Map(project.clips.map((clip) => [clip.id, clip]));
   return [...edit.clips]
     .sort((left, right) => left.order - right.order)
     .flatMap((decision) => {
-      const clip = project.clips.find((candidate) => candidate.id === decision.clipId);
+      const clip = clipsById.get(decision.clipId);
       if (!clip) return [];
       const version = decision.sourceVersionId
         ? clip.versions.find((candidate) => candidate.id === decision.sourceVersionId)
@@ -75,6 +77,7 @@ export function splitTimelineItem(
   sourceTime: number,
   nextId: string,
 ): MovieEdit {
+  if (edit.clips.length >= 4096) return edit;
   const items = timelineItems(project, edit);
   const selected = items.find((item) => item.edit.id === itemId);
   if (!selected) return edit;
@@ -146,6 +149,9 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
   const [showInspector, setShowInspector] = useState(true);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [search, setSearch] = useState("");
+  const [mediaPage, setMediaPage] = useState(0);
+  const [trackViewport, setTrackViewport] = useState({ left: 0, width: 1200 });
+  const trackScroll = useRef<HTMLDivElement>(null);
   const [sourceClipId, setSourceClipId] = useState(project.clips[0]?.id ?? "");
   const [sourceVersionId, setSourceVersionId] = useState("");
   const [sourceTime, setSourceTime] = useState(0);
@@ -171,10 +177,30 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     + Math.max(0, previewTime - preview.edit.trimStart) / preview.edit.speed : 0;
   const trackWidth = Math.max(900, totalDuration * zoom);
   const timelineScale = totalDuration > 0 ? trackWidth / totalDuration : zoom;
+  const visibleStart = Math.max(0, trackViewport.left - 700);
+  const visibleEnd = trackViewport.left + trackViewport.width + 600;
+  let trackCursor = 0;
+  const visibleTrackItems = enabledItems.flatMap((item, index) => {
+    const left = trackCursor;
+    const width = item.outputDuration * timelineScale;
+    trackCursor += width;
+    return left + width >= visibleStart && left <= visibleEnd ? [{ item, index, left, width: Math.max(1, width - 2) }] : [];
+  });
   const dirty = JSON.stringify(orderedMovieEdit(normalizedValue)) !== JSON.stringify(orderedMovieEdit({ ...project.edit, markers: project.edit.markers ?? [] }));
   const query = search.trim().toLocaleLowerCase();
   const filteredClips = project.clips.filter((clip) => !query || `${clip.title} ${clip.prompt}`.toLocaleLowerCase().includes(query));
   const filteredReferences = project.references.filter((reference) => !query || `${reference.name} ${reference.description}`.toLocaleLowerCase().includes(query));
+  const lastMediaPage = Math.max(0, Math.ceil(filteredClips.length / MEDIA_PAGE_SIZE) - 1);
+  const visibleMediaPage = Math.min(mediaPage, lastMediaPage);
+
+  useEffect(() => setMediaPage(0), [query]);
+  useEffect(() => {
+    const element = trackScroll.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setTrackViewport({ left: element.scrollLeft, width: element.clientWidth || 1200 }));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (selectedId && items.some((item) => item.edit.id === selectedId)) return;
@@ -299,7 +325,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     splitAt(selected, currentSourceTime);
   };
   const duplicate = () => {
-    if (!selected) return;
+    if (!selected || items.length >= 4096) return;
     const clips = [...normalizedValue.clips].sort((left, right) => left.order - right.order);
     const index = clips.findIndex((item) => item.id === selected.edit.id);
     const copy = { ...clips[index], id: editId(), label: clips[index].label ? `${clips[index].label} copy` : "" };
@@ -314,7 +340,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     setSelectedId(items[index + 1]?.edit.id ?? items[index - 1]?.edit.id ?? "");
   };
   const appendClip = (clip: RenderedClip) => {
-    if (disabled || normalizedValue.clips.length >= 512 || !clip.path) return;
+    if (disabled || normalizedValue.clips.length >= 4096 || !clip.path) return;
     const id = editId();
     commit(appendTimelineSource(normalizedValue, clip.id, id));
     setSelectedId(id);
@@ -411,9 +437,9 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
         <div className="editor-panel-tabs"><button className={browserTab === "masters" ? "active" : ""} onClick={() => setBrowserTab("masters")}><Film /> Masters</button><button className={browserTab === "references" ? "active" : ""} onClick={() => setBrowserTab("references")}><Images /> References</button><button className={browserTab === "index" ? "active" : ""} onClick={() => setBrowserTab("index")}><List /> Index</button></div>
         <label className="editor-search"><Search /><input aria-label="Search editor media" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={browserTab === "index" ? "Clips, markers, notes" : "Search this production"} />{search && <button aria-label="Clear media search" onClick={() => setSearch("")}><X /></button>}</label>
         <div className="editor-browser-body">
-          {browserTab === "masters" && <>{filteredClips.map((clip) => <button key={clip.id} className={`editor-media-row ${sourceClip?.id === clip.id && !sourceReference ? "selected" : ""}`} onClick={() => { setSourceReferenceId(""); setSourceClipId(clip.id); setSourceVersionId(""); setViewerMode("source"); setSourceTime(0); }} onDoubleClick={() => appendClip(clip)}>
+          {browserTab === "masters" && <>{filteredClips.slice(visibleMediaPage * MEDIA_PAGE_SIZE, (visibleMediaPage + 1) * MEDIA_PAGE_SIZE).map((clip) => <button key={clip.id} className={`editor-media-row ${sourceClip?.id === clip.id && !sourceReference ? "selected" : ""}`} onClick={() => { setSourceReferenceId(""); setSourceClipId(clip.id); setSourceVersionId(""); setViewerMode("source"); setSourceTime(0); }} onDoubleClick={() => appendClip(clip)}>
             <span className="editor-media-thumb video"><Video /><b>{clip.index + 1}</b></span><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {String(clip.seed).length > 8 ? `${String(clip.seed).slice(0, 8)}…` : clip.seed}</small><em>{clip.versions.length ? `${clip.versions.length} preserved versions` : "Active master"}</em></span><i className={normalizedValue.clips.some((item) => item.clipId === clip.id) ? "used" : ""} />
-          </button>)}{!filteredClips.length && <EditorEmpty text="No preserved masters match this search." />}</>}
+          </button>)}{lastMediaPage > 0 && <nav aria-label="Master pages"><button disabled={visibleMediaPage === 0} onClick={() => setMediaPage(visibleMediaPage - 1)}>Previous masters</button><span>{visibleMediaPage + 1} / {lastMediaPage + 1}</span><button disabled={visibleMediaPage === lastMediaPage} onClick={() => setMediaPage(visibleMediaPage + 1)}>Next masters</button></nav>}{!filteredClips.length && <EditorEmpty text="No preserved masters match this search." />}</>}
           {browserTab === "references" && <>{filteredReferences.map((reference) => <button key={reference.assetId} className={`editor-media-row ${sourceReference?.assetId === reference.assetId ? "selected" : ""}`} onClick={() => { setSourceReferenceId(reference.assetId); setViewerMode("source"); setSourceTime(0); }}>
             <ReferenceThumb reference={reference} /><span><strong>{reference.name}</strong><small>{reference.kind} · {reference.durationSeconds ? `${reference.durationSeconds.toFixed(1)}s` : `${reference.width}×${reference.height}`}</small><em>{reference.description || "Producer reference"}</em></span>
           </button>)}{!filteredReferences.length && <EditorEmpty text="No producer references match this search." />}</>}
@@ -485,19 +511,19 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
           <button className={tool === "blade" ? "active" : ""} title="Blade tool · B" onClick={() => setTool("blade")}><Scissors /><kbd>B</kbd></button>
           <i />
           <button aria-label="Split at playhead" title="Split at playhead" disabled={!selected} onClick={split}><Scissors /></button>
-          <button aria-label="Duplicate timeline item" title="Duplicate" disabled={!selected || items.length >= 512} onClick={duplicate}><Copy /></button>
+          <button aria-label="Duplicate timeline item" title="Duplicate" disabled={!selected || items.length >= 4096} onClick={duplicate}><Copy /></button>
           <button aria-label="Remove timeline item" title="Remove decision" disabled={!selected} onClick={remove}><Trash2 /></button>
         </div>
         <div><button className={snapping ? "active" : ""} title="Snapping · N" onClick={() => setSnapping((active) => !active)}><Magnet /><kbd>N</kbd></button><button className={skimming ? "active" : ""} title="Skimming · S" onClick={() => setSkimming((active) => !active)}><Eye /><kbd>S</kbd></button><button title="Keyboard shortcuts · ?" onClick={() => setShowShortcuts((visible) => !visible)}><CircleHelp /></button><span>{items.length} edits · {formatTimecode(totalDuration)}</span><ZoomIn /><input aria-label="Timeline zoom" type="range" min={28} max={180} value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><button className="zoom-fit" onClick={() => setZoom(Math.max(28, Math.min(180, 900 / Math.max(1, totalDuration))))}>Fit</button></div>
       </div>
       {markerComposer && <div className="editor-marker-composer"><Flag /><select aria-label="Marker type" value={markerKind} onChange={(event) => setMarkerKind(event.target.value as TimelineMarker["kind"])}><option value="marker">Marker</option><option value="todo">To-do</option><option value="chapter">Chapter</option></select><input autoFocus maxLength={120} value={markerLabel} onChange={(event) => setMarkerLabel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addMarker(markerLabel, markerKind); if (event.key === "Escape") setMarkerComposer(false); }} placeholder={`Note at ${formatTimecode(elapsed)}`} /><button onClick={() => addMarker(markerLabel, markerKind)}>Add at playhead</button><button aria-label="Close marker composer" onClick={() => setMarkerComposer(false)}><X /></button></div>}
       {showShortcuts && <div className="editor-shortcut-map"><span><kbd>Space</kbd> Play / pause</span><span><kbd>J K L</kbd> Shuttle</span><span><kbd>← →</kbd> One frame</span><span><kbd>↑ ↓</kbd> Previous / next edit</span><span><kbd>I O</kbd> Mark in / out</span><span><kbd>M</kbd> Marker</span><span><kbd>A T B</kbd> Select / trim / blade</span><span><kbd>N S</kbd> Snapping / skimming</span><span><kbd>⌘Z</kbd> Undo</span><span><kbd>⌘S</kbd> Save</span></div>}
-      <div className="editor-timeline-scroll">
-        <div className="editor-ruler-row"><div className="editor-track-label"><strong>INDEX</strong><small>{normalizedValue.markers.length} markers</small></div><div className="editor-ruler" style={{ width: trackWidth }} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); seekGlobal(((event.clientX - rect.left) / rect.width) * totalDuration); }}>{rulerLabels(totalDuration, trackWidth).map((tick) => <span key={tick.time} style={{ left: tick.left }}>{formatTimecode(tick.time)}</span>)}{normalizedValue.markers.filter((marker) => marker.timeSeconds <= totalDuration).map((marker) => <button key={marker.id} className={marker.kind} title={`${formatTimecode(marker.timeSeconds)} · ${marker.label}`} style={{ left: marker.timeSeconds * timelineScale }} onClick={(event) => { event.stopPropagation(); seekGlobal(marker.timeSeconds); }}><Flag /></button>)}<i className="editor-playhead" style={{ left: Math.min(trackWidth, elapsed * timelineScale) }} /></div></div>
-        <div className="editor-track-row picture"><div className="editor-track-label"><strong>V1</strong><small>Primary Storyline</small></div><div className="editor-track-canvas" style={{ width: trackWidth }}>{enabledItems.map((item, index) => <button key={item.edit.id} draggable={!disabled && tool === "select"} onDragStart={() => setDraggingId(item.edit.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggingId) commit(moveTimelineItem(normalizedValue, draggingId, item.edit.id)); setDraggingId(""); }} onMouseMove={(event) => handleSkim(event, item)} onMouseLeave={() => setSkimmer(undefined)} onClick={(event) => handleTimelinePointer(event, item)} className={`${selected?.edit.id === item.edit.id ? "selected" : ""} tool-${tool}`} style={{ width: Math.max(24, item.outputDuration * timelineScale) }}>
+      <div className="editor-timeline-scroll" ref={trackScroll} aria-label="Timeline tracks" onScroll={(event) => setTrackViewport({ left: event.currentTarget.scrollLeft, width: event.currentTarget.clientWidth || 1200 })}>
+        <div className="editor-ruler-row"><div className="editor-track-label"><strong>INDEX</strong><small>{normalizedValue.markers.length} markers</small></div><div className="editor-ruler" style={{ width: trackWidth }} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); seekGlobal(((event.clientX - rect.left) / rect.width) * totalDuration); }}>{rulerLabels(totalDuration, trackWidth, visibleStart, visibleEnd).map((tick) => <span key={tick.time} style={{ left: tick.left }}>{formatTimecode(tick.time)}</span>)}{normalizedValue.markers.filter((marker) => marker.timeSeconds <= totalDuration).map((marker) => <button key={marker.id} className={marker.kind} title={`${formatTimecode(marker.timeSeconds)} · ${marker.label}`} style={{ left: marker.timeSeconds * timelineScale }} onClick={(event) => { event.stopPropagation(); seekGlobal(marker.timeSeconds); }}><Flag /></button>)}<i className="editor-playhead" style={{ left: Math.min(trackWidth, elapsed * timelineScale) }} /></div></div>
+        <div className="editor-track-row picture"><div className="editor-track-label"><strong>V1</strong><small>Primary Storyline</small></div><div className="editor-track-canvas" style={{ width: trackWidth }}>{visibleTrackItems.map(({ item, index, left, width }) => <button key={item.edit.id} draggable={!disabled && tool === "select"} onDragStart={() => setDraggingId(item.edit.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggingId) commit(moveTimelineItem(normalizedValue, draggingId, item.edit.id)); setDraggingId(""); }} onMouseMove={(event) => handleSkim(event, item)} onMouseLeave={() => setSkimmer(undefined)} onClick={(event) => handleTimelinePointer(event, item)} className={`${selected?.edit.id === item.edit.id ? "selected" : ""} tool-${tool}`} style={{ position: "absolute", left, width, minWidth: 0, top: 7, bottom: 7 }}>
           <i className="clip-color" /><span className="clip-order">{index + 1}</span><strong>{item.edit.label || item.clip.title}</strong><small>{formatTimecode(item.outputDuration)} · {item.edit.speed}×</small><em>{item.versionLabel}</em>{item.edit.notes && <Flag className="clip-note" />}{(item.edit.fadeIn > 0 || item.edit.fadeOut > 0) && <span className="clip-fade-in" />}{(item.edit.fadeIn > 0 || item.edit.fadeOut > 0) && <span className="clip-fade-out" />}{tool === "trim" && <><i className="trim-handle start" /><i className="trim-handle end" /></>}{skimmer?.id === item.edit.id && <i className="timeline-skimmer" style={{ left: `${skimmer.fraction * 100}%` }} />}
         </button>)}<i className="editor-playhead" style={{ left: Math.min(trackWidth, elapsed * timelineScale) }} /></div></div>
-        <div className="editor-track-row audio"><div className="editor-track-label"><strong>A1</strong><small>Native Mix</small></div><div className="editor-track-canvas" style={{ width: trackWidth }}>{enabledItems.map((item) => <div key={item.edit.id} className={selected?.edit.id === item.edit.id ? "selected" : ""} style={{ width: Math.max(24, item.outputDuration * timelineScale) }}><Volume2 /><span className="audio-waveform" style={{ opacity: Math.min(1, .22 + item.edit.audioGain / 2) }} /><small>{item.edit.audioGain === 0 ? "Muted" : `${item.edit.audioGain.toFixed(2)}×`}</small></div>)}<i className="editor-playhead" style={{ left: Math.min(trackWidth, elapsed * timelineScale) }} /></div></div>
+        <div className="editor-track-row audio"><div className="editor-track-label"><strong>A1</strong><small>Native Mix</small></div><div className="editor-track-canvas" style={{ width: trackWidth }}>{visibleTrackItems.map(({ item, left, width }) => <div key={item.edit.id} className={selected?.edit.id === item.edit.id ? "selected" : ""} style={{ position: "absolute", left, width, minWidth: 0, top: 7, bottom: 7 }}><Volume2 /><span className="audio-waveform" style={{ opacity: Math.min(1, .22 + item.edit.audioGain / 2) }} /><small>{item.edit.audioGain === 0 ? "Muted" : `${item.edit.audioGain.toFixed(2)}×`}</small></div>)}<i className="editor-playhead" style={{ left: Math.min(trackWidth, elapsed * timelineScale) }} /></div></div>
       </div>
       <footer className="editor-timeline-footer"><span><Magnet /> Magnetic storyline closes gaps automatically</span><span><Volume2 /> H3 native mix remains frame-locked</span><span><Archive /> Every source master is immutable</span></footer>
     </section>
@@ -520,8 +546,17 @@ function TimelineIndex({ items, markers, query, selectedId, onSelect, onSeek, on
 }) {
   const visibleItems = items.filter((item) => !query || `${item.edit.label} ${item.clip.title} ${item.edit.notes}`.toLocaleLowerCase().includes(query));
   const visibleMarkers = markers.filter((marker) => !query || marker.label.toLocaleLowerCase().includes(query));
+  const [page, setPage] = useState(0);
+  useEffect(() => setPage(0), [query]);
+  const lastPage = Math.max(0, Math.ceil(visibleItems.length / MEDIA_PAGE_SIZE) - 1);
+  const visiblePage = Math.min(page, lastPage);
   let cursor = 0;
-  return <div className="editor-index"><h4>Storyline</h4>{visibleItems.map((item, index) => { const start = cursor; cursor += item.edit.enabled ? item.outputDuration : 0; return <button key={item.edit.id} className={selectedId === item.edit.id ? "selected" : ""} onClick={() => onSelect(item)}><b>{index + 1}</b><span><strong>{item.edit.label || item.clip.title}</strong><small>{formatTimecode(start)} · {formatTimecode(item.outputDuration)}</small>{item.edit.notes && <em>{item.edit.notes}</em>}</span></button>; })}<h4>Markers & to-dos</h4>{visibleMarkers.map((marker) => <article key={marker.id} className={`${marker.kind} ${marker.completed ? "complete" : ""}`}><button aria-label={`Go to ${marker.label}`} onClick={() => onSeek(marker.timeSeconds)}><Flag /></button><span><input aria-label={`Marker label at ${formatTimecode(marker.timeSeconds)}`} maxLength={120} value={marker.label} onChange={(event) => onPatchMarker(marker.id, { label: event.target.value })} /><small>{formatTimecode(marker.timeSeconds)} · {marker.kind}</small></span>{marker.kind === "todo" && <button aria-label={`Mark ${marker.label} complete`} onClick={() => onPatchMarker(marker.id, { completed: !marker.completed })}><Check /></button>}<button aria-label={`Delete ${marker.label}`} onClick={() => onDeleteMarker(marker.id)}><Trash2 /></button></article>)}{!visibleItems.length && !visibleMarkers.length && <EditorEmpty text="No timeline items match this search." />}</div>;
+  const starts = new Map(items.map((item) => {
+    const start = cursor;
+    if (item.edit.enabled && item.sourcePath) cursor += item.outputDuration;
+    return [item.edit.id, start];
+  }));
+  return <div className="editor-index"><h4>Storyline</h4>{lastPage > 0 && <nav aria-label="Index pages"><button disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>Previous edits</button><span>{visiblePage + 1} / {lastPage + 1}</span><button disabled={visiblePage === lastPage} onClick={() => setPage(visiblePage + 1)}>Next edits</button></nav>}{visibleItems.slice(visiblePage * MEDIA_PAGE_SIZE, (visiblePage + 1) * MEDIA_PAGE_SIZE).map((item) => { const start = starts.get(item.edit.id) ?? 0; const index = item.edit.order; return <button key={item.edit.id} className={selectedId === item.edit.id ? "selected" : ""} onClick={() => onSelect(item)}><b>{index + 1}</b><span><strong>{item.edit.label || item.clip.title}</strong><small>{formatTimecode(start)} · {formatTimecode(item.outputDuration)}</small>{item.edit.notes && <em>{item.edit.notes}</em>}</span></button>; })}<h4>Markers & to-dos</h4>{visibleMarkers.map((marker) => <article key={marker.id} className={`${marker.kind} ${marker.completed ? "complete" : ""}`}><button aria-label={`Go to ${marker.label}`} onClick={() => onSeek(marker.timeSeconds)}><Flag /></button><span><input aria-label={`Marker label at ${formatTimecode(marker.timeSeconds)}`} maxLength={120} value={marker.label} onChange={(event) => onPatchMarker(marker.id, { label: event.target.value })} /><small>{formatTimecode(marker.timeSeconds)} · {marker.kind}</small></span>{marker.kind === "todo" && <button aria-label={`Mark ${marker.label} complete`} onClick={() => onPatchMarker(marker.id, { completed: !marker.completed })}><Check /></button>}<button aria-label={`Delete ${marker.label}`} onClick={() => onDeleteMarker(marker.id)}><Trash2 /></button></article>)}{!visibleItems.length && !visibleMarkers.length && <EditorEmpty text="No timeline items match this search." />}</div>;
 }
 
 function SourceViewer({ reference, path, time, duration, videoRef, playing, onPlaying, onTime }: {
@@ -558,14 +593,14 @@ function TimelineNumber({ label, value, min, max, step, suffix, onChange }: {
   return <label>{label}<span className="timeline-number"><input type="number" value={Number.isFinite(value) ? Number(value.toFixed(3)) : 0} min={min} max={max} step={step} onChange={(event) => { if (event.target.value === "") return; const parsed = Number(event.target.value); if (Number.isFinite(parsed)) onChange(Math.min(max, Math.max(min, parsed))); }} /><b>{suffix}</b></span></label>;
 }
 
-function rulerLabels(duration: number, width: number): Array<{ time: number; left: number }> {
+function rulerLabels(duration: number, width: number, visibleStart = 0, visibleEnd = width): Array<{ time: number; left: number }> {
   if (duration <= 0) return [{ time: 0, left: 0 }];
   const targetTicks = Math.max(2, Math.floor(width / 150));
   const rough = duration / targetTicks;
   const steps = [.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
   const step = steps.find((candidate) => candidate >= rough) ?? 600;
   const ticks = [];
-  for (let time = 0; time <= duration + .001; time += step) ticks.push({ time, left: (time / duration) * width });
+  for (let time = Math.max(0, Math.floor(visibleStart / width * duration / step) * step); time <= Math.min(duration, visibleEnd / width * duration + step) + .001; time += step) ticks.push({ time, left: (time / duration) * width });
   return ticks;
 }
 

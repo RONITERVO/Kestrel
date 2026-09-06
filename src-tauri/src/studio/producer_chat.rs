@@ -30,6 +30,8 @@ use super::{
     MovieStudio,
 };
 
+mod batch;
+
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_CONTEXT_BYTES: usize = 768 * 1024;
 const MAX_CHAT_OUTPUT_TOKENS: u32 = 32_768;
@@ -46,10 +48,12 @@ The producer chooses exactly which existing scene cards are supplied in full. Yo
 
 Write scene prompts that small local workflows can render reliably. Each H3 prompt should establish who/what/where, visual medium, camera/framing/movement, lighting and texture, exact visible action, local timed beats beginning at 0 seconds and ending at durationSeconds, sound, exact quoted speech when any, explicit no-dialogue direction otherwise, useful exclusions, and the visible final-frame state. Do not use film-global timecodes. Avoid vague instructions such as cinematic, beautiful, or dramatic unless followed by concrete visible and audible direction.
 
+Keep each short clip focused on one readable action with two or three timed beats. Choose one consistent camera instruction; a locked camera cannot also push in. Keep props, hands, and movement physically plausible. Unless the producer explicitly requires readable text, communicate story information through visible images, actions, and reactions instead of asking the renderer to reproduce paragraphs on signs or paper. Keep descriptions concise enough to use directly as a video prompt while preserving the accepted story's meaning and visual continuity.
+
 Return exactly one JSON object matching the supplied schema. replyMarkdown is the concise, friendly response shown in chat. operations contains only the changes needed for the producer's request. A no-change answer uses an empty operations array."#;
 
 pub struct MovieStudioChatJob {
-    pub app: AppHandle,
+    pub app: Option<AppHandle>,
     pub studio: MovieStudio,
     pub runtime: Arc<RuntimeManager>,
     pub models: Vec<ModelInfo>,
@@ -60,6 +64,16 @@ pub struct MovieStudioChatJob {
 
 impl MovieStudioChatJob {
     pub async fn run(self) -> Result<(), String> {
+        if self.request.scene_batch.is_some() {
+            return self.run_batch().await;
+        }
+        self.run_turn(None).await
+    }
+
+    async fn run_turn(
+        self,
+        batch: Option<&crate::models::MovieSceneDraftBatch>,
+    ) -> Result<(), String> {
         let Self {
             app,
             studio,
@@ -92,8 +106,13 @@ impl MovieStudioChatJob {
         }
         effective.model_overrides.clear();
         let thinking_level = effective.thinking_level;
+        let messages = if let Some(batch) = batch {
+            batch::build_batch_messages(&prepared, batch)?
+        } else {
+            build_messages(&project.prompt, &prepared, request.kind)?
+        };
         emit(
-            &app,
+            app.as_ref(),
             &request,
             &conversation_id,
             "queued",
@@ -104,15 +123,14 @@ impl MovieStudioChatJob {
             Vec::new(),
         );
         let lease = tokio::select! {
-            result = runtime.lease_model(&request.model_id, &models, &effective, Some(&app)) => {
+            result = runtime.lease_model(&request.model_id, &models, &effective, app.as_ref()) => {
                 result.map_err(|error| error.to_string())?
             }
             _ = cancel.cancelled() => {
-                emit(&app, &request, &conversation_id, "cancelled", None, Some(&model.name), Some(thinking_level), None, Vec::new());
+                emit(app.as_ref(), &request, &conversation_id, "cancelled", None, Some(&model.name), Some(thinking_level), None, Vec::new());
                 return Ok(());
             }
         };
-        let messages = build_messages(&project.prompt, &prepared, request.kind)?;
         let mut body = json!({
             "model": lease.connection.model_id,
             "messages": messages,
@@ -125,6 +143,18 @@ impl MovieStudioChatJob {
         });
         if request.kind == MovieStudioConversationKind::Scenes {
             body["response_format"] = scene_response_schema();
+            if let Some(batch) = batch {
+                let operations = &mut body["response_format"]["json_schema"]["schema"]
+                    ["properties"]["operations"];
+                operations["minItems"] = json!(1);
+                operations["maxItems"] = json!(1);
+                operations["items"]["properties"]["action"]["enum"] = json!(["add"]);
+                operations["items"]["properties"]["position"]["enum"] = json!(["end"]);
+                operations["items"]["properties"]["sceneId"] = json!({"type":"null"});
+                operations["items"]["properties"]["anchorSceneId"] = json!({"type":"null"});
+                operations["items"]["properties"]["scene"]["anyOf"][0]["properties"]
+                    ["durationSeconds"] = json!({"type":"number", "minimum":batch.scene_seconds, "maximum":batch.scene_seconds});
+            }
         }
         if thinking_level.is_off() || project.settings.thinking_budget == 0 {
             body["thinking_budget_tokens"] = json!(0);
@@ -143,14 +173,20 @@ impl MovieStudioChatJob {
             .timeout(std::time::Duration::from_secs(3_600))
             .build()
             .map_err(|error| error.to_string())?;
-        let response = authorized(
+        let pending_response = authorized(
             client.post(format!("{}/chat/completions", lease.connection.endpoint)),
             &lease.connection,
         )
         .json(&body)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
+        .send();
+        let response = tokio::select! {
+            result = pending_response => result.map_err(|error| error.to_string())?,
+            _ = cancel.cancelled() => {
+                studio.preserve_interrupted_turn(&request.project_id, &conversation_id, "", "Stopped before the response began. No scene was changed.").await.map_err(|error| error.to_string())?;
+                emit(app.as_ref(), &request, &conversation_id, "cancelled", None, Some(&model.name), Some(thinking_level), None, Vec::new());
+                return Ok(());
+            }
+        };
         let status = response.status();
         if !status.is_success() {
             let detail = response.text().await.unwrap_or_default();
@@ -160,7 +196,7 @@ impl MovieStudioChatJob {
             ));
         }
         emit(
-            &app,
+            app.as_ref(),
             &request,
             &conversation_id,
             "started",
@@ -173,12 +209,13 @@ impl MovieStudioChatJob {
         let mut stream = response.bytes_stream();
         let mut decoder = OpenAiSseDecoder::default();
         let mut output = String::new();
+        let mut finish_reason = None;
         loop {
             let next = tokio::select! {
                 value = stream.next() => value,
                 _ = cancel.cancelled() => {
                     studio.preserve_interrupted_turn(&request.project_id, &conversation_id, &output, "The producer stopped this response. Partial model text was preserved but was not made an active revision or applied to scenes.").await.map_err(|error| error.to_string())?;
-                    emit(&app, &request, &conversation_id, "cancelled", None, Some(&model.name), Some(thinking_level), None, Vec::new());
+                    emit(app.as_ref(), &request, &conversation_id, "cancelled", None, Some(&model.name), Some(thinking_level), None, Vec::new());
                     return Ok(());
                 }
             };
@@ -210,9 +247,10 @@ impl MovieStudioChatJob {
                     .await);
                 }
             };
+            record_finish_reason(&events, &mut finish_reason);
             if let Err(error) = accept_events(
                 events,
-                &app,
+                app.as_ref(),
                 &request,
                 &conversation_id,
                 &model.name,
@@ -242,9 +280,10 @@ impl MovieStudioChatJob {
                 .await);
             }
         };
+        record_finish_reason(&events, &mut finish_reason);
         if let Err(error) = accept_events(
             events,
-            &app,
+            app.as_ref(),
             &request,
             &conversation_id,
             &model.name,
@@ -260,6 +299,10 @@ impl MovieStudioChatJob {
             )
             .await);
         }
+        if finish_reason.as_deref() != Some("stop") {
+            return Err(preserve_failed_turn(&studio, &request.project_id, &conversation_id, &output,
+                format!("The collaborator did not finish a complete response ({}). Partial text was saved. Increase the output allowance or shorten the requested revision before retrying.", finish_reason.as_deref().unwrap_or("missing completion reason"))).await);
+        }
         match request.kind {
             MovieStudioConversationKind::Story => {
                 let markdown = clean_story_markdown(&output);
@@ -270,7 +313,7 @@ impl MovieStudioChatJob {
                         nonempty(&prepared.story_revision_id),
                         &request.instruction,
                         markdown,
-                        Some(&app),
+                        app.as_ref(),
                     )
                     .await
                 {
@@ -287,7 +330,7 @@ impl MovieStudioChatJob {
                     }
                 };
                 emit(
-                    &app,
+                    app.as_ref(),
                     &request,
                     &conversation_id,
                     "complete",
@@ -315,7 +358,7 @@ impl MovieStudioChatJob {
                 let reply = parsed.reply_markdown.trim().to_string();
                 if !reply.is_empty() {
                     emit(
-                        &app,
+                        app.as_ref(),
                         &request,
                         &conversation_id,
                         "token",
@@ -326,18 +369,33 @@ impl MovieStudioChatJob {
                         Vec::new(),
                     );
                 }
-                let (_, changed) = match studio
-                    .finish_scene_turn(
-                        &request.project_id,
-                        &conversation_id,
-                        prepared.scene_revision,
-                        &request.selected_scene_ids,
-                        reply,
-                        parsed.operations,
-                        Some(&app),
-                    )
-                    .await
-                {
+                let applied = if let Some(batch) = batch {
+                    studio
+                        .finish_scene_turn_inner(
+                            &request.project_id,
+                            &conversation_id,
+                            prepared.scene_revision,
+                            &request.selected_scene_ids,
+                            reply,
+                            parsed.operations,
+                            Some(&batch.id),
+                            app.as_ref(),
+                        )
+                        .await
+                } else {
+                    studio
+                        .finish_scene_turn(
+                            &request.project_id,
+                            &conversation_id,
+                            prepared.scene_revision,
+                            &request.selected_scene_ids,
+                            reply,
+                            parsed.operations,
+                            app.as_ref(),
+                        )
+                        .await
+                };
+                let (_, changed) = match applied {
                     Ok(result) => result,
                     Err(error) => {
                         return Err(preserve_failed_turn(
@@ -351,10 +409,14 @@ impl MovieStudioChatJob {
                     }
                 };
                 emit(
-                    &app,
+                    app.as_ref(),
                     &request,
                     &conversation_id,
-                    "complete",
+                    if batch.is_some() {
+                        "scene-saved"
+                    } else {
+                        "complete"
+                    },
                     None,
                     Some(&model.name),
                     Some(thinking_level),
@@ -534,9 +596,22 @@ fn bounded_summary_transcript(conversation: &MovieStudioConversation) -> String 
     transcript
 }
 
+fn record_finish_reason(events: &[OpenAiStreamEvent], reason: &mut Option<String>) {
+    for event in events {
+        if let OpenAiStreamEvent::Message(value) = event {
+            if let Some(value) = value
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str)
+            {
+                *reason = Some(value.into());
+            }
+        }
+    }
+}
+
 fn accept_events(
     events: Vec<OpenAiStreamEvent>,
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     request: &MovieStudioChatRequest,
     conversation_id: &str,
     model_name: &str,
@@ -867,7 +942,7 @@ fn nonempty(value: &str) -> Option<String> {
 
 #[allow(clippy::too_many_arguments)]
 fn emit(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     request: &MovieStudioChatRequest,
     conversation_id: &str,
     event: &str,
@@ -877,6 +952,9 @@ fn emit(
     story_revision: Option<MovieStoryRevision>,
     changed_scene_ids: Vec<String>,
 ) {
+    let Some(app) = app else {
+        return;
+    };
     let _ = app.emit(
         "movie-studio-chat",
         MovieStudioChatEvent {
@@ -897,7 +975,7 @@ fn emit(
 
 pub fn emit_error(app: &AppHandle, request: &MovieStudioChatRequest, error: String) {
     emit(
-        app,
+        Some(app),
         request,
         request.conversation_id.as_deref().unwrap_or_default(),
         "error",
@@ -911,7 +989,7 @@ pub fn emit_error(app: &AppHandle, request: &MovieStudioChatRequest, error: Stri
 
 pub fn emit_settled(app: &AppHandle, request: &MovieStudioChatRequest) {
     emit(
-        app,
+        Some(app),
         request,
         request.conversation_id.as_deref().unwrap_or_default(),
         "settled",
@@ -942,6 +1020,85 @@ fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
 mod tests {
     use super::*;
     use crate::models::{MovieStudioConversation, MovieStudioMessage};
+
+    #[tokio::test]
+    #[ignore = "requires KESTREL_ACCEPTANCE_LIBRARY, KESTREL_LIVE_MODEL_ID, an installed catalog model and engine; uses the production RuntimeManager and saves a real story and three scenes"]
+    async fn live_local_producer_story_and_distinct_scene_queue() {
+        let output = std::path::PathBuf::from(
+            std::env::var("KESTREL_ACCEPTANCE_LIBRARY")
+                .expect("set a separate acceptance output library"),
+        );
+        assert!(output.is_absolute());
+        let model_id = std::env::var("KESTREL_LIVE_MODEL_ID")
+            .expect("choose an installed model ID explicitly");
+        let library = crate::store::default_research_root();
+        assert_ne!(
+            output, library,
+            "acceptance must not use the producer's own library"
+        );
+        let settings = crate::config::ControlSettingsStore::new(&library)
+            .load()
+            .unwrap();
+        let models = crate::model::ModelCatalogStore::new(&library)
+            .load()
+            .unwrap();
+        let model = models
+            .iter()
+            .find(|model| model.id == model_id)
+            .expect("model is not in the local catalog");
+        let runtime = Arc::new(RuntimeManager::new());
+        let studio = MovieStudio::new(&output).unwrap();
+        let material = "A lonely lighthouse keeper receives a postcard from the sea. Make a gentle, surprising 15-second story with a beginning, discovery, and ending. No dialogue.";
+        let project = studio
+            .create_producer_base(
+                material.into(),
+                super::super::MovieSettings::default(),
+                Vec::new(),
+                &model.name,
+                false,
+            )
+            .unwrap();
+        let request: MovieStudioChatRequest = serde_json::from_value(json!({
+            "requestId":uuid::Uuid::new_v4().to_string(), "projectId":project.id,
+            "kind":"story", "mode":"fresh", "modelId":model_id,
+            "instruction":"Write a complete short story from this idea, making confident creative choices.",
+            "thinkingLevel":"low"
+        })).unwrap();
+        let job = |request| MovieStudioChatJob {
+            app: None,
+            studio: studio.clone(),
+            runtime: runtime.clone(),
+            models: models.clone(),
+            settings: settings.clone(),
+            request,
+            cancel: CancellationToken::new(),
+        };
+        let result = async {
+            job(request.clone()).run().await?;
+            let story = studio.get_producer_workspace(&project.id).map_err(|error| error.to_string())?;
+            let revision = story.active_story_revision_id.ok_or("no story revision saved")?;
+            let accepted = studio.accept_story_revision(crate::models::AcceptMovieStoryRevisionRequest {
+                project_id:project.id.clone(), revision_id:revision.clone(), conversation_mode:crate::models::MovieStudioConversationMode::Fresh,
+            }, None).await.map_err(|error| error.to_string())?;
+            let mut scenes_request = request;
+            scenes_request.request_id = uuid::Uuid::new_v4().to_string();
+            scenes_request.kind = MovieStudioConversationKind::Scenes;
+            scenes_request.story_revision_id = Some(revision);
+            scenes_request.conversation_id = accepted.active_scene_conversation_id;
+            scenes_request.instruction = "Tell the complete accepted story in three distinct five-second scenes. No dialogue. Each scene advances the action.".into();
+            scenes_request.scene_batch = Some(crate::models::MovieSceneBatchRequest { scene_count:3, resume:false });
+            job(scenes_request).run().await?;
+            let saved = studio.get_producer_workspace(&project.id).map_err(|error| error.to_string())?;
+            assert_eq!(saved.scenes.len(), 3);
+            assert_eq!(saved.scene_draft_batch.as_ref().unwrap().completed_scene_ids.len(), 3);
+            assert!(saved.scenes.iter().all(|scene| scene.references.is_empty() && scene.first_frame.is_none() && scene.last_frame.is_none()));
+            studio.approve_producer_scenes(&project.id, None).await.map_err(|error| error.to_string())?;
+            println!("Producer acceptance saved for {} at {}", model.name, studio.project_dir(&project.id).display());
+            Ok::<_, String>(())
+        }.await;
+        runtime.stop_managed().await.unwrap();
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+    }
 
     #[test]
     fn scene_context_never_contains_reference_or_frame_choices() {

@@ -23,6 +23,7 @@ use thiserror::Error;
 use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
+mod export;
 mod image_assets;
 mod image_studio;
 mod live_preview;
@@ -75,6 +76,7 @@ const HASH_BUFFER_BYTES: usize = 64 * 1024;
 pub(super) const MAX_MOVIE_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_REFERENCE_SECONDS: f64 = 15.1;
 const MOVIE_THINKING_BUDGET: u32 = 32_768;
+const MAX_MOVIE_SCENES: u32 = 4_096;
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const MIN_TIMELINE_SOURCE_SECONDS: f32 = 0.1;
 
@@ -481,10 +483,10 @@ impl Default for MovieSettings {
 }
 
 fn default_width() -> u32 {
-    1_344
+    768
 }
 fn default_height() -> u32 {
-    768
+    448
 }
 fn default_clip_seconds() -> f32 {
     5.0
@@ -493,7 +495,7 @@ fn default_steps() -> u32 {
     20
 }
 fn default_max_clips() -> u32 {
-    12
+    MAX_MOVIE_SCENES
 }
 fn default_temperature() -> f32 {
     0.7
@@ -537,7 +539,7 @@ impl MovieSettings {
         }
         self.clip_seconds = self.clip_seconds.clamp(5.0, 15.0);
         self.steps = self.steps.clamp(1, if advanced { 100 } else { 40 });
-        self.max_clips = self.max_clips.clamp(1, if advanced { 96 } else { 24 });
+        self.max_clips = self.max_clips.clamp(1, MAX_MOVIE_SCENES);
         self.temperature = self.temperature.clamp(0.0, 2.0);
         self.top_p = self.top_p.clamp(0.05, 1.0);
         self.top_k = self.top_k.clamp(1, 200);
@@ -1822,80 +1824,6 @@ impl MovieStudio {
                 "enable at least one clip before exporting".into(),
             ));
         }
-        let mut command = tokio::process::Command::new(media_program("ffmpeg"));
-        command.args(["-y", "-hide_banner", "-loglevel", "error"]);
-        let mut filters = Vec::new();
-        let mut duration_seconds = 0.0_f32;
-        for (index, edit) in edits.iter().enumerate() {
-            let source = selected_clip_source(&project, edit)?;
-            if !Path::new(source.path).is_file() {
-                return Err(StudioError::Invalid(format!(
-                    "timeline item {} cannot be exported because its preserved source is missing: {}",
-                    edit.id, source.path
-                )));
-            }
-            command.arg("-i").arg(source.path);
-            let end = source.duration_seconds - edit.trim_end;
-            let output_duration = (end - edit.trim_start) / edit.speed;
-            duration_seconds += output_duration;
-
-            let mut video = format!(
-                "[{index}:v]trim=start={}:end={},setpts=(PTS-STARTPTS)/{}",
-                edit.trim_start, end, edit.speed
-            );
-            if edit.fade_in > 0.0 {
-                video.push_str(&format!(",fade=t=in:st=0:d={}", edit.fade_in));
-            }
-            if edit.fade_out > 0.0 {
-                video.push_str(&format!(
-                    ",fade=t=out:st={}:d={}",
-                    (output_duration - edit.fade_out).max(0.0),
-                    edit.fade_out
-                ));
-            }
-            video.push_str(&format!(
-                ",scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v{index}]",
-                project.settings.width,
-                project.settings.height,
-                project.settings.width,
-                project.settings.height,
-            ));
-
-            let mut audio = format!(
-                "[{index}:a]atrim=start={}:end={},asetpts=PTS-STARTPTS",
-                edit.trim_start, end
-            );
-            for stage in atempo_filters(edit.speed) {
-                audio.push_str(&format!(",atempo={stage}"));
-            }
-            audio.push_str(&format!(",volume={}", edit.audio_gain));
-            if edit.audio_fade_in > 0.0 {
-                audio.push_str(&format!(",afade=t=in:st=0:d={}", edit.audio_fade_in));
-            }
-            if edit.audio_fade_out > 0.0 {
-                audio.push_str(&format!(
-                    ",afade=t=out:st={}:d={}",
-                    (output_duration - edit.audio_fade_out).max(0.0),
-                    edit.audio_fade_out
-                ));
-            }
-            audio.push_str(&format!(
-                ",aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,aresample=48000:async=1:first_pts=0[a{index}]"
-            ));
-            filters.push(format!("{video};{audio}"));
-        }
-        let streams = (0..edits.len())
-            .map(|index| format!("[v{index}][a{index}]"))
-            .collect::<String>();
-        if project.edit.normalize_audio {
-            filters.push(format!(
-                "{streams}concat=n={}:v=1:a=1[v][mixed];[mixed]loudnorm=I={}:TP=-1.5:LRA=11[a]",
-                edits.len(),
-                project.edit.target_lufs
-            ));
-        } else {
-            filters.push(format!("{streams}concat=n={}:v=1:a=1[v][a]", edits.len()));
-        }
         let export_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let file_stem = format!(
             "{}-{}-{export_id}",
@@ -1906,45 +1834,7 @@ impl MovieStudio {
         fs::create_dir_all(&exports)?;
         let target = exports.join(format!("{file_stem}.mp4"));
         let temporary = exports.join(format!("{file_stem}.partial.mp4"));
-        let (preset, crf, audio_bitrate) = match project.edit.export_preset.as_str() {
-            "archive" => ("slow", "14", "320k"),
-            "review" => ("veryfast", "24", "128k"),
-            _ => ("medium", "18", "192k"),
-        };
-        command
-            .arg("-filter_complex")
-            .arg(filters.join(";"))
-            .args([
-                "-map",
-                "[v]",
-                "-map",
-                "[a]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                preset,
-                "-crf",
-                crf,
-                "-c:a",
-                "aac",
-                "-b:a",
-                audio_bitrate,
-                "-map_metadata",
-                "-1",
-                "-movflags",
-                "+faststart",
-            ])
-            .arg("-metadata")
-            .arg(format!("title={}", project.edit.export_title))
-            .arg(&temporary);
-        let output = command.output().await?;
-        if !output.status.success() {
-            let _ = fs::remove_file(&temporary);
-            return Err(StudioError::Render(format!(
-                "edit export failed: {}",
-                truncate(&String::from_utf8_lossy(&output.stderr), 1_000)
-            )));
-        }
+        let duration_seconds = export::render_timeline(&project, &edits, &temporary).await?;
         let export = MovieExport {
             id: export_id,
             created_at: Utc::now().to_rfc3339(),
@@ -2112,9 +2002,9 @@ fn normalize_movie_project(project: &mut MovieProject) {
 }
 
 fn validate_movie_edit(project: &MovieProject, edit: &mut MovieEdit) -> Result<(), StudioError> {
-    if edit.clips.len() > 512 {
+    if edit.clips.len() > MAX_MOVIE_SCENES as usize {
         return Err(StudioError::Invalid(
-            "a movie timeline can contain at most 512 items".into(),
+            "a movie timeline can contain at most 4096 items".into(),
         ));
     }
     let title = edit.export_title.trim();

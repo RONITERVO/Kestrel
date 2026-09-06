@@ -23,6 +23,8 @@ use super::{
     MovieSettings, MovieStudio, PlannedClip, ProducerReferenceRequest, RenderedClip, StudioError,
 };
 
+mod batch;
+
 const PRODUCER_SCHEMA_VERSION: u32 = 1;
 const MAX_STORY_BYTES: usize = 256 * 1024;
 const MAX_STORY_INSTRUCTION_CHARS: usize = 16_000;
@@ -47,6 +49,7 @@ struct SceneHistorySnapshot<'a> {
     /// Render state before this scene revision was applied. This keeps masters and versions for
     /// removed scenes recoverable without returning them to the active plan.
     previous_rendered_clips: &'a [RenderedClip],
+    previous_edit: &'a super::MovieEdit,
 }
 
 #[derive(Debug, Clone)]
@@ -417,6 +420,31 @@ impl MovieStudio {
         operations: Vec<SceneTextOperation>,
         app: Option<&AppHandle>,
     ) -> Result<(MovieProducerWorkspace, Vec<String>), StudioError> {
+        self.finish_scene_turn_inner(
+            project_id,
+            conversation_id,
+            expected_scene_revision,
+            selected_scene_ids,
+            reply_markdown,
+            operations,
+            None,
+            app,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn finish_scene_turn_inner(
+        &self,
+        project_id: &str,
+        conversation_id: &str,
+        expected_scene_revision: u64,
+        selected_scene_ids: &[String],
+        reply_markdown: String,
+        operations: Vec<SceneTextOperation>,
+        batch_id: Option<&str>,
+        app: Option<&AppHandle>,
+    ) -> Result<(MovieProducerWorkspace, Vec<String>), StudioError> {
         if operations.len() > 64 {
             return Err(StudioError::Invalid(
                 "the scene collaborator returned more than 64 changes in one response".into(),
@@ -426,6 +454,9 @@ impl MovieStudio {
         let _guard = lock.lock().await;
         let project = self.get(project_id)?;
         let mut workspace = self.get_producer_workspace(project_id)?;
+        if let Some(id) = batch_id {
+            batch::validate_batch_turn(&workspace, id, &operations)?;
+        }
         if workspace.scene_revision != expected_scene_revision {
             return Err(StudioError::Invalid(
                 "scene cards changed while the collaborator was writing; its response was saved in chat but no scene was overwritten"
@@ -548,7 +579,17 @@ impl MovieStudio {
         )?;
         workspace.scene_revision = workspace.scene_revision.saturating_add(1);
         workspace.updated_at = now.clone();
-        self.persist_scene_snapshot(&workspace, &project.clips)?;
+        if batch_id.is_some() {
+            let batch = workspace
+                .scene_draft_batch
+                .as_mut()
+                .expect("validated batch");
+            batch.completed_scene_ids.extend(changed.iter().cloned());
+            batch.expected_scene_revision = workspace.scene_revision;
+            self.persist_batch_scene(&workspace)?;
+        } else {
+            self.persist_scene_snapshot(&workspace, &project)?;
+        }
         let mut conversation = self.get_producer_conversation(project_id, conversation_id)?;
         conversation.updated_at = now;
         conversation.messages.push(MovieStudioMessage {
@@ -615,6 +656,7 @@ impl MovieStudio {
         let now = Utc::now().to_rfc3339();
         let workspace = MovieProducerWorkspace {
             schema_version: PRODUCER_SCHEMA_VERSION,
+            scene_draft_batch: None,
             project_id: project_id.into(),
             created_at: project.created_at,
             updated_at: now,
@@ -794,10 +836,32 @@ impl MovieStudio {
             accepted_story,
             project.settings.max_clips,
         )?;
+        let same_text = workspace.scenes.len() == scenes.len()
+            && workspace.scenes.iter().zip(&scenes).all(|(old, next)| {
+                old.id == next.id
+                    && old.title == next.title
+                    && old.purpose == next.purpose
+                    && old.duration_seconds == next.duration_seconds
+                    && old.h3_prompt == next.h3_prompt
+                    && old.continuity_in == next.continuity_in
+                    && old.continuity_out == next.continuity_out
+                    && old.transition == next.transition
+            });
+        if same_text {
+            if let Some(batch) = workspace
+                .scene_draft_batch
+                .as_mut()
+                .filter(|batch| batch.expected_scene_revision == workspace.scene_revision)
+            {
+                // Media choices are outside model context. A paused queue may resume after the
+                // producer binds references, without discarding those choices or restarting text.
+                batch.expected_scene_revision = workspace.scene_revision.saturating_add(1);
+            }
+        }
         workspace.scene_revision = workspace.scene_revision.saturating_add(1);
         workspace.scenes = scenes;
         workspace.updated_at = Utc::now().to_rfc3339();
-        self.persist_scene_snapshot(&workspace, &project.clips)?;
+        self.persist_scene_snapshot(&workspace, &project)?;
         self.save_producer_workspace(&workspace)?;
         self.sync_scene_plan(&project.id, &workspace, app)?;
         self.emit_producer_workspace(&workspace, app);
@@ -1028,7 +1092,7 @@ impl MovieStudio {
     fn persist_scene_snapshot(
         &self,
         workspace: &MovieProducerWorkspace,
-        previous_rendered_clips: &[RenderedClip],
+        previous: &super::MovieProject,
     ) -> Result<(), StudioError> {
         let path = self
             .producer_root(&workspace.project_id)
@@ -1045,7 +1109,8 @@ impl MovieStudio {
                 schema_version: 1,
                 scene_revision: workspace.scene_revision,
                 scenes: &workspace.scenes,
-                previous_rendered_clips,
+                previous_rendered_clips: &previous.clips,
+                previous_edit: &previous.edit,
             },
         )
     }
@@ -1083,8 +1148,10 @@ impl MovieStudio {
             },
             clips: workspace.scenes.iter().map(scene_to_planned_clip).collect(),
         };
-        project.title = title.clone();
-        project.edit.export_title = title;
+        if project.edit.export_title.is_empty() || project.edit.export_title == project.title {
+            project.edit.export_title = title.clone();
+        }
+        project.title = title;
         let previous_plan = project
             .plan
             .as_ref()
@@ -1155,39 +1222,47 @@ impl MovieStudio {
                 }
             })
             .collect();
-        let previous_edits = project.edit.clips.clone();
-        project.edit.clips = project
+        let active_clips = project
             .clips
             .iter()
-            .enumerate()
-            .map(|(index, clip)| {
-                previous_edits
-                    .iter()
-                    .find(|edit| edit.clip_id == clip.id)
-                    .cloned()
-                    .map(|mut edit| {
-                        edit.order = index as u32;
-                        edit
-                    })
-                    .unwrap_or_else(|| ClipEdit {
-                        id: format!("edit-{}", clip.id),
-                        clip_id: clip.id.clone(),
-                        enabled: true,
-                        order: index as u32,
-                        trim_start: 0.0,
-                        trim_end: 0.0,
-                        audio_gain: default_gain(),
-                        source_version_id: String::new(),
-                        speed: default_speed(),
-                        fade_in: 0.0,
-                        fade_out: 0.0,
-                        audio_fade_in: 0.0,
-                        audio_fade_out: 0.0,
-                        label: clip.title.clone(),
-                        notes: String::new(),
-                    })
-            })
-            .collect();
+            .map(|clip| &clip.id)
+            .collect::<HashSet<_>>();
+        // Scene changes must not flatten the producer's reordered/repeated timeline items.
+        project
+            .edit
+            .clips
+            .retain(|edit| active_clips.contains(&edit.clip_id));
+        project.edit.clips.sort_by_key(|edit| edit.order);
+        let previous_ids = previous_renders
+            .iter()
+            .map(|clip| &clip.id)
+            .collect::<HashSet<_>>();
+        for clip in &project.clips {
+            if !previous_ids.contains(&clip.id)
+                && project.edit.clips.len() < super::MAX_MOVIE_SCENES as usize
+            {
+                project.edit.clips.push(ClipEdit {
+                    id: format!("edit-{}", clip.id),
+                    clip_id: clip.id.clone(),
+                    enabled: true,
+                    order: project.edit.clips.len() as u32,
+                    trim_start: 0.0,
+                    trim_end: 0.0,
+                    audio_gain: default_gain(),
+                    source_version_id: String::new(),
+                    speed: default_speed(),
+                    fade_in: 0.0,
+                    fade_out: 0.0,
+                    audio_fade_in: 0.0,
+                    audio_fade_out: 0.0,
+                    label: clip.title.clone(),
+                    notes: String::new(),
+                });
+            }
+        }
+        for (index, edit) in project.edit.clips.iter_mut().enumerate() {
+            edit.order = index as u32;
+        }
         project.plan = Some(plan.clone());
         project.status = "awaiting-review".into();
         project.phase = "scene-draft".into();
@@ -1804,6 +1879,12 @@ mod tests {
             .join("old-master.mp4")
             .to_string_lossy()
             .into_owned();
+        rendered.edit.export_title = "My festival cut".into();
+        let mut repeat = rendered.edit.clips[0].clone();
+        repeat.id = "producer-repeat".into();
+        repeat.order = 1;
+        repeat.trim_start = 0.5;
+        rendered.edit.clips.push(repeat.clone());
         studio.save(&rendered).unwrap();
 
         scene.revision = 2;
@@ -1820,6 +1901,9 @@ mod tests {
             .await
             .unwrap();
         let updated = studio.get(&project.id).unwrap();
+        assert_eq!(updated.edit.export_title, "My festival cut");
+        assert_eq!(updated.edit.clips.len(), 2);
+        assert_eq!(updated.edit.clips[1], repeat);
         assert_eq!(updated.clips[0].status, "queued");
         assert!(updated.clips[0].path.is_empty());
         assert_eq!(updated.clips[0].versions.len(), 1);

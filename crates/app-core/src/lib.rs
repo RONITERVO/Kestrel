@@ -1172,6 +1172,33 @@ pub struct MovieProducerWorkspace {
     #[serde(default)]
     pub scenes: Vec<MovieSceneDraft>,
     pub scene_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scene_draft_batch: Option<MovieSceneDraftBatch>,
+}
+
+/// A producer-started queue. An incomplete checkpoint always requires explicit resume.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieSceneDraftBatch {
+    pub id: String,
+    pub story_revision_id: String,
+    pub instruction: String,
+    pub scene_count: u32,
+    pub scene_seconds: f32,
+    pub completed_scene_ids: Vec<String>,
+    pub context_scene_ids: Vec<String>,
+    pub expected_scene_revision: u64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovieSceneBatchRequest {
+    pub scene_count: u32,
+    pub resume: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
@@ -1192,6 +1219,9 @@ pub struct MovieStudioChatRequest {
     pub selected_scene_ids: Vec<String>,
     #[ts(optional)]
     pub thinking_level: Option<ThinkingLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scene_batch: Option<MovieSceneBatchRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1203,7 +1233,7 @@ pub struct MovieStudioChatEvent {
     pub conversation_id: String,
     pub kind: MovieStudioConversationKind,
     #[ts(
-        type = "\"queued\" | \"started\" | \"token\" | \"reasoning\" | \"complete\" | \"cancelled\" | \"error\" | \"settled\""
+        type = "\"queued\" | \"started\" | \"token\" | \"reasoning\" | \"scene-saved\" | \"complete\" | \"cancelled\" | \"error\" | \"settled\""
     )]
     pub event: String,
     #[serde(skip_serializing_if = "Option::is_none")]

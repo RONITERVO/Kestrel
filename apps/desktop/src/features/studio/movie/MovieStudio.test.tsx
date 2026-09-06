@@ -16,6 +16,7 @@ vi.mock("../../../platform/api", async () => {
     saveMovieStoryRevision: vi.fn(),
     acceptMovieStoryRevision: vi.fn(),
     saveMovieScenes: vi.fn(),
+    startMovieStudioChat: vi.fn(async () => "scene-request"),
   };
 });
 
@@ -94,7 +95,10 @@ describe("producer-owned Movie Studio", () => {
     expect(create).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Starting material"), { target: { value: "A fox waits for the last train." } });
     expect(create).toBeEnabled();
-    expect(screen.getByText(/TypeScript never owns application truth/i)).toBeInTheDocument();
+    expect(screen.getByText(/Your work stays on this computer/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Video quality")).toHaveValue("768x448");
+    fireEvent.change(screen.getByLabelText("Video quality"), { target: { value: "1344x768" } });
+    expect(screen.getByLabelText("Video quality")).toHaveValue("1344x768");
   });
 
   it("shows a readable Markdown story and saves direct edits as a new revision", async () => {
@@ -108,11 +112,17 @@ describe("producer-owned Movie Studio", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
     const document = screen.getByLabelText("Story document");
     fireEvent.change(document, { target: { value: "# A quieter title\n\nMara listens." } });
+    fireEvent.change(screen.getByLabelText("story collaborator direction"), { target: { value: "Make this funnier." } });
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByLabelText("Story revision")).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /Save revision/i }));
     await waitFor(() => expect(api.saveMovieStoryRevision).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "movie-one", parentRevisionId: "story-one", markdown: "# A quieter title\n\nMara listens.",
     })));
     expect(await screen.findByRole("option", { name: /Revision 2/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.startMovieStudioChat).toHaveBeenCalledWith(expect.objectContaining({ storyRevisionId: "story-two" })));
+    expect(screen.getByRole("button", { name: /^Edit$/ })).toBeDisabled();
   });
 
   it("keeps scene context selection separate from native reference bindings", async () => {
@@ -138,8 +148,51 @@ describe("producer-owned Movie Studio", () => {
     expect(screen.getByText(/1 scene card in full context/i)).toBeInTheDocument();
     fireEvent.click(visual);
     expect(visual).toBeChecked();
+    expect(screen.getByLabelText(/First frame/i)).toBeDisabled();
+    expect(screen.getByText(/Uncheck native references to choose frames/i)).toBeInTheDocument();
+    fireEvent.click(visual);
+    expect(screen.getByLabelText(/First frame/i)).toBeEnabled();
     fireEvent.change(screen.getByLabelText(/First frame/i), { target: { value: "image:asset-image" } });
     expect(visual).not.toBeChecked();
     expect(visual).toBeDisabled();
+  });
+
+  it("starts a native queue with one producer action and no scene-save side effect", async () => {
+    await openFixture(project(), workspace({ acceptedStoryRevisionId: "story-one" }));
+    fireEvent.change(screen.getByLabelText("New scenes"), { target: { value: "1440" } });
+    fireEvent.click(screen.getByRole("button", { name: "Draft 1440 distinct scenes" }));
+    await waitFor(() => expect(api.startMovieStudioChat).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "scenes", sceneBatch: { sceneCount: 1440, resume: false }, selectedSceneIds: [],
+      requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
+    })));
+    expect(api.saveMovieScenes).not.toHaveBeenCalled();
+    expect(api.startMovieStudioChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates manual scene identities accepted by the native UUID boundary", async () => {
+    const next = workspace({ acceptedStoryRevisionId: "story-one" });
+    vi.mocked(api.saveMovieScenes).mockResolvedValue(next);
+    await openFixture(project(), next);
+    fireEvent.click(screen.getByRole("button", { name: "Add scene card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save cards" }));
+    await waitFor(() => expect(api.saveMovieScenes).toHaveBeenCalledWith(expect.objectContaining({
+      scenes: [expect.objectContaining({ id: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i) })],
+    })));
+  });
+
+  it("shows an incomplete queue after reopening and resumes only when clicked", async () => {
+    const next = workspace({ acceptedStoryRevisionId: "story-one", sceneDraftBatch: {
+      id: "batch-one", storyRevisionId: "story-one", instruction: "Follow the keeper.",
+      sceneCount: 100, sceneSeconds: 5, completedSceneIds: [], contextSceneIds: [],
+      expectedSceneRevision: 0, createdAt: "2026-09-07T00:00:00Z",
+    } });
+    await openFixture(project(), next);
+    expect(screen.getByRole("status")).toHaveTextContent("0 of 100 scenes saved");
+    expect(api.startMovieStudioChat).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Resume scene queue" }));
+    await waitFor(() => expect(api.startMovieStudioChat).toHaveBeenCalledWith(expect.objectContaining({
+      sceneBatch: { sceneCount: 100, resume: true },
+    })));
+    expect(api.saveMovieScenes).not.toHaveBeenCalled();
   });
 });

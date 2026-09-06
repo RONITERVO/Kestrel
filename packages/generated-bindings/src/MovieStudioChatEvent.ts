@@ -3,4 +3,4 @@ import type { MovieStoryRevision } from "./MovieStoryRevision.js";
 import type { MovieStudioConversationKind } from "./MovieStudioConversationKind.js";
 import type { ThinkingLevel } from "./ThinkingLevel.js";
 
-export type MovieStudioChatEvent = { requestId: string, projectId: string, conversationId: string, kind: MovieStudioConversationKind, event: "queued" | "started" | "token" | "reasoning" | "complete" | "cancelled" | "error" | "settled", content?: string, modelName?: string, thinkingLevel?: ThinkingLevel, storyRevision?: MovieStoryRevision, changedSceneIds: Array<string>, createdAt: string, };
+export type MovieStudioChatEvent = { requestId: string, projectId: string, conversationId: string, kind: MovieStudioConversationKind, event: "queued" | "started" | "token" | "reasoning" | "scene-saved" | "complete" | "cancelled" | "error" | "settled", content?: string, modelName?: string, thinkingLevel?: ThinkingLevel, storyRevision?: MovieStoryRevision, changedSceneIds: Array<string>, createdAt: string, };
