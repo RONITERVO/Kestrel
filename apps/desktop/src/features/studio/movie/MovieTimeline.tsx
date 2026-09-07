@@ -6,6 +6,8 @@ import {
   Trash2, Undo2, Video, Volume2, X, ZoomIn,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { GenerateAssetButton } from "./MovieAssetCreator";
 import { movieMediaUrl } from "../../../platform/api";
 import {
   type ClipEdit, type MovieEdit, type MovieProject, type MovieReference, type RenderedClip, type TimelineMarker,
@@ -119,12 +121,14 @@ function editId(prefix = "edit"): string {
     : `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function MovieTimeline({ project, value, disabled, onChange, onRequestSave }: {
+export function MovieTimeline({ project, value, disabled, onChange, onRequestSave, generationPanel, renderPreview }: {
   project: MovieProject;
   value: MovieEdit;
   disabled: boolean;
   onChange: (edit: MovieEdit) => void;
   onRequestSave?: () => void;
+  generationPanel?: (playhead: number, duration: number) => ReactNode;
+  renderPreview?: ReactNode;
 }) {
   const normalizedValue = useMemo(() => ({ ...value, markers: value.markers ?? [] }), [value]);
   const items = useMemo(() => timelineItems(project, normalizedValue), [project, normalizedValue]);
@@ -134,6 +138,20 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
   const [zoom, setZoom] = useState(68);
   const [undo, setUndo] = useState<MovieEdit[]>([]);
   const [redo, setRedo] = useState<MovieEdit[]>([]);
+  const priorSaved = useRef(project.edit);
+  const priorValue = useRef(value);
+  useEffect(() => {
+    if (JSON.stringify(priorSaved.current) !== JSON.stringify(project.edit)
+      && JSON.stringify(priorValue.current) === JSON.stringify(priorSaved.current)) {
+      // Native range replacement is an editor action too. Keep its prior decision list in
+      // the ordinary undo stack; the native job also preserves it across application restarts.
+      const before = priorSaved.current;
+      setUndo((history) => [...history.slice(-49), before]);
+      setRedo([]);
+    }
+    priorSaved.current = project.edit;
+    priorValue.current = value;
+  }, [project.edit, value]);
   const [previewId, setPreviewId] = useState(enabledItems[0]?.edit.id ?? "");
   const [previewTime, setPreviewTime] = useState(0);
   const [sequencePlaying, setSequencePlaying] = useState(false);
@@ -147,6 +165,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
   const [cinemaViewer, setCinemaViewer] = useState(false);
   const [showBrowser, setShowBrowser] = useState(true);
   const [showInspector, setShowInspector] = useState(true);
+  const [showGeneration, setShowGeneration] = useState(Boolean(generationPanel));
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [search, setSearch] = useState("");
   const [mediaPage, setMediaPage] = useState(0);
@@ -428,11 +447,11 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
   return <div className={`movie-editor-pro ${cinemaViewer ? "cinema-viewer" : ""}`} tabIndex={0} onKeyDown={handleKey}>
     <header className="editor-command-bar">
       <div className="editor-project-identity"><Film /><span><strong>{project.title}</strong><small>{dirty ? "Unsaved timeline changes" : "Timeline saved"}</small></span>{dirty && <i />}</div>
-      <div className="editor-workspace-switch"><button className={showBrowser ? "active" : ""} aria-label="Toggle media browser" onClick={() => setShowBrowser((shown) => !shown)}><PanelLeft /> Media</button><button className={showInspector ? "active" : ""} aria-label="Toggle inspector" onClick={() => setShowInspector((shown) => !shown)}><PanelRight /> Inspector</button></div>
+      <div className="editor-workspace-switch">{generationPanel && <button className={showGeneration ? "active" : ""} onClick={() => { setShowGeneration((shown) => !shown); setShowInspector(true); }}>Generate</button>}<button className={showBrowser ? "active" : ""} aria-label="Toggle media browser" onClick={() => { if (window.matchMedia("(max-width: 980px)").matches && (showGeneration || showInspector)) { setShowBrowser(true); setShowGeneration(false); setShowInspector(false); } else setShowBrowser((shown) => !shown); }}><PanelLeft /> Media</button><button className={showInspector && !showGeneration ? "active" : ""} aria-label="Toggle inspector" onClick={() => { setShowGeneration(false); setShowInspector((shown) => !shown); }}><PanelRight /> Inspector</button></div>
       <div className="editor-save-state"><span>{formatTimecode(totalDuration)} · {enabledItems.length} edits</span><button disabled={disabled || !dirty} onClick={onRequestSave}><Save /> Save <kbd>⌘S</kbd></button></div>
     </header>
 
-    <div className={`editor-upper ${showBrowser ? "with-browser" : ""} ${showInspector ? "with-inspector" : ""}`}>
+    <div className={`editor-upper ${showBrowser ? "with-browser" : ""} ${showInspector || showGeneration ? "with-inspector" : ""}`}>
       {showBrowser && <aside className="editor-media-browser">
         <div className="editor-panel-tabs"><button className={browserTab === "masters" ? "active" : ""} onClick={() => setBrowserTab("masters")}><Film /> Masters</button><button className={browserTab === "references" ? "active" : ""} onClick={() => setBrowserTab("references")}><Images /> References</button><button className={browserTab === "index" ? "active" : ""} onClick={() => setBrowserTab("index")}><List /> Index</button></div>
         <label className="editor-search"><Search /><input aria-label="Search editor media" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={browserTab === "index" ? "Clips, markers, notes" : "Search this production"} />{search && <button aria-label="Clear media search" onClick={() => setSearch("")}><X /></button>}</label>
@@ -440,9 +459,9 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
           {browserTab === "masters" && <>{filteredClips.slice(visibleMediaPage * MEDIA_PAGE_SIZE, (visibleMediaPage + 1) * MEDIA_PAGE_SIZE).map((clip) => <button key={clip.id} className={`editor-media-row ${sourceClip?.id === clip.id && !sourceReference ? "selected" : ""}`} onClick={() => { setSourceReferenceId(""); setSourceClipId(clip.id); setSourceVersionId(""); setViewerMode("source"); setSourceTime(0); }} onDoubleClick={() => appendClip(clip)}>
             <span className="editor-media-thumb video"><Video /><b>{clip.index + 1}</b></span><span><strong>{clip.title}</strong><small>{clip.durationSeconds.toFixed(1)}s · seed {String(clip.seed).length > 8 ? `${String(clip.seed).slice(0, 8)}…` : clip.seed}</small><em>{clip.versions.length ? `${clip.versions.length} preserved versions` : "Active master"}</em></span><i className={normalizedValue.clips.some((item) => item.clipId === clip.id) ? "used" : ""} />
           </button>)}{lastMediaPage > 0 && <nav aria-label="Master pages"><button disabled={visibleMediaPage === 0} onClick={() => setMediaPage(visibleMediaPage - 1)}>Previous masters</button><span>{visibleMediaPage + 1} / {lastMediaPage + 1}</span><button disabled={visibleMediaPage === lastMediaPage} onClick={() => setMediaPage(visibleMediaPage + 1)}>Next masters</button></nav>}{!filteredClips.length && <EditorEmpty text="No preserved masters match this search." />}</>}
-          {browserTab === "references" && <>{filteredReferences.map((reference) => <button key={reference.assetId} className={`editor-media-row ${sourceReference?.assetId === reference.assetId ? "selected" : ""}`} onClick={() => { setSourceReferenceId(reference.assetId); setViewerMode("source"); setSourceTime(0); }}>
+          {browserTab === "references" && <><GenerateAssetButton disabled={disabled} />{filteredReferences.slice(0, 50).map((reference) => <button key={reference.assetId} className={`editor-media-row ${sourceReference?.assetId === reference.assetId ? "selected" : ""}`} onClick={() => { setSourceReferenceId(reference.assetId); setViewerMode("source"); setSourceTime(0); }}>
             <ReferenceThumb reference={reference} /><span><strong>{reference.name}</strong><small>{reference.kind} · {reference.durationSeconds ? `${reference.durationSeconds.toFixed(1)}s` : `${reference.width}×${reference.height}`}</small><em>{reference.description || "Producer reference"}</em></span>
-          </button>)}{!filteredReferences.length && <EditorEmpty text="No producer references match this search." />}</>}
+          </button>)}{filteredReferences.length > 50 && <small>Showing 50 of {filteredReferences.length}. Search to find any attached reference.</small>}{!filteredReferences.length && <EditorEmpty text="No producer references match this search." />}</>}
           {browserTab === "index" && <TimelineIndex items={items} markers={normalizedValue.markers} query={query} selectedId={selected?.edit.id} onSelect={(item) => setProgramPosition(item, item.edit.trimStart)} onSeek={seekGlobal} onPatchMarker={patchMarker} onDeleteMarker={(id) => commit({ ...normalizedValue, markers: normalizedValue.markers.filter((marker) => marker.id !== id) })} />}
         </div>
         <footer>{browserTab === "masters" ? <><span>{filteredClips.length} masters · double-click to append</span>{sourceClip && <button disabled={disabled || !sourceClip.path} onClick={() => appendClip(sourceClip)}><Plus /> Append</button>}</> : browserTab === "references" ? <span>Reference media informs generation; it is never substituted into the cut.</span> : <><span>{items.length} edits · {normalizedValue.markers.length} markers</span><button onClick={() => setMarkerComposer(true)}><Flag /> Marker</button></>}</footer>
@@ -451,6 +470,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
       <main className="editor-viewer">
         <header className="viewer-header"><div className="viewer-mode-tabs"><button className={viewerMode === "source" ? "active" : ""} onClick={() => setViewerMode("source")}>Source</button><button className={viewerMode === "program" ? "active" : ""} onClick={() => setViewerMode("program")}>Program</button></div><strong>{viewerTitle}</strong><div><button className={showSafeAreas ? "active" : ""} aria-label="Toggle title safe guides" title="Title safe guides" onClick={() => setShowSafeAreas((shown) => !shown)}><ScanLine /></button><button aria-label={cinemaViewer ? "Exit cinema viewer" : "Cinema viewer"} onClick={() => setCinemaViewer((active) => !active)}>{cinemaViewer ? <Minimize2 /> : <Maximize2 />}</button></div></header>
         <div className="editor-monitor">
+          {renderPreview && <div className="editor-render-preview">{renderPreview}</div>}
           {viewerMode === "program" ? preview && programMediaUrl ? <video key={preview.sourcePath} ref={videoRef} src={programMediaUrl} preload="metadata"
             onLoadedMetadata={(event) => { event.currentTarget.currentTime = previewTime || preview.edit.trimStart; event.currentTarget.playbackRate = preview.edit.speed; event.currentTarget.volume = Math.min(1, preview.edit.audioGain); if (sequencePlaying) void event.currentTarget.play().catch(() => setSequencePlaying(false)); }}
             onPlay={() => setSequencePlaying(true)} onPause={() => setSequencePlaying(false)} onTimeUpdate={(event) => { const time = event.currentTarget.currentTime; setPreviewTime(time); if (time >= preview.sourceDuration - preview.edit.trimEnd - .03) advancePreview(); }} /> : <EditorMonitorEmpty />
@@ -462,12 +482,13 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
         <div className="editor-transport">
           <div><button aria-label="Previous edit" title="Previous edit · ↑" onClick={() => advancePreview(-1)}><SkipBack /></button><button aria-label="Previous frame" title="Previous frame · ←" onClick={() => stepFrame(-1)}><ChevronLeft /></button><button className="play" aria-label={(viewerMode === "program" ? sequencePlaying : sourcePlaying) ? "Pause" : "Play"} title="Play/Pause · Space" onClick={previewSequence}>{(viewerMode === "program" ? sequencePlaying : sourcePlaying) ? <Pause /> : <Play />}</button><button aria-label="Next frame" title="Next frame · →" onClick={() => stepFrame(1)}><ChevronRight /></button><button aria-label="Next edit" title="Next edit · ↓" onClick={() => advancePreview(1)}><SkipForward /></button></div>
           <time>{formatTimecode(viewerCurrentTime)}</time>
-          <div>{viewerMode === "program" && <><button title="Mark In · I" onClick={() => selected && patchSelected({ trimStart: Math.min(previewTime, selected.sourceDuration - selected.edit.trimEnd - .1) })}>I</button><button title="Mark Out · O" onClick={() => selected && patchSelected({ trimEnd: Math.max(0, selected.sourceDuration - previewTime) })}>O</button><button title="Add marker · M" onClick={() => addMarker()}><Flag /></button></>}</div>
+          <div>{viewerMode === "program" && <><button title="Trim source in · I" onClick={() => selected && patchSelected({ trimStart: Math.min(previewTime, selected.sourceDuration - selected.edit.trimEnd - .1) })}>I</button><button title="Trim source out · O" onClick={() => selected && patchSelected({ trimEnd: Math.max(0, selected.sourceDuration - previewTime) })}>O</button><button title="Add marker · M" onClick={() => addMarker()}><Flag /></button></>}</div>
         </div>
         <div className="viewer-status"><span>{viewerMode === "program" ? "Program monitor · edited sequence" : sourceReference ? "Reference viewer · generation input" : "Source viewer · preserved master"}</span><span>{formatTimecode(viewerDuration)} total</span></div>
       </main>
 
-      {showInspector && <aside className="editor-inspector">
+      {generationPanel && <aside className="editor-generation-inspector" hidden={!showGeneration}>{generationPanel(elapsed, totalDuration)}</aside>}
+      {showInspector && !showGeneration && <aside className="editor-inspector">
         <div className="editor-panel-tabs">
           <button className={inspectorTab === "video" ? "active" : ""} onClick={() => setInspectorTab("video")}><Video /> Video</button>
           <button className={inspectorTab === "audio" ? "active" : ""} onClick={() => setInspectorTab("audio")}><AudioLines /> Audio</button>

@@ -23,6 +23,9 @@ use thiserror::Error;
 use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
+mod editor;
+mod editor_media;
+mod editor_timeline;
 mod export;
 mod image_assets;
 mod image_studio;
@@ -710,6 +713,17 @@ fn default_gain() -> f32 {
     1.0
 }
 
+fn validate_h3_reference_counts(
+    images: usize,
+    videos: usize,
+    audio: usize,
+) -> Result<(), StudioError> {
+    if images > 9 || videos > 3 || audio > 3 {
+        return Err(StudioError::Invalid(format!("One H3 scene can use at most 9 pictures, 3 videos and 3 audio signals. This selection has {images} pictures, {videos} videos and {audio} audio signals. Keep assets in the library and select fewer for this scene.")));
+    }
+    Ok(())
+}
+
 fn default_speed() -> f32 {
     1.0
 }
@@ -882,6 +896,7 @@ impl MovieStudio {
         };
         studio.recover_interrupted()?;
         studio.recover_image_asset_generations()?;
+        studio.recover_editor_generations()?;
         Ok(studio)
     }
 
@@ -898,6 +913,27 @@ impl MovieStudio {
             active,
             preview: if active {
                 self.live_previews.movie(project_id)
+            } else {
+                None
+            },
+        })
+    }
+
+    pub fn image_asset_render_state(
+        &self,
+        request_id: &str,
+        active: bool,
+    ) -> Result<MovieRenderState, StudioError> {
+        uuid::Uuid::parse_str(request_id)
+            .map_err(|_| StudioError::Invalid("Invalid image generation identity.".into()))?;
+        let key = format!("image:{request_id}");
+        if !active {
+            self.live_previews.clear_movie(&key);
+        }
+        Ok(MovieRenderState {
+            active,
+            preview: if active {
+                self.live_previews.movie(&key)
             } else {
                 None
             },
@@ -1062,6 +1098,18 @@ impl MovieStudio {
         project_id: &str,
         requests: Vec<ProducerReferenceRequest>,
     ) -> Result<Vec<MovieReference>, StudioError> {
+        self.materialize_reference_additions(project_id, requests, &[])
+    }
+
+    fn materialize_reference_additions(
+        &self,
+        project_id: &str,
+        requests: Vec<ProducerReferenceRequest>,
+        existing: &[MovieReference],
+    ) -> Result<Vec<MovieReference>, StudioError> {
+        if existing.len() + requests.len() > 4096 {
+            return Err(StudioError::Invalid("A production can keep up to 4096 reference assets. Start another production for additional assets.".into()));
+        }
         let mut seen = HashSet::new();
         let mut prepared = Vec::new();
         for request in requests {
@@ -1104,31 +1152,24 @@ impl MovieStudio {
             }
             prepared.push((asset, request));
         }
-        let images = prepared
-            .iter()
-            .filter(|(asset, _)| asset.kind == "image")
-            .count();
-        let videos = prepared
-            .iter()
-            .filter(|(asset, _)| asset.kind == "video")
-            .count();
         let embedded_audio = prepared
             .iter()
             .filter(|(asset, request)| asset.kind == "video" && request.use_embedded_audio)
             .count();
-        let standalone_audio = prepared
-            .iter()
-            .filter(|(asset, _)| asset.kind == "audio")
-            .count();
-        if images > 9 || videos > 3 || embedded_audio + standalone_audio > 3 {
-            return Err(StudioError::Invalid(
-                "H3 supports at most 9 pictures, 3 videos, and 3 audio signals per movie".into(),
-            ));
-        }
         let project_root = self.project_dir(project_id).join("references");
-        let mut picture_index = 0usize;
-        let mut video_index = 0usize;
-        let mut embedded_index = 0usize;
+        let mut picture_index = existing
+            .iter()
+            .filter(|reference| reference.kind == "image")
+            .count();
+        let mut video_index = existing
+            .iter()
+            .filter(|reference| reference.kind == "video")
+            .count();
+        let existing_audio = existing
+            .iter()
+            .filter(|reference| reference.kind == "audio" || reference.use_embedded_audio)
+            .count();
+        let mut embedded_index = existing_audio;
         let mut standalone_index = 0usize;
         let mut result = Vec::with_capacity(prepared.len());
         for (asset, request) in prepared {
@@ -1157,7 +1198,7 @@ impl MovieStudio {
                 }
                 "audio" => {
                     standalone_index += 1;
-                    let index = embedded_audio + standalone_index;
+                    let index = existing_audio + embedded_audio + standalone_index;
                     (
                         format!("<Audio {index}>"),
                         String::new(),
@@ -1554,6 +1595,26 @@ impl MovieStudio {
             })
             .collect::<Vec<_>>();
         let mut graph_references = Vec::with_capacity(selected_references.len());
+        validate_h3_reference_counts(
+            selected_references
+                .iter()
+                .filter(|(reference, _)| reference.kind == "image")
+                .count(),
+            selected_references
+                .iter()
+                .filter(|(reference, _)| reference.kind == "video")
+                .count(),
+            selected_references
+                .iter()
+                .filter(|(reference, selection)| {
+                    reference.kind == "audio"
+                        || (reference.kind == "video"
+                            && selection
+                                .map(|selection| selection.use_audio)
+                                .unwrap_or(reference.use_embedded_audio))
+                })
+                .count(),
+        )?;
         for (reference, selection) in &selected_references {
             if selection.is_some_and(|selection| {
                 reference.kind == "video" && selection.use_audio && !selection.use_visual
@@ -1634,6 +1695,17 @@ impl MovieStudio {
             ref_image_size: &project.settings.ref_image_size,
             preview_available,
         });
+        if let Some(id) = variant.filter(|_| planned.id.starts_with("editor-")) {
+            // The native graph is preserved before submission, including exact endpoint inputs.
+            producer::write_recoverable_json(
+                &self
+                    .project_dir(&project.id)
+                    .join("editor-generations")
+                    .join(id)
+                    .join("graph.json"),
+                &graph,
+            )?;
+        }
         let client_id = format!("kestrel-preview-{}", uuid::Uuid::new_v4().simple());
         let job_id = variant
             .map(|value| format!("{}-{value}", planned.id))
@@ -1763,7 +1835,11 @@ impl MovieStudio {
         let folder = self.project_dir(&project.id);
         let concat_path = folder.join("assembly.txt");
         let mut concat = String::new();
-        for clip in &project.clips {
+        for clip in project
+            .clips
+            .iter()
+            .filter(|clip| !clip.id.starts_with("editor-"))
+        {
             if clip.status == "complete" {
                 concat.push_str(&format!(
                     "file '{}'\n",

@@ -154,18 +154,10 @@ impl MovieStudio {
         let lock = self.project_lock(&request.project_id)?;
         let _guard = lock.lock().await;
         let mut project = self.get(&request.project_id)?;
-        let mut combined = project
-            .references
-            .iter()
-            .map(|reference| ProducerReferenceRequest {
-                asset_id: reference.asset_id.clone(),
-                description: reference.description.clone(),
-                use_embedded_audio: reference.use_embedded_audio,
-                embedded_audio_description: reference.embedded_audio_description.clone(),
-            })
-            .collect::<Vec<_>>();
+        let mut added = Vec::new();
         for reference in request.references {
-            if combined
+            if project
+                .references
                 .iter()
                 .any(|existing| existing.asset_id == reference.asset_id)
             {
@@ -173,14 +165,16 @@ impl MovieStudio {
                     "one of the selected references is already attached to this project".into(),
                 ));
             }
-            combined.push(ProducerReferenceRequest {
+            added.push(ProducerReferenceRequest {
                 asset_id: reference.asset_id,
                 description: reference.description,
                 use_embedded_audio: reference.include_embedded_audio,
                 embedded_audio_description: reference.embedded_audio_description,
             });
         }
-        project.references = self.materialize_references(&project.id, combined)?;
+        let references =
+            self.materialize_reference_additions(&project.id, added, &project.references)?;
+        project.references.extend(references);
         project.detail = format!(
             "{} producer reference{} available. Scene selections were not changed.",
             project.references.len(),
@@ -1222,6 +1216,13 @@ impl MovieStudio {
                 }
             })
             .collect();
+        // Editor auditions have independent durable jobs and are not scene-card projections.
+        project.clips.extend(
+            previous_renders
+                .iter()
+                .filter(|clip| clip.id.starts_with("editor-"))
+                .cloned(),
+        );
         let active_clips = project
             .clips
             .iter()
@@ -1439,6 +1440,27 @@ fn validate_scenes(
             }
             reference.guidance = reference.guidance.trim().into();
         }
+        super::validate_h3_reference_counts(
+            scene
+                .references
+                .iter()
+                .filter(|selection| {
+                    selection.use_visual && known[selection.asset_id.as_str()].kind == "image"
+                })
+                .count(),
+            scene
+                .references
+                .iter()
+                .filter(|selection| {
+                    selection.use_visual && known[selection.asset_id.as_str()].kind == "video"
+                })
+                .count(),
+            scene
+                .references
+                .iter()
+                .filter(|selection| selection.use_audio)
+                .count(),
+        )?;
         result.push(scene);
     }
     Ok(result)
@@ -1584,7 +1606,10 @@ fn nonempty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.into())
 }
 
-fn write_recoverable_json<T: Serialize>(path: &Path, value: &T) -> Result<(), StudioError> {
+pub(super) fn write_recoverable_json<T: Serialize>(
+    path: &Path,
+    value: &T,
+) -> Result<(), StudioError> {
     write_recoverable_bytes(path, &serde_json::to_vec_pretty(value)?)
 }
 
@@ -1608,7 +1633,7 @@ fn write_recoverable_bytes(path: &Path, bytes: &[u8]) -> Result<(), StudioError>
     Ok(())
 }
 
-fn read_recoverable_json<T: DeserializeOwned>(path: &Path) -> Result<T, StudioError> {
+pub(super) fn read_recoverable_json<T: DeserializeOwned>(path: &Path) -> Result<T, StudioError> {
     match fs::read(path) {
         Ok(bytes) => match serde_json::from_slice(&bytes) {
             Ok(value) => Ok(value),
@@ -2010,5 +2035,97 @@ mod tests {
         };
         let error = validate_scenes(vec![scene], &[], "story", 12).unwrap_err();
         assert!(error.to_string().contains("cannot combine"));
+    }
+
+    #[test]
+    fn production_can_keep_more_than_nine_images_but_a_scene_cannot_select_them_all() {
+        let root = tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let references = (0..12)
+            .map(|index| {
+                let id = seed_image_reference(
+                    &studio,
+                    &format!("image-{index}"),
+                    format!("immutable image {index}").as_bytes(),
+                );
+                ProducerReferenceRequest {
+                    asset_id: id,
+                    description: format!("Scene {index} appearance"),
+                    use_embedded_audio: false,
+                    embedded_audio_description: String::new(),
+                }
+            })
+            .collect();
+        let project = studio
+            .create_producer_base(
+                "A long production with many locations.".into(),
+                MovieSettings::default(),
+                references,
+                "test",
+                false,
+            )
+            .unwrap();
+        assert_eq!(project.references.len(), 12);
+        let scene: MovieSceneDraft = serde_json::from_value(serde_json::json!({
+            "id":uuid::Uuid::new_v4().to_string(), "revision":1, "title":"Many locations", "purpose":"A new scene", "durationSeconds":5,
+            "continuityIn":"", "continuityOut":"", "transition":"", "storyRevisionId":"story", "createdAt":"", "updatedAt":"",
+            "h3Prompt":"A quiet coastal landscape.", "references": project.references.iter().take(9).map(|reference| MovieSceneReferenceSelection {
+                asset_id:reference.asset_id.clone(), use_visual:true, use_audio:false, guidance:String::new()
+            }).collect::<Vec<_>>()
+        })).unwrap();
+        validate_scenes(vec![scene.clone()], &project.references, "story", 4096).unwrap();
+        let mut over_limit = scene;
+        over_limit.references.push(MovieSceneReferenceSelection {
+            asset_id: project.references[9].asset_id.clone(),
+            use_visual: true,
+            use_audio: false,
+            guidance: String::new(),
+        });
+        assert!(
+            validate_scenes(vec![over_limit], &project.references, "story", 4096)
+                .unwrap_err()
+                .to_string()
+                .contains("9")
+        );
+    }
+
+    #[test]
+    fn scene_projection_keeps_editor_auditions_and_their_existing_placements() {
+        let root = tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let mut project = project(&studio);
+        project.clips = ["old-scene", "editor-placed", "editor-audition"]
+            .iter()
+            .enumerate()
+            .map(|(index, id)| RenderedClip {
+                id: (*id).into(),
+                index: index as u32,
+                title: (*id).into(),
+                prompt: "Preserved prompt".into(),
+                duration_seconds: 5.0,
+                seed: 1,
+                status: "complete".into(),
+                path: format!("{id}.mp4"),
+                error: String::new(),
+                versions: vec![],
+            })
+            .collect();
+        project.edit.clips = ["old-scene", "editor-placed"].iter().enumerate().map(|(order,id)| serde_json::from_value(serde_json::json!({"id":format!("edit-{order}"),"clipId":id,"enabled":true,"order":order,"trimStart":0,"trimEnd":0})).unwrap()).collect();
+        studio.save(&project).unwrap();
+        let workspace = studio.get_producer_workspace(&project.id).unwrap();
+        studio
+            .sync_scene_plan(&project.id, &workspace, None)
+            .unwrap();
+        let updated = studio.get(&project.id).unwrap();
+        assert_eq!(
+            updated
+                .clips
+                .iter()
+                .map(|clip| clip.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["editor-placed", "editor-audition"]
+        );
+        assert_eq!(updated.edit.clips.len(), 1);
+        assert_eq!(updated.edit.clips[0].clip_id, "editor-placed");
     }
 }

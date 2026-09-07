@@ -88,9 +88,8 @@ impl LivePreviewRegistry {
     }
 
     fn record(&self, event: &MovieRenderPreviewEvent) {
-        let Some(project_id) = event.project_id.as_ref() else {
-            return;
-        };
+        let asset_key = format!("image:{}", event.job_id);
+        let project_id = event.project_id.as_ref().unwrap_or(&asset_key);
         if let Ok(mut previews) = self.movie_projects.lock() {
             if !previews.contains_key(project_id) && previews.len() >= MAX_RETAINED_MOVIE_PREVIEWS {
                 if let Some(oldest) = previews
@@ -185,7 +184,7 @@ impl PreviewTarget {
 }
 
 pub(super) struct LivePreviewSession {
-    app: AppHandle,
+    app: Option<AppHandle>,
     target: PreviewTarget,
     registry: LivePreviewRegistry,
     terminal: AtomicBool,
@@ -226,13 +225,13 @@ impl LivePreviewSession {
         target: PreviewTarget,
         registry: &LivePreviewRegistry,
     ) -> Option<Self> {
-        let app = app?.clone();
+        let app = app.cloned();
         let url = format!("ws://127.0.0.1:8188/ws?clientId={client_id}");
         let (stream, _) = match tokio_tungstenite::connect_async(&url).await {
             Ok(value) => value,
             Err(error) => {
                 emit_preview_event(
-                    Some(&app),
+                    app.as_ref(),
                     registry,
                     target.event(
                         "unavailable",
@@ -250,7 +249,7 @@ impl LivePreviewSession {
         let task = tokio::spawn(async move {
             let (_, mut reader) = stream.split();
             emit_preview_event(
-                Some(&task_app),
+                task_app.as_ref(),
                 &task_registry,
                 task_target.event(
                     "connected",
@@ -266,14 +265,14 @@ impl LivePreviewSession {
                             Ok(message) if message.is_text() => {
                                 if let Ok(text) = message.into_text() {
                                     if let Some(event) = parse_preview_message(&text, &task_target) {
-                                        emit_preview_event(Some(&task_app), &task_registry, event);
+                                        emit_preview_event(task_app.as_ref(), &task_registry, event);
                                     }
                                 }
                             }
                             Ok(message) if message.is_close() => break,
                             Err(error) => {
                                 emit_preview_event(
-                                    Some(&task_app),
+                                    task_app.as_ref(),
                                     &task_registry,
                                     task_target.event("unavailable", format!("The local live preview stream closed: {error}")),
                                 );
@@ -298,7 +297,7 @@ impl LivePreviewSession {
     pub(super) fn finish(&self) {
         self.terminal.store(true, Ordering::Release);
         emit_preview_event(
-            Some(&self.app),
+            self.app.as_ref(),
             &self.registry,
             self.target.event(
                 "finished",
@@ -313,7 +312,7 @@ impl Drop for LivePreviewSession {
     fn drop(&mut self) {
         if !self.terminal.swap(true, Ordering::AcqRel) {
             emit_preview_event(
-                Some(&self.app),
+                self.app.as_ref(),
                 &self.registry,
                 self.target.event(
                     "stopped",

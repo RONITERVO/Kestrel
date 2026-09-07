@@ -40,6 +40,9 @@ unapplied suggestion until a typed native boundary saves it.
 | `producer/batch.rs` | Native queue validation, durable checkpoints and append receipts | Inference or automatic resume |
 | `producer_chat/batch.rs` | Fixed sequential one-scene requests using the shared inference gate | Model-selected scheduling, media selection or rendering |
 | `export.rs` | Bounded FFmpeg groups and manifest assembly | Creative decisions or source mutation |
+| `editor.rs` | Frozen endpoint jobs, one-shot writing, immutable editor masters and guarded placement | Agent loops or model-selected references/settings |
+| `editor_timeline.rs` | Timeline-to-source endpoint resolution and ripple replacement | Inference, rendering or filesystem mutation |
+| `editor_media.rs` | Fit the entire H3 frame grid to the selected duration while retaining its final frame | Original master mutation |
 | `prompt_draft.rs` | Tool-free image/reference/music drafting from producer context | Applying proposals, movie-scene mutation, or rendering |
 | `model_stream.rs` | OpenAI-compatible SSE framing and explicit reasoning-channel extraction | Feature prompts, schemas, or persistence |
 | `image_assets.rs` | Durable H3 pseudo-image generations and exact graph/receipt provenance | Story or scene authority |
@@ -119,6 +122,28 @@ Never let UI state decide whether an old render still matches a scene.
 
 Preview frames are approximate process-local state. Starting a render clears the previous estimate;
 the preserved full-VAE master and receipts remain durable truth.
+
+## Editor generations and later assets
+
+The editor accepts timeline ranges in seconds or time notation, including decimal commas.
+Native code validates and saves the edit, resolves trims, speed and source versions, and extracts
+immutable first/last PNGs. A producer can preview endpoints or generate immediately. One tool-free
+response expands the direction using the two scenes' written context; it never claims to see frames.
+The runtime releases its lease and unloads before H3 receives the native endpoint graph.
+
+Each `editor-generations/<uuid>/job.json` preserves the frozen edit, settings, source/frame hashes,
+partial writing, selected destination and completion status. The exact model request and H3 graph
+are saved beside it. `raw/*.mp4` preserves the full H3 output; `take.mp4` fits its complete frame grid
+to the requested duration, with a media receipt, instead of discarding the conditioned final frames.
+Durations resolve to the nearest 24-fps frame. Completed takes remain in Masters across scene saves.
+Replacement compares the saved edit hash, preserves the prior edit, splits range endpoints and
+ripples later markers. A changed timeline keeps the take as an audition. Restart never resumes work.
+
+Image creation is available in launch attachments, scene references, both frame selectors, and
+the editor reference browser. Production libraries may contain 4096 assets; H3's 9-picture,
+3-video and 3-audio-signal limits apply to each selected scene. New attachments only materialize
+new assets. Native graphs always renumber the selected references. The shared preview retains
+approximate frames through view remounts for both movie and image jobs.
 
 ## Long productions
 

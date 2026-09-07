@@ -1,5 +1,6 @@
 // New application contracts are generated from Rust. The declarations below the generated
 // imports are a quarantined migration set; do not add durable state or IPC types here.
+export type { MovieEditorEndpoint, MovieEditorGenerateRequest, MovieEditorJob, MovieEditorJobStatus, MovieEditorPlacement, MovieEditorRangeRequest, MovieEditorState } from "@kestrel/generated-bindings";
 import type {
   AppSnapshot,
   ChatMessage,

@@ -25,6 +25,23 @@ const movieEdit = (clips: ClipEdit[]): MovieEdit => ({
 afterEach(cleanup);
 
 describe("movie timeline decisions", () => {
+  it("lets the producer undo a completed native replacement while keeping both masters", () => {
+    const edit = movieEdit([decision("a", "one", 0)]);
+    const current: MovieProject = { ...project, title: "Movie", references: [], settings: {
+      width: 768, height: 448, clipSeconds: 5, steps: 20, maxClips: 4096, seed: 0,
+      temperature: .45, topP: .9, topK: 20, thinkingBudget: 32768,
+      maxOutputTokens: 32768, comfyRoot: "", refImageSize: "match",
+    }, edit };
+    const onChange = vi.fn();
+    const view = render(createElement(MovieTimeline, { project: current, value: edit, disabled: false, onChange }));
+    expect(screen.getByRole("button", { name: "Undo timeline change" })).toBeDisabled();
+    const replacement = movieEdit([decision("generated", "two", 0)]);
+    view.rerender(createElement(MovieTimeline, { project: { ...current, edit: replacement }, value: replacement, disabled: false, onChange }));
+    fireEvent.click(screen.getByRole("button", { name: "Undo timeline change" }));
+    expect(onChange).toHaveBeenLastCalledWith(edit);
+    expect(current.clips.map((clip) => clip.id)).toEqual(["one", "two"]);
+  });
+
   it("keeps a two-hour timeline bounded while exposing later masters and track edits", () => {
     const clips = Array.from({ length: 1440 }, (_, index) => ({ ...project.clips[1], id: `clip-${index}`, title: `Scene ${index + 1}`, index }));
     const edit = movieEdit(clips.map((clip, index) => decision(`edit-${index}`, clip.id, index)));

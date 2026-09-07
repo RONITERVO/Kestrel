@@ -971,7 +971,20 @@ fn get_movie_render_state(
     );
     state
         .studio
-        .movie_render_state(&id, registered && render_phase)
+        .movie_render_state(
+            &id,
+            registered
+                && (render_phase
+                    || state.studio.editor_state(&id).is_ok_and(|state| {
+                        state.jobs.iter().any(|job| {
+                            matches!(
+                                job.status,
+                                models::MovieEditorJobStatus::Writing
+                                    | models::MovieEditorJobStatus::Rendering
+                            )
+                        })
+                    })),
+        )
         .map_err(|error| error.to_string())
 }
 
@@ -1013,6 +1026,22 @@ async fn pick_movie_reference_files(
     })
     .await
     .map_err(|error| format!("Reference import stopped unexpectedly: {error}"))
+}
+
+#[tauri::command]
+fn get_movie_image_asset_render_state(
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<MovieRenderState, String> {
+    let active = state
+        .image_asset_jobs
+        .lock()
+        .map_err(|_| "Image generation registry is unavailable".to_string())?
+        .contains_key(&request_id);
+    state
+        .studio
+        .image_asset_render_state(&request_id, active)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1137,6 +1166,84 @@ async fn render_movie_scenes(
         .insert(id.clone(), cancel.clone());
     spawn_movie_render(app, id, cancel);
     Ok(project)
+}
+
+#[tauri::command]
+fn get_movie_editor_state(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<models::MovieEditorState, String> {
+    state
+        .studio
+        .editor_state(&id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn prepare_movie_editor_range(
+    request: models::MovieEditorRangeRequest,
+    edit: MovieEdit,
+    state: State<'_, AppState>,
+) -> Result<models::MovieEditorJob, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .prepare_editor_range(request, edit)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn start_movie_editor_generation(
+    request: models::MovieEditorGenerateRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    ensure_workspace_idle(&state)?;
+    let models = state.models.read().await.clone();
+    state
+        .studio
+        .validate_editor_generation(&request, &models)
+        .map_err(|error| error.to_string())?;
+    let settings = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    state
+        .work_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another local AI or Studio job is already active.".to_string())?;
+    let cancel = CancellationToken::new();
+    let project_id = request.project_id.clone();
+    let job_id = request.job_id.clone();
+    state
+        .movie_jobs
+        .lock()
+        .map_err(|_| {
+            state.work_active.store(false, Ordering::Release);
+            "Movie job registry is unavailable".to_string()
+        })?
+        .insert(project_id.clone(), cancel.clone());
+    tauri::async_runtime::spawn(async move {
+        let managed = app.state::<AppState>();
+        let _guard = WorkGuard(&managed.work_active);
+        release_all_comfy_memory(&managed).await;
+        let _ = managed
+            .studio
+            .generate_editor_take(
+                request,
+                &managed.runtime,
+                &models,
+                &settings,
+                &cancel,
+                Some(&app),
+            )
+            .await;
+        if let Ok(mut jobs) = managed.movie_jobs.lock() {
+            jobs.remove(&project_id);
+        };
+    });
+    Ok(job_id)
 }
 
 fn spawn_movie_render(app: AppHandle, id: String, cancel: CancellationToken) {
@@ -3567,6 +3674,7 @@ pub fn run() {
             start_studio_prompt_draft,
             cancel_studio_prompt_draft,
             get_movie_render_state,
+            get_movie_image_asset_render_state,
             pick_movie_reference_files,
             list_movie_image_assets,
             start_movie_image_asset,
@@ -3574,6 +3682,9 @@ pub fn run() {
             render_movie_scenes,
             cancel_movie_render,
             save_movie_edits,
+            get_movie_editor_state,
+            prepare_movie_editor_range,
+            start_movie_editor_generation,
             render_movie_edit,
             reveal_movie,
             list_music_projects,
