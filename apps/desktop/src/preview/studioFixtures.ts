@@ -8,7 +8,7 @@ export const sampleImage = {
   highLevelDescription: "A restrained yellow and black exhibition poster with generous margins.",
   style: { mode: "art", aesthetics: "Swiss editorial grid", lighting: "Flat graphic light", photo: "", artStyle: "Geometric illustration", medium: "Risograph print", colorPalette: ["#111111", "#F2C14E"] },
   background: "Matte black paper", elements: [{ id: "preview-title", kind: "text", bbox: [80, 100, 320, 900], text: "NIGHT / FORM", description: "Large upright bold sans-serif title", colorPalette: ["#F2C14E"] }],
-  settings: { width: 1024, height: 1024, preset: "square", seed: 42, batchSize: 1, comfyRoot: "" },
+  settings: { width: 1024, height: 1024, preset: "standard", seed: 42, batchSize: 1, comfyRoot: "" },
   takes: [], activeTakeId: "", licenseNotice: "Sample composition; no generated media.",
 } satisfies ImageProject;
 
@@ -19,7 +19,7 @@ export const sampleMusic = {
     { id: "preview-verse", tag: "Verse", name: "Verse 1", bars: 8, lyrics: "Across the water, one light stays\nA quiet signal through the haze", direction: "Close voice and soft piano" },
     { id: "preview-chorus", tag: "Chorus", name: "Chorus", bars: 8, lyrics: "Keep the light on\nI am coming home", direction: "Open the harmony" },
   ],
-  settings: { maxDurationSeconds: 120, steps: 32, cfgScale: 3, topK: 50, seed: 42, tiledDecode: true, modelVariant: "", comfyRoot: "" },
+  settings: { maxDurationSeconds: 120, steps: 32, cfgScale: 3, topK: 50, seed: 42, tiledDecode: true, modelVariant: "auto", comfyRoot: "" },
   midi: { executablePath: "", modelPath: "", instruments: "piano" }, takes: [], activeTakeId: "",
 } satisfies MusicProject;
 
