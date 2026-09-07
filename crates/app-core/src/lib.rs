@@ -1354,7 +1354,8 @@ impl Default for MovieProducerProjectSettings {
             thinking_budget: settings.thinking_budget,
             max_output_tokens: settings.max_output_tokens,
             context_window: None,
-            comfy_root: settings.comfy_root,
+            // Installation paths arrive in bootstrap, never in generated portable defaults.
+            comfy_root: String::new(),
             ref_image_size: settings.ref_image_size,
         }
     }

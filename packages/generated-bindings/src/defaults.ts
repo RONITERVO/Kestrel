@@ -5,7 +5,7 @@ import type { RuntimePolicyCatalog } from "./RuntimePolicyCatalog.js";
 import type { ExternalCollaborationFormat } from "./ExternalCollaborationFormat.js";
 export const movieProducerDefaults: MovieProducerProjectSettings = {
   "clipSeconds": 5,
-  "comfyRoot": "C:\\Users\\ronit\\Kestrel AI\\ComfyUI_windows_portable\\ComfyUI",
+  "comfyRoot": "",
   "height": 448,
   "maxClips": 4096,
   "maxOutputTokens": 32768,
