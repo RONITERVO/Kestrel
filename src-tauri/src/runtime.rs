@@ -9,7 +9,6 @@ use crate::models::{
     ControlSettings, EngineCandidate, ManagedRuntimeSnapshot, ResearchSettings, RuntimeLog,
 };
 use reqwest::Client;
-use serde_json::json;
 use sha2::Digest;
 use std::{
     collections::{HashSet, VecDeque},
@@ -19,7 +18,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
@@ -583,7 +582,15 @@ pub fn authorized(
 
 fn emit_runtime(app: Option<&AppHandle>, phase: &str, detail: &str) {
     if let Some(app) = app {
-        let _ = app.emit("runtime-progress", json!({"phase":phase,"detail":detail}));
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::RuntimeProgress>(
+            app,
+            &kestrel_app_core::OperationProgress {
+                phase: Some(phase.into()),
+                detail: detail.into(),
+                stage: None,
+                at: None,
+            },
+        );
     }
 }
 
@@ -615,7 +622,9 @@ fn spawn_log_reader<R>(
                         values.push_back(record.clone());
                     }
                     if let Some(app) = &app {
-                        let _ = app.emit("runtime-log", &record);
+                        let _ = crate::ipc_events::emit::<kestrel_app_core::events::RuntimeLog>(
+                            app, &record,
+                        );
                     }
                     break;
                 }
@@ -633,7 +642,8 @@ fn spawn_log_reader<R>(
                 values.push_back(record.clone());
             }
             if let Some(app) = &app {
-                let _ = app.emit("runtime-log", &record);
+                let _ =
+                    crate::ipc_events::emit::<kestrel_app_core::events::RuntimeLog>(app, &record);
             }
         }
     });

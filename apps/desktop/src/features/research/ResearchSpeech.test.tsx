@@ -1,6 +1,7 @@
+import { speechPreferencesDefaults } from "../../contracts/index";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { demoReport } from "../../app/demo";
+import { demoReport } from "../../preview/fixtures";
 import { ResearchSpeechPlayer } from "./ResearchSpeech";
 import { buildResearchSpeechPassages } from "./researchSpeechContent";
 import { LocalSpeechProvider } from "../speech/LocalSpeechControls";
@@ -16,6 +17,9 @@ const speechApi = vi.hoisted(() => ({
 
 vi.mock("../../platform/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../platform/api")>(),
+  getSpeechPreferences: vi.fn(async () => speechPreferencesDefaults),
+  saveVadSettings: vi.fn(async (vad) => ({ ...speechPreferencesDefaults, vad })),
+  saveResearchSpeechPreferences: vi.fn(async (research) => ({ ...speechPreferencesDefaults, research })),
   getLocalSpeechSnapshot: speechApi.snapshot,
   synthesizeLocalSpeech: speechApi.synthesize,
   alignLocalSpeech: speechApi.align,

@@ -5,6 +5,15 @@
 //! per-instrument media. Optional MuScriptor transcription is an explicit, fixed-argument
 //! audio-to-MIDI export using a producer-supplied executable and locally accepted checkpoint.
 
+pub use kestrel_app_core::music::{
+    CreateMusicProjectRequest, DraftLyricsFromAudioRangeRequest, DraftLyricsFromAudioRangeResult,
+    MusicGenerationEvent, MusicLyricSegment, MusicLyricWord, MusicLyricsDocument,
+    MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult,
+    MusicMidiSettings, MusicProject, MusicSection, MusicSettings, MusicSummary, MusicTake,
+    RepairMusicLyricsRangeRequest, SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest,
+    TranscribeMusicLyricsRequest, TranslateMusicLyricsRequest, TranslateMusicLyricsResult,
+};
+
 use super::music_midi::{
     normalize_midi_document, parse_midi_document, validate_midi_document, write_bytes_recoverable,
     write_midi_document, MusicMidiDocument,
@@ -17,7 +26,7 @@ use crate::local_speech::{SpeechFileTranscription, SpeechTiming};
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -27,11 +36,11 @@ use std::{
     process::Stdio,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-const MUSIC_SCHEMA_VERSION: u32 = 1;
+const MUSIC_SCHEMA_VERSION: u32 = 2;
 const MUSCRIPTOR_MODEL_BYTES: u64 = 5_465_642_136;
 const MAX_MUSIC_TEXT_BYTES: usize = 64 * 1024;
 const MAX_SECTIONS: usize = 64;
@@ -46,286 +55,6 @@ const MUSIC_DIT_INT8: &str = "minimax_music3_dit_int8_convrot.safetensors";
 const MUSIC_DIT_FP16: &str = "minimax_music3_dit_fp16.safetensors";
 const MUSIC_TEXT_ENCODER: &str = "minimax_music3_text_encoder_pruned_int8_convrot.safetensors";
 const MUSIC_VAE: &str = "minimax_music3_dav.safetensors";
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicSettings {
-    pub max_duration_seconds: f64,
-    pub steps: u32,
-    pub cfg_scale: f64,
-    pub top_k: u32,
-    pub seed: u64,
-    pub tiled_decode: bool,
-    pub model_variant: String,
-    pub comfy_root: String,
-}
-
-impl Default for MusicSettings {
-    fn default() -> Self {
-        Self {
-            max_duration_seconds: 120.0,
-            steps: 30,
-            cfg_scale: 1.7,
-            top_k: 50,
-            seed: 0,
-            tiled_decode: true,
-            model_variant: "auto".into(),
-            comfy_root: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicSection {
-    pub id: String,
-    pub tag: String,
-    pub name: String,
-    pub bars: u32,
-    pub lyrics: String,
-    pub direction: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicMidiSettings {
-    pub executable_path: String,
-    pub model_path: String,
-    pub instruments: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicTake {
-    pub id: String,
-    pub created_at: String,
-    pub status: String,
-    pub detail: String,
-    pub error: String,
-    pub path: String,
-    pub bytes: u64,
-    pub sha256: String,
-    pub duration_seconds: f64,
-    pub seed: u64,
-    pub resolved_model: String,
-    pub caption: String,
-    pub lyrics: String,
-    pub prompt_id: String,
-    pub exact_graph: Value,
-    pub midi_path: String,
-    pub midi_receipt_path: String,
-    #[serde(default)]
-    pub midi_source_path: String,
-    #[serde(default)]
-    pub midi_document_path: String,
-    #[serde(default)]
-    pub midi_revision: u32,
-    #[serde(default)]
-    pub lyrics_document_path: String,
-    #[serde(default)]
-    pub lyrics_receipt_path: String,
-    #[serde(default)]
-    pub lyrics_revision: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicProject {
-    pub schema_version: u32,
-    pub id: String,
-    pub title: String,
-    pub idea: String,
-    pub caption: String,
-    pub instrumental: bool,
-    pub sections: Vec<MusicSection>,
-    pub settings: MusicSettings,
-    pub midi: MusicMidiSettings,
-    pub takes: Vec<MusicTake>,
-    pub active_take_id: String,
-    pub status: String,
-    pub phase: String,
-    pub detail: String,
-    pub error: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicSummary {
-    pub id: String,
-    pub title: String,
-    pub status: String,
-    pub updated_at: String,
-    pub take_count: usize,
-    pub active_take_path: String,
-}
-
-impl From<&MusicProject> for MusicSummary {
-    fn from(project: &MusicProject) -> Self {
-        Self {
-            id: project.id.clone(),
-            title: project.title.clone(),
-            status: project.status.clone(),
-            updated_at: project.updated_at.clone(),
-            take_count: project.takes.len(),
-            active_take_path: project
-                .takes
-                .iter()
-                .find(|take| take.id == project.active_take_id)
-                .map(|take| take.path.clone())
-                .unwrap_or_default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateMusicProjectRequest {
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub idea: String,
-    #[serde(default)]
-    pub comfy_root: String,
-    #[serde(default)]
-    pub muscriptor_executable_path: String,
-    #[serde(default)]
-    pub muscriptor_model_path: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicMidiRequest {
-    pub project_id: String,
-    pub take_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveMusicMidiDocumentRequest {
-    pub project_id: String,
-    pub take_id: String,
-    pub document: MusicMidiDocument,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicMidiSaveResult {
-    pub project: MusicProject,
-    pub document: MusicMidiDocument,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicLyricWord {
-    pub value: String,
-    pub start: f64,
-    pub end: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicLyricSegment {
-    pub id: String,
-    pub start: f64,
-    pub end: f64,
-    pub primary: String,
-    #[serde(default)]
-    pub translation: String,
-    #[serde(default)]
-    pub words: Vec<MusicLyricWord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicLyricsDocument {
-    pub schema_version: u32,
-    pub take_id: String,
-    pub source_sha256: String,
-    pub revision: u32,
-    pub language: String,
-    pub source: String,
-    pub transcript: String,
-    pub theme: String,
-    pub show_translation: bool,
-    #[serde(default)]
-    pub translation_language: String,
-    #[serde(default)]
-    pub translation_model_id: String,
-    pub created_at: String,
-    pub updated_at: String,
-    pub segments: Vec<MusicLyricSegment>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicLyricsRequest {
-    pub project_id: String,
-    pub take_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TranscribeMusicLyricsRequest {
-    pub project_id: String,
-    pub take_id: String,
-    pub job_id: String,
-    pub model_id: String,
-    #[serde(default = "default_lyrics_language")]
-    pub language: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepairMusicLyricsRangeRequest {
-    pub project_id: String,
-    pub take_id: String,
-    pub job_id: String,
-    pub model_id: String,
-    #[serde(default = "default_lyrics_language")]
-    pub language: String,
-    pub start_seconds: f64,
-    pub end_seconds: f64,
-    #[serde(default)]
-    pub prompt: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DraftLyricsFromAudioRangeRequest {
-    pub project_id: String,
-    pub take_id: String,
-    pub model_id: String,
-    pub start_seconds: f64,
-    pub end_seconds: f64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DraftLyricsFromAudioRangeResult {
-    pub transcription: String,
-    pub model_id: String,
-    pub model_name: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TranslateMusicLyricsRequest {
-    pub project_id: String,
-    pub take_id: String,
-    pub model_id: String,
-    pub target_language: String,
-    pub lines: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TranslateMusicLyricsResult {
-    pub translations: Vec<String>,
-    pub model_id: String,
-    pub model_name: String,
-}
 
 pub(crate) struct MusicLyricsAudioSource {
     pub path: PathBuf,
@@ -484,41 +213,17 @@ pub fn parse_lyrical_translations(raw_text: &str, expected_count: usize) -> Vec<
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveMusicLyricsDocumentRequest {
-    pub project_id: String,
-    pub take_id: String,
-    pub document: MusicLyricsDocument,
+pub trait MusicGenerationEventPolicy: Sized {
+    fn new(
+        project_id: &str,
+        take_id: &str,
+        kind: &str,
+        phase: &str,
+        detail: impl Into<String>,
+    ) -> Self;
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicLyricsSaveResult {
-    pub project: MusicProject,
-    pub document: MusicLyricsDocument,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicGenerationEvent {
-    pub project_id: String,
-    pub take_id: String,
-    pub kind: String,
-    pub phase: String,
-    pub detail: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub step: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub percent: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub eta_seconds: Option<u64>,
-    pub at: String,
-}
-
-impl MusicGenerationEvent {
+impl MusicGenerationEventPolicy for MusicGenerationEvent {
     fn new(
         project_id: &str,
         take_id: &str,
@@ -592,7 +297,9 @@ impl MusicStudio {
 
     pub fn get(&self, id: &str) -> Result<MusicProject, StudioError> {
         validate_music_id(id)?;
-        read_project(&self.project_dir(id).join("project.json"))
+        let mut project = read_project(&self.project_dir(id).join("project.json"))?;
+        project.schema_version = MUSIC_SCHEMA_VERSION;
+        Ok(project)
     }
 
     pub fn create(&self, request: CreateMusicProjectRequest) -> Result<MusicProject, StudioError> {
@@ -649,7 +356,11 @@ impl MusicStudio {
 
     /// Save only producer-editable state. Generated paths, hashes, receipts, and take history are
     /// durable backend truth and cannot be replaced by a frontend payload.
-    pub fn save_editable(&self, edited: MusicProject) -> Result<MusicProject, StudioError> {
+    pub fn save_editable(
+        &self,
+        edited: impl Into<kestrel_app_core::MusicProjectEdit>,
+    ) -> Result<MusicProject, StudioError> {
+        let edited = edited.into();
         let mut stored = self.get(&edited.id)?;
         if stored.status == "generating" {
             return Err(StudioError::Invalid(
@@ -657,7 +368,6 @@ impl MusicStudio {
                     .into(),
             ));
         }
-        validate_editable(&edited)?;
         stored.title = edited.title.trim().into();
         stored.idea = edited.idea;
         stored.caption = edited.caption;
@@ -673,6 +383,7 @@ impl MusicStudio {
         {
             stored.active_take_id = edited.active_take_id;
         }
+        validate_editable(&stored)?;
         stored.updated_at = Utc::now().to_rfc3339();
         stored.detail =
             "Producer changes are saved. Existing generated takes remain immutable.".into();
@@ -1938,7 +1649,10 @@ impl MusicStudio {
         project.updated_at = Utc::now().to_rfc3339();
         self.persist(project)?;
         if let Some(app) = app {
-            let _ = app.emit("music-project-updated", project.clone());
+            let _ = crate::ipc_events::emit::<kestrel_app_core::events::MusicProject>(
+                app,
+                &project.clone(),
+            );
         }
         Ok(())
     }
@@ -1963,6 +1677,7 @@ impl MusicStudio {
             }
             .into();
             project.phase = "interrupted".into();
+            project.schema_version = MUSIC_SCHEMA_VERSION;
             project.detail = "Kestrel closed during generation. Existing takes and the exact in-progress graph are safe; create a new take when ready.".into();
             project.error.clear();
             if let Some(take) =
@@ -2014,7 +1729,7 @@ impl MusicProgressSession {
                         if !message.is_text() { continue; }
                         let Ok(text) = message.into_text() else { continue; };
                         if let Some(event) = parse_music_progress(&text, &task_project, &task_take, started) {
-                            let _ = task_app.emit("music-generation", event);
+                            let _ = crate::ipc_events::emit::<kestrel_app_core::events::MusicGeneration>(&task_app, &event);
                         }
                     }
                 }
@@ -2104,7 +1819,7 @@ fn parse_music_progress(
 
 fn emit_music(app: Option<&AppHandle>, event: MusicGenerationEvent) {
     if let Some(app) = app {
-        let _ = app.emit("music-generation", event);
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::MusicGeneration>(app, &event);
     }
 }
 
@@ -2129,10 +1844,6 @@ fn default_sections() -> Vec<MusicSection> {
         direction: String::new(),
     })
     .collect()
-}
-
-fn default_lyrics_language() -> String {
-    "auto".into()
 }
 
 fn estimated_lyric_segments(lyrics: &str, duration_seconds: f64) -> Vec<MusicLyricSegment> {
@@ -3975,10 +3686,7 @@ mod tests {
         fs::create_dir_all(executable.parent().unwrap()).unwrap();
         fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
         fs::write(&executable, b"test runner").unwrap();
-        fs::File::create(&checkpoint)
-            .unwrap()
-            .set_len(MUSCRIPTOR_MODEL_BYTES)
-            .unwrap();
+        crate::test_support::sparse_file(&checkpoint, MUSCRIPTOR_MODEL_BYTES);
         let mut settings = MusicMidiSettings {
             executable_path: executable.to_string_lossy().into_owned(),
             model_path: root

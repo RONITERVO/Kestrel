@@ -1,6 +1,5 @@
-use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     sync::{OnceLock, RwLock},
@@ -12,13 +11,7 @@ const VERSION: u32 = 1;
 const MAX_PACK_BYTES: usize = 512 * 1024;
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptPack {
-    pub format: String,
-    pub version: u32,
-    pub prompts: BTreeMap<String, String>,
-}
+pub use kestrel_app_core::PromptPack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptId {

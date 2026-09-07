@@ -1,3 +1,5 @@
+import { movieProducerDefaults } from "../../../contracts/index";
+import type { PendingMovieReference } from "./movieDrafts";
 import {
   ArrowDown, ArrowUp, AudioLines, Check, ChevronDown, CircleStop, Clapperboard,
   Download, FilePenLine, Film, FolderOpen, Library, LoaderCircle, MessageSquare,
@@ -25,17 +27,13 @@ import type {
   ControlSettings, ModelInfo, MovieEdit, MovieProducerWorkspace, MovieReference,
   MovieReferenceAsset, MovieSceneDraft, MovieSceneFrameSource,
   MovieStudioConversation, MovieStudioConversationKind, MovieStudioConversationMode, MovieStudioChatRequest,
-  MovieSummary, PendingMovieReference, ThinkingLevel,
+  MovieSummary, ThinkingLevel,
 } from "../../../contracts/index";
 
 type ProjectWorkspace = "story" | "scenes" | "edit" | "deliver";
 type ChatState = { requestId?: string; kind?: MovieStudioConversationKind; text: string; reasoning: string; status: string };
 
-const defaultSettings = {
-  width: 768, height: 448, clipSeconds: 5, steps: 20, maxClips: 4096, seed: 0,
-  temperature: 0.45, topP: 0.9, topK: 20, thinkingBudget: 32768,
-  maxOutputTokens: 32768, comfyRoot: "", refImageSize: "match" as const,
-};
+const defaultSettings = movieProducerDefaults;
 const emptyChat: ChatState = { text: "", reasoning: "", status: "" };
 
 function requestId(): string {

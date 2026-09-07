@@ -1,3 +1,7 @@
+pub use kestrel_app_core::prompt_draft::{
+    PromptDraftEvent, PromptDraftMode, PromptDraftReceipt, PromptDraftRequest, PromptDraftTarget,
+};
+
 use crate::{
     model::ModelInfo,
     models::{ControlSettings, ThinkingLevel},
@@ -6,10 +10,9 @@ use crate::{
 };
 use chrono::Utc;
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -54,73 +57,6 @@ fn prompt_inference_allowance(settings: &ControlSettings) -> PromptInferenceAllo
         thinking_budget_tokens: thinking_budget,
         visible_output_tokens: visible_output_allowance,
     }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum PromptDraftTarget {
-    Story,
-    ImageAsset,
-    ImageComposition,
-    ReferenceDescription,
-    MusicCaption,
-    MusicLyrics,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum PromptDraftMode {
-    Develop,
-    Continue,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptDraftRequest {
-    pub request_id: String,
-    pub model_id: String,
-    pub target: PromptDraftTarget,
-    pub mode: PromptDraftMode,
-    #[serde(default)]
-    pub story_text: String,
-    #[serde(default)]
-    pub existing_text: String,
-    #[serde(default)]
-    pub asset_name: String,
-    #[serde(default)]
-    pub asset_kind: String,
-    #[serde(default)]
-    pub thinking_level: Option<ThinkingLevel>,
-    #[serde(default)]
-    pub context_window: Option<u32>,
-    #[serde(default)]
-    pub max_output_tokens: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptDraftReceipt {
-    pub target: PromptDraftTarget,
-    pub mode: PromptDraftMode,
-    pub model_id: String,
-    pub messages: Vec<Value>,
-    pub temperature: f64,
-    pub top_p: f64,
-    pub top_k: u32,
-    pub max_tokens: u32,
-    pub exact_request: Value,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptDraftEvent {
-    pub request_id: String,
-    pub kind: String,
-    pub content: Option<String>,
-    pub model_name: Option<String>,
-    pub thinking_level: Option<ThinkingLevel>,
-    pub receipt: Option<PromptDraftReceipt>,
-    pub at: String,
 }
 
 pub struct PromptDraftJob {
@@ -637,9 +573,9 @@ fn emit(
     thinking_level: Option<ThinkingLevel>,
     receipt: Option<PromptDraftReceipt>,
 ) {
-    let _ = app.emit(
-        "studio-prompt-draft",
-        PromptDraftEvent {
+    let _ = crate::ipc_events::emit::<kestrel_app_core::events::StudioPromptDraft>(
+        app,
+        &PromptDraftEvent {
             request_id: request_id.into(),
             kind: kind.into(),
             content: content.map(str::to_owned),

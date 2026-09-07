@@ -241,18 +241,18 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       }));
     } else if (event.kind === "metrics") {
       setStream((current) =>
-        current ? { ...current, metrics: event.data } : current,
+        current ? { ...current, metrics: event.data ?? undefined } : current,
       );
     } else if (event.kind === "context") {
       setStream((current) =>
         current
-          ? { ...current, notice: event.content }
+          ? { ...current, notice: event.content ?? undefined }
           : {
               requestId: event.requestId,
               phase: "preparing context",
               content: "",
               reasoning: "",
-              notice: event.content,
+              notice: event.content ?? undefined,
             },
       );
     } else if (event.kind === "queued" || event.kind === "started") {
@@ -275,7 +275,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
             },
       );
     } else if (["done", "cancelled", "error"].includes(event.kind)) {
-      chatTerminalRef.current = { kind: event.kind, content: event.content };
+      chatTerminalRef.current = { kind: event.kind, content: event.content ?? undefined };
       setStream((current) =>
         current
           ? {

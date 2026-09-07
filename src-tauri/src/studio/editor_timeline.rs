@@ -159,6 +159,7 @@ fn clamp_fades(item: &mut ClipEdit, source_seconds: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kestrel_app_core::TimelineMarker;
     use tempfile::tempdir;
 
     fn fixture(studio: &MovieStudio) -> MovieProject {

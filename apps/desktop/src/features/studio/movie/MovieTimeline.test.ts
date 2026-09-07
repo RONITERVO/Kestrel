@@ -30,7 +30,7 @@ describe("movie timeline decisions", () => {
     const current: MovieProject = { ...project, title: "Movie", references: [], settings: {
       width: 768, height: 448, clipSeconds: 5, steps: 20, maxClips: 4096, seed: 0,
       temperature: .45, topP: .9, topK: 20, thinkingBudget: 32768,
-      maxOutputTokens: 32768, comfyRoot: "", refImageSize: "match",
+      maxOutputTokens: 32768, contextWindow: 0, comfyRoot: "", refImageSize: "match",
     }, edit };
     const onChange = vi.fn();
     const view = render(createElement(MovieTimeline, { project: current, value: edit, disabled: false, onChange }));
@@ -48,7 +48,7 @@ describe("movie timeline decisions", () => {
     const longProject: MovieProject = { ...project, title: "Two hours", clips, references: [], settings: {
       width: 768, height: 448, clipSeconds: 5, steps: 20, maxClips: 4096, seed: 0,
       temperature: .45, topP: .9, topK: 20, thinkingBudget: 32768,
-      maxOutputTokens: 32768, comfyRoot: "", refImageSize: "match",
+      maxOutputTokens: 32768, contextWindow: 0, comfyRoot: "", refImageSize: "match",
     }, edit };
     const { container } = render(createElement(MovieTimeline, { project: longProject, value: edit, disabled: false, onChange: vi.fn() }));
     expect(container.querySelectorAll(".editor-media-row")).toHaveLength(80);

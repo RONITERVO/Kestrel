@@ -1,3 +1,5 @@
+import { useSpeechPreferences } from "./useSpeechPreferences";
+import { speechPreferencesDefaults, type ResearchSpeechPreferences } from "../../contracts/index";
 import {
   Check,
   LoaderCircle,
@@ -44,9 +46,6 @@ import {
 } from "./usePipelinedSpeechPlayer";
 import {
   DEFAULT_VAD_SETTINGS,
-  loadVadSettings,
-  normalizeVadSettings,
-  saveVadSettings,
   VoiceActivityDetector,
   type VadSettings,
 } from "./voiceActivityDetection";
@@ -60,6 +59,8 @@ type SpeechContextValue = {
   prepare: () => Promise<LocalSpeechSnapshot>;
   selectedVoiceProfile: VoiceProfile | null;
   openVoiceLibrary: () => void;
+  researchSpeechPreferences: ResearchSpeechPreferences;
+  updateResearchSpeechPreferences: (patch: Partial<ResearchSpeechPreferences>) => void;
   vadSettings: VadSettings;
   updateVadSettings: (updater: Partial<VadSettings> | ((prev: VadSettings) => VadSettings)) => void;
   resetVadSettings: () => void;
@@ -70,8 +71,8 @@ const SpeechContext = createContext<SpeechContextValue | null>(null);
 export function LocalSpeechProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<LocalSpeechSnapshot | null>(null);
   const [voiceLibraryOpen, setVoiceLibraryOpen] = useState(false);
-  const [vadSettings, setVadSettingsState] = useState<VadSettings>(() => loadVadSettings());
-  const vadSettingsRef = useRef(vadSettings);
+  const preferences = useSpeechPreferences();
+  const { vadSettings, updateVadSettings, resetVadSettings, researchSpeechPreferences, updateResearchSpeechPreferences, preferenceError } = preferences;
 
   const refresh = useCallback(async () => {
     const next = await getLocalSpeechSnapshot();
@@ -85,26 +86,6 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
     return next;
   }, []);
 
-  const updateVadSettings = useCallback(
-    (updater: Partial<VadSettings> | ((prev: VadSettings) => VadSettings)) => {
-      const previous = vadSettingsRef.current;
-      const next = normalizeVadSettings(
-        typeof updater === "function" ? updater(previous) : { ...previous, ...updater },
-      );
-      vadSettingsRef.current = next;
-      setVadSettingsState(next);
-      saveVadSettings(next);
-    },
-    [],
-  );
-
-  const resetVadSettings = useCallback(() => {
-    const defaults = { ...DEFAULT_VAD_SETTINGS };
-    vadSettingsRef.current = defaults;
-    setVadSettingsState(defaults);
-    saveVadSettings(defaults);
-  }, []);
-
   useEffect(() => {
     void refresh().catch(() => undefined);
   }, [refresh]);
@@ -116,11 +97,13 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
       prepare,
       selectedVoiceProfile: snapshot?.voiceProfiles.find((profile) => profile.id === snapshot.defaultVoiceProfileId) ?? snapshot?.voiceProfiles[0] ?? null,
       openVoiceLibrary: () => setVoiceLibraryOpen(true),
+      researchSpeechPreferences,
+      updateResearchSpeechPreferences,
       vadSettings,
       updateVadSettings,
       resetVadSettings,
     }),
-    [prepare, refresh, resetVadSettings, snapshot, updateVadSettings, vadSettings],
+    [prepare, refresh, resetVadSettings, snapshot, updateVadSettings, vadSettings, researchSpeechPreferences, updateResearchSpeechPreferences],
   );
 
   const updateVoiceLibrary = useCallback((library: VoiceLibrarySnapshot) => {
@@ -131,7 +114,7 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
     } : current);
   }, []);
 
-  return <SpeechContext.Provider value={value}>{children}{voiceLibraryOpen && snapshot && <VoiceLibraryDialog snapshot={{ profiles: snapshot.voiceProfiles, defaultProfileId: snapshot.defaultVoiceProfileId }} onSnapshot={updateVoiceLibrary} onClose={() => setVoiceLibraryOpen(false)} />}</SpeechContext.Provider>;
+  return <SpeechContext.Provider value={value}>{preferenceError && <div role="alert">{preferenceError}</div>}{children}{voiceLibraryOpen && snapshot && <VoiceLibraryDialog snapshot={{ profiles: snapshot.voiceProfiles, defaultProfileId: snapshot.defaultVoiceProfileId }} onSnapshot={updateVoiceLibrary} onClose={() => setVoiceLibraryOpen(false)} />}</SpeechContext.Provider>;
 }
 
 export function useSpeech() {
@@ -143,6 +126,8 @@ export function useSpeech() {
       prepare: prepareLocalSpeech,
       selectedVoiceProfile: null,
       openVoiceLibrary: () => undefined,
+      researchSpeechPreferences: speechPreferencesDefaults.research,
+      updateResearchSpeechPreferences: () => undefined,
       vadSettings: DEFAULT_VAD_SETTINGS,
       updateVadSettings: () => undefined,
       resetVadSettings: () => undefined,

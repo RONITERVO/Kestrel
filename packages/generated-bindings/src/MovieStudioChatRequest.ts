@@ -4,4 +4,4 @@ import type { MovieStudioConversationKind } from "./MovieStudioConversationKind.
 import type { MovieStudioConversationMode } from "./MovieStudioConversationMode.js";
 import type { ThinkingLevel } from "./ThinkingLevel.js";
 
-export type MovieStudioChatRequest = { requestId: string, projectId: string, kind: MovieStudioConversationKind, mode: MovieStudioConversationMode, conversationId?: string, modelId: string, instruction: string, storyRevisionId?: string, selectedSceneIds: Array<string>, thinkingLevel?: ThinkingLevel, sceneBatch?: MovieSceneBatchRequest, };
+export type MovieStudioChatRequest = { requestId: string, projectId: string, kind: MovieStudioConversationKind, mode: MovieStudioConversationMode, conversationId?: string | null, modelId: string, instruction: string, storyRevisionId?: string | null, selectedSceneIds: Array<string>, thinkingLevel?: ThinkingLevel | null, sceneBatch?: MovieSceneBatchRequest, };

@@ -9,8 +9,11 @@
 //! GpuClean's `taskkill /PID <pid> /F` path; if it fails, Kestrel exposes that exact command for an
 //! administrator PowerShell instead of attempting a broader or less verifiable fallback.
 
+pub use kestrel_app_core::gpu::{
+    GpuCleanupFailure, GpuMemoryExclusion, GpuMemoryProcess, VramCleanupPreview, VramCleanupResult,
+};
+
 use crate::{models::GpuSnapshot, services};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -119,59 +122,6 @@ pub enum GpuMemoryError {
     QueryFailed(String),
     #[error("NVIDIA reported more than {MAX_GPU_PROCESSES} GPU processes. Close GPU applications manually, then try again")]
     TooManyProcesses,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct GpuMemoryProcess {
-    pub pid: u32,
-    pub name: String,
-    pub executable_path: String,
-    pub memory_mib: u64,
-    pub kind: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VramCleanupPreview {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gpu: Option<GpuSnapshot>,
-    pub candidates: Vec<GpuMemoryProcess>,
-    pub exclusions: Vec<GpuMemoryExclusion>,
-    pub candidate_memory_mib: u64,
-    pub protected_process_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct GpuMemoryExclusion {
-    pub process: GpuMemoryProcess,
-    pub reason: String,
-    pub can_include: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GpuCleanupFailure {
-    pub process: GpuMemoryProcess,
-    pub detail: String,
-    pub can_force_close: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub powershell_command: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VramCleanupResult {
-    pub attempted: Vec<GpuMemoryProcess>,
-    pub terminated: Vec<GpuMemoryProcess>,
-    pub failed: Vec<GpuCleanupFailure>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub before_gpu: Option<GpuSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub after_gpu: Option<GpuSnapshot>,
-    pub freed_mib: u64,
-    pub message: String,
 }
 
 #[derive(Debug, Clone, Default)]

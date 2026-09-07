@@ -1,7 +1,8 @@
+pub use kestrel_app_core::live_preview::{MovieRenderPreviewEvent, MovieRenderState};
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
 use futures_util::StreamExt;
-use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -10,7 +11,7 @@ use std::{
         Arc, Mutex,
     },
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -22,51 +23,6 @@ pub(super) const PREVIEW_DECODER_SHA256: &str =
 const MAX_ENCODED_PREVIEW_BYTES: usize = 12 * 1024 * 1024;
 const MAX_DECODED_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RETAINED_MOVIE_PREVIEWS: usize = 4;
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieRenderPreviewEvent {
-    pub kind: String,
-    pub target: String,
-    pub job_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clip_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clip_index: Option<usize>,
-    pub detail: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub step: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fps: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub step_ms: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub average_step_ms: Option<f64>,
-    pub preview_node_revision: &'static str,
-    pub preview_decoder_revision: &'static str,
-    pub preview_decoder_sha256: &'static str,
-    pub at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieRenderState {
-    pub active: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preview: Option<MovieRenderPreviewEvent>,
-}
 
 /// Process-local handoff for approximate preview frames. The full-VAE master remains the only
 /// durable picture truth; this bounded registry lets a remounted Studio window reconnect to the
@@ -199,7 +155,8 @@ fn emit_preview_event(
 ) {
     registry.record(&event);
     if let Some(app) = app {
-        let _ = app.emit("movie-render-preview", event);
+        let _ =
+            crate::ipc_events::emit::<kestrel_app_core::events::MovieRenderPreview>(app, &event);
     }
 }
 

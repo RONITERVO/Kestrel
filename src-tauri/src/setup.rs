@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -2853,9 +2853,9 @@ fn emit(
     total_bytes: u64,
     bytes_per_second: u64,
 ) {
-    let _ = app.emit(
-        "setup-progress",
-        SetupProgress {
+    let _ = crate::ipc_events::emit::<kestrel_app_core::events::SetupProgress>(
+        app,
+        &SetupProgress {
             component: component.into(),
             stage: stage.into(),
             detail: detail.into(),
@@ -2908,10 +2908,10 @@ mod tests {
             .unwrap();
         let nested = root.path().join("ComfyUI/models/diffusion_models");
         fs::create_dir_all(&nested).unwrap();
-        fs::File::create(nested.join(&music.download.file_name))
-            .unwrap()
-            .set_len(music.download.bytes)
-            .unwrap();
+        crate::test_support::sparse_file(
+            nested.join(&music.download.file_name),
+            music.download.bytes,
+        );
         fs::File::create(nested.join("large-v3-turbo.pt"))
             .unwrap()
             .set_len(1)
@@ -2954,26 +2954,17 @@ mod tests {
         for asset in h3_assets() {
             let path = comfy.join("models").join(asset.relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::File::create(path)
-                .unwrap()
-                .set_len(asset.bytes)
-                .unwrap();
+            crate::test_support::sparse_file(path, asset.bytes);
         }
         for asset in speech_assets() {
             let path = comfy.join(asset.relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::File::create(path)
-                .unwrap()
-                .set_len(asset.download.bytes)
-                .unwrap();
+            crate::test_support::sparse_file(path, asset.download.bytes);
         }
         for asset in ideogram_assets() {
             let path = comfy.join(asset.relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::File::create(path)
-                .unwrap()
-                .set_len(asset.download.bytes)
-                .unwrap();
+            crate::test_support::sparse_file(path, asset.download.bytes);
         }
         for path in [
             comfy.join("comfy_extras/nodes_ideogram4.py"),
@@ -2984,10 +2975,7 @@ mod tests {
         }
         let decoder = comfy.join("models/vae_approx/taeh3.safetensors");
         fs::create_dir_all(decoder.parent().unwrap()).unwrap();
-        fs::File::create(decoder)
-            .unwrap()
-            .set_len(h3_preview_decoder().bytes)
-            .unwrap();
+        crate::test_support::sparse_file(decoder, h3_preview_decoder().bytes);
         let preview = comfy.join("custom_nodes/ComfyUI-KJNodes/nodes");
         fs::create_dir_all(&preview).unwrap();
         let preview_node = preview.join("preview_override_node.py");
@@ -3163,10 +3151,7 @@ mod tests {
         fs::create_dir_all(executable.parent().unwrap()).unwrap();
         fs::create_dir_all(model.parent().unwrap()).unwrap();
         fs::write(&executable, b"runner").unwrap();
-        fs::File::create(&model)
-            .unwrap()
-            .set_len(MUSCRIPTOR_MODEL_BYTES)
-            .unwrap();
+        crate::test_support::sparse_file(&model, MUSCRIPTOR_MODEL_BYTES);
         fs::write(&marker, format!("{MUSCRIPTOR_SETUP_REVISION}\n")).unwrap();
         let research = ResearchSettings {
             install_root: root.path().to_string_lossy().into_owned(),

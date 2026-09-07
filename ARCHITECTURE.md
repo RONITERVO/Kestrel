@@ -19,7 +19,8 @@ apps/
     src/features/           feature-owned UI and view helpers
     src/shared/             reusable presentation/collaboration components
     src/platform/           typed IPC adapter
-    src/contracts/          generated-contract facade and shrinking legacy quarantine
+    src/contracts/          re-exports of generated Rust contracts and values
+    src/preview/            development-only, typed sample data
 
 crates/
   app-core/                 Rust-owned durable and IPC-visible core contracts/policies
@@ -34,8 +35,8 @@ scripts/                    verification, binding generation, packaging, accepta
 `src-tauri` deliberately remains one composition crate while its most safety-sensitive authorities
 share the process-wide work lock and `RuntimeManager` inference semaphore. Splitting it into many
 crates before ports and ownership are explicit would hide cycles without creating isolation. New
-pure durable contracts go into `crates/app-core`; the next extraction candidates are research,
-workspace storage, runtime/model management, and Studio project models. FFmpeg and ComfyUI become
+durable and UI-facing contracts live in `crates/app-core`, including Studio, speech, download and
+GPU data. Native execution remains in the feature service modules. FFmpeg and ComfyUI become
 adapter crates only when their process APIs no longer reach through Studio internals.
 
 The generated boundary is operational, not aspirational:
@@ -43,12 +44,21 @@ The generated boundary is operational, not aspirational:
 1. Add or change the Rust type in `crates/app-core` and derive `TS`.
 2. Run `npm run bindings:generate`.
 3. Import it through `apps/desktop/src/contracts/index.ts`.
-4. `npm run check` rejects stale generated files, direct facade bypasses, duplicate legacy
-   declarations, and additions to the quarantined handwritten contract set.
+4. `npm run check` rejects stale generated files, facade bypasses, duplicated contracts, reversed
+   import layers, browser persistence/network authority, native dependence on UI files, and
+   untyped native event emission. `npm run ui:check` checks the UI using committed bindings without Rust.
 
-The quarantine currently contains pre-existing Studio, speech, download, and GPU DTOs. It may only
-shrink as those types move to Rust generation; adding a new handwritten application contract is an
-architecture-check failure.
+There is no contract quarantine. Actual Tauri command signatures generate argument/result maps;
+the native event registry generates the subscription map and checks emission payloads. The build
+requires every command to appear in the registration table and every boundary type to be exportable.
+Runtime policy/default values are Rust-owned and generated too. Saved speech preferences use native
+recoverable storage, with a read-only import of existing WebView preferences.
+
+The [UI contributor guide](apps/desktop/README.md) provides a browser workflow and directory map.
+The [feature audit and exception register](docs/UI_BOUNDARIES.md) explains view drafts, media APIs,
+clipboard exchange, raw-text editors, opaque receipts and native ownership at each boundary.
+GitHub verification runs a UI job without Rust and a Windows job that compiles native contracts
+and checks regeneration; hosted checks do not substitute for applicable local live-service tests.
 
 The executable is one Tauri application with ten explicit native authorities:
 

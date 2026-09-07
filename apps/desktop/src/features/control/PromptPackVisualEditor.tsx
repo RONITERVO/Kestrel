@@ -1,5 +1,6 @@
 import { AlertTriangle, RotateCcw, Search, Tag, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { PromptPack } from "../../contracts/index";
 
 interface PromptPackVisualEditorProps {
   /** The live, possibly-unsaved prompt pack JSON text shared with the Raw JSON view. */
@@ -66,7 +67,7 @@ function sameMembers(a: Set<string>, b: Set<string>): boolean {
 }
 
 function withPromptValue(jsonText: string, key: string, value: string): string {
-  const parsed = JSON.parse(jsonText) as { prompts: Record<string, string> };
+  const parsed = JSON.parse(jsonText) as PromptPack;
   parsed.prompts = { ...parsed.prompts, [key]: value };
   return JSON.stringify(parsed, null, 2);
 }

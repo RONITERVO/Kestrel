@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { demoSnapshot } from "./demo";
+import { demoSnapshot } from "../preview/fixtures";
 import { mergeAttachments, terminalTaskStatus } from "../features/workspace/OfflineWorkspace";
 import type { ContextAttachment } from "../contracts/index";
 

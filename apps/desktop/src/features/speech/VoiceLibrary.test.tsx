@@ -36,7 +36,7 @@ vi.mock("./voiceReferenceProcessing", async (importOriginal) => ({
 const snapshot: VoiceLibrarySnapshot = {
   defaultProfileId: "voice-default",
   profiles: [
-    { id: "voice-default", name: "Chatterbox Default", language: "Auto", tags: ["Built in"], source: "built-in", consentConfirmed: true, performance: "natural", createdAt: "", updatedAt: "" },
+    { id: "voice-default", name: "Chatterbox Default", language: "Auto", tags: ["Built in"], source: "built-in", consentConfirmed: true, performance: "natural", referenceRelativePath: null, referenceSha256: null, referenceSeconds: null, originalFileName: null, createdAt: "", updatedAt: "" },
     { id: "voice-narrator", name: "Evening Narrator", language: "English", tags: ["Warm"], source: "imported", consentConfirmed: true, performance: "restrained", referenceRelativePath: "voices/objects/a.wav", referenceSha256: "a", referenceSeconds: 12, originalFileName: "voice.wav", createdAt: "2026-01-01", updatedAt: "2026-01-01" },
   ],
 };

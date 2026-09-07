@@ -1,42 +1,10 @@
 import { Pause, Play, SkipBack, SkipForward, Square, Volume2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { SpeechLiveCaption, useSpeech } from "../speech/LocalSpeechControls";
 import { buildResearchSpeechPassages, type ResearchSpeechScope } from "./researchSpeechContent";
 import { type SpeechProgressState } from "../../shared/components/spokenHighlight";
 import type { ResearchReport } from "../../contracts/index";
 import { usePipelinedSpeechPlayer } from "../speech/usePipelinedSpeechPlayer";
-
-const MODEL_KEY = "kestrel.researchSpeech.comfyModel";
-const VOICE_KEY = "kestrel.researchSpeech.voiceProfile";
-const RATE_KEY = "kestrel.researchSpeech.rate";
-const SCOPE_KEY = "kestrel.researchSpeech.scope";
-
-function readPreference(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function savePreference(key: string, value: string) {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // Playback remains available when WebView preference storage is unavailable.
-  }
-}
-
-function initialRate(): number {
-  const saved = readPreference(RATE_KEY);
-  const parsed = saved ? Number(saved) : 1;
-  return Number.isFinite(parsed) && parsed >= 0.8 && parsed <= 1.5 ? parsed : 1;
-}
-
-function initialScope(): ResearchSpeechScope {
-  const saved = readPreference(SCOPE_KEY);
-  return saved === "summary" || saved === "all" ? saved : "article";
-}
 
 interface ResearchSpeechPlayerProps {
   report: ResearchReport;
@@ -45,11 +13,8 @@ interface ResearchSpeechPlayerProps {
 }
 
 export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress }: ResearchSpeechPlayerProps) {
-  const { snapshot, refresh, prepare, openVoiceLibrary } = useSpeech();
-  const [modelId, setModelId] = useState(() => readPreference(MODEL_KEY) ?? "");
-  const [voiceProfileId, setVoiceProfileId] = useState(() => readPreference(VOICE_KEY) ?? "");
-  const [rate, setRate] = useState(initialRate);
-  const [scope, setScope] = useState<ResearchSpeechScope>(initialScope);
+  const { snapshot, refresh, prepare, openVoiceLibrary, researchSpeechPreferences, updateResearchSpeechPreferences } = useSpeech();
+  const { modelId, voiceProfileId, rate, scope } = researchSpeechPreferences;
 
   const passages = useMemo(() => buildResearchSpeechPassages(report, scope), [report, scope]);
   const selectedModel = snapshot?.voices.find((model) => model.id === modelId) ?? snapshot?.voices[0] ?? null;
@@ -114,14 +79,6 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
       .then((next) => {
         if (!active) return;
         player.setDetail(next.detail);
-        const selected = next.voices.find((model) => model.id === modelId) ?? next.voices[0];
-        setModelId(selected?.id ?? "");
-        if (selected) savePreference(MODEL_KEY, selected.id);
-        const voice = next.voiceProfiles.find((profile) => profile.id === voiceProfileId)
-          ?? next.voiceProfiles.find((profile) => profile.id === next.defaultVoiceProfileId)
-          ?? next.voiceProfiles[0];
-        setVoiceProfileId(voice?.id ?? "");
-        if (voice) savePreference(VOICE_KEY, voice.id);
         if (next.narrationAvailable && !next.comfyReady) {
           player.setDetail("Starting the private ComfyUI voice engine in the background...");
           void prepare().then((ready) => {
@@ -145,19 +102,16 @@ export function ResearchSpeechPlayer({ report, onPassageChange, onSpeechProgress
 
   const chooseVoice = (nextVoiceProfileId: string) => {
     player.clearModelCache();
-    setVoiceProfileId(nextVoiceProfileId);
-    savePreference(VOICE_KEY, nextVoiceProfileId);
+    updateResearchSpeechPreferences({ voiceProfileId: nextVoiceProfileId });
   };
 
   const chooseRate = (nextRate: number) => {
     if (!Number.isFinite(nextRate) || nextRate < 0.8 || nextRate > 1.5) return;
-    setRate(nextRate);
-    savePreference(RATE_KEY, String(nextRate));
+    updateResearchSpeechPreferences({ rate: nextRate });
   };
 
   const chooseScope = (nextScope: ResearchSpeechScope) => {
-    setScope(nextScope);
-    savePreference(SCOPE_KEY, nextScope);
+    updateResearchSpeechPreferences({ scope: nextScope });
   };
 
   const unavailable = !snapshot?.narrationAvailable || !selectedModel || !selectedVoiceProfile;

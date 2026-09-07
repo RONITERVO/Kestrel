@@ -130,7 +130,7 @@ export function MusicStudio({
         if (!current || current.id !== event.requestId) return current;
         const thinkingLevel = event.thinkingLevel ?? current.thinkingLevel;
         if (event.kind === "token") return { ...current, text: current.text + (event.content ?? ""), status: "writing", modelName: event.modelName ?? current.modelName, thinkingLevel };
-        if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt, thinkingLevel };
+        if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt ?? undefined, thinkingLevel };
         if (event.kind === "reasoning") return { ...current, reasoning: appendModelThinking(current.reasoning, event.content ?? ""), status: "thinking", modelName: event.modelName ?? current.modelName, thinkingLevel };
         if (event.kind === "complete") return { ...current, status: "ready", modelName: event.modelName ?? current.modelName, thinkingLevel };
         if (event.kind === "limited") return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName, thinkingLevel };
@@ -190,7 +190,7 @@ export function MusicStudio({
   const create = async () => {
     setCreating(true);
     try {
-      const next = await createMusicProject({ title: newTitle, idea: newIdea, comfyRoot: initialComfyRoot ?? "" });
+      const next = await createMusicProject({ title: newTitle, idea: newIdea, comfyRoot: initialComfyRoot ?? "", muscriptorExecutablePath: "", muscriptorModelPath: "" });
       activeProjectId.current = next.id;
       setProject(next);
       setSelectedSectionId(next.sections[0]?.id ?? "");
@@ -322,7 +322,7 @@ export function MusicStudio({
         existingText: base,
         assetName: "",
         assetKind: "",
-        thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : undefined,
+        thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : null,
         contextWindow: runtimePolicy.contextWindow,
         maxOutputTokens: runtimePolicy.maxOutputTokens,
       });
@@ -709,7 +709,7 @@ export function MusicStudio({
             <summary><span><SlidersHorizontal /> Generation</span><ChevronDown /></summary>
             <fieldset disabled={busy}>
               <label>Maximum length <span>{formatTime(project.settings.maxDurationSeconds)}</span><input aria-label="Maximum song duration" type="range" min={15} max={300} step={1} value={project.settings.maxDurationSeconds} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, maxDurationSeconds: Number(event.target.value) } }))} /></label>
-              {advancedEnabled && <><div className="music-field-row"><label>Steps<input type="number" min={1} max={100} value={project.settings.steps} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 100, (steps) => mutate((current) => ({ ...current, settings: { ...current.settings, steps } })))} /></label><label>Seed<input type="number" min={0} max={2147483647} value={project.settings.seed} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 0, 2147483647, (seed) => mutate((current) => ({ ...current, settings: { ...current.settings, seed } })))} /></label></div><div className="music-field-row"><label>CFG<input type="number" min={0} max={100} step={.1} value={project.settings.cfgScale} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 0, 100, (cfgScale) => mutate((current) => ({ ...current, settings: { ...current.settings, cfgScale } })))} /></label><label>Top K<input type="number" min={1} max={16384} value={project.settings.topK} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 16384, (topK) => mutate((current) => ({ ...current, settings: { ...current.settings, topK } })))} /></label></div><label>Model<select value={project.settings.modelVariant} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, modelVariant: event.target.value as MusicProject["settings"]["modelVariant"] } }))}><option value="auto">Auto · best installed</option><option value="int8">INT8 · lower VRAM</option><option value="fp16">FP16 · maximum fidelity</option></select></label><label className="music-toggle"><input type="checkbox" checked={project.settings.tiledDecode} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, tiledDecode: event.target.checked } }))} /><span><strong>Tiled full-quality decode</strong><small>Lower VRAM; never changes the preserved source format</small></span></label></>}
+              {advancedEnabled && <><div className="music-field-row"><label>Steps<input type="number" min={1} max={100} value={project.settings.steps} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 100, (steps) => mutate((current) => ({ ...current, settings: { ...current.settings, steps } })))} /></label><label>Seed<input inputMode="numeric" pattern="[0-9]*" value={project.settings.seed} onChange={(event) => { const seed = event.currentTarget.value; if (/^\d{0,20}$/.test(seed)) mutate((current) => ({ ...current, settings: { ...current.settings, seed: seed || 0 } })); }} /></label></div><div className="music-field-row"><label>CFG<input type="number" min={0} max={100} step={.1} value={project.settings.cfgScale} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 0, 100, (cfgScale) => mutate((current) => ({ ...current, settings: { ...current.settings, cfgScale } })))} /></label><label>Top K<input type="number" min={1} max={16384} value={project.settings.topK} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 16384, (topK) => mutate((current) => ({ ...current, settings: { ...current.settings, topK } })))} /></label></div><label>Model<select value={project.settings.modelVariant} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, modelVariant: event.target.value as MusicProject["settings"]["modelVariant"] } }))}><option value="auto">Auto · best installed</option><option value="int8">INT8 · lower VRAM</option><option value="fp16">FP16 · maximum fidelity</option></select></label><label className="music-toggle"><input type="checkbox" checked={project.settings.tiledDecode} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, tiledDecode: event.target.checked } }))} /><span><strong>Tiled full-quality decode</strong><small>Lower VRAM; never changes the preserved source format</small></span></label></>}
             </fieldset>
           </details>
 
@@ -726,7 +726,7 @@ export function MusicStudio({
             </fieldset>
           </details>
 
-          {advancedEnabled && activeTake && <details className="music-receipt"><summary><span><Gauge /> Exact generation receipt</span><ChevronDown /></summary><dl><dt>Model</dt><dd>{activeTake.resolvedModel}</dd><dt>Seed</dt><dd>{activeTake.seed}</dd><dt>Prompt ID</dt><dd>{activeTake.promptId}</dd><dt>SHA-256</dt><dd>{activeTake.sha256}</dd></dl><pre>{JSON.stringify(activeTake.exactGraph, null, 2)}</pre></details>}
+          {advancedEnabled && activeTake && <details className="music-receipt"><summary><span><Gauge /> Exact generation receipt</span><ChevronDown /></summary><dl><dt>Model</dt><dd>{activeTake.resolvedModel}</dd><dt>Seed</dt><dd>{activeTake.seed}</dd><dt>Prompt ID</dt><dd>{activeTake.promptId}</dd><dt>SHA-256</dt><dd>{activeTake.sha256}</dd></dl><p>Graph preview. The saved native artifact preserves exact numeric values.</p><pre>{JSON.stringify(activeTake.exactGraph, null, 2)}</pre></details>}
         </div>}
       </aside>
 

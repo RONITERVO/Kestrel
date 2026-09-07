@@ -13,10 +13,13 @@ export function MovieH3Preview({ projectId, assetId, active, onStop }: {
   projectId?: string; assetId?: string; active: boolean; onStop?: () => void;
 }) {
   const [preview, setPreview] = useState<MovieRenderPreviewEvent>();
+  const [failedPreview, setFailedPreview] = useState<MovieRenderPreviewEvent>();
+  const failed = Boolean(preview?.dataUrl && failedPreview?.jobId === preview.jobId && failedPreview?.dataUrl === preview.dataUrl);
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     setPreview(undefined);
+    setFailedPreview(undefined);
     void onMovieRenderPreview((event) => {
       if (!disposed && (assetId ? event.target === "imageAsset" && event.jobId === assetId : event.projectId === projectId && Boolean(projectId))) {
         setPreview((previous) => retainPreview(previous, event));
@@ -30,9 +33,10 @@ export function MovieH3Preview({ projectId, assetId, active, onStop }: {
   if (!active) return null;
   return <section className="movie-h3-preview" aria-label="Live H3 preview">
     <header><strong><Video size={16} /> H3 live preview</strong>{onStop && <button onClick={onStop}><CircleStop size={15} /> Stop</button>}</header>
-    <div className="movie-h3-picture">{preview?.dataUrl ? preview.mimeType === "video/mp4"
-      ? <video src={preview.dataUrl} autoPlay muted loop playsInline />
-      : <img src={preview.dataUrl} alt="Approximate H3 generation preview" />
+    <div className="movie-h3-picture">{preview?.dataUrl ? <>{preview.mimeType === "video/mp4"
+      ? <video src={preview.dataUrl} autoPlay muted loop playsInline hidden={failed} onError={() => setFailedPreview(preview)} onLoadedData={() => setFailedPreview(undefined)} />
+      : <img src={preview.dataUrl} alt="Approximate H3 generation preview" hidden={failed} onError={() => setFailedPreview(preview)} onLoad={() => setFailedPreview(undefined)} />}
+      {failed && <span role="alert">Preview couldn’t play. Rendering continues.</span>}</>
       : <span>{preview?.kind === "unavailable" ? "Preview unavailable" : "Preparing the first preview…"}</span>}</div>
     <p role="status">{preview?.detail ?? "The preview appears when H3 begins sampling. The finished take is saved at full quality."}</p>
     {preview?.kind === "unavailable" && <small>Check the H3 preview components in Setup. The saved render continues.</small>}

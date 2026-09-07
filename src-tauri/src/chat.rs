@@ -11,7 +11,7 @@ use crate::{
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
 pub struct ChatStreamJob {
@@ -363,9 +363,9 @@ fn emit(
     data: Option<Value>,
 ) {
     if let Some(app) = app {
-        let _ = app.emit(
-            "chat-stream",
-            ChatStreamEvent {
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::ChatStream>(
+            app,
+            &ChatStreamEvent {
                 request_id: request_id.to_string(),
                 session_id: session_id.to_string(),
                 kind: kind.to_string(),

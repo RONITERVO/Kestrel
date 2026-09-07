@@ -37,8 +37,9 @@ so a long production does not depend on a local agent coordinating tools or retu
 Rust owns application truth; React owns the current view. The desktop lives in `apps/desktop`,
 Rust-owned cross-feature contracts live in `crates/app-core`, generated TypeScript lives in
 `packages/generated-bindings`, and the native composition root remains in `src-tauri`. See
-[`ARCHITECTURE.md`](ARCHITECTURE.md#repository-and-ownership) for dependency rules and the staged
-extraction plan.
+[`ARCHITECTURE.md`](ARCHITECTURE.md#repository-and-ownership) for dependency rules,
+[`apps/desktop/README.md`](apps/desktop/README.md) for UI work without Rust, and
+[`docs/UI_BOUNDARIES.md`](docs/UI_BOUNDARIES.md) for the feature audit and exception register.
 
 ## Tested local installation
 

@@ -91,7 +91,7 @@ export function ModelDownloader({
     void run(() =>
       startModelDownload({
         url: source,
-        expectedSha256: sha256.trim() || candidate?.sha256 || undefined,
+        expectedSha256: sha256.trim() || candidate?.sha256 || null,
       }),
     );
   };
@@ -324,7 +324,7 @@ function ModelDownloadProgress({
         </div>
         <div>
           <dt>ETA</dt>
-          <dd>{formatDuration(record.etaSeconds)}</dd>
+          <dd>{formatDuration(record.etaSeconds ?? undefined)}</dd>
         </div>
         <div>
           <dt>Retries</dt>

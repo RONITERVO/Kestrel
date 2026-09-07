@@ -3,7 +3,14 @@
 //! Maintainers should read `studio/README.md` before changing model-assisted flows or persistence
 //! boundaries. Child modules own producer state, rendering, media, and editing concerns.
 
-use crate::models::{ControlSettings, ResearchSettings};
+pub use kestrel_app_core::movie::{
+    default_export_preset, default_gain, default_speed, default_target_lufs, ClipEdit, ClipVersion,
+    MovieEdit, MovieExport, MoviePlan, MovieProject, MovieQualityReview, MovieReference,
+    MovieReferenceAsset, MovieReferenceImport, MovieSettings, MovieSummary, PlannedClip,
+    ProducerReferenceRequest, RenderedClip, MAX_MOVIE_SCENES, MOVIE_THINKING_BUDGET,
+};
+
+use crate::models::ControlSettings;
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -15,10 +22,10 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex as StdMutex, OnceLock},
+    sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use thiserror::Error;
 use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
@@ -38,8 +45,8 @@ mod producer;
 mod producer_chat;
 mod prompt_draft;
 pub use image_assets::{
-    emit_image_asset_error, GeneratedImageProvenance, MovieImageAssetGeneration,
-    MovieImageAssetRequest,
+    emit_image_asset_error, MovieImageAssetGeneration, MovieImageAssetRequest,
+    MovieImageAssetRequestPolicy,
 };
 pub use image_studio::{CreateImageProjectRequest, ImageProject, ImageStudio, ImageSummary};
 pub use live_preview::MovieRenderState;
@@ -69,7 +76,7 @@ pub(crate) use prompt_draft::{
 };
 pub use prompt_draft::{PromptDraftJob, PromptDraftRequest};
 
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 pub(super) const MUSIC_COMFY_BASE: &str = "http://127.0.0.1:8189";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -78,55 +85,11 @@ const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
 pub(super) const MAX_MOVIE_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_REFERENCE_SECONDS: f64 = 15.1;
-const MOVIE_THINKING_BUDGET: u32 = 32_768;
-const MAX_MOVIE_SCENES: u32 = 4_096;
+
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const MIN_TIMELINE_SOURCE_SECONDS: f32 = 0.1;
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimePolicyTier {
-    maximum_context_window: u32,
-    maximum_max_output_tokens: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimePolicyLimitsFile {
-    minimum_context_window: u32,
-    minimum_max_output_tokens: u32,
-    standard: RuntimePolicyTier,
-    advanced: RuntimePolicyTier,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct RuntimePolicyLimits {
-    pub minimum_context_window: u32,
-    pub minimum_max_output_tokens: u32,
-    pub maximum_context_window: u32,
-    pub maximum_max_output_tokens: u32,
-}
-
-pub(crate) fn runtime_policy_limits(advanced: bool) -> RuntimePolicyLimits {
-    static LIMITS: OnceLock<RuntimePolicyLimitsFile> = OnceLock::new();
-    let limits = LIMITS.get_or_init(|| {
-        serde_json::from_str(include_str!(
-            "../../apps/desktop/src/features/control/runtimePolicyLimits.json"
-        ))
-        .expect("the shared runtime policy limits must be valid JSON")
-    });
-    let tier = if advanced {
-        limits.advanced
-    } else {
-        limits.standard
-    };
-    RuntimePolicyLimits {
-        minimum_context_window: limits.minimum_context_window,
-        minimum_max_output_tokens: limits.minimum_max_output_tokens,
-        maximum_context_window: tier.maximum_context_window,
-        maximum_max_output_tokens: tier.maximum_max_output_tokens,
-    }
-}
+pub(crate) use kestrel_app_core::runtime_policy_limits;
 
 #[derive(Clone, Copy)]
 pub(crate) enum ComfyWorkload {
@@ -369,161 +332,13 @@ pub enum StudioError {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProducerReferenceRequest {
-    pub asset_id: String,
-    pub description: String,
-    #[serde(default)]
-    pub use_embedded_audio: bool,
-    #[serde(default)]
-    pub embedded_audio_description: String,
+pub trait MovieSettingsPolicy: Sized {
+    fn validate(self, advanced: bool) -> Result<Self, StudioError>;
+    fn runtime_settings_for(&self, base: &ControlSettings, model_id: &str) -> ControlSettings;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieReferenceAsset {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub mime_type: String,
-    pub bytes: u64,
-    pub duration_seconds: f64,
-    pub width: u32,
-    pub height: u32,
-    pub has_audio: bool,
-    pub path: String,
-    pub created_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<GeneratedImageProvenance>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieReference {
-    pub asset_id: String,
-    pub tag: String,
-    #[serde(default)]
-    pub audio_tag: String,
-    pub name: String,
-    pub kind: String,
-    pub mime_type: String,
-    pub bytes: u64,
-    pub duration_seconds: f64,
-    pub width: u32,
-    pub height: u32,
-    pub has_audio: bool,
-    pub path: String,
-    pub description: String,
-    #[serde(default)]
-    pub use_embedded_audio: bool,
-    #[serde(default)]
-    pub embedded_audio_description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<GeneratedImageProvenance>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieReferenceImport {
-    pub references: Vec<MovieReferenceAsset>,
-    pub failures: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieSettings {
-    #[serde(default = "default_width")]
-    pub width: u32,
-    #[serde(default = "default_height")]
-    pub height: u32,
-    #[serde(default = "default_clip_seconds")]
-    pub clip_seconds: f32,
-    #[serde(default = "default_steps")]
-    pub steps: u32,
-    #[serde(default = "default_max_clips")]
-    pub max_clips: u32,
-    #[serde(default)]
-    pub seed: u64,
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
-    #[serde(default = "default_top_p")]
-    pub top_p: f32,
-    #[serde(default = "default_top_k")]
-    pub top_k: u32,
-    #[serde(default = "default_thinking")]
-    pub thinking_budget: u32,
-    #[serde(default = "default_output")]
-    pub max_output_tokens: u32,
-    /// Zero in a legacy project means inherit the selected model's System/per-model context.
-    #[serde(default)]
-    pub context_window: u32,
-    #[serde(default = "default_comfy_root")]
-    pub comfy_root: String,
-    #[serde(default = "default_ref_image_size")]
-    pub ref_image_size: String,
-}
-
-impl Default for MovieSettings {
-    fn default() -> Self {
-        Self {
-            width: default_width(),
-            height: default_height(),
-            clip_seconds: default_clip_seconds(),
-            steps: default_steps(),
-            max_clips: default_max_clips(),
-            seed: 0,
-            temperature: default_temperature(),
-            top_p: default_top_p(),
-            top_k: default_top_k(),
-            thinking_budget: default_thinking(),
-            max_output_tokens: default_output(),
-            context_window: 0,
-            comfy_root: default_comfy_root(),
-            ref_image_size: default_ref_image_size(),
-        }
-    }
-}
-
-fn default_width() -> u32 {
-    768
-}
-fn default_height() -> u32 {
-    448
-}
-fn default_clip_seconds() -> f32 {
-    5.0
-}
-fn default_steps() -> u32 {
-    20
-}
-fn default_max_clips() -> u32 {
-    MAX_MOVIE_SCENES
-}
-fn default_temperature() -> f32 {
-    0.7
-}
-fn default_top_p() -> f32 {
-    0.95
-}
-fn default_top_k() -> u32 {
-    20
-}
-fn default_thinking() -> u32 {
-    MOVIE_THINKING_BUDGET
-}
-fn default_output() -> u32 {
-    32_768
-}
-fn default_comfy_root() -> String {
-    ResearchSettings::default().comfy_root
-}
-fn default_ref_image_size() -> String {
-    "match".into()
-}
-
-impl MovieSettings {
-    pub fn validate(mut self, advanced: bool) -> Result<Self, StudioError> {
+impl MovieSettingsPolicy for MovieSettings {
+    fn validate(mut self, advanced: bool) -> Result<Self, StudioError> {
         let runtime_limits = runtime_policy_limits(advanced);
         if !self.width.is_multiple_of(32) || !self.height.is_multiple_of(32) {
             return Err(StudioError::Invalid(
@@ -572,11 +387,7 @@ impl MovieSettings {
     }
 
     /// Apply the project layer after System defaults and per-model policy.
-    pub(crate) fn runtime_settings_for(
-        &self,
-        base: &ControlSettings,
-        model_id: &str,
-    ) -> ControlSettings {
+    fn runtime_settings_for(&self, base: &ControlSettings, model_id: &str) -> ControlSettings {
         let mut effective = base.for_model(model_id);
         if self.context_window > 0 {
             effective.context_window = self.context_window;
@@ -585,132 +396,6 @@ impl MovieSettings {
         effective.model_overrides.clear();
         effective
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MoviePlan {
-    pub title: String,
-    pub logline: String,
-    pub audience: String,
-    pub creative_direction: String,
-    #[serde(default)]
-    pub continuity_bible: Vec<String>,
-    #[serde(default)]
-    pub source_credits: Vec<String>,
-    #[serde(default)]
-    pub quality_review: MovieQualityReview,
-    pub clips: Vec<PlannedClip>,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieQualityReview {
-    pub attempts: u32,
-    pub score: u32,
-    pub verdict: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct PlannedClip {
-    #[serde(default)]
-    pub id: String,
-    pub title: String,
-    pub purpose: String,
-    pub duration_seconds: f32,
-    pub prompt: String,
-    pub continuity_in: String,
-    pub continuity_out: String,
-    pub transition: String,
-    pub use_previous_frame: bool,
-    #[serde(default)]
-    pub source_refs: Vec<String>,
-    #[serde(default)]
-    pub reference_ids: Vec<String>,
-    /// Producer-selected image used by H3's first-frame conditioning path.
-    #[serde(default)]
-    pub first_frame_reference_id: String,
-    /// Producer-selected image used by H3's last-frame conditioning path.
-    #[serde(default)]
-    pub last_frame_reference_id: String,
-    /// Producer-owned per-scene native bindings. Empty means a legacy plan using reference_ids.
-    #[serde(default)]
-    pub reference_selections: Vec<crate::models::MovieSceneReferenceSelection>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieSource {
-    pub id: String,
-    pub title: String,
-    pub reference: String,
-    pub snapshot: String,
-    pub excerpt: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RenderedClip {
-    pub id: String,
-    pub index: u32,
-    pub title: String,
-    pub prompt: String,
-    pub duration_seconds: f32,
-    pub seed: u64,
-    pub status: String,
-    #[serde(default)]
-    pub path: String,
-    #[serde(default)]
-    pub error: String,
-    #[serde(default)]
-    pub versions: Vec<ClipVersion>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClipVersion {
-    pub id: String,
-    pub created_at: String,
-    pub title: String,
-    pub prompt: String,
-    pub duration_seconds: f32,
-    pub seed: u64,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ClipEdit {
-    #[serde(default)]
-    pub id: String,
-    pub clip_id: String,
-    pub enabled: bool,
-    pub order: u32,
-    pub trim_start: f32,
-    pub trim_end: f32,
-    #[serde(default = "default_gain")]
-    pub audio_gain: f32,
-    #[serde(default)]
-    pub source_version_id: String,
-    #[serde(default = "default_speed")]
-    pub speed: f32,
-    #[serde(default)]
-    pub fade_in: f32,
-    #[serde(default)]
-    pub fade_out: f32,
-    #[serde(default)]
-    pub audio_fade_in: f32,
-    #[serde(default)]
-    pub audio_fade_out: f32,
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub notes: String,
-}
-
-fn default_gain() -> f32 {
-    1.0
 }
 
 fn validate_h3_reference_counts(
@@ -722,147 +407,6 @@ fn validate_h3_reference_counts(
         return Err(StudioError::Invalid(format!("One H3 scene can use at most 9 pictures, 3 videos and 3 audio signals. This selection has {images} pictures, {videos} videos and {audio} audio signals. Keep assets in the library and select fewer for this scene.")));
     }
     Ok(())
-}
-
-fn default_speed() -> f32 {
-    1.0
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieEdit {
-    #[serde(default)]
-    pub clips: Vec<ClipEdit>,
-    #[serde(default = "default_export_title")]
-    pub export_title: String,
-    #[serde(default = "default_export_preset")]
-    pub export_preset: String,
-    #[serde(default)]
-    pub normalize_audio: bool,
-    #[serde(default = "default_target_lufs")]
-    pub target_lufs: f32,
-    #[serde(default)]
-    pub markers: Vec<TimelineMarker>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct TimelineMarker {
-    pub id: String,
-    pub time_seconds: f32,
-    pub label: String,
-    #[serde(default = "default_marker_kind")]
-    pub kind: String,
-    #[serde(default)]
-    pub completed: bool,
-}
-
-fn default_marker_kind() -> String {
-    "marker".into()
-}
-
-fn default_export_title() -> String {
-    "Kestrel Movie".into()
-}
-
-fn default_export_preset() -> String {
-    "publish".into()
-}
-
-fn default_target_lufs() -> f32 {
-    -14.0
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieExport {
-    pub id: String,
-    pub created_at: String,
-    pub title: String,
-    pub preset: String,
-    pub path: String,
-    pub bytes: u64,
-    pub sha256: String,
-    pub duration_seconds: f32,
-    pub clip_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieProject {
-    pub schema_version: u32,
-    pub id: String,
-    pub prompt: String,
-    pub title: String,
-    pub status: String,
-    pub phase: String,
-    pub detail: String,
-    pub created_at: String,
-    pub updated_at: String,
-    pub model: String,
-    /// Preserved verbatim when an older project is opened; no current workflow reads it.
-    #[serde(default, rename = "modelRoles", skip_serializing_if = "Value::is_null")]
-    pub legacy_model_roles: Value,
-    pub renderer: String,
-    pub settings: MovieSettings,
-    #[serde(default)]
-    pub references: Vec<MovieReference>,
-    #[serde(default)]
-    pub plan: Option<MoviePlan>,
-    #[serde(default)]
-    pub sources: Vec<MovieSource>,
-    #[serde(default)]
-    pub clips: Vec<RenderedClip>,
-    pub edit: MovieEdit,
-    #[serde(default)]
-    pub final_path: String,
-    #[serde(default)]
-    pub exports: Vec<MovieExport>,
-    #[serde(default)]
-    pub error: String,
-    #[serde(default)]
-    pub producer_review_required: bool,
-    #[serde(default)]
-    pub producer_approved_at: String,
-    /// Compatibility payloads are retained so saving a legacy project is non-destructive.
-    #[serde(
-        default,
-        rename = "producerFeedback",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub legacy_producer_feedback: Vec<Value>,
-    #[serde(
-        default,
-        rename = "copilotHistory",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub legacy_copilot_history: Vec<Value>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieSummary {
-    pub id: String,
-    pub title: String,
-    pub status: String,
-    pub phase: String,
-    pub updated_at: String,
-    pub clip_count: usize,
-    pub final_path: String,
-}
-
-impl From<&MovieProject> for MovieSummary {
-    fn from(project: &MovieProject) -> Self {
-        Self {
-            id: project.id.clone(),
-            title: project.title.clone(),
-            status: project.status.clone(),
-            phase: project.phase.clone(),
-            updated_at: project.updated_at.clone(),
-            clip_count: project.clips.len(),
-            final_path: project.final_path.clone(),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -1965,7 +1509,10 @@ impl MovieStudio {
         project.updated_at = Utc::now().to_rfc3339();
         self.save(project)?;
         if let Some(app) = app {
-            let _ = app.emit("movie-project", project.clone());
+            let _ = crate::ipc_events::emit::<kestrel_app_core::events::MovieProject>(
+                app,
+                &project.clone(),
+            );
         }
         Ok(())
     }

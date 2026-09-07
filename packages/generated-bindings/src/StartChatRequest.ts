@@ -2,4 +2,4 @@
 import type { SpeechRecordingAttachment } from "./SpeechRecordingAttachment.js";
 import type { ThinkingLevel } from "./ThinkingLevel.js";
 
-export type StartChatRequest = { sessionId?: string, modelId: string, message: string, attachmentIds: Array<string>, recording?: SpeechRecordingAttachment, temperature: number, topP: number, topK: number, maxOutputTokens: number, thinkingLevel?: ThinkingLevel, };
+export type StartChatRequest = { sessionId?: string | null, modelId: string, message: string, attachmentIds: Array<string>, recording?: SpeechRecordingAttachment | null, temperature: number, topP: number, topK: number, maxOutputTokens: number, thinkingLevel?: ThinkingLevel | null, };

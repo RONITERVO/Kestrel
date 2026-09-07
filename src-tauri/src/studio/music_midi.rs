@@ -3,12 +3,15 @@
 //! MuScriptor output is immutable source material. This module converts it into a bounded typed
 //! document and writes producer revisions as new MIDI files; model output is never overwritten.
 
+pub use kestrel_app_core::music_midi::{
+    MusicMidiDocument, MusicMidiNote, MusicMidiTempo, MusicMidiTimeSignature, MusicMidiTrack,
+};
+
 use super::StudioError;
 use midly::{
     num::{u15, u24, u28, u4, u7},
     Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
 };
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
@@ -21,58 +24,6 @@ const MAX_MIDI_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MIDI_TRACKS: usize = 128;
 const MAX_MIDI_NOTES: usize = 250_000;
 const MAX_MIDI_TICKS: u64 = 100_000_000;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicMidiDocument {
-    pub schema_version: u32,
-    pub take_id: String,
-    pub source_sha256: String,
-    pub revision: u32,
-    pub ticks_per_quarter: u16,
-    pub duration_ticks: u64,
-    pub duration_seconds: f64,
-    pub tempos: Vec<MusicMidiTempo>,
-    pub time_signatures: Vec<MusicMidiTimeSignature>,
-    pub tracks: Vec<MusicMidiTrack>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicMidiTempo {
-    pub tick: u64,
-    pub microseconds_per_quarter: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicMidiTimeSignature {
-    pub tick: u64,
-    pub numerator: u8,
-    pub denominator: u8,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicMidiTrack {
-    pub id: String,
-    pub name: String,
-    pub channel: u8,
-    pub program: u8,
-    pub muted: bool,
-    pub notes: Vec<MusicMidiNote>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicMidiNote {
-    pub id: String,
-    pub pitch: u8,
-    pub start_tick: u64,
-    pub duration_ticks: u64,
-    pub velocity: u8,
-    pub channel: u8,
-}
 
 #[derive(Default)]
 struct TrackBuilder {

@@ -1,15 +1,9 @@
-export const EXTERNAL_COLLABORATION_FORMAT = "kestrel.external-collaboration.response";
-export const EXTERNAL_COLLABORATION_VERSION = 1;
-export const MAX_EXTERNAL_COLLABORATION_BYTES = 2 * 1024 * 1024;
+import { externalCollaborationFormat, type ExternalCollaborationTarget, type ExternalCollaborationResponse } from "../../contracts/index";
+export type { ExternalCollaborationTarget } from "../../contracts/index";
 
-export type ExternalCollaborationTarget =
-  | "movie-brief"
-  | "movie-image-description"
-  | "movie-reference-description"
-  | "image-design"
-  | "music-description"
-  | "music-lyrics"
-  | "movie-generation-direction";
+export const EXTERNAL_COLLABORATION_FORMAT = externalCollaborationFormat.format;
+export const EXTERNAL_COLLABORATION_VERSION = externalCollaborationFormat.version;
+export const MAX_EXTERNAL_COLLABORATION_BYTES = externalCollaborationFormat.maximumBytes;
 
 interface ExternalRequestOptions {
   target: ExternalCollaborationTarget;
@@ -25,7 +19,7 @@ export function buildExternalCollaborationRequest({ target, role, instructions, 
     version: EXTERNAL_COLLABORATION_VERSION,
     target,
     result: resultTemplate,
-  };
+  } satisfies Omit<ExternalCollaborationResponse, "result"> & { result: unknown };
   const request = [
     `Act as ${role} for a Kestrel production. You are a collaborator, not an execution agent: do not call tools, claim to change files, or invent file paths.`,
     "Return exactly one JSON object and no Markdown commentary. Treat existing text as producer material: it may be an idea, notes, a partial draft, or exact wording, so infer the producer's intent instead of blindly appending it.",

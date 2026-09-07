@@ -11,6 +11,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.5", features = [] }
+syn = { version = "2", features = ["full", "visit"] }
+quote = "1"
 
 [dependencies]
 base64 = "0.22"
@@ -48,5 +50,9 @@ kestrel-app-core = { path = "../crates/app-core" }
 windows-sys = { version = "0.61", features = ["Win32_System_Power"] }
 
 [dev-dependencies]
+ts-rs = { version = "12.0.1", features = ["no-serde-warnings", "serde-json-impl"] }
 lopdf = "0.42"
 tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_IO", "Win32_System_Ioctl"] }

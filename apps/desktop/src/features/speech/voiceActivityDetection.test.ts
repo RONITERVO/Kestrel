@@ -1,37 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_VAD_SETTINGS,
-  loadVadSettings,
   normalizeVadSettings,
-  saveVadSettings,
   VoiceActivityDetector,
   type VadSettings,
 } from "./voiceActivityDetection";
 
 describe("Voice Activity Detection (VAD)", () => {
-  let mockStorage: Record<string, string> = {};
-
-  beforeEach(() => {
-    mockStorage = {};
-    const storageMock = {
-      getItem: (key: string) => mockStorage[key] ?? null,
-      setItem: (key: string, value: string) => { mockStorage[key] = value; },
-      removeItem: (key: string) => { delete mockStorage[key]; },
-      clear: () => { mockStorage = {}; },
-    };
-    Object.defineProperty(globalThis, "localStorage", {
-      value: storageMock,
-      writable: true,
-      configurable: true,
-    });
-  });
-
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
-  describe("Settings normalization & storage", () => {
+  describe("Device-view settings normalization", () => {
     it("returns default settings when raw input is empty", () => {
       const settings = normalizeVadSettings(null);
       expect(settings).toEqual(DEFAULT_VAD_SETTINGS);
@@ -57,19 +38,7 @@ describe("Voice Activity Detection (VAD)", () => {
       expect(settings.initialGraceTimeoutSec).toBe(3.0);
     });
 
-    it("persists and loads custom settings to localStorage", () => {
-      const custom: VadSettings = {
-        enabled: true,
-        silenceTimeoutSec: 3.5,
-        speechThresholdDb: -48,
-        minSpeechDurationMs: 500,
-        initialGraceTimeoutSec: 20.0,
-      };
 
-      saveVadSettings(custom);
-      const loaded = loadVadSettings();
-      expect(loaded).toEqual(custom);
-    });
   });
 
   describe("VoiceActivityDetector state machine", () => {

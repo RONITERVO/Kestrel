@@ -16,7 +16,7 @@ import {
 const FPS = 24;
 const MEDIA_PAGE_SIZE = 80;
 
-export interface TimelineItem {
+export interface MovieTimelineItem {
   edit: ClipEdit;
   clip: RenderedClip;
   sourcePath: string;
@@ -30,7 +30,7 @@ type BrowserTab = "masters" | "references" | "index";
 type InspectorTab = "video" | "audio" | "info";
 type ViewerMode = "program" | "source";
 
-export function timelineItems(project: MovieProject, edit: MovieEdit): TimelineItem[] {
+export function timelineItems(project: MovieProject, edit: MovieEdit): MovieTimelineItem[] {
   const clipsById = new Map(project.clips.map((clip) => [clip.id, clip]));
   return [...edit.clips]
     .sort((left, right) => left.order - right.order)
@@ -264,7 +264,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     commit({ ...normalizedValue, clips: normalizedValue.clips.map((item) => item.id === selected.edit.id ? next : item) });
   };
 
-  const setProgramPosition = (item: TimelineItem, time: number, play = false) => {
+  const setProgramPosition = (item: MovieTimelineItem, time: number, play = false) => {
     const bounded = Math.max(item.edit.trimStart, Math.min(item.sourceDuration - item.edit.trimEnd, time));
     setViewerMode("program");
     setPreviewId(item.edit.id);
@@ -332,7 +332,7 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     videoRef.current?.pause();
     setProgramPosition(preview, next);
   };
-  const splitAt = (item: TimelineItem, sourceTime: number) => {
+  const splitAt = (item: MovieTimelineItem, sourceTime: number) => {
     const next = splitTimelineItem(project, normalizedValue, item.edit.id, sourceTime, editId());
     if (next !== normalizedValue) commit(next);
   };
@@ -379,14 +379,14 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
     ...normalizedValue,
     markers: normalizedValue.markers.map((marker) => marker.id === id ? { ...marker, ...change } : marker),
   });
-  const handleTimelinePointer = (event: React.MouseEvent<HTMLButtonElement>, item: TimelineItem) => {
+  const handleTimelinePointer = (event: React.MouseEvent<HTMLButtonElement>, item: MovieTimelineItem) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
     const sourceTimeAtPointer = item.edit.trimStart + fraction * (item.sourceDuration - item.edit.trimStart - item.edit.trimEnd);
     if (tool === "blade") splitAt(item, sourceTimeAtPointer);
     else setProgramPosition(item, sourceTimeAtPointer);
   };
-  const handleSkim = (event: React.MouseEvent<HTMLButtonElement>, item: TimelineItem) => {
+  const handleSkim = (event: React.MouseEvent<HTMLButtonElement>, item: MovieTimelineItem) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
     setSkimmer({ id: item.edit.id, fraction });
@@ -561,8 +561,8 @@ export function MovieTimeline({ project, value, disabled, onChange, onRequestSav
 }
 
 function TimelineIndex({ items, markers, query, selectedId, onSelect, onSeek, onPatchMarker, onDeleteMarker }: {
-  items: TimelineItem[]; markers: TimelineMarker[]; query: string; selectedId?: string;
-  onSelect: (item: TimelineItem) => void; onSeek: (time: number) => void;
+  items: MovieTimelineItem[]; markers: TimelineMarker[]; query: string; selectedId?: string;
+  onSelect: (item: MovieTimelineItem) => void; onSeek: (time: number) => void;
   onPatchMarker: (id: string, change: Partial<TimelineMarker>) => void; onDeleteMarker: (id: string) => void;
 }) {
   const visibleItems = items.filter((item) => !query || `${item.edit.label} ${item.clip.title} ${item.edit.notes}`.toLocaleLowerCase().includes(query));

@@ -1,14 +1,19 @@
+pub use kestrel_app_core::image_assets::{
+    GeneratedImageProvenance, MovieImageAssetCandidate, MovieImageAssetEvent,
+    MovieImageAssetGeneration, MovieImageAssetRequest,
+};
+
 use super::live_preview::{
     emit_preview_unavailable, preview_node, LivePreviewSession, PreviewTarget,
     PREVIEW_DECODER_REVISION, PREVIEW_DECODER_SHA256, PREVIEW_NODE_ID, PREVIEW_NODE_REVISION,
 };
 use super::{
-    comfy_execution_error, truncate, write_json_atomic, MovieReferenceAsset, MovieStudio,
-    StudioError, COMFY_BASE, COMFY_RENDER_TIMEOUT, MAX_MOVIE_PROMPT_BYTES,
+    comfy_execution_error, truncate, write_json_atomic, MovieStudio, StudioError, COMFY_BASE,
+    COMFY_RENDER_TIMEOUT, MAX_MOVIE_PROMPT_BYTES,
 };
 use crate::prompt_catalog::{self, PromptId};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -16,7 +21,7 @@ use std::{
     path::{Component, Path, PathBuf},
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
 const WORKFLOW_NAME: &str = "MiniMax H3 pseudo-image stable-frame workflow";
@@ -31,120 +36,10 @@ const MAX_GENERATION_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_LISTED_GENERATIONS: usize = 50;
 const MAX_HISTORY_FAILURES: u8 = 5;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieImageAssetRequest {
-    pub request_id: String,
-    pub prompt: String,
-    pub width: u32,
-    pub height: u32,
-    pub steps: u32,
-    #[serde(default)]
-    pub seed: u64,
-    pub comfy_root: String,
-    #[serde(default = "default_stabilize")]
-    pub stabilize: bool,
-}
-
-fn default_stabilize() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GeneratedImageProvenance {
-    pub generation_id: String,
-    pub workflow: String,
-    pub workflow_source: String,
-    pub workflow_revision: String,
-    pub prompt: String,
-    pub rendered_prompt: String,
-    pub width: u32,
-    pub height: u32,
-    pub steps: u32,
-    pub seed: u64,
-    pub requested_length: u32,
-    pub resolved_frame_count: u32,
-    pub frame_index: u32,
-    pub sampler: String,
-    pub scheduler: String,
-    pub diffusion_model: String,
-    pub text_encoder: String,
-    pub vae: String,
-    pub comfy_prompt_id: String,
-    pub created_at: String,
-    #[serde(default)]
-    pub exact_graph: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieImageAssetCandidate {
-    pub frame_index: u32,
-    pub asset: MovieReferenceAsset,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieImageAssetGeneration {
-    pub id: String,
-    pub status: String,
-    pub stage: String,
-    pub detail: String,
-    pub prompt: String,
-    pub rendered_prompt: String,
-    pub width: u32,
-    pub height: u32,
-    pub steps: u32,
-    pub seed: u64,
-    pub stabilize: bool,
-    pub workflow: String,
-    pub workflow_source: String,
-    pub workflow_revision: String,
-    #[serde(default = "legacy_preview_provenance")]
-    pub preview_node_revision: String,
-    #[serde(default = "legacy_preview_provenance")]
-    pub preview_decoder_revision: String,
-    #[serde(default = "legacy_preview_provenance")]
-    pub preview_decoder_sha256: String,
-    pub requested_length: u32,
-    pub resolved_frame_count: u32,
-    pub candidate_start: u32,
-    pub candidate_count: u32,
-    pub comfy_prompt_id: String,
-    pub created_at: String,
-    pub updated_at: String,
-    #[serde(default)]
-    pub completed_at: String,
-    #[serde(default)]
-    pub error: String,
-    #[serde(default)]
-    pub candidates: Vec<MovieImageAssetCandidate>,
-    #[serde(default)]
-    pub exact_graph: Value,
-}
-
-fn legacy_preview_provenance() -> String {
-    "unavailable (legacy generation)".into()
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieImageAssetEvent {
-    pub request_id: String,
-    pub kind: String,
-    pub stage: String,
-    pub detail: String,
-    pub progress: u8,
-    pub at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub generation: Option<MovieImageAssetGeneration>,
-}
-
 pub fn emit_image_asset_error(app: &AppHandle, request_id: &str, error: impl ToString) {
-    let _ = app.emit(
-        "movie-image-asset",
-        MovieImageAssetEvent {
+    let _ = crate::ipc_events::emit::<kestrel_app_core::events::MovieImageAsset>(
+        app,
+        &MovieImageAssetEvent {
             request_id: request_id.into(),
             kind: "error".into(),
             stage: "failed".into(),
@@ -156,8 +51,12 @@ pub fn emit_image_asset_error(app: &AppHandle, request_id: &str, error: impl ToS
     );
 }
 
-impl MovieImageAssetRequest {
-    pub fn validate(&self, advanced: bool) -> Result<(), StudioError> {
+pub trait MovieImageAssetRequestPolicy: Sized {
+    fn validate(&self, advanced: bool) -> Result<(), StudioError>;
+}
+
+impl MovieImageAssetRequestPolicy for MovieImageAssetRequest {
+    fn validate(&self, advanced: bool) -> Result<(), StudioError> {
         if uuid::Uuid::parse_str(&self.request_id).is_err() {
             return Err(StudioError::Invalid(
                 "image generation request ID must be a UUID".into(),
@@ -728,9 +627,9 @@ fn emit_image_event(
     completed: Option<MovieImageAssetGeneration>,
 ) {
     let Some(app) = app else { return };
-    let _ = app.emit(
-        "movie-image-asset",
-        MovieImageAssetEvent {
+    let _ = crate::ipc_events::emit::<kestrel_app_core::events::MovieImageAsset>(
+        app,
+        &MovieImageAssetEvent {
             request_id: generation.id.clone(),
             kind: kind.into(),
             stage: generation.stage.clone(),

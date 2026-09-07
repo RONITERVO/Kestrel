@@ -43,11 +43,16 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `apps/desktop/src/features`: feature-owned UI and view-only helpers.
 - `apps/desktop/src/shared`: reusable presentation components without application authority.
 - `apps/desktop/src/platform`: Tauri IPC adapter.
-- `apps/desktop/src/contracts`: generated-contract facade and shrinking legacy quarantine.
+- `apps/desktop/src/contracts`: re-exports of generated Rust contracts and values; no local declarations.
+- `apps/desktop/src/preview`: development-only sample data; never application authority.
 - `packages/generated-bindings`: generated from Rust; never edit by hand.
 
 TypeScript never owns application truth. New durable state or IPC-visible contracts must originate
-in Rust and be generated with `npm run bindings:generate`; do not add them to the quarantine.
+in Rust and be generated with `npm run bindings:generate`. There is no handwritten contract quarantine.
+Command signatures in `lib.rs` and the Rust event registry also generate the IPC maps. Only
+`platform/transport.ts` imports the native SDK. Rust must not include policy files from UI folders.
+UI contributors should start with `apps/desktop/README.md`; documented boundaries and practical
+exceptions are in `docs/UI_BOUNDARIES.md`. UI-only checks are available with `npm run ui:check`.
 
 Prefer small typed modules, fixed command argument arrays, bounded reads, loopback-only URLs, recoverable file replacement, and actionable errors. Never directly execute model text: parse tool JSON, require absolute paths, resolve it through the selected access policy, reject wildcards, use argument arrays without a shell, and persist the result.
 

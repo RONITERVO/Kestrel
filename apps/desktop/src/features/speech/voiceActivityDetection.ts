@@ -4,28 +4,11 @@
  * cleanly trigger an auto-stop after user-configured silence.
  */
 
-export interface VadSettings {
-  /** Whether VAD auto-stop is enabled */
-  enabled: boolean;
-  /** Silence duration in seconds required to auto-stop recording after speech has started */
-  silenceTimeoutSec: number;
-  /** Audio energy threshold in dB to classify a frame as speech vs silence (-60 dB sensitive to -20 dB noisy) */
-  speechThresholdDb: number;
-  /** Minimum continuous speech duration in milliseconds before silence auto-stop is armed */
-  minSpeechDurationMs: number;
-  /** Maximum initial silence in seconds before auto-stopping if the user never begins speaking */
-  initialGraceTimeoutSec: number;
-}
+import { speechPreferencesDefaults, type VadSettings } from "../../contracts/index";
+export type { VadSettings };
 
-export const DEFAULT_VAD_SETTINGS: VadSettings = {
-  enabled: true,
-  silenceTimeoutSec: 2.0,
-  speechThresholdDb: -42,
-  minSpeechDurationMs: 400,
-  initialGraceTimeoutSec: 15.0,
-};
-
-const STORAGE_KEY = "kestrel_speech_vad_settings";
+// Initial device-view values; saved settings are validated and persisted by Rust.
+export const DEFAULT_VAD_SETTINGS = speechPreferencesDefaults.vad;
 
 export function normalizeVadSettings(raw?: Partial<VadSettings> | null): VadSettings {
   if (!raw || typeof raw !== "object") {
@@ -61,30 +44,6 @@ export function normalizeVadSettings(raw?: Partial<VadSettings> | null): VadSett
     minSpeechDurationMs,
     initialGraceTimeoutSec,
   };
-}
-
-export function loadVadSettings(): VadSettings {
-  if (typeof window === "undefined" || !window.localStorage) {
-    return { ...DEFAULT_VAD_SETTINGS };
-  }
-  try {
-    const serialized = window.localStorage.getItem(STORAGE_KEY);
-    if (!serialized) return { ...DEFAULT_VAD_SETTINGS };
-    const parsed = JSON.parse(serialized) as unknown;
-    return normalizeVadSettings(parsed as Partial<VadSettings>);
-  } catch {
-    return { ...DEFAULT_VAD_SETTINGS };
-  }
-}
-
-export function saveVadSettings(settings: VadSettings): void {
-  if (typeof window === "undefined" || !window.localStorage) return;
-  try {
-    const normalized = normalizeVadSettings(settings);
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-  } catch {
-    // Local storage quota or security restriction fallback
-  }
 }
 
 export interface VadCallbacks {
