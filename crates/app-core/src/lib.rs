@@ -7,6 +7,9 @@ use serde::{de::Error as _, ser::Error as _, Deserialize, Deserializer, Serializ
 use std::collections::BTreeMap;
 use ts_rs::TS;
 
+mod movie_editor;
+pub use movie_editor::*;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]

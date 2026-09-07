@@ -917,8 +917,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires KESTREL_LIVE_COMFY_ROOT, the installed MiniMax H3 ComfyUI stack, and several minutes"]
     async fn live_h3_image_pass_preserves_selectable_candidates_and_provenance() {
-        use futures_util::StreamExt as _;
-
         let library = tempfile::tempdir().unwrap();
         let studio = MovieStudio::new(library.path()).unwrap();
         let mut value = request();
@@ -927,42 +925,27 @@ mod tests {
         value.width = 512;
         value.height = 512;
         value.prompt = "A single handmade brass compass on a dark green linen field, centered product reference, precise engraved details, soft north-window light, no hands, no labels, no motion.".into();
-        let client_id = format!("kestrel-image-{}", value.request_id);
-        let (socket, _) = tokio_tungstenite::connect_async(format!(
-            "ws://127.0.0.1:8188/ws?clientId={client_id}"
-        ))
-        .await
-        .unwrap();
-        let (_, mut reader) = socket.split();
-        let preview = tokio::spawn(async move {
-            while let Some(message) = reader.next().await {
-                let message = message.unwrap();
-                if !message.is_text() {
-                    continue;
-                }
-                let value: Value = serde_json::from_str(&message.into_text().unwrap()).unwrap();
-                if value.get("type").and_then(Value::as_str) == Some("kj_preview_override") {
-                    return value;
-                }
-            }
-            panic!("ComfyUI closed before emitting a live H3 preview")
-        });
+        let project = studio
+            .create_producer_base(
+                "A movie started before its reference exists.".into(),
+                super::super::MovieSettings::default(),
+                vec![],
+                "Local acceptance",
+                false,
+            )
+            .unwrap();
         let generation = studio
             .generate_image_assets(value, &CancellationToken::new(), None)
             .await
             .unwrap();
-        let preview = tokio::time::timeout(Duration::from_secs(30), preview)
-            .await
-            .expect("live preview did not arrive")
-            .unwrap();
-        assert_eq!(
-            preview.pointer("/data/node_id").and_then(Value::as_str),
-            Some(PREVIEW_NODE_ID)
-        );
-        assert!(preview
-            .pointer("/data/image")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value.len() > 1_000));
+        let preview = studio
+            .image_asset_render_state(&generation.id, true)
+            .unwrap()
+            .preview
+            .expect("native preview registry did not retain the image generation preview");
+        assert_eq!(preview.target, "imageAsset");
+        assert_eq!(preview.job_id, generation.id);
+        assert!(preview.data_url.is_some_and(|value| value.len() > 1_000));
         assert_eq!(generation.status, "complete");
         assert!(!generation.comfy_prompt_id.is_empty());
         assert!(!generation.candidates.is_empty());
@@ -974,6 +957,30 @@ mod tests {
             assert_eq!(provenance.seed, generation.seed);
             assert_eq!(provenance.exact_graph, generation.exact_graph);
         }
+        let chosen = &generation.candidates[0].asset;
+        studio
+            .attach_producer_references(
+                crate::models::AttachMovieProducerReferencesRequest {
+                    project_id: project.id.clone(),
+                    references: vec![crate::models::MovieProducerReferenceRequest {
+                        asset_id: chosen.id.clone(),
+                        description: "Use this compass in a later scene.".into(),
+                        include_embedded_audio: false,
+                        embedded_audio_description: String::new(),
+                    }],
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let reopened = MovieStudio::new(library.path()).unwrap();
+        let restored = reopened.get(&project.id).unwrap();
+        assert_eq!(restored.references.len(), 1);
+        assert_eq!(restored.references[0].asset_id, chosen.id);
+        assert_eq!(
+            super::super::hash_reference(Path::new(&restored.references[0].path)).unwrap(),
+            super::super::hash_reference(Path::new(&chosen.path)).unwrap()
+        );
     }
 
     #[tokio::test]

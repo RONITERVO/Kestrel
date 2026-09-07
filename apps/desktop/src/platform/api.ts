@@ -1,5 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { MovieEditorGenerateRequest, MovieEditorJob, MovieEditorRangeRequest, MovieEditorState } from "../contracts/index";
+
+export async function getMovieEditorState(id: string): Promise<MovieEditorState> {
+  if (!isTauri()) return { editHash: "", jobs: [] };
+  return invoke("get_movie_editor_state", { id });
+}
+
+export async function getMovieImageAssetRenderState(requestId: string): Promise<MovieRenderState> {
+  if (!isTauri()) return { active: false };
+  return invoke("get_movie_image_asset_render_state", { requestId });
+}
+
+export async function prepareMovieEditorRange(request: MovieEditorRangeRequest, edit: MovieEdit): Promise<MovieEditorJob> {
+  if (!isTauri()) throw new Error("Endpoint generation requires the desktop application.");
+  return invoke("prepare_movie_editor_range", { request, edit });
+}
+
+export async function startMovieEditorGeneration(request: MovieEditorGenerateRequest): Promise<string> {
+  if (!isTauri()) throw new Error("Endpoint generation requires the desktop application.");
+  return invoke("start_movie_editor_generation", { request });
+}
+
+export async function onMovieEditorJob(callback: (job: MovieEditorJob) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<MovieEditorJob>("movie-editor-job", (event) => callback(event.payload));
+  return () => undefined;
+}
 import { demoReport, demoSnapshot } from "../app/demo";
 import type {
   AppSnapshot,
