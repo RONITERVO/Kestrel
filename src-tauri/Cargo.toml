@@ -53,3 +53,6 @@ windows-sys = { version = "0.61", features = ["Win32_System_Power"] }
 ts-rs = { version = "12.0.1", features = ["no-serde-warnings", "serde-json-impl"] }
 lopdf = "0.42"
 tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_IO", "Win32_System_Ioctl"] }

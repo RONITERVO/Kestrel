@@ -27,6 +27,9 @@ mod voice_library;
 mod workspace;
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 include!(concat!(env!("OUT_DIR"), "/command_bindings.rs"));
 
 use attachments::AttachmentStore;

@@ -3686,10 +3686,7 @@ mod tests {
         fs::create_dir_all(executable.parent().unwrap()).unwrap();
         fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
         fs::write(&executable, b"test runner").unwrap();
-        fs::File::create(&checkpoint)
-            .unwrap()
-            .set_len(MUSCRIPTOR_MODEL_BYTES)
-            .unwrap();
+        crate::test_support::sparse_file(&checkpoint, MUSCRIPTOR_MODEL_BYTES);
         let mut settings = MusicMidiSettings {
             executable_path: executable.to_string_lossy().into_owned(),
             model_path: root
