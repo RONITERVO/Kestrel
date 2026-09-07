@@ -1,5 +1,7 @@
 import type { MusicLyricFrame } from "./MusicLyricReactivity";
-import type { MusicLyricTheme } from "../../../contracts/index";
+import type { MusicLyricsDocument } from "../../../contracts/index";
+
+type MusicLyricTheme = MusicLyricsDocument["theme"];
 
 export interface MusicLyricRenderer {
   draw(frame: MusicLyricFrame): void;

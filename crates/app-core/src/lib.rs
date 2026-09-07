@@ -9,6 +9,18 @@ use ts_rs::TS;
 
 mod movie_editor;
 pub use movie_editor::*;
+mod operations;
+pub use operations::*;
+pub mod events;
+mod speech_preferences;
+pub use speech_preferences::*;
+mod runtime_limits;
+pub use runtime_limits::*;
+mod prompt_pack;
+pub use prompt_pack::*;
+mod external_collaboration;
+pub use external_collaboration::*;
+mod seed_serde;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -36,14 +48,14 @@ pub struct ModelInfo {
     pub path: String,
     pub source: String,
     pub bytes: u64,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub architecture: Option<String>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub context_length: Option<u64>,
     pub chat_template: bool,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub quantization: Option<String>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub mmproj_path: Option<String>,
     #[serde(default)]
     pub supports_vision: bool,
@@ -85,7 +97,7 @@ pub struct SetupSnapshot {
     pub ready: bool,
     pub install_root: String,
     pub available_bytes: u64,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub gpu_name: Option<String>,
     pub gpu_memory_bytes: u64,
     pub components: Vec<SetupComponent>,
@@ -154,7 +166,7 @@ pub struct ProvenHardwareProfile {
     pub quantization_pattern: Option<String>,
     pub display_name: String,
     pub min_vram_mib: u32,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub max_vram_mib: Option<u32>,
     pub recommended_context_window: u32,
     pub recommended_max_output_tokens: u32,
@@ -261,7 +273,7 @@ pub struct ControlSettings {
     pub advanced_mode: bool,
     pub engine_path: String,
     pub extra_model_roots: Vec<String>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub selected_model_id: Option<String>,
     pub context_window: u32,
     pub max_output_tokens: u32,
@@ -280,13 +292,13 @@ pub struct ControlSettings {
 #[ts(export)]
 pub struct ModelRuntimeOverride {
     pub model_id: String,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub context_window: Option<u32>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub max_output_tokens: Option<u32>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub threads: Option<u32>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub thinking_level: Option<ThinkingLevel>,
 }
 
@@ -363,13 +375,13 @@ impl Default for ControlSettings {
 pub struct ManagedRuntimeSnapshot {
     pub phase: String,
     pub mode: String,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub model_id: Option<String>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub model_name: Option<String>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub endpoint: Option<String>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub pid: Option<u32>,
     pub context_window: u32,
     pub launch_args: Vec<String>,
@@ -400,13 +412,13 @@ impl Default for ManagedRuntimeSnapshot {
 pub struct DeveloperStatus {
     pub codex_available: bool,
     pub codex_authenticated: bool,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub codex_version: Option<String>,
     pub project_root: String,
     pub git_repository: bool,
     pub worktree_clean: bool,
     pub running: bool,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub last_report: Option<String>,
 }
 
@@ -418,7 +430,7 @@ pub struct ControlSnapshot {
     pub models: Vec<ModelInfo>,
     pub engine_candidates: Vec<EngineCandidate>,
     pub runtime: ManagedRuntimeSnapshot,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub gpu: Option<GpuSnapshot>,
     pub developer: DeveloperStatus,
     pub runtime_logs: Vec<RuntimeLog>,
@@ -545,21 +557,21 @@ pub struct ChatSessionSummary {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct StartChatRequest {
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub session_id: Option<String>,
     pub model_id: String,
     pub message: String,
     #[serde(default)]
     pub attachment_ids: Vec<String>,
     #[serde(default)]
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub recording: Option<SpeechRecordingAttachment>,
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: u32,
     pub max_output_tokens: u32,
     #[serde(default)]
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub thinking_level: Option<ThinkingLevel>,
 }
 
@@ -581,9 +593,9 @@ pub struct ChatStreamEvent {
         type = "\"queued\" | \"started\" | \"context\" | \"token\" | \"reasoning\" | \"metrics\" | \"done\" | \"cancelled\" | \"error\" | \"settled\""
     )]
     pub kind: String,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub content: Option<String>,
-    #[ts(optional, type = "Record<string, unknown>")]
+    #[ts(optional = nullable, type = "Record<string, unknown> | null")]
     pub data: Option<serde_json::Value>,
     pub at: String,
 }
@@ -600,7 +612,7 @@ pub struct ComputerTaskRequest {
     pub max_steps: u32,
     pub max_output_tokens: u32,
     #[serde(default)]
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub thinking_level: Option<ThinkingLevel>,
 }
 
@@ -1212,15 +1224,15 @@ pub struct MovieStudioChatRequest {
     pub project_id: String,
     pub kind: MovieStudioConversationKind,
     pub mode: MovieStudioConversationMode,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub conversation_id: Option<String>,
     pub model_id: String,
     pub instruction: String,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub story_revision_id: Option<String>,
     #[serde(default)]
     pub selected_scene_ids: Vec<String>,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1261,7 +1273,7 @@ pub struct MovieStudioChatEvent {
 #[ts(export)]
 pub struct SaveMovieStoryRevisionRequest {
     pub project_id: String,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub parent_revision_id: Option<String>,
     pub markdown: String,
     #[serde(default)]
@@ -1302,7 +1314,7 @@ pub struct SummarizeMovieStudioConversationRequest {
     pub project_id: String,
     pub conversation_id: String,
     pub model_id: String,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub thinking_level: Option<ThinkingLevel>,
 }
 
@@ -1329,6 +1341,25 @@ pub struct MovieProducerProjectSettings {
     pub ref_image_size: String,
 }
 
+impl Default for MovieProducerProjectSettings {
+    fn default() -> Self {
+        let settings = MovieSettings::default();
+        Self {
+            width: settings.width,
+            height: settings.height,
+            clip_seconds: settings.clip_seconds,
+            steps: settings.steps,
+            max_clips: settings.max_clips,
+            seed: settings.seed,
+            thinking_budget: settings.thinking_budget,
+            max_output_tokens: settings.max_output_tokens,
+            context_window: None,
+            comfy_root: settings.comfy_root,
+            ref_image_size: settings.ref_image_size,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -1345,7 +1376,7 @@ pub struct MovieProducerReferenceRequest {
 pub struct CreateMovieProducerProjectRequest {
     pub starting_material: String,
     pub collaborator_model_id: String,
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub thinking_level: Option<ThinkingLevel>,
     pub settings: MovieProducerProjectSettings,
     #[serde(default)]
@@ -1493,3 +1524,80 @@ mod tests {
         assert!(error.contains("JavaScript can preserve it exactly"));
     }
 }
+
+pub mod movie;
+pub use movie::{
+    ClipEdit, ClipVersion, MovieEdit, MovieExport, MoviePlan, MovieProject, MovieQualityReview,
+    MovieReference, MovieReferenceAsset, MovieReferenceImport, MovieSettings, MovieSource,
+    MovieSummary, PlannedClip, ProducerReferenceRequest, RenderedClip, TimelineMarker,
+};
+
+pub mod image_assets;
+pub use image_assets::{
+    GeneratedImageProvenance, MovieImageAssetCandidate, MovieImageAssetEvent,
+    MovieImageAssetGeneration, MovieImageAssetRequest,
+};
+
+pub mod live_preview;
+pub use live_preview::{MovieRenderPreviewEvent, MovieRenderState};
+
+pub mod image;
+pub use image::{
+    CreateImageProjectRequest, ImageElement, ImageGenerationEvent, ImageProject, ImageSettings,
+    ImageStyle, ImageSummary, ImageTake,
+};
+
+pub mod music;
+pub use music::{
+    CreateMusicProjectRequest, DraftLyricsFromAudioRangeRequest, DraftLyricsFromAudioRangeResult,
+    MusicGenerationEvent, MusicLyricSegment, MusicLyricWord, MusicLyricsDocument,
+    MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult,
+    MusicMidiSettings, MusicProject, MusicSection, MusicSettings, MusicSummary, MusicTake,
+    RepairMusicLyricsRangeRequest, SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest,
+    TranscribeMusicLyricsRequest, TranslateMusicLyricsRequest, TranslateMusicLyricsResult,
+};
+
+pub mod music_midi;
+pub use music_midi::{
+    MusicMidiDocument, MusicMidiNote, MusicMidiTempo, MusicMidiTimeSignature, MusicMidiTrack,
+};
+
+pub mod prompt_draft;
+pub use prompt_draft::{
+    PromptDraftEvent, PromptDraftMode, PromptDraftReceipt, PromptDraftRequest, PromptDraftTarget,
+};
+
+pub mod speech;
+pub use speech::{
+    SpeechAlignmentRequest, SpeechClip, SpeechModel, SpeechProgress, SpeechSnapshot,
+    SpeechSynthesisRequest, SpeechTiming, SpeechTranscription, SpeechTranscriptionRequest,
+};
+
+pub mod voices;
+pub use voices::{
+    CreateVoiceProfileRequest, UpdateVoiceProfileRequest, VoiceLibrarySnapshot, VoiceProfile,
+};
+
+pub mod downloads;
+pub use downloads::{
+    ModelDownloadCandidate, ModelDownloadInspection, ModelDownloadRecord, ModelDownloadRequest,
+};
+
+pub mod gpu;
+pub use gpu::{
+    GpuCleanupFailure, GpuMemoryExclusion, GpuMemoryProcess, VramCleanupPreview, VramCleanupResult,
+};
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextAttachmentImport {
+    pub attachments: Vec<ContextAttachment>,
+    pub failures: Vec<String>,
+}
+
+pub mod ideogram;
+
+pub use image::ImageProjectEdit;
+
+pub use music::MusicProjectEdit;

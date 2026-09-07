@@ -2,4 +2,4 @@
 import type { ComputerTaskAccess } from "./ComputerTaskAccess.js";
 import type { ThinkingLevel } from "./ThinkingLevel.js";
 
-export type ComputerTaskRequest = { modelId: string, objective: string, attachmentIds: Array<string>, access: ComputerTaskAccess, maxSteps: number, maxOutputTokens: number, thinkingLevel?: ThinkingLevel, };
+export type ComputerTaskRequest = { modelId: string, objective: string, attachmentIds: Array<string>, access: ComputerTaskAccess, maxSteps: number, maxOutputTokens: number, thinkingLevel?: ThinkingLevel | null, };

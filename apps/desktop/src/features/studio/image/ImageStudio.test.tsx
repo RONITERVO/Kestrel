@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { compiledPrompt, ImageStudio, parseImageProposal } from "./ImageStudio";
+import { imageCompositionPreview, ImageStudio, parseImageProposal } from "./ImageStudio";
 import type { ImageProject } from "../../../contracts/index";
 
 describe("ImageStudio", () => {
@@ -66,7 +66,7 @@ describe("ImageStudio", () => {
         elements: [{ type: "obj", bbox: [100, 100, 900, 900], desc: "Angular kestrel", color_palette: ["#cc3300"] }],
       },
     }));
-    const prompt = compiledPrompt({
+    const prompt = imageCompositionPreview({
       highLevelDescription: proposal.highLevelDescription,
       style: proposal.style,
       background: proposal.background,

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -768,9 +768,9 @@ fn emit(
     current: u32,
 ) -> Result<(), ResearchError> {
     if let Some(app) = app {
-        app.emit(
-            "research-progress",
-            ResearchProgress {
+        crate::ipc_events::emit::<kestrel_app_core::events::ResearchProgress>(
+            app,
+            &ResearchProgress {
                 job_id: job_id.into(),
                 stage: stage.into(),
                 title: title.into(),
@@ -1411,6 +1411,7 @@ mod tests {
         let harness = ResearchHarness::new(store.clone());
         let settings = ResearchSettings {
             advanced_mode: true,
+            wikipedia_book: crate::kiwix::BOOK.into(),
             context_window: 98_304,
             max_output_tokens: 32_768,
             research_lanes: 3,
@@ -1471,7 +1472,7 @@ mod tests {
         let report = harness.run(
             None,
             RunResearchRequest { query: "How did the Antikythera mechanism predict eclipses, and what remains uncertain?".into(), depth: "focused".into() },
-            ResearchSettings::default(),
+            ResearchSettings { wikipedia_book: crate::kiwix::BOOK.into(), ..ResearchSettings::default() },
             &live_connection(),
             "live-acceptance",
             CancellationToken::new(),

@@ -16,7 +16,7 @@ use crate::models::{
 use chrono::Utc;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{collections::HashSet, fs, path::Path};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use super::{
     default_gain, default_speed, validate_id, ClipEdit, ClipVersion, MoviePlan, MovieQualityReview,
@@ -1058,7 +1058,9 @@ impl MovieStudio {
         app: Option<&AppHandle>,
     ) {
         if let Some(app) = app {
-            let _ = app.emit("movie-producer-workspace", workspace);
+            let _ = crate::ipc_events::emit::<kestrel_app_core::events::MovieProducerWorkspace>(
+                app, workspace,
+            );
         }
     }
 

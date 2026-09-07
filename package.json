@@ -18,7 +18,8 @@
     "test:vad": "vite-node scripts/vad_dictation_harness.ts",
     "bindings:generate": "node scripts/generate-bindings.mjs",
     "bindings:check": "node scripts/generate-bindings.mjs --check",
-    "architecture:check": "node scripts/check-architecture.mjs",
+    "architecture:check": "node --test scripts/architecture-rules.test.mjs && node scripts/check-architecture.mjs",
+    "ui:check": "npm run architecture:check && npm run check --workspace @kestrel/desktop",
     "package:offline": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-offline.ps1",
     "launch": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/launch-from-shortcut.ps1"
   },

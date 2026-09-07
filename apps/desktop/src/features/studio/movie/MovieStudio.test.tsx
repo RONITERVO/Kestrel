@@ -34,7 +34,7 @@ const model = {
 const settings = {
   width: 1344, height: 768, clipSeconds: 5, steps: 20, maxClips: 12, seed: 0,
   temperature: .45, topP: .9, topK: 20, thinkingBudget: 32768,
-  maxOutputTokens: 32768, comfyRoot: "", refImageSize: "match" as const,
+  maxOutputTokens: 32768, contextWindow: 0, comfyRoot: "", refImageSize: "match" as const,
 };
 
 function project(overrides: Partial<MovieProject> = {}): MovieProject {
@@ -43,7 +43,7 @@ function project(overrides: Partial<MovieProject> = {}): MovieProject {
     title: "Tomorrow's Weather", status: "awaiting-review", phase: "story-draft",
     detail: "Story revision 1 is ready.", createdAt: "2026-08-31T10:00:00Z",
     updatedAt: "2026-08-31T10:00:00Z", model: "Ternary Bonsai 27B", renderer: "H3",
-    settings, references: [], sources: [], clips: [],
+    settings, plan: null, references: [], sources: [], clips: [],
     edit: { clips: [], exportTitle: "Tomorrow's Weather", exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [] },
     finalPath: "", exports: [], error: "", producerReviewRequired: true,
     producerApprovedAt: "", ...overrides,

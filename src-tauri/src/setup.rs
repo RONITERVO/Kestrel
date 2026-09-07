@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -2853,9 +2853,9 @@ fn emit(
     total_bytes: u64,
     bytes_per_second: u64,
 ) {
-    let _ = app.emit(
-        "setup-progress",
-        SetupProgress {
+    let _ = crate::ipc_events::emit::<kestrel_app_core::events::SetupProgress>(
+        app,
+        &SetupProgress {
             component: component.into(),
             stage: stage.into(),
             detail: detail.into(),

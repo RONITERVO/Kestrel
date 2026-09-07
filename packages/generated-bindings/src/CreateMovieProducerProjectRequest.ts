@@ -3,4 +3,4 @@ import type { MovieProducerProjectSettings } from "./MovieProducerProjectSetting
 import type { MovieProducerReferenceRequest } from "./MovieProducerReferenceRequest.js";
 import type { ThinkingLevel } from "./ThinkingLevel.js";
 
-export type CreateMovieProducerProjectRequest = { startingMaterial: string, collaboratorModelId: string, thinkingLevel?: ThinkingLevel, settings: MovieProducerProjectSettings, references: Array<MovieProducerReferenceRequest>, };
+export type CreateMovieProducerProjectRequest = { startingMaterial: string, collaboratorModelId: string, thinkingLevel?: ThinkingLevel | null, settings: MovieProducerProjectSettings, references: Array<MovieProducerReferenceRequest>, };

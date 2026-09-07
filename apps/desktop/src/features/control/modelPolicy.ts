@@ -47,7 +47,7 @@ export function findProvenHardwareProfile(
     if (profile.quantizationPattern && !lower.includes(profile.quantizationPattern.toLowerCase())) return false;
     if (vramMib !== undefined) {
       if (vramMib < profile.minVramMib) return false;
-      if (profile.maxVramMib !== undefined && vramMib > profile.maxVramMib) return false;
+      if (profile.maxVramMib != null && vramMib > profile.maxVramMib) return false;
     }
     return true;
   });

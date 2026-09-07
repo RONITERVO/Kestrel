@@ -4,6 +4,7 @@
 //! response containing prose for the chat and text-only scene operations. The model never sees or
 //! controls project references, frame bindings, files, ComfyUI, FFmpeg, or rendering commands.
 
+use super::MovieSettingsPolicy;
 use crate::{
     model::ModelInfo,
     models::{
@@ -18,7 +19,7 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -955,9 +956,9 @@ fn emit(
     let Some(app) = app else {
         return;
     };
-    let _ = app.emit(
-        "movie-studio-chat",
-        MovieStudioChatEvent {
+    let _ = crate::ipc_events::emit::<kestrel_app_core::events::MovieStudioChat>(
+        app,
+        &MovieStudioChatEvent {
             request_id: request.request_id.clone(),
             project_id: request.project_id.clone(),
             conversation_id: conversation_id.into(),

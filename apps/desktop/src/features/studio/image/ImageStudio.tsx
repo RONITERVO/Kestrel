@@ -1,3 +1,4 @@
+import type { OrderedCaption } from "../../../contracts/index";
 import {
   Aperture, ArrowDown, ArrowUp, Bot, Check, ChevronLeft, ChevronRight, CircleStop,
   Copy, Download, Eye, EyeOff, FolderOpen, Frame, Image as ImageIcon, Layers3,
@@ -120,7 +121,7 @@ export function ImageStudio({
         if (!current || current.id !== event.requestId) return current;
         const thinkingLevel = event.thinkingLevel ?? current.thinkingLevel;
         if (event.kind === "token") return { ...current, text: current.text + (event.content ?? ""), status: "writing", modelName: event.modelName ?? current.modelName, thinkingLevel };
-        if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt, thinkingLevel };
+        if (event.kind === "started") return { ...current, status: "writing", modelName: event.modelName ?? current.modelName, receipt: event.receipt ?? undefined, thinkingLevel };
         if (event.kind === "reasoning") return { ...current, reasoning: appendModelThinking(current.reasoning, event.content ?? ""), status: "thinking", modelName: event.modelName ?? current.modelName, thinkingLevel };
         if (event.kind === "complete") return { ...current, status: "ready", modelName: event.modelName ?? current.modelName, thinkingLevel };
         if (["limited", "cancelled"].includes(event.kind)) return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName, thinkingLevel };
@@ -211,10 +212,10 @@ export function ImageStudio({
         target: "imageComposition",
         mode: "develop",
         storyText: project.idea,
-        existingText: JSON.stringify(compiledPrompt(project), null, 2),
+        existingText: JSON.stringify(imageCompositionPreview(project), null, 2),
         assetName: "",
         assetKind: "",
-        thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : undefined,
+        thinkingLevel: thinkingLevel !== "default" ? thinkingLevel : null,
         contextWindow: runtimePolicy.contextWindow,
         maxOutputTokens: runtimePolicy.maxOutputTokens,
       });
@@ -445,7 +446,7 @@ export function ImageStudio({
               "style_description must contain exactly one of photo or art_style, plus aesthetics, lighting, medium, and an optional palette of at most 16 colors.",
               "Preserve intentional producer wording and layout constraints while replacing incomplete notes with a coherent production-ready design.",
             ],
-            context: { producerBrief: project.idea, currentEditableDesign: compiledPrompt(project), canvas: { width: project.settings.width, height: project.settings.height } },
+            context: { producerBrief: project.idea, currentEditableDesign: imageCompositionPreview(project), canvas: { width: project.settings.width, height: project.settings.height } },
             resultTemplate: {
               high_level_description: "Complete image description",
               style_description: { aesthetics: "Visual qualities", lighting: "Lighting", medium: "Medium", photo: "Photo treatment", color_palette: ["#112233"] },
@@ -478,10 +479,10 @@ export function ImageStudio({
         <label>Canvas size<select disabled={busy} value={`${project.settings.width}x${project.settings.height}`} onChange={(event) => { const [, width, height] = SIZE_PRESETS.find((item) => `${item[1]}x${item[2]}` === event.target.value) ?? SIZE_PRESETS[0]; mutate((current) => ({ ...current, settings: { ...current.settings, width, height } })); }}>{SIZE_PRESETS.map(([label, width, height]) => <option key={label} value={`${width}x${height}`}>{label} · {width}×{height}</option>)}</select></label>
         <div className="image-field-pair"><label>Width<input disabled={busy} type="number" min={256} max={2048} step={16} value={project.settings.width} onChange={(event) => finiteNumber(event.currentTarget.valueAsNumber, 256, 2048, (width) => mutate((current) => ({ ...current, settings: { ...current.settings, width: round16(width) } })))} /></label><label>Height<input disabled={busy} type="number" min={256} max={2048} step={16} value={project.settings.height} onChange={(event) => finiteNumber(event.currentTarget.valueAsNumber, 256, 2048, (height) => mutate((current) => ({ ...current, settings: { ...current.settings, height: round16(height) } })))} /></label></div>
         <label>Variations in one render<select disabled={busy} value={project.settings.batchSize} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, batchSize: Number(event.target.value) } }))}><option value={1}>1 variation</option><option value={2}>2 variations</option><option value={4}>4 variations</option></select></label>
-        <label>Seed<input disabled={busy} type="number" min={0} max={2147483647} value={project.settings.seed} onChange={(event) => finiteNumber(event.currentTarget.valueAsNumber, 0, 2147483647, (seed) => mutate((current) => ({ ...current, settings: { ...current.settings, seed } })))} /></label>
+        <label>Seed<input disabled={busy} inputMode="numeric" pattern="[0-9]*" value={project.settings.seed} onChange={(event) => { const seed = event.currentTarget.value; if (/^\d{0,20}$/.test(seed)) mutate((current) => ({ ...current, settings: { ...current.settings, seed: seed || 0 } })); }} /></label>
         <div className="image-seed-actions"><button disabled={busy} onClick={() => mutate((current) => ({ ...current, settings: { ...current.settings, seed: 0 } }))}>Random every render</button><button disabled={busy} onClick={() => mutate((current) => ({ ...current, settings: { ...current.settings, seed: secureSeed() } }))}>New fixed seed</button></div>
         <p className="image-backdrop-note"><Eye /> The visible take is an alignment backdrop only. Ideogram receives the structured caption, seed, and boxes—not the image.</p>
-        <details><summary>Compiled structured prompt</summary><pre>{JSON.stringify(compiledPrompt(project), null, 2)}</pre></details>{activeTake && <details><summary>Active take receipt</summary><dl><dt>Model</dt><dd>{activeTake.modelProfile}</dd><dt>Seed</dt><dd>{activeTake.seed}</dd><dt>SHA-256</dt><dd>{activeTake.sha256}</dd><dt>Prompt ID</dt><dd>{activeTake.promptId}</dd><dt>Batch</dt><dd>{activeTake.batchIndex}/{activeTake.batchSize}</dd></dl><pre>{activeTake.exactPromptText}</pre><pre>{JSON.stringify(activeTake.exactGraph, null, 2)}</pre></details>}
+        <details><summary>Composition draft preview</summary><pre>{JSON.stringify(imageCompositionPreview(project), null, 2)}</pre></details>{activeTake && <details><summary>Active take receipt</summary><dl><dt>Model</dt><dd>{activeTake.modelProfile}</dd><dt>Seed</dt><dd>{activeTake.seed}</dd><dt>SHA-256</dt><dd>{activeTake.sha256}</dd><dt>Prompt ID</dt><dd>{activeTake.promptId}</dd><dt>Batch</dt><dd>{activeTake.batchIndex}/{activeTake.batchSize}</dd></dl><pre>{activeTake.exactPromptText}</pre><p>Graph preview. The saved native artifact preserves exact numeric values.</p><pre>{JSON.stringify(activeTake.exactGraph, null, 2)}</pre></details>}
       </div>}
     </aside>
 
@@ -510,7 +511,7 @@ function NewImageDialog({ title, idea, busy, onTitle, onIdea, onClose, onCreate 
   return <dialog ref={dialogRef} className="image-new-dialog" aria-labelledby="new-image-dialog-title" onCancel={onClose}><div className="image-dialog-icon"><Aperture /></div><div><small>New private image project</small><h2 id="new-image-dialog-title">Start with as much or as little as you have.</h2><p>A sentence, an A4 brief, exact copy, or an already-developed design all work. The project stays editable without the model.</p></div><label>Project name<input autoFocus disabled={busy} value={title} onChange={(event) => onTitle(event.target.value)} placeholder="Campaign key art" /></label><label>Idea or complete brief<textarea disabled={busy} value={idea} onChange={(event) => onIdea(event.target.value)} placeholder="A quiet editorial portrait… Include the exact headline ‘…’" /></label><footer><button disabled={busy} onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy} onClick={onCreate}>{busy ? <LoaderCircle className="spin" /> : <Plus />} Create project</button></footer></dialog>;
 }
 
-export function compiledPrompt(project: ImageProject): Record<string, unknown> {
+export function imageCompositionPreview(project: ImageProject): OrderedCaption {
   const styleDescription = project.style.mode === "art" ? {
     aesthetics: project.style.aesthetics.trim(),
     lighting: project.style.lighting.trim(),

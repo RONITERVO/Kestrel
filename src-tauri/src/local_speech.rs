@@ -5,14 +5,18 @@
 //! for timestamped microphone transcription. Additional adapters belong here rather than in
 //! individual product UIs.
 
+pub use kestrel_app_core::speech::{
+    default_voice_profile_id, SpeechAlignmentRequest, SpeechClip, SpeechModel, SpeechProgress,
+    SpeechSnapshot, SpeechSynthesisRequest, SpeechTiming, SpeechTranscription,
+    SpeechTranscriptionRequest,
+};
+
 use crate::{
-    models::MAX_TRANSCRIPT_TIMINGS,
-    store::default_research_root,
-    voice_library::{VoiceConditioning, VoiceProfile},
+    models::MAX_TRANSCRIPT_TIMINGS, store::default_research_root, voice_library::VoiceConditioning,
 };
 use base64::Engine as _;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -23,7 +27,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use thiserror::Error;
 use tokio::{process::Child, sync::Mutex};
 use tokio_util::sync::CancellationToken;
@@ -73,113 +77,6 @@ pub enum SpeechError {
     Unavailable(String),
     #[error("Local speech operation was stopped")]
     Cancelled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpeechModel {
-    pub id: String,
-    pub name: String,
-    pub provider: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpeechSnapshot {
-    pub narration_available: bool,
-    pub transcription_available: bool,
-    pub comfy_ready: bool,
-    pub voices: Vec<SpeechModel>,
-    pub transcribers: Vec<SpeechModel>,
-    pub voice_profiles: Vec<VoiceProfile>,
-    pub default_voice_profile_id: String,
-    pub detail: String,
-}
-
-fn default_voice_profile_id() -> String {
-    "voice-default".into()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpeechSynthesisRequest {
-    pub job_id: String,
-    pub source_kind: String,
-    pub source_id: String,
-    pub passage_id: String,
-    pub text: String,
-    pub model_id: String,
-    #[serde(default = "default_voice_profile_id")]
-    pub voice_profile_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpeechAlignmentRequest {
-    pub job_id: String,
-    pub source_kind: String,
-    pub source_id: String,
-    pub passage_id: String,
-    pub text: String,
-    pub relative_path: String,
-    pub voice_model_id: String,
-    #[serde(default = "default_voice_profile_id")]
-    pub voice_profile_id: String,
-    pub alignment_model_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpeechTiming {
-    pub value: String,
-    pub start: f64,
-    pub end: f64,
-}
-
-fn default_transcription_language() -> String {
-    "auto".into()
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpeechClip {
-    pub job_id: String,
-    pub passage_id: String,
-    pub relative_path: String,
-    pub model_id: String,
-    pub voice_profile_id: String,
-    pub cache_hit: bool,
-    pub segments: Vec<SpeechTiming>,
-    pub words: Vec<SpeechTiming>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpeechTranscriptionRequest {
-    pub job_id: String,
-    pub source_kind: String,
-    pub source_id: String,
-    pub recording_id: String,
-    pub audio_base64: String,
-    pub mime_type: String,
-    pub model_id: String,
-    #[serde(default = "default_transcription_language")]
-    pub language: String,
-    #[serde(default)]
-    pub prompt: String,
-    pub final_pass: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpeechTranscription {
-    pub job_id: String,
-    pub recording_id: String,
-    pub text: String,
-    pub segments: Vec<SpeechTiming>,
-    pub words: Vec<SpeechTiming>,
-    pub audio_relative_path: Option<String>,
-    pub final_pass: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -270,15 +167,6 @@ struct WhisperContextMetadata {
     second_start: f64,
     second_end: f64,
     seam_seconds: f64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpeechProgress {
-    pub job_id: String,
-    pub passage_id: String,
-    pub stage: String,
-    pub detail: String,
 }
 
 #[derive(Clone)]
@@ -2874,9 +2762,9 @@ fn emit_progress(
     detail: &str,
 ) {
     if let Some(app) = app {
-        let _ = app.emit(
-            "local-speech-progress",
-            SpeechProgress {
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::LocalSpeechProgress>(
+            app,
+            &SpeechProgress {
                 job_id: request.job_id.clone(),
                 passage_id: request.passage_id.clone(),
                 stage: stage.into(),
@@ -2893,9 +2781,9 @@ fn emit_transcription_progress(
     detail: &str,
 ) {
     if let Some(app) = app {
-        let _ = app.emit(
-            "local-speech-progress",
-            SpeechProgress {
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::LocalSpeechProgress>(
+            app,
+            &SpeechProgress {
                 job_id: request.job_id.clone(),
                 passage_id: request.recording_id.clone(),
                 stage: stage.into(),
@@ -2912,9 +2800,9 @@ fn emit_file_transcription_progress(
     detail: &str,
 ) {
     if let Some(app) = app {
-        let _ = app.emit(
-            "local-speech-progress",
-            SpeechProgress {
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::LocalSpeechProgress>(
+            app,
+            &SpeechProgress {
                 job_id: request.job_id.clone(),
                 passage_id: request.recording_id.clone(),
                 stage: stage.into(),
@@ -2931,9 +2819,9 @@ fn emit_alignment_progress(
     detail: &str,
 ) {
     if let Some(app) = app {
-        let _ = app.emit(
-            "local-speech-progress",
-            SpeechProgress {
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::LocalSpeechProgress>(
+            app,
+            &SpeechProgress {
                 job_id: request.job_id.clone(),
                 passage_id: request.passage_id.clone(),
                 stage: stage.into(),

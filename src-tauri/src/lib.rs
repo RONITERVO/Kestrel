@@ -9,6 +9,7 @@ mod gpu_memory;
 mod hardware_profiles;
 mod harness;
 mod html;
+mod ipc_events;
 mod kiwix;
 mod local_speech;
 mod model;
@@ -19,12 +20,16 @@ mod prompt_catalog;
 mod runtime;
 mod services;
 mod setup;
+mod speech_preferences;
 mod store;
 mod studio;
 mod voice_library;
 mod workspace;
 
-use attachments::{AttachmentStore, ContextAttachment};
+#[cfg(test)]
+include!(concat!(env!("OUT_DIR"), "/command_bindings.rs"));
+
+use attachments::AttachmentStore;
 use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
@@ -58,7 +63,7 @@ use std::{
     },
 };
 use store::ResearchStore;
-use studio::summarize_studio_conversation;
+use studio::{summarize_studio_conversation, MovieImageAssetRequestPolicy};
 use studio::{
     ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
     ImageSummary, MovieEdit, MovieImageAssetGeneration, MovieImageAssetRequest, MovieProject,
@@ -67,7 +72,7 @@ use studio::{
     MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest, RepairMusicLyricsRangeRequest,
     SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use voice_library::{
@@ -78,6 +83,7 @@ use workspace::WorkspaceStore;
 /// Shared native state. Keep authority visibly separated: research owns evidence/storage, runtime
 /// owns the only model process, and developer owns the optional Codex child.
 struct AppState {
+    speech_preferences: speech_preferences::SpeechPreferencesStore,
     store: ResearchStore,
     harness: ResearchHarness,
     research_settings: SettingsStore,
@@ -136,12 +142,7 @@ impl Drop for ResearchGuard<'_> {
 
 struct WorkGuard<'a>(&'a AtomicBool);
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ContextAttachmentImport {
-    attachments: Vec<ContextAttachment>,
-    failures: Vec<String>,
-}
+use kestrel_app_core::ContextAttachmentImport;
 
 impl Drop for WorkGuard<'_> {
     fn drop(&mut self) {
@@ -152,6 +153,30 @@ impl Drop for WorkGuard<'_> {
 #[tauri::command]
 async fn bootstrap(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     snapshot(&state).await
+}
+
+#[tauri::command]
+fn get_speech_preferences(
+    legacy: Option<kestrel_app_core::LegacySpeechPreferences>,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::SpeechPreferences, String> {
+    state.speech_preferences.get(legacy)
+}
+
+#[tauri::command]
+fn save_vad_settings(
+    settings: kestrel_app_core::VadSettings,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::SpeechPreferences, String> {
+    state.speech_preferences.save_vad(settings)
+}
+
+#[tauri::command]
+fn save_research_speech_preferences(
+    settings: kestrel_app_core::ResearchSpeechPreferences,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::SpeechPreferences, String> {
+    state.speech_preferences.save_research(settings)
 }
 
 #[tauri::command]
@@ -1339,7 +1364,7 @@ fn create_music_project(
 
 #[tauri::command]
 fn save_music_project(
-    project: MusicProject,
+    project: kestrel_app_core::MusicProjectEdit,
     state: State<'_, AppState>,
 ) -> Result<MusicProject, String> {
     let _guard = claim_workspace(&state)?;
@@ -1821,7 +1846,7 @@ fn create_image_project(
 
 #[tauri::command]
 fn save_image_project(
-    project: ImageProject,
+    project: kestrel_app_core::ImageProjectEdit,
     state: State<'_, AppState>,
 ) -> Result<ImageProject, String> {
     let _guard = claim_workspace(&state)?;
@@ -3093,7 +3118,7 @@ async fn resume_computer_task(
             return Err(error);
         }
     };
-    let _ = app.emit("computer-task-event", input_event);
+    let _ = crate::ipc_events::emit::<kestrel_app_core::events::ComputerTask>(&app, &input_event);
     let task_request = ComputerTaskRequest {
         model_id: run.model_id.clone(),
         objective: run.objective.clone(),
@@ -3456,7 +3481,7 @@ async fn refresh_model_catalog(
     })?;
     *state.models.write().await = found.clone();
     if let Some(app) = app {
-        let _ = app.emit("model-catalog-updated", &found);
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::ModelCatalog>(app, &found);
     }
     Ok(found)
 }
@@ -3577,6 +3602,7 @@ pub fn run() {
             let speech = LocalSpeech::new(store.root()).map_err(|error| error.to_string())?;
             let voice_library = VoiceLibrary::new(store.root()).map_err(|error| error.to_string())?;
             app.manage(AppState {
+                speech_preferences: speech_preferences::SpeechPreferencesStore::new(store.root()),
                 store,
                 harness,
                 research_settings,
@@ -3636,11 +3662,14 @@ pub fn run() {
                     eprintln!("Kestrel found local models, but its disposable catalog could not be saved: {error}");
                 }
                 *state.models.write().await = merged.clone();
-                let _ = handle.emit("model-catalog-updated", merged);
+                let _ = crate::ipc_events::emit::<kestrel_app_core::events::ModelCatalog>(&handle, &merged);
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_speech_preferences,
+            save_vad_settings,
+            save_research_speech_preferences,
             bootstrap,
             get_report,
             get_local_speech_snapshot,

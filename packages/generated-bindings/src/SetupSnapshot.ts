@@ -2,4 +2,4 @@
 import type { SetupComponent } from "./SetupComponent.js";
 import type { SetupModelAsset } from "./SetupModelAsset.js";
 
-export type SetupSnapshot = { ready: boolean, installRoot: string, availableBytes: number, gpuName?: string, gpuMemoryBytes: number, components: Array<SetupComponent>, modelAssets: Array<SetupModelAsset>, };
+export type SetupSnapshot = { ready: boolean, installRoot: string, availableBytes: number, gpuName?: string | null, gpuMemoryBytes: number, components: Array<SetupComponent>, modelAssets: Array<SetupModelAsset>, };

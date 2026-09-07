@@ -12,7 +12,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::process::Command;
 
 pub struct DeveloperAssistant {
@@ -376,9 +376,14 @@ async fn command_output(
 
 fn emit(app: Option<&AppHandle>, stage: &str, detail: &str) {
     if let Some(app) = app {
-        let _ = app.emit(
-            "developer-progress",
-            json!({"stage":stage,"detail":detail,"at":Utc::now().to_rfc3339()}),
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::DeveloperProgress>(
+            app,
+            &kestrel_app_core::OperationProgress {
+                stage: Some(stage.into()),
+                detail: detail.into(),
+                phase: None,
+                at: Some(Utc::now().to_rfc3339()),
+            },
         );
     }
 }

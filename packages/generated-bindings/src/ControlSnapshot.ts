@@ -8,4 +8,4 @@ import type { ModelInfo } from "./ModelInfo.js";
 import type { ProvenHardwareProfile } from "./ProvenHardwareProfile.js";
 import type { RuntimeLog } from "./RuntimeLog.js";
 
-export type ControlSnapshot = { settings: ControlSettings, models: Array<ModelInfo>, engineCandidates: Array<EngineCandidate>, runtime: ManagedRuntimeSnapshot, gpu?: GpuSnapshot, developer: DeveloperStatus, runtimeLogs: Array<RuntimeLog>, provenHardwareProfiles: Array<ProvenHardwareProfile>, };
+export type ControlSnapshot = { settings: ControlSettings, models: Array<ModelInfo>, engineCandidates: Array<EngineCandidate>, runtime: ManagedRuntimeSnapshot, gpu?: GpuSnapshot | null, developer: DeveloperStatus, runtimeLogs: Array<RuntimeLog>, provenHardwareProfiles: Array<ProvenHardwareProfile>, };

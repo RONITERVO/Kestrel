@@ -88,12 +88,11 @@ import type {
   ControlSettings,
   ControlSnapshot,
   GpuMemoryProcess,
-  ProgressStage,
   ReportSummary,
   ResearchProgress,
   ResearchReport,
   ResearchSettings,
-  ServiceState,
+  ServiceStatus,
   SystemSnapshot,
   ThinkingLevel,
   VramCleanupPreview,
@@ -109,6 +108,9 @@ const emptyProgress: ResearchProgress = {
   total: 6,
   elapsedSeconds: 0,
 };
+
+type ProgressStage = ResearchProgress["stage"];
+type ServiceState = ServiceStatus["modelRuntime"];
 
 const stageOrder: ProgressStage[] = ["preparing", "library", "searching", "reading", "synthesizing", "publishing"];
 const stageNames: Record<ProgressStage, string> = {
@@ -330,13 +332,13 @@ function App() {
             />
           </section>}
           {mountedViews.has("studio") && <section className="retained-app-view" hidden={view !== "studio"} aria-hidden={view !== "studio"}>
-            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={handleError} />
+            <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId ?? undefined} controlSettings={snapshot.control.settings} onError={handleError} />
           </section>}
           {mountedViews.has("music") && <section className="retained-app-view" hidden={view !== "music"} aria-hidden={view !== "music"}>
-            <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} installRoot={snapshot.settings.installRoot} muscriptorSetupReady={snapshot.setup.components.find((component) => component.id === "muscriptor")?.status === "ready"} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={handleError} />
+            <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} installRoot={snapshot.settings.installRoot} muscriptorSetupReady={snapshot.setup.components.find((component) => component.id === "muscriptor")?.status === "ready"} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId ?? undefined} controlSettings={snapshot.control.settings} onError={handleError} />
           </section>}
           {mountedViews.has("image") && <section className="retained-app-view" hidden={view !== "image"} aria-hidden={view !== "image"}>
-            <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId} controlSettings={snapshot.control.settings} onError={handleError} />
+            <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId ?? undefined} controlSettings={snapshot.control.settings} onError={handleError} />
           </section>}
           {mountedViews.has("developer") && <section className="retained-app-view" hidden={view !== "developer"} aria-hidden={view !== "developer"}>
             <DeveloperConsole

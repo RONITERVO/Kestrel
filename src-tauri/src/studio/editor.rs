@@ -67,7 +67,10 @@ impl MovieStudio {
             record,
         )?;
         if let Some(app) = app {
-            let _ = app.emit("movie-editor-job", &record.job);
+            let _ = crate::ipc_events::emit::<kestrel_app_core::events::MovieEditorJob>(
+                app,
+                &record.job,
+            );
         }
         Ok(())
     }

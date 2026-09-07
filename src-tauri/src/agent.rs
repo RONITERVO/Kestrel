@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::{process::Command, time::timeout};
 use tokio_util::sync::CancellationToken;
 
@@ -528,7 +528,7 @@ fn event(
         );
     }
     if let Some(app) = app {
-        let _ = app.emit("computer-task-event", value);
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::ComputerTask>(app, &value);
     }
 }
 

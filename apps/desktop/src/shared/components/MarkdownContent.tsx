@@ -9,7 +9,7 @@ import {
   type SpeechProgressState,
   type WordOffsetTracker,
 } from "./spokenHighlight";
-import { cleanProseForSpeech } from "../../features/research/researchSpeechContent";
+import { cleanProseForSpeech } from "../speech/text";
 
 export interface MarkdownContentProps {
   value: string;

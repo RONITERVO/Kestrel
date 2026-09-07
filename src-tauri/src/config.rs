@@ -189,7 +189,7 @@ impl SettingsStore {
     }
 }
 
-fn atomic_json_write(path: &Path, contents: &[u8]) -> Result<(), ConfigError> {
+pub(crate) fn atomic_json_write(path: &Path, contents: &[u8]) -> Result<(), ConfigError> {
     let temporary = path.with_extension("json.tmp");
     let backup = path.with_extension("json.backup");
     fs::write(&temporary, contents)?;

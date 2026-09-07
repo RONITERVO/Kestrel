@@ -15,7 +15,6 @@ import {
 import type {
   CreateVoiceProfileRequest,
   VoiceLibrarySnapshot,
-  VoicePerformance,
   VoiceProfile,
 } from "../../contracts/index";
 
@@ -553,3 +552,5 @@ function formatTimestamp(seconds: number): string {
   const remainder = bounded % 60;
   return `${minutes}:${remainder.toString().padStart(2, "0")}`;
 }
+
+type VoicePerformance = VoiceProfile["performance"];

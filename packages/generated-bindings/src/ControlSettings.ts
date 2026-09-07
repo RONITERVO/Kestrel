@@ -2,4 +2,4 @@
 import type { ModelRuntimeOverride } from "./ModelRuntimeOverride.js";
 import type { ThinkingLevel } from "./ThinkingLevel.js";
 
-export type ControlSettings = { advancedMode: boolean, enginePath: string, extraModelRoots: Array<string>, selectedModelId?: string, contextWindow: number, maxOutputTokens: number, threads: number, thinkingLevel: ThinkingLevel, modelOverrides: Array<ModelRuntimeOverride>, projectRoot: string, agentWorkspaceRoots: Array<string>, allowFullAccessAgent: boolean, agentMaxSteps: number, agentMaxOutputTokens: number, };
+export type ControlSettings = { advancedMode: boolean, enginePath: string, extraModelRoots: Array<string>, selectedModelId?: string | null, contextWindow: number, maxOutputTokens: number, threads: number, thinkingLevel: ThinkingLevel, modelOverrides: Array<ModelRuntimeOverride>, projectRoot: string, agentWorkspaceRoots: Array<string>, allowFullAccessAgent: boolean, agentMaxSteps: number, agentMaxOutputTokens: number, };

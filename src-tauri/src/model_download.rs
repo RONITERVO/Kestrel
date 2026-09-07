@@ -5,6 +5,10 @@
 //! Kestrel's offline workspace owns the work gate. Partial bytes and a recoverable ledger make an
 //! overnight transfer safe to stop without turning public-network access into background behavior.
 
+pub use kestrel_app_core::downloads::{
+    ModelDownloadCandidate, ModelDownloadInspection, ModelDownloadRecord, ModelDownloadRequest,
+};
+
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::{
@@ -20,7 +24,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -30,60 +34,6 @@ const MAX_LEDGER_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_RETRIES: u32 = 12;
 const PERSIST_INTERVAL: Duration = Duration::from_secs(5);
 const EMIT_INTERVAL: Duration = Duration::from_millis(400);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelDownloadRequest {
-    pub url: String,
-    #[serde(default)]
-    pub expected_sha256: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelDownloadCandidate {
-    pub file_path: String,
-    pub file_name: String,
-    pub url: String,
-    pub bytes: u64,
-    pub sha256: Option<String>,
-    pub kind: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelDownloadInspection {
-    pub repository: String,
-    pub revision: String,
-    pub candidates: Vec<ModelDownloadCandidate>,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelDownloadRecord {
-    pub id: String,
-    pub status: String,
-    pub source_url: String,
-    pub repository: String,
-    pub revision: String,
-    pub file_name: String,
-    pub destination_path: String,
-    pub partial_path: String,
-    pub total_bytes: u64,
-    pub downloaded_bytes: u64,
-    pub bytes_per_second: u64,
-    pub eta_seconds: Option<u64>,
-    pub expected_sha256: Option<String>,
-    pub actual_sha256: Option<String>,
-    pub source_etag: Option<String>,
-    pub checksum_source: String,
-    pub retry_count: u32,
-    pub created_at: String,
-    pub updated_at: String,
-    pub detail: String,
-    pub error: Option<String>,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1356,7 +1306,7 @@ fn write_ledger(path: &Path, records: &[ModelDownloadRecord]) -> Result<(), Stri
 }
 
 fn emit(app: &AppHandle, record: &ModelDownloadRecord) {
-    let _ = app.emit("model-download", record);
+    let _ = crate::ipc_events::emit::<kestrel_app_core::events::ModelDownload>(app, record);
 }
 
 #[cfg(test)]

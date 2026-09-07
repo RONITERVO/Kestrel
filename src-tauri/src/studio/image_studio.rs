@@ -4,13 +4,22 @@
 //! never accepts executable workflow JSON from a model or producer. Completed PNGs, prompt JSON,
 //! graph receipts, hashes, and earlier takes are immutable backend truth.
 
+pub use kestrel_app_core::image::{
+    CreateImageProjectRequest, ImageGenerationEvent, ImageProject, ImageSettings, ImageStyle,
+    ImageSummary, ImageTake,
+};
+
 use super::{
     comfy_execution_error, hash_file, truncate, ComfyWorkload, MovieStudio, StudioError, COMFY_BASE,
 };
 use chrono::Utc;
 use futures_util::StreamExt;
+use kestrel_app_core::ideogram::{
+    OrderedArtStyle, OrderedCaption, OrderedComposition, OrderedElement, OrderedObject,
+    OrderedPhotoStyle, OrderedStyle, OrderedText,
+};
 use reqwest::Client;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -19,11 +28,11 @@ use std::{
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-const IMAGE_SCHEMA_VERSION: u32 = 2;
+const IMAGE_SCHEMA_VERSION: u32 = 3;
 const MAX_IMAGE_TEXT_BYTES: usize = 64 * 1024;
 const MAX_IMAGE_ELEMENTS: usize = 64;
 const MAX_IMAGE_TAKES: usize = 256;
@@ -34,194 +43,17 @@ const IDEOGRAM_TEXT_ENCODER: &str = "qwen3vl_8b_nvfp4.safetensors";
 const IDEOGRAM_VAE: &str = "flux2-vae.safetensors";
 pub const IDEOGRAM_LICENSE_NOTICE: &str = "Ideogram 4 is provided under the Ideogram Non-Commercial Model Agreement. Generated work may not be used in or to advertise revenue-generating products or services unless Ideogram grants separate rights.";
 
-fn default_style_mode() -> String {
-    "photo".into()
+pub trait ImageGenerationEventPolicy: Sized {
+    fn new(
+        project_id: &str,
+        take_id: &str,
+        kind: &str,
+        phase: &str,
+        detail: impl Into<String>,
+    ) -> Self;
 }
 
-fn default_art_style() -> String {
-    "Editorial illustration with purposeful shape language and finished detail.".into()
-}
-
-const fn default_batch_size() -> u32 {
-    1
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageStyle {
-    #[serde(default = "default_style_mode")]
-    pub mode: String,
-    pub aesthetics: String,
-    pub lighting: String,
-    pub photo: String,
-    #[serde(default = "default_art_style")]
-    pub art_style: String,
-    pub medium: String,
-    pub color_palette: Vec<String>,
-}
-
-impl Default for ImageStyle {
-    fn default() -> Self {
-        Self {
-            mode: default_style_mode(),
-            aesthetics: "Editorial image with deliberate composition and natural detail.".into(),
-            lighting: "Soft directional daylight with controlled contrast.".into(),
-            photo: "Clean full-resolution image with restrained texture.".into(),
-            art_style: default_art_style(),
-            medium: "Photograph".into(),
-            color_palette: vec!["#24313A".into(), "#D9D2C3".into(), "#C36A3D".into()],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageElement {
-    pub id: String,
-    pub kind: String,
-    /// Ideogram coordinates in `[y_min, x_min, y_max, x_max]` order, normalized to 0..1000.
-    pub bbox: [u16; 4],
-    pub text: String,
-    pub description: String,
-    pub color_palette: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageSettings {
-    pub width: u32,
-    pub height: u32,
-    pub preset: String,
-    pub seed: u64,
-    #[serde(default = "default_batch_size")]
-    pub batch_size: u32,
-    pub comfy_root: String,
-}
-
-impl Default for ImageSettings {
-    fn default() -> Self {
-        Self {
-            width: 1536,
-            height: 1024,
-            preset: "standard".into(),
-            seed: 0,
-            batch_size: default_batch_size(),
-            comfy_root: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageTake {
-    pub id: String,
-    pub created_at: String,
-    pub status: String,
-    pub detail: String,
-    pub error: String,
-    pub path: String,
-    pub bytes: u64,
-    pub sha256: String,
-    pub width: u32,
-    pub height: u32,
-    pub preset: String,
-    pub seed: u64,
-    #[serde(default)]
-    pub batch_index: u32,
-    #[serde(default = "default_batch_size")]
-    pub batch_size: u32,
-    pub prompt_id: String,
-    pub exact_prompt: Value,
-    #[serde(default)]
-    pub exact_prompt_text: String,
-    pub exact_graph: Value,
-    pub model_profile: String,
-    pub license_notice: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageProject {
-    pub schema_version: u32,
-    pub id: String,
-    pub title: String,
-    pub idea: String,
-    pub high_level_description: String,
-    pub style: ImageStyle,
-    pub background: String,
-    pub elements: Vec<ImageElement>,
-    pub settings: ImageSettings,
-    pub takes: Vec<ImageTake>,
-    pub active_take_id: String,
-    pub status: String,
-    pub phase: String,
-    pub detail: String,
-    pub error: String,
-    pub license_notice: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageSummary {
-    pub id: String,
-    pub title: String,
-    pub status: String,
-    pub updated_at: String,
-    pub take_count: usize,
-    pub active_take_path: String,
-}
-
-impl From<&ImageProject> for ImageSummary {
-    fn from(project: &ImageProject) -> Self {
-        Self {
-            id: project.id.clone(),
-            title: project.title.clone(),
-            status: project.status.clone(),
-            updated_at: project.updated_at.clone(),
-            take_count: project.takes.len(),
-            active_take_path: project
-                .takes
-                .iter()
-                .find(|take| take.id == project.active_take_id)
-                .map(|take| take.path.clone())
-                .unwrap_or_default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateImageProjectRequest {
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub idea: String,
-    #[serde(default)]
-    pub comfy_root: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImageGenerationEvent {
-    pub project_id: String,
-    pub take_id: String,
-    pub kind: String,
-    pub phase: String,
-    pub detail: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub step: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub percent: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub eta_seconds: Option<u64>,
-    pub at: String,
-}
-
-impl ImageGenerationEvent {
+impl ImageGenerationEventPolicy for ImageGenerationEvent {
     fn new(
         project_id: &str,
         take_id: &str,
@@ -282,7 +114,10 @@ impl ImageStudio {
 
     pub fn get(&self, id: &str) -> Result<ImageProject, StudioError> {
         validate_image_id(id)?;
-        read_recoverable(&self.project_dir(id).join("project.json"))
+        let mut project: ImageProject =
+            read_recoverable(&self.project_dir(id).join("project.json"))?;
+        project.schema_version = IMAGE_SCHEMA_VERSION;
+        Ok(project)
     }
 
     pub fn create(&self, request: CreateImageProjectRequest) -> Result<ImageProject, StudioError> {
@@ -327,7 +162,11 @@ impl ImageStudio {
     }
 
     /// Save only producer-editable state. Generated media and receipts remain backend truth.
-    pub fn save_editable(&self, edited: ImageProject) -> Result<ImageProject, StudioError> {
+    pub fn save_editable(
+        &self,
+        edited: impl Into<kestrel_app_core::ImageProjectEdit>,
+    ) -> Result<ImageProject, StudioError> {
+        let edited = edited.into();
         let mut stored = self.get(&edited.id)?;
         if stored.status == "generating" {
             return Err(StudioError::Invalid(
@@ -335,7 +174,6 @@ impl ImageStudio {
                     .into(),
             ));
         }
-        validate_editable(&edited)?;
         stored.title = edited.title.trim().into();
         stored.idea = edited.idea;
         stored.high_level_description = edited.high_level_description;
@@ -351,6 +189,7 @@ impl ImageStudio {
         {
             stored.active_take_id = edited.active_take_id;
         }
+        validate_editable(&stored)?;
         stored.updated_at = Utc::now().to_rfc3339();
         stored.detail =
             "Producer changes are saved. Existing full-resolution takes remain immutable.".into();
@@ -763,7 +602,10 @@ impl ImageStudio {
         project.updated_at = Utc::now().to_rfc3339();
         self.persist(project)?;
         if let Some(app) = app {
-            let _ = app.emit("image-project-updated", project.clone());
+            let _ = crate::ipc_events::emit::<kestrel_app_core::events::ImageProject>(
+                app,
+                &project.clone(),
+            );
         }
         Ok(())
     }
@@ -788,6 +630,7 @@ impl ImageStudio {
             }
             .into();
             project.phase = "interrupted".into();
+            project.schema_version = IMAGE_SCHEMA_VERSION;
             project.detail = "Kestrel closed during generation. Completed takes and the exact in-progress prompt and graph are safe; create a new take when ready.".into();
             project.error.clear();
             for take in project
@@ -845,7 +688,7 @@ impl ImageProgressSession {
                         if !message.is_text() { continue; }
                         let Ok(text) = message.into_text() else { continue; };
                         if let Some(event) = parse_image_progress(&text, &task_project, &task_take, started) {
-                            let _ = task_app.emit("image-generation", event);
+                            let _ = crate::ipc_events::emit::<kestrel_app_core::events::ImageGeneration>(&task_app, &event);
                         }
                     }
                 }
@@ -939,80 +782,8 @@ fn parse_image_progress(
 
 fn emit_image(app: Option<&AppHandle>, event: ImageGenerationEvent) {
     if let Some(app) = app {
-        let _ = app.emit("image-generation", event);
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::ImageGeneration>(app, &event);
     }
-}
-
-#[derive(Serialize)]
-struct OrderedCaption<'a> {
-    high_level_description: &'a str,
-    style_description: OrderedStyle<'a>,
-    compositional_deconstruction: OrderedComposition<'a>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum OrderedStyle<'a> {
-    Photo(OrderedPhotoStyle<'a>),
-    Art(OrderedArtStyle<'a>),
-}
-
-#[derive(Serialize)]
-struct OrderedPhotoStyle<'a> {
-    aesthetics: &'a str,
-    lighting: &'a str,
-    photo: &'a str,
-    medium: &'a str,
-    #[serde(skip_serializing_if = "slice_is_empty")]
-    color_palette: &'a [String],
-}
-
-#[derive(Serialize)]
-struct OrderedArtStyle<'a> {
-    aesthetics: &'a str,
-    lighting: &'a str,
-    medium: &'a str,
-    art_style: &'a str,
-    #[serde(skip_serializing_if = "slice_is_empty")]
-    color_palette: &'a [String],
-}
-
-#[derive(Serialize)]
-struct OrderedComposition<'a> {
-    background: &'a str,
-    elements: Vec<OrderedElement<'a>>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum OrderedElement<'a> {
-    Object(OrderedObject<'a>),
-    Text(OrderedText<'a>),
-}
-
-#[derive(Serialize)]
-struct OrderedObject<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    bbox: [u16; 4],
-    desc: &'a str,
-    #[serde(skip_serializing_if = "slice_is_empty")]
-    color_palette: &'a [String],
-}
-
-#[derive(Serialize)]
-struct OrderedText<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    bbox: [u16; 4],
-    text: &'a str,
-    desc: &'a str,
-    #[serde(skip_serializing_if = "slice_is_empty")]
-    color_palette: &'a [String],
-}
-
-fn slice_is_empty<T>(slice: &[T]) -> bool {
-    slice.is_empty()
 }
 
 /// Compile the producer-owned composition into Ideogram's order-sensitive caption schema.
@@ -1028,14 +799,16 @@ fn structured_prompt(project: &ImageProject) -> Result<(Value, String), StudioEr
                     bbox: element.bbox,
                     text: element.text.as_str(),
                     desc: element.description.trim(),
-                    color_palette: &element.color_palette,
+                    color_palette: (!element.color_palette.is_empty())
+                        .then_some(element.color_palette.as_slice()),
                 })
             } else {
                 OrderedElement::Object(OrderedObject {
                     kind: "obj",
                     bbox: element.bbox,
                     desc: element.description.trim(),
-                    color_palette: &element.color_palette,
+                    color_palette: (!element.color_palette.is_empty())
+                        .then_some(element.color_palette.as_slice()),
                 })
             }
         })
@@ -1046,7 +819,8 @@ fn structured_prompt(project: &ImageProject) -> Result<(Value, String), StudioEr
             lighting: project.style.lighting.trim(),
             medium: project.style.medium.trim(),
             art_style: project.style.art_style.trim(),
-            color_palette: &project.style.color_palette,
+            color_palette: (!project.style.color_palette.is_empty())
+                .then_some(project.style.color_palette.as_slice()),
         })
     } else {
         OrderedStyle::Photo(OrderedPhotoStyle {
@@ -1054,7 +828,8 @@ fn structured_prompt(project: &ImageProject) -> Result<(Value, String), StudioEr
             lighting: project.style.lighting.trim(),
             photo: project.style.photo.trim(),
             medium: project.style.medium.trim(),
-            color_palette: &project.style.color_palette,
+            color_palette: (!project.style.color_palette.is_empty())
+                .then_some(project.style.color_palette.as_slice()),
         })
     };
     let caption = OrderedCaption {
@@ -1501,6 +1276,7 @@ fn write_bytes_recoverable(path: &Path, bytes: &[u8]) -> Result<(), StudioError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kestrel_app_core::ImageElement;
     use tempfile::TempDir;
 
     fn project(studio: &ImageStudio) -> ImageProject {
@@ -1654,6 +1430,40 @@ mod tests {
         let mut project = project(&studio);
         project.elements[0].bbox = [800, 50, 200, 900];
         assert!(studio.save_editable(project).is_err());
+    }
+
+    #[test]
+    fn old_numeric_seed_survives_open_edit_save_with_explicit_new_schema() {
+        let root = TempDir::new().unwrap();
+        let studio = ImageStudio::new(root.path()).unwrap();
+        let original = project(&studio);
+        let seed = i64::MAX as u64;
+        let path = studio.project_dir(&original.id).join("project.json");
+        let mut legacy = serde_json::to_value(&original).unwrap();
+        legacy["schemaVersion"] = json!(2);
+        legacy["settings"]["seed"] = json!(seed);
+        let old_bytes = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&path, &old_bytes).unwrap();
+        let opened = studio.get(&original.id).unwrap();
+        assert_eq!(opened.settings.seed, seed);
+        assert_eq!(fs::read(&path).unwrap(), old_bytes);
+        let mut wire = serde_json::to_value(opened).unwrap();
+        assert_eq!(wire["settings"]["seed"], seed.to_string());
+        wire["title"] = json!("Changed through the UI");
+        let mut invalid = wire.clone();
+        invalid["settings"]["seed"] = json!(u64::MAX.to_string());
+        let invalid: kestrel_app_core::ImageProjectEdit = serde_json::from_value(invalid).unwrap();
+        assert!(studio
+            .save_editable(invalid)
+            .unwrap_err()
+            .to_string()
+            .contains("integer boundary"));
+        assert_eq!(fs::read(&path).unwrap(), old_bytes);
+        let edit: kestrel_app_core::ImageProjectEdit = serde_json::from_value(wire).unwrap();
+        studio.save_editable(edit).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["schemaVersion"], IMAGE_SCHEMA_VERSION);
+        assert_eq!(saved["settings"]["seed"], seed.to_string());
     }
 
     #[test]

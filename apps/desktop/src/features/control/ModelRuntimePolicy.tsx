@@ -1,10 +1,7 @@
 import type { ControlSettings } from "../../contracts/index";
-import limits from "./runtimePolicyLimits.json";
+import { runtimePolicyCatalog as limits } from "../../contracts/index";
 
-export interface RuntimePolicyValue {
-  contextWindow: number;
-  maxOutputTokens: number;
-}
+export type RuntimePolicyValue = Pick<ControlSettings, "contextWindow" | "maxOutputTokens">;
 
 export function effectiveModelRuntimePolicy(
   settings: ControlSettings | undefined,

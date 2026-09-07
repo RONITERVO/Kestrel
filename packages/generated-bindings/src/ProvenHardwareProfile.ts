@@ -4,4 +4,4 @@ import type { ThinkingLevel } from "./ThinkingLevel.js";
 /**
  * A proven, empirically validated hardware configuration for a local model and VRAM tier.
  */
-export type ProvenHardwareProfile = { id: string, modelPattern: string, quantizationPattern?: string, displayName: string, minVramMib: number, maxVramMib?: number, recommendedContextWindow: number, recommendedMaxOutputTokens: number, recommendedThinkingLevel: ThinkingLevel, recommendedThreads: number, description: string, provenSpeedNotes: string, };
+export type ProvenHardwareProfile = { id: string, modelPattern: string, quantizationPattern?: string, displayName: string, minVramMib: number, maxVramMib?: number | null, recommendedContextWindow: number, recommendedMaxOutputTokens: number, recommendedThinkingLevel: ThinkingLevel, recommendedThreads: number, description: string, provenSpeedNotes: string, };

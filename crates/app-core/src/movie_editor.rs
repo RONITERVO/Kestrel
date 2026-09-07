@@ -79,6 +79,8 @@ pub struct MovieEditorJob {
     pub direction: String,
     pub render_prompt: String,
     pub model_id: String,
+    #[serde(with = "crate::seed_serde")]
+    #[ts(type = "number | string")]
     pub seed: u64,
     pub first: MovieEditorEndpoint,
     pub last: MovieEditorEndpoint,
