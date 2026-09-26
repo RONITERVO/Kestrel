@@ -1,0 +1,26 @@
+/* Developer chapter: status and boundaries on the left page, the repair desk on the right. */
+
+.developer-status-page .system-hero h1 { font-size: var(--text-display); }
+.dev-status-grid { display: grid; gap: 8px; }
+.dev-status-grid article { padding: 10px 13px; display: grid; gap: 2px; border: var(--stroke-soft); border-left: 5px solid var(--rule-strong); border-radius: var(--radius-card); background: var(--paper-raised); box-shadow: var(--lift); }
+.dev-status-grid article.ok { border-left-color: var(--ok); }
+.dev-status-grid article.stop { border-left-color: var(--stop); }
+.dev-status-grid span { color: var(--ink-3); font-size: var(--text-xs); letter-spacing: .09em; text-transform: uppercase; }
+.dev-status-grid strong { font-family: var(--font-hand); font-size: var(--text-xl); font-weight: 700; }
+.dev-status-grid small { color: var(--ink-3); font-size: var(--text-sm); }
+.dev-root { display: grid; gap: 4px; }
+.dev-root label { color: var(--ink-2); font-size: var(--text-sm); }
+.dev-root > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.dev-root input { font-family: var(--font-data); font-size: var(--text-sm); }
+.dev-issue { display: grid; gap: 5px; font-size: var(--text-sm); }
+.dev-issue textarea { min-height: 150px; }
+.dev-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.repair-result { display: grid; gap: 2px; padding: 8px 11px; border: 1px solid var(--wait); border-radius: var(--radius-sketch); background: var(--wait-wash); }
+.repair-result.success { border-color: var(--ok); background: var(--ok-wash); }
+.repair-result.failed { border-color: var(--stop); background: var(--stop-wash); }
+.repair-result strong { font-weight: 400; }
+.repair-result span { overflow: hidden; color: var(--ink-3); font-family: var(--font-data); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.diagnostic-output { min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px; }
+.diagnostic-output > div:first-child { display: flex; align-items: center; justify-content: space-between; color: var(--ink-3); font-size: var(--text-xs); letter-spacing: .09em; }
+.diagnostic-output pre { margin: 0; color: var(--ink-2); font-size: var(--text-xs); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dev-empty { margin-top: auto; margin-bottom: auto; color: var(--ink-3); font-family: var(--font-read); text-align: center; }

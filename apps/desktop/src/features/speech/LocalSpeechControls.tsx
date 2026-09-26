@@ -49,6 +49,7 @@ import {
   VoiceActivityDetector,
   type VadSettings,
 } from "./voiceActivityDetection";
+import "./speech.css";
 
 export { claimPlayback, clearPlayback };
 export type { SpeechProgressState };

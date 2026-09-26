@@ -1,0 +1,142 @@
+/* Kestrel sketchbook tokens.
+   Every color, type face, stroke and lift used by the UI is named here. Feature styles
+   use these names only; `npm run ui:check` rejects raw color literals elsewhere.
+   See docs/KESTREL_BOOK.md for the meaning of each family. */
+
+@font-face {
+  font-family: "Caveat";
+  src: url("./fonts/caveat.ttf") format("truetype");
+  font-weight: 400 700;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Patrick Hand";
+  src: url("./fonts/patrick-hand.ttf") format("truetype");
+  font-display: block;
+}
+
+:root {
+  /* Desk, paper and binding. */
+  --desk: #ebe2cf;
+  --desk-deep: #d8cab0;
+  --paper: #fbf6ea;
+  --paper-raised: #fffbf3;
+  --paper-sunk: #f3ebd8;
+  --paper-deep: #eadfc6;
+  --paper-edge: #e2d3b1;
+  --cover: #73534e;
+  --cover-deep: #553b37;
+  --ribbon: #c39950;
+
+  /* Graphite. Text uses ink to ink-3; ink-4 is only for decoration and disabled marks. */
+  --ink: #342d2b;
+  --ink-2: #4f4842;
+  --ink-3: #6b6154;
+  --ink-4: #a0957f;
+  --rule: #d5c7a7;
+  --rule-strong: #8f7f64;
+  --shade: rgba(84, 70, 52, 0.14);
+  --shade-strong: rgba(60, 48, 36, 0.24);
+  --scrim: rgba(52, 45, 43, 0.42);
+  /* Binding shadows: the desk vignette, cover sheen, page curvature and spine. */
+  --desk-vignette: rgba(120, 96, 64, 0.1);
+  --cover-sheen: rgba(255, 255, 255, 0.05);
+  --cover-shadow: rgba(0, 0, 0, 0.12);
+  --page-shade: rgba(90, 70, 45, 0.07);
+  --spine-shade-soft: rgba(90, 68, 44, 0.05);
+  --spine-shade: rgba(90, 68, 44, 0.16);
+  --spine-light: rgba(255, 252, 244, 0.5);
+
+  /* Watercolor meanings. A meaning is the same in every chapter:
+     act = what you can do next / selection, ok = ready or done, wait = working or attention,
+     stop = error or destructive, note = information. Pigment fills; -ink is text; -wash is ground. */
+  --act: #2b8d88;
+  --act-ink: #1d6864;
+  --act-wash: #dbeeea;
+  --ok: #5c9e7c;
+  --ok-ink: #2d6a4c;
+  --ok-wash: #e0efe3;
+  --wait: #d7b750;
+  --wait-ink: #7a5f12;
+  --wait-wash: #f5ebc7;
+  --stop: #b64f42;
+  --stop-ink: #8c3226;
+  --stop-wash: #f5dcd4;
+  --note: #859ac1;
+  --note-ink: #435a88;
+  --note-wash: #e3e8f2;
+  --on-pigment: #fffaf0;
+
+  /* Chapter ribbons tell you where you are. They never signal state. */
+  --ch-setup: #cfa640;
+  --ch-control: #2b8d88;
+  --ch-research: #5c9e7c;
+  --ch-studio: #cc7b58;
+  --ch-image: #7f95c0;
+  --ch-music: #9a7fb4;
+  --ch-developer: #7d7365;
+  --ch-system: #b5875a;
+  --chapter: var(--ch-control);
+
+  /* Media surfaces: video, waveforms and canvases keep true color on a dark mat. */
+  --mat: #2c2624;
+  --mat-2: #3a3330;
+  --mat-ink: #efe6d6;
+
+  /* Type. Caveat letters titles, Patrick Hand labels the book, Georgia carries reading. */
+  --font-hand: "Caveat", "Segoe Print", cursive;
+  --font-ui: "Patrick Hand", "Segoe Print", "Comic Sans MS", cursive;
+  --font-read: Georgia, "Iowan Old Style", "Book Antiqua", serif;
+  --font-data: "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-md: 16px;
+  --text-lg: 19px;
+  --text-xl: 24px;
+  --text-title: 34px;
+  --text-display: 46px;
+
+  /* Pencil strokes and paper lift. */
+  --stroke: 1.5px solid var(--rule-strong);
+  --stroke-soft: 1px solid var(--rule);
+  --stroke-ink: 1.5px solid var(--ink-2);
+  --radius-sketch: 4px 10px 5px 8px;
+  --radius-card: 5px 13px 6px 11px;
+  --radius-chip: 11px 8px 12px 9px;
+  --lift: 2px 3px 0 var(--shade);
+  --lift-strong: 3px 4px 0 var(--shade-strong);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --hit: 34px;
+
+  /* Paper grain and washes, drawn once and reused. */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .32 0 0 0 0 .27 0 0 0 0 .2 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)'/%3E%3C/svg%3E");
+  --deckle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600'%3E%3Cfilter id='w'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.006' numOctaves='3' seed='7'/%3E%3CfeColorMatrix values='0 0 0 0 .75 0 0 0 0 .63 0 0 0 0 .43 0 0 0 .16 -.03'/%3E%3C/filter%3E%3Crect width='600' height='600' filter='url(%23w)'/%3E%3C/svg%3E");
+
+  color: var(--ink);
+  background: var(--desk);
+  font-family: var(--font-ui);
+  font-size: var(--text-md);
+  line-height: 1.35;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-chapter="setup"] { --chapter: var(--ch-setup); }
+[data-chapter="control"] { --chapter: var(--ch-control); }
+[data-chapter="research"] { --chapter: var(--ch-research); }
+[data-chapter="studio"] { --chapter: var(--ch-studio); }
+[data-chapter="image"] { --chapter: var(--ch-image); }
+[data-chapter="music"] { --chapter: var(--ch-music); }
+[data-chapter="developer"] { --chapter: var(--ch-developer); }
+[data-chapter="system"] { --chapter: var(--ch-system); }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion: 0; }
+}

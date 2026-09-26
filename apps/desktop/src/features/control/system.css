@@ -1,0 +1,78 @@
+/* System chapter: telemetry and the section index on the left page, the open form on the right. */
+
+.system-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.system-hero h1 { margin: 2px 0 6px; font-size: var(--text-display); }
+.system-hero p { max-width: 58ch; color: var(--ink-2); font-family: var(--font-read); font-size: var(--text-sm); line-height: 1.45; }
+.system-hero-actions { flex: 0 0 auto; }
+
+.telemetry-grid { display: grid; gap: 8px; }
+.telemetry-card { padding: 10px 13px; display: grid; gap: 6px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); box-shadow: var(--lift); }
+.telemetry-card > p { color: var(--ink-3); font-family: var(--font-read); font-size: var(--text-sm); }
+.telemetry-title { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 9px; align-items: center; }
+.telemetry-title > svg { width: 19px; height: 19px; color: var(--chapter); }
+.telemetry-title span { min-width: 0; display: flex; flex-direction: column; }
+.telemetry-title small { color: var(--ink-3); letter-spacing: .08em; text-transform: uppercase; }
+.telemetry-title strong { overflow: hidden; font-size: var(--text-lg); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.vram-number { display: flex; align-items: baseline; gap: 8px; }
+.vram-number strong { font-family: var(--font-hand); font-size: 30px; line-height: 1; }
+.vram-number span, .telemetry-foot { color: var(--ink-3); font-size: var(--text-sm); }
+.vram-track { height: 10px; overflow: hidden; border: var(--stroke-soft); border-radius: 6px 4px 7px 5px; background: var(--paper-sunk); }
+.vram-track span { height: 100%; display: block; background: linear-gradient(90deg, var(--ok), var(--wait) 70%, var(--stop)); background-size: 1000px 100%; }
+.telemetry-foot { display: flex; justify-content: space-between; }
+.runtime-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.runtime-facts span { padding: 1px 9px; border: var(--stroke-soft); border-radius: var(--radius-chip); color: var(--ink-2); background: var(--paper); font-size: var(--text-sm); }
+
+/* The section index reads like a table of contents. */
+.system-tabs { margin-top: auto; display: grid; gap: 6px; }
+.system-tabs > button { min-height: 56px; padding: 8px 12px; display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; align-items: center; border: var(--stroke-soft); border-left: 4px solid transparent; border-radius: var(--radius-sketch); color: var(--ink-2); background: transparent; text-align: left; }
+.system-tabs > button span { display: flex; flex-direction: column; }
+.system-tabs > button strong { color: var(--ink); font-size: var(--text-lg); font-weight: 400; }
+.system-tabs > button small { color: var(--ink-3); font-size: var(--text-sm); }
+.system-tabs > button:hover { background: var(--paper-raised); }
+.system-tabs > button.active { border-color: var(--rule-strong); border-left-color: var(--chapter); background: var(--paper-raised); box-shadow: var(--lift); }
+
+/* The right page. Policies flow into pages; editors fill the page. */
+.system-console-body { padding-bottom: 12px; }
+.system-console-body .flow-columns > * + * { margin-top: 14px; }
+.system-console-body .flow-columns > * { break-inside: avoid-column; }
+.system-policy-column { display: grid; gap: 10px; padding: 12px 14px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); }
+.model-exception-card { border-style: dashed; background: var(--paper); }
+.model-exception-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.model-exception-heading > div { display: flex; flex-direction: column; }
+.model-exception-heading strong { font-family: var(--font-hand); font-size: var(--text-xl); }
+.model-exception-heading label { display: inline-flex; align-items: center; gap: 7px; font-size: var(--text-sm); }
+.model-runtime-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.token-custom-entry { display: flex; align-items: center; gap: 5px; }
+.token-custom-entry input { min-width: 0; flex: 1 1 auto; }
+.proven-profile-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 11px; border: 1px solid var(--ok); border-radius: var(--radius-sketch); background: var(--ok-wash); }
+.proven-profile-banner strong { display: inline-flex; align-items: center; gap: 6px; color: var(--ok-ink); font-weight: 400; }
+.proven-profile-banner p { color: var(--ink-2); font-size: var(--text-sm); }
+.advanced-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; padding: 12px 14px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); }
+.advanced-settings.disabled { opacity: .7; }
+
+/* Prompt pack and portable setup: one column, the document fills the page, actions stay in the footer. */
+.system-document-page { min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 10px; }
+.system-document-page > .settings-heading, .system-document-page > .prompt-pack-authority, .system-document-page > .segmented, .system-document-page > .settings-actions { flex: 0 0 auto; }
+.system-document-page > .settings-actions { padding-top: 8px; border-top: var(--stroke-soft); }
+.prompt-pack-authority { display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px; border: 1px solid var(--wait); border-radius: var(--radius-sketch); color: var(--ink-2); background: var(--wait-wash); font-size: var(--text-sm); line-height: 1.4; }
+.prompt-pack-authority > svg { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; color: var(--wait-ink); }
+.prompt-pack-authority strong { color: var(--wait-ink); font-weight: 400; }
+.portable-json { min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; gap: 5px; font-size: var(--text-sm); }
+/* Raw JSON is a free-text editor, so it may scroll inside itself. */
+.portable-json textarea { min-height: 0; flex: 1 1 auto; font-family: var(--font-data); font-size: var(--text-sm); line-height: 1.5; resize: none; }
+.portable-path-row { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.portable-path-row .wide-field { flex: 1 1 260px; }
+.prompt-pack-files { min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; gap: 12px; }
+.prompt-pack-files > p { max-width: 62ch; color: var(--ink-2); font: var(--text-sm)/1.45 var(--font-read); }
+.prompt-pack-files > p strong { font-family: var(--font-ui); font-weight: 400; }
+.portable-file-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.profile-status { padding: 5px 9px; border: 1px solid var(--ok); border-radius: var(--radius-sketch); color: var(--ok-ink); background: var(--ok-wash); font-size: var(--text-sm); }
+
+/* Short windows keep every section label and control; only the explanations step back. */
+@media (max-height: 820px) {
+  .system-hero p, .system-document-page > .settings-heading p { display: none; }
+  .system-tabs > button { min-height: 42px; padding-block: 5px; }
+  .system-tabs > button small { display: none; }
+  .telemetry-card { padding: 7px 11px; gap: 4px; }
+  .telemetry-card > p, .telemetry-foot { display: none; }
+}

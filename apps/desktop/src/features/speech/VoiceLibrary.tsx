@@ -17,6 +17,8 @@ import type {
   VoiceLibrarySnapshot,
   VoiceProfile,
 } from "../../contracts/index";
+import { FlowPages } from "../../shared/book/FlowPages";
+import "./speech.css";
 
 const MIN_REFERENCE_SECONDS = 3;
 const MAX_REFERENCE_SECONDS = 45;
@@ -428,7 +430,7 @@ export function VoiceLibraryDialog({
         <button type="button" aria-label="Close Voice Library" disabled={recording || !!busy} onClick={onClose}><X /></button>
       </header>
 
-      <div className="voice-library-body">
+      <FlowPages className="voice-library-body" label="Voice Library pages">
         <section className="voice-profile-grid" aria-label="Available voices">
           {snapshot.profiles.map((profile) => {
             const selected = snapshot.defaultProfileId === profile.id;
@@ -537,7 +539,7 @@ export function VoiceLibraryDialog({
           </section>
         )}
         {error && <p className="voice-library-error" role="alert">{error}</p>}
-      </div>
+      </FlowPages>
     </dialog>
   );
 }

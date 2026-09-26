@@ -1,7 +1,7 @@
 import { movieProducerDefaults } from "../../../contracts/index";
 import type { PendingMovieReference } from "./movieDrafts";
 import {
-  ArrowDown, ArrowUp, AudioLines, Check, ChevronDown, CircleStop, Clapperboard,
+  ArrowDown, ArrowLeft, ArrowUp, AudioLines, Check, ChevronDown, CircleStop, Clapperboard,
   Download, FilePenLine, Film, FolderOpen, Library, LoaderCircle, MessageSquare,
   Paperclip, Play, Plus, RotateCcw, Save, Send, Settings2, ShieldCheck, Sparkles,
   Trash2, Video, X,
@@ -16,13 +16,15 @@ import {
   resetMovieStudioConversation, revealMovie, saveMovieEdits, saveMovieScenes,
   saveMovieStoryRevision, startMovieStudioChat, summarizeMovieStudioConversation,
 } from "../../../platform/api";
+import { FlowPages } from "../../../shared/book/FlowPages";
+import { PagedList } from "../../../shared/book/PagedList";
 import { MarkdownContent } from "../../../shared/components/MarkdownContent";
 import { appendModelThinking, ModelThinkingStream } from "../../control/ModelThinkingStream";
 import { MovieTimeline } from "./MovieTimeline";
 import { MovieGenerationPanel } from "./MovieGenerationPanel";
 import { GenerateAssetButton, MovieAssetCreator } from "./MovieAssetCreator";
 import { MovieH3Preview } from "./MovieH3Preview";
-import "./producer-tools.css";
+import "./movie.css";
 import type {
   ControlSettings, ModelInfo, MovieEdit, MovieProducerWorkspace, MovieReference,
   MovieReferenceAsset, MovieSceneDraft, MovieSceneFrameSource,
@@ -67,6 +69,8 @@ export function MovieStudio({
   const [project, setProject] = useState<Awaited<ReturnType<typeof getMovie>> | null>(null);
   const [producer, setProducer] = useState<MovieProducerWorkspace | null>(null);
   const [creating, setCreating] = useState(true);
+  // Browsing the library keeps the open production intact until another one is chosen.
+  const [browsing, setBrowsing] = useState(false);
   const [startingMaterial, setStartingMaterial] = useState("");
   const [modelId, setModelId] = useState(selectedModelId ?? models[0]?.id ?? "");
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
@@ -131,7 +135,7 @@ export function MovieStudio({
       const [nextProject, nextProducer] = await Promise.all([getMovie(id), getMovieProducerWorkspace(id)]);
       activeProjectId.current = id;
       setSelectedSceneIds([]);
-      setProject(nextProject); setEdit(nextProject.edit); applyProducer(nextProducer); setCreating(false);
+      setProject(nextProject); setEdit(nextProject.edit); applyProducer(nextProducer); setCreating(false); setBrowsing(false);
       const nextWorkspace: ProjectWorkspace = nextProducer.acceptedStoryRevisionId ? "scenes" : "story";
       setWorkspace(nextWorkspace);
       await loadConversation(id, nextProducer, nextWorkspace);
@@ -233,7 +237,7 @@ export function MovieStudio({
     if (chat.requestId) void cancelMovieStudioChat(chat.requestId).catch(() => undefined);
     activeProjectId.current = "";
     activeChatRequest.current = "";
-    setProject(null); setProducer(null); setConversation(null); setCreating(true);
+    setProject(null); setProducer(null); setConversation(null); setCreating(true); setBrowsing(false);
     setStartingMaterial(""); setPendingReferences([]); setWorkspace("story");
     setStoryDraft(""); setStoryRevisionId(""); setScenes([]); setSelectedSceneIds([]); setChat(emptyChat);
   };
@@ -346,14 +350,31 @@ export function MovieStudio({
   const sceneDirty = Boolean(producer && JSON.stringify(scenes) !== JSON.stringify(producer.scenes));
   const complete = project?.clips.filter((clip) => clip.status === "complete").length ?? 0;
 
-  return <MovieAssetCreator comfyRoot={project?.settings.comfyRoot || settings.comfyRoot} onUse={(asset) => useGeneratedImage(asset, Boolean(project && !creating))} onError={onError}><div className="movie-studio producer-movie-studio">
-    <aside className="movie-library"><div className="movie-library-title"><span>Private movie library</span><button aria-label="New production" onClick={beginNew}><Plus size={15} /></button></div><div className="movie-list">
-      {movies.map((movie) => <button key={movie.id} className={project?.id === movie.id ? "active" : ""} onClick={() => void openProject(movie.id)}><Film size={15} /><span><strong>{movie.title}</strong><small>{movie.phase} · {movie.clipCount} clips</small></span></button>)}
-      {!movies.length && <div className="movie-empty-list"><Library size={18} />Your durable productions will appear here.</div>}
-    </div></aside>
-    <section className="movie-stage"><div className="movie-compact-library"><label>Movie library<select aria-label="Open production" value={project?.id ?? ""} onChange={(event) => event.target.value && void openProject(event.target.value)}><option value="">Choose a production</option>{movies.map((movie) => <option key={movie.id} value={movie.id}>{movie.title}</option>)}</select></label><button onClick={beginNew}><Plus size={15} /> New</button></div>{project && workspace !== "edit" && (project.status === "running" || editorActive) && <div className="movie-preview-dock"><MovieH3Preview projectId={project.id} active onStop={() => void cancelMovieRender(project.id).catch((error) => onError(String(error)))} /></div>}
-      {creating || !project || !producer ? <ProducerLaunch material={startingMaterial} onMaterial={setStartingMaterial} modelId={modelId} onModel={setModelId} models={models} thinkingLevel={thinkingLevel} onThinkingLevel={setThinkingLevel} settings={settings} onSettings={setSettings} advanced={advanced} onAdvanced={setAdvanced} advancedEnabled={advancedEnabled} references={pendingReferences} onReferences={setPendingReferences} generatedImages={generatedImages} busy={busy || Boolean(chat.requestId)} onAttach={() => void attachReferences(false)} onUseGenerated={(asset) => useGeneratedImage(asset, false)} onCreate={() => void createProject()} /> : <div className="movie-project-view movie-production-shell producer-project-shell">
-        <header className="studio-project-bar"><div><span className={`studio-project-state ${project.status}`}>{project.status === "running" ? <LoaderCircle className="spin" /> : <ShieldCheck />}{project.phase}</span><span><strong>{project.title}</strong><small>Producer-owned story, scenes, media choices, and H3 masters</small></span></div><div className="movie-project-actions"><button onClick={beginNew}><Plus /> New</button><button onClick={() => void revealMovie(project.id)}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={() => void cancelMovieRender(project.id).catch((error) => onError(String(error)))}><CircleStop /> Stop H3 safely</button>}</div></header>
+  const launching = creating || !project || !producer || browsing;
+  return <MovieAssetCreator comfyRoot={project?.settings.comfyRoot || settings.comfyRoot} onUse={(asset) => useGeneratedImage(asset, Boolean(project && !creating))} onError={onError}><div className={`movie-studio producer-movie-studio ${launching ? "is-launch" : "has-project"}`}>
+    {launching ? <div className="spread movie-launch-spread">
+      <aside className="page page-left movie-library">
+        <div className="movie-library-title"><span><small className="eyebrow">Private movie library</small><strong>Your productions</strong></span><button className="quiet-button compact" onClick={beginNew}><Plus size={15} /> New production</button></div>
+        {browsing && project && <button className="primary-button compact movie-library-return" onClick={() => setBrowsing(false)}><ArrowLeft size={15} /> Back to {project.title}</button>}
+        <PagedList
+            as="nav"
+            className="movie-list"
+            label="Private movie library"
+            items={movies}
+            itemKey={(movie) => movie.id}
+            selectedKey={project?.id}
+            empty={<div className="movie-empty-list"><Library size={18} />Your durable productions will appear here.</div>}
+            renderItem={(movie) => <button className={project?.id === movie.id ? "active" : ""} onClick={() => void openProject(movie.id)}><Film size={15} /><span><strong>{movie.title}</strong><small>{movie.phase} · {movie.clipCount} clips</small></span></button>}
+          />
+      </aside>
+      <section className="page page-right movie-stage">
+        <ProducerLaunch material={startingMaterial} onMaterial={setStartingMaterial} modelId={modelId} onModel={setModelId} models={models} thinkingLevel={thinkingLevel} onThinkingLevel={setThinkingLevel} settings={settings} onSettings={setSettings} advanced={advanced} onAdvanced={setAdvanced} advancedEnabled={advancedEnabled} references={pendingReferences} onReferences={setPendingReferences} generatedImages={generatedImages} busy={busy || Boolean(chat.requestId)} onAttach={() => void attachReferences(false)} onUseGenerated={(asset) => useGeneratedImage(asset, false)} onCreate={() => void createProject()} />
+      </section>
+    </div> : <section className="movie-stage">
+      <div className="movie-compact-library"><label>Production<select aria-label="Open production" value={project?.id ?? ""} onChange={(event) => event.target.value && void openProject(event.target.value)}><option value="">Choose a production</option>{movies.map((movie) => <option key={movie.id} value={movie.id}>{movie.title}</option>)}</select></label></div>
+      {project && workspace !== "edit" && (project.status === "running" || editorActive) && <div className="movie-preview-dock"><MovieH3Preview projectId={project.id} active onStop={() => void cancelMovieRender(project.id).catch((error) => onError(String(error)))} /></div>}
+      <div className="movie-project-view movie-production-shell producer-project-shell">
+        <header className="studio-project-bar"><div><span className={`studio-project-state ${project.status}`}>{project.status === "running" ? <LoaderCircle className="spin" /> : <ShieldCheck />}{project.phase}</span><span><strong>{project.title}</strong><small>Producer-owned story, scenes, media choices, and H3 masters</small></span></div><div className="movie-project-actions"><button onClick={() => setBrowsing(true)}><Library /> Library</button><button onClick={beginNew}><Plus /> New</button><button onClick={() => void revealMovie(project.id)}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={() => void cancelMovieRender(project.id).catch((error) => onError(String(error)))}><CircleStop /> Stop H3 safely</button>}</div></header>
         <div className={`studio-production-strip ${project.status}`}><span>{project.status === "running" ? <LoaderCircle className="spin" /> : <ShieldCheck />}<strong>{project.detail}</strong><small>{producer.storyRevisions.length} story revisions · {producer.scenes.length} scene cards · {complete} H3 masters</small></span><div className="movie-progress"><i style={{ width: `${project.clips.length ? complete / project.clips.length * 100 : 0}%` }} /></div>{project.error && <button title={project.error} onClick={() => onError(project.error)}>Production issue</button>}</div>
         <nav className="studio-workspace-tabs project-tabs" aria-label="Production workspaces">
           <button className={workspace === "story" ? "active" : ""} onClick={() => void showWorkspace("story")}><FilePenLine /><span><strong>Story</strong><small>Draft and revise</small></span>{producer.activeStoryRevisionId && <Check />}</button>
@@ -367,8 +388,8 @@ export function MovieStudio({
           {workspace === "edit" && project.clips.length > 0 && <section className="project-edit-room"><MovieTimeline key={project.id} project={project} value={edit} disabled={busy || editorActive || project.status === "running"} onChange={setEdit} onRequestSave={() => void saveEdits(false)} renderPreview={editorActive || project.status === "running" ? <MovieH3Preview projectId={project.id} active onStop={() => void cancelMovieRender(project.id).catch((error) => onError(String(error)))} /> : undefined} generationPanel={(playhead, duration) => <MovieGenerationPanel project={project} edit={edit} playhead={playhead} duration={duration} models={models} modelId={modelId} disabled={busy || project.status === "running" || Boolean(chat.requestId)} onProject={(next) => { setProject(next); setEdit(next.edit); }} onActive={setEditorActive} onError={onError} />} /></section>}
           {workspace === "deliver" && <DeliveryRoom project={project} edit={edit} busy={busy} complete={complete} onExport={() => void saveEdits(true)} />}
         </div>
-      </div>}
-    </section>
+      </div>
+    </section>}
   </div></MovieAssetCreator>;
 }
 
@@ -399,12 +420,14 @@ function StoryRoom({ producer, revisionId, draft, editing, dirty, acceptedId, co
   const revision = producer.storyRevisions.find((item) => item.id === revisionId);
   return <div className="producer-split-room"><main className="producer-document-room">
     <header className="producer-room-header"><span><small>Story document</small><strong>One complete creative source of truth</strong></span><div>
-      <select aria-label="Story revision" disabled={disabled || dirty} value={revisionId} onChange={(event) => onRevision(event.target.value)}>{producer.storyRevisions.map((item) => <option value={item.id} key={item.id}>Revision {item.number}{item.id === acceptedId ? " · accepted" : ""}</option>)}</select>
+      {producer.storyRevisions.length
+        ? <select aria-label="Story revision" title="Choose which saved story revision to read" disabled={disabled || dirty} value={revisionId} onChange={(event) => onRevision(event.target.value)}>{producer.storyRevisions.map((item) => <option value={item.id} key={item.id}>Revision {item.number}{item.id === acceptedId ? " · accepted" : ""}</option>)}</select>
+        : <span className="chip">No revision yet</span>}
       <button disabled={disabled} className={editing ? "active" : ""} onClick={() => onEditing(!editing)}><FilePenLine /> {editing ? "Preview" : "Edit"}</button>
       {editing && <button disabled={disabled || !dirty || draft.trim().length < 3} onClick={onSave}><Save /> Save revision</button>}
     </div></header>
     <article className={`producer-story-paper ${editing ? "editing" : ""}`}>
-      {editing ? <textarea aria-label="Story document" disabled={disabled} maxLength={262144} value={draft} onChange={(event) => onDraft(event.target.value)} /> : draft ? <MarkdownContent value={draft} /> : <div className="studio-room-empty"><LoaderCircle className={chat.requestId ? "spin" : ""} /><strong>{chat.requestId ? "Writing the first story sketch" : "No story revision yet"}</strong><span>The complete Markdown response will become revision 1.</span></div>}
+      {editing ? <textarea aria-label="Story document" disabled={disabled} maxLength={262144} value={draft} onChange={(event) => onDraft(event.target.value)} /> : draft ? <FlowPages className="producer-story-pages" label="Story pages" resetKey={revisionId}><MarkdownContent value={draft} /></FlowPages> : <div className="studio-room-empty"><LoaderCircle className={chat.requestId ? "spin" : ""} /><strong>{chat.requestId ? "Writing the first story sketch" : "No story revision yet"}</strong><span>The complete Markdown response will become revision 1.</span></div>}
     </article>
     <footer className="producer-document-footer"><span>{revision ? `Revision ${revision.number} · ${new Date(revision.createdAt).toLocaleString()}` : "Waiting for the first revision"}{dirty ? " · unsaved edits" : ""}</span><div>{revisionId === acceptedId && <span className="accepted-badge"><Check /> Accepted</span>}<button disabled={disabled || Boolean(chat.requestId) || !revisionId || dirty} onClick={() => onAccept("continue")}><Check /> Accept and continue scenes</button><button disabled={disabled || Boolean(chat.requestId) || !revisionId || dirty} onClick={() => onAccept("fresh")}><RotateCcw /> Accept with fresh scene chat</button></div></footer>
   </main><ConversationPanel kind="story" conversation={conversation} chat={chat} instruction={instruction} modelId={modelId} models={models} disabled={disabled || dirty} selectedCount={0} onInstruction={onInstruction} onSend={onSend} onStop={onStop} onSummarize={onSummarize} onReset={onReset} /></div>;
@@ -434,14 +457,16 @@ function SceneRoom({ project, producer, scenes, selectedIds, dirty, conversation
   const remove = (id: string) => { onScenes(scenes.filter((scene) => scene.id !== id)); onSelected(selectedIds.filter((item) => item !== id)); };
   return <div className="producer-scene-layout"><main className="producer-scene-room">
     <header className="producer-room-header"><span><small>Scene cards · accepted story revision {accepted?.number ?? "—"}</small><strong>Producer-controlled H3 picture and sound</strong></span><div><button onClick={onAttach} disabled={disabled}><Paperclip /> Add media</button><GenerateAssetButton disabled={disabled} /><button disabled={disabled || !dirty} onClick={onSave}><Save /> Save cards</button><button className="accent" disabled={disabled || !scenes.length || dirty} onClick={onRender}>{project.status === "running" ? <LoaderCircle className="spin" /> : <Play />} Render H3 masters</button></div></header>
+    <FlowPages className="producer-scene-pages" label="Scene card pages" resetKey={visiblePage}>
     <div className="producer-context-note"><ShieldCheck /><span><strong>You choose the model context.</strong><small>The full accepted story is always included. Only checked scene cards are supplied in full. References, paths, frame bindings, and render controls never enter model context.</small></span></div>
     <section className="producer-batch-controls"><strong>Draft distinct scenes</strong><p>Choose a count and start once. Each scene gets its own prompt. The queue uses your direction below, checked context cards, and the four most recent scenes it writes for continuity. You can stop and resume later, then choose references and render.</p><label>New scenes<input aria-label="New scenes" type="number" min={1} max={Math.max(1, 4096 - scenes.length)} step={1} disabled={disabled} value={batchCount} onChange={(event) => setBatchCount(Number(event.target.value))} /></label><span>{Number.isFinite(batchCount) ? (batchCount * project.settings.clipSeconds / 60).toFixed(1) : "—"} minutes at {project.settings.clipSeconds} seconds per scene</span><button disabled={disabled || !modelId || !Number.isInteger(batchCount) || batchCount < 1 || batchCount + scenes.length > 4096} onClick={() => onBatch(batchCount, false)}><Sparkles /> Draft {batchCount} distinct scenes</button>{batch && <p role="status">{batch.completedSceneIds.length} of {batch.sceneCount} scenes saved. {incomplete ? "An incomplete queue resumes only when you choose Resume." : "Drafting complete. Review cards and choose references before rendering."}</p>}{incomplete && batch && <button disabled={disabled || dirty} onClick={() => onBatch(batch.sceneCount, true)}><Play /> Resume scene queue</button>}</section>
     <ReferenceShelf references={project.references} generatedImages={generatedImages.filter((asset) => !project.references.some((item) => item.assetId === asset.id))} onUseGenerated={onUseGenerated} />
-    {lastPage > 0 && <nav aria-label="Scene pages"><button disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>Previous cards</button><span>Page {visiblePage + 1} of {lastPage + 1} · {scenes.length} scenes</span><button disabled={visiblePage === lastPage} onClick={() => setPage(visiblePage + 1)}>Next cards</button></nav>}
+    {lastPage > 0 && <nav aria-label="Scene card groups"><button disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>Previous cards</button><span>Cards {visiblePage * pageSize + 1}–{Math.min(scenes.length, (visiblePage + 1) * pageSize)} of {scenes.length}</span><button disabled={visiblePage === lastPage} onClick={() => setPage(visiblePage + 1)}>Next cards</button></nav>}
     <div className="producer-scene-list">{scenes.slice(visiblePage * pageSize, (visiblePage + 1) * pageSize).map((scene, offset) => { const index = visiblePage * pageSize + offset; return <SceneCard key={scene.id} scene={scene} index={index} first={index === 0} last={index === scenes.length - 1} references={project.references} selected={selectedIds.includes(scene.id)} disabled={disabled} rendered={project.clips.find((clip) => clip.id === scene.id)} onSelected={(selected) => onSelected(selected ? [...selectedIds, scene.id] : selectedIds.filter((id) => id !== scene.id))} onPatch={(patch) => patchScene(scene.id, patch)} onMoveUp={() => move(index, -1)} onMoveDown={() => move(index, 1)} onRemove={() => remove(scene.id)} onUseGenerated={onUseGenerated} />; })}
       {!scenes.length && <div className="studio-room-empty"><Video /><strong>Turn the accepted story into scenes</strong><span>Ask the scene collaborator for a first pass, or add the first card yourself. Nothing renders until you approve the cards.</span></div>}
     </div>
     <button className="producer-add-scene" disabled={disabled || scenes.length >= project.settings.maxClips} onClick={() => onScenes([...scenes, emptyScene(producer.acceptedStoryRevisionId ?? "", project.settings.clipSeconds, scenes.length)])}><Plus /> Add scene card</button>
+    </FlowPages>
   </main><ConversationPanel kind="scenes" conversation={conversation} chat={chat} instruction={instruction} modelId={modelId} models={models} disabled={disabled} selectedCount={selectedIds.length} onInstruction={onInstruction} onSend={onSend} onStop={onStop} onSummarize={onSummarize} onReset={onReset} /></div>;
 }
 
@@ -470,7 +495,7 @@ function SceneCard({ scene, index, first, last, references, selected, disabled, 
     const updated = signal === "visual" ? { ...next, useVisual: checked } : { ...next, useAudio: checked };
     onPatch({ references: updated.useVisual || updated.useAudio ? [...scene.references.filter((item) => item.assetId !== reference.assetId), updated] : scene.references.filter((item) => item.assetId !== reference.assetId) });
   };
-  return <article className={`producer-scene-card ${selected ? "selected" : ""}`}><fieldset disabled={disabled} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+  return <article className={`producer-scene-card ${selected ? "selected" : ""}`}><fieldset className="scene-card-fields" disabled={disabled}>
     <header><label><input type="checkbox" aria-label={`Include ${scene.title} in scene chat context`} checked={selected} onChange={(event) => onSelected(event.target.checked)} /> <span>Scene {index + 1}</span></label><div><button aria-label={`Move ${scene.title} up`} disabled={disabled || first} onClick={onMoveUp}><ArrowUp /></button><button aria-label={`Move ${scene.title} down`} disabled={disabled || last} onClick={onMoveDown}><ArrowDown /></button><button aria-label={`Remove ${scene.title}`} disabled={disabled} onClick={onRemove}><Trash2 /></button></div></header>
     <div className="producer-scene-fields"><label>Title<input value={scene.title} maxLength={160} onChange={(event) => onPatch({ title: event.target.value })} /></label><label>Purpose<input value={scene.purpose} maxLength={4000} onChange={(event) => onPatch({ purpose: event.target.value })} placeholder="What changes in the movie here?" /></label><label className="short">Seconds<input type="number" min={5} max={15} step={1} value={scene.durationSeconds} onChange={(event) => onPatch({ durationSeconds: Number(event.target.value) })} /></label><label className="wide">H3 prompt<textarea aria-label={`${scene.title} H3 prompt`} maxLength={65536} value={scene.h3Prompt} onChange={(event) => onPatch({ h3Prompt: event.target.value })} placeholder="Concrete subject, setting, framing, camera, light, timed action beats, exact sound/dialogue, exclusions, and visible final frame…" /></label><label>Continuity in<textarea value={scene.continuityIn} onChange={(event) => onPatch({ continuityIn: event.target.value })} /></label><label>Continuity out<textarea value={scene.continuityOut} onChange={(event) => onPatch({ continuityOut: event.target.value })} /></label><label>Transition<input value={scene.transition} onChange={(event) => onPatch({ transition: event.target.value })} /></label></div>
     <section className="producer-frame-controls"><strong>Frame conditioning</strong>{references.length > 40 && <label>Find media<input aria-label={`${scene.title} reference search`} value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="Search all attached media…" /><small>Showing selected media and up to 40 matches.</small></label>}<small>Choose first/last frames, or native references below. H3 cannot combine them. {hasReferences && "Uncheck native references to choose frames; your selections stay saved until you change them."}</small><div><div><label htmlFor={`first-frame-${scene.id}`}>First frame<select id={`first-frame-${scene.id}`} disabled={disabled || hasReferences} value={frameValue(scene.firstFrame)} onChange={(event) => onPatch({ firstFrame: parseFrame(event.target.value) })}><option value="">None</option>{!first && <option value="previous">Previous scene final frame</option>}{images.map((item) => <option key={item.assetId} value={`image:${item.assetId}`}>{item.name}</option>)}</select></label><GenerateAssetButton disabled={disabled || hasReferences} label="Create first frame" onUse={async (asset) => { await onUseGenerated(asset); onPatch({ firstFrame: { kind: "referenceImage", assetId: asset.id } }); }} /></div><div><label htmlFor={`last-frame-${scene.id}`}>Last frame<select id={`last-frame-${scene.id}`} disabled={disabled || hasReferences} value={frameValue(scene.lastFrame)} onChange={(event) => onPatch({ lastFrame: parseFrame(event.target.value) })}><option value="">None</option>{images.map((item) => <option key={item.assetId} value={`image:${item.assetId}`}>{item.name}</option>)}</select></label><GenerateAssetButton disabled={disabled || hasReferences} label="Create last frame" onUse={async (asset) => { await onUseGenerated(asset); onPatch({ lastFrame: { kind: "referenceImage", assetId: asset.id } }); }} /></div></div></section>
@@ -490,10 +515,10 @@ function ConversationPanel({ kind, conversation, chat, instruction, modelId, mod
 }) {
   return <aside className="producer-chat-panel"><header><span><MessageSquare /><strong>{kind === "story" ? "Story collaborator" : "Scene collaborator"}</strong><small>{kind === "story" ? "Every response is a full Markdown revision" : `${selectedCount} scene card${selectedCount === 1 ? "" : "s"} in full context`}</small></span><div><button disabled={disabled || Boolean(chat.requestId) || !conversation?.messages.length} title="Summarize this conversation" onClick={onSummarize}><Sparkles /></button><button disabled={disabled || Boolean(chat.requestId) || !conversation} title="Clear and start a blank conversation" onClick={() => onReset(false)}><Trash2 /></button><button disabled={disabled || Boolean(chat.requestId) || !conversation?.summary} title="Start a new conversation carrying the saved summary" onClick={() => onReset(true)}><RotateCcw /></button></div></header>
     {conversation?.summary && <section className="producer-chat-summary"><strong>Carried summary</strong><MarkdownContent value={conversation.summary} /></section>}
-    <div className="producer-chat-history">{conversation?.messages.map((message) => <article className={message.role} key={message.id}><small>{message.role === "producer" ? "You" : message.role === "collaborator" ? "Local collaborator" : "Kestrel"}{message.selectedSceneIds.length ? ` · ${message.selectedSceneIds.length} selected scenes` : ""}</small><MarkdownContent value={message.markdown} /></article>)}
+    <FlowPages className="producer-chat-pages" label="Collaborator pages" follow="end" resetKey={conversation?.id ?? kind}><div className="producer-chat-history">{conversation?.messages.map((message) => <article className={message.role} key={message.id}><small>{message.role === "producer" ? "You" : message.role === "collaborator" ? "Local collaborator" : "Kestrel"}{message.selectedSceneIds.length ? ` · ${message.selectedSceneIds.length} selected scenes` : ""}</small><MarkdownContent value={message.markdown} /></article>)}
       {chat.text && <article className="collaborator live"><small>Local collaborator · live</small><MarkdownContent value={chat.text} streaming /></article>}
       {!conversation?.messages.length && !chat.text && <div className="studio-room-empty"><MessageSquare /><strong>{kind === "story" ? "Revise by talking" : "Shape scenes by talking"}</strong><span>{kind === "story" ? "Ask for tone, structure, character, pacing, or a full rewrite. Every answer is saved as a new revision." : "Check only the cards the collaborator may change. It can add cards around the outline without seeing your media choices."}</span></div>}
-    </div>
+    </div></FlowPages>
     {chat.reasoning && <ModelThinkingStream text={chat.reasoning} active={Boolean(chat.requestId)} />}
     {chat.status && <div className="producer-chat-status">{chat.requestId && <LoaderCircle className="spin" />}{chat.status}</div>}
     <div className="producer-chat-compose"><textarea aria-label={`${kind} collaborator direction`} maxLength={16000} value={instruction} onChange={(event) => onInstruction(event.target.value)} placeholder={kind === "story" ? "Make the ending quieter and let Mara choose to stay…" : selectedCount ? "Split the selected scene and make the second beat more intimate…" : "Create a first scene pass from the accepted story…"} /><div><select aria-label={`${kind} collaborator model`} value={modelId} disabled>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select>{chat.requestId ? <button className="danger" onClick={onStop}><CircleStop /> Stop</button> : <button disabled={disabled || !modelId || instruction.trim().length < 2} onClick={onSend}><Send /> Send</button>}</div></div>
@@ -527,7 +552,7 @@ function DeliveryRoom({ project, edit, busy, complete, onExport }: {
   const latest = project.exports.at(-1);
   return <section className="project-room-scroll delivery-room"><div className="studio-room-heading"><span><small>Producer delivery room</small><strong>Review and preserve every explicit export</strong></span><button disabled={busy || !complete || project.status === "running" || !edit.clips.some((item) => item.enabled)} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export current cut</button></div>
     {project.finalPath ? <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">{latest ? "Latest immutable export" : "Assembled file"}</span><h2>{latest?.title ?? project.title}</h2><small>Native masters and earlier exports remain addressable.</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section> : <div className="studio-room-empty"><Download /><strong>No deliverable yet</strong><span>Render scenes, arrange the timeline, then explicitly export a cut.</span></div>}
-    {project.exports.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2></div></div><div>{[...project.exports].reverse().map((item) => <article key={item.id}><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>)}</div></section>}
+    {project.exports.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2></div></div><PagedList className="movie-export-list" label="Export history" items={[...project.exports].reverse()} itemKey={(item) => item.id} renderItem={(item) => <article><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>} /></section>}
   </section>;
 }
 

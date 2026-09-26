@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { SpeechTiming } from "../../contracts/index";
+import "./markdown.css";
 
 export interface SpeechProgressState {
   active: boolean;

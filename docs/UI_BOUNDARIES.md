@@ -78,7 +78,8 @@ authoritative. Do not use browser arithmetic to create durable identities or see
 `architecture:check` checks imports/re-exports/dynamic imports, facade-only generated imports,
 duplicate generated contract names, forbidden browser storage/network capabilities, the read-only
 legacy bridge, native dependence on UI source files, raw native event emission, and commands
-outside the composition root. Negative fixtures test those guardrails. `ui:check` also compiles the
+outside the composition root. It also keeps one palette: raw colors are rejected in every
+stylesheet except `app/book/tokens.css`, and in inline styles. Negative fixtures test those guardrails. `ui:check` also compiles the
 typed command/event rejection examples. `bindings:check` compiles the actual native boundary and
 compares regenerated content, normalizing Windows line endings.
 

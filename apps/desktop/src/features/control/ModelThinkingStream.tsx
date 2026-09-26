@@ -2,6 +2,7 @@ import { LoaderCircle, Sparkles, ZapOff } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { useInferenceTelemetryReporter } from "./InferenceTelemetry";
 import type { ThinkingLevel } from "../../contracts/index";
+import "./model-streams.css";
 
 const MAX_VISIBLE_THINKING_CHARS = 160_000;
 const OMITTED_PREFIX = "[Earlier model thinking omitted from this live view]\n\n";

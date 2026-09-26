@@ -39,9 +39,10 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 
 ## Frontend map
 
-- `apps/desktop/src/app`: desktop composition, navigation, and global styling.
+- `apps/desktop/src/app`: desktop composition, the banner, and shared dialogs.
+- `apps/desktop/src/app/book`: the Kestrel book: design tokens (the only place colors are defined), index-tab navigation, spreads, page turns, and the on-demand WebGL book. See `docs/KESTREL_BOOK.md`.
 - `apps/desktop/src/features`: feature-owned UI and view-only helpers.
-- `apps/desktop/src/shared`: reusable presentation components without application authority.
+- `apps/desktop/src/shared`: reusable presentation components without application authority, including `shared/book` paging.
 - `apps/desktop/src/platform`: Tauri IPC adapter.
 - `apps/desktop/src/contracts`: re-exports of generated Rust contracts and values; no local declarations.
 - `apps/desktop/src/preview`: development-only sample data; never application authority.

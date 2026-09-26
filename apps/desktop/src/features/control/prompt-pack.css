@@ -1,0 +1,41 @@
+/* Prompt pack editor (System chapter): the chooser on the left page, the open prompt on the right. */
+
+.system-prompt-contents, .prompt-visual-chooser { min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; gap: 8px; }
+.prompt-visual-toolbar { flex: 0 0 auto; display: grid; gap: 7px; }
+.prompt-visual-categories { display: flex; flex-wrap: wrap; gap: 5px; }
+.prompt-visual-categories button { min-height: 28px; padding: 1px 9px; display: inline-flex; align-items: center; gap: 6px; border: var(--stroke-soft); border-radius: var(--radius-chip); color: var(--ink-2); background: var(--paper-raised); font-size: var(--text-sm); text-transform: capitalize; }
+.prompt-visual-categories button:hover { background: var(--paper-sunk); }
+.prompt-visual-categories button.active { border-color: var(--act-ink); color: var(--act-ink); background: var(--act-wash); }
+.prompt-visual-categories button span { color: var(--ink-3); font: var(--text-xs) var(--font-data); }
+
+.prompt-visual-list .paged-list-items { gap: 3px; }
+.prompt-visual-list .paged-list-item > button { width: 100%; min-height: 32px; padding: 3px 9px; display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 1px solid transparent; border-radius: var(--radius-sketch); color: var(--ink); background: transparent; text-align: left; }
+.prompt-visual-list .paged-list-item > button:hover { background: var(--paper-sunk); }
+.prompt-visual-list .paged-list-item > button.active { border-color: var(--act-ink); background: var(--act-wash); }
+.prompt-visual-list-key { max-width: 30ch; overflow: hidden; font: var(--text-xs) var(--font-data); text-overflow: ellipsis; white-space: nowrap; }
+.prompt-visual-list-preview { overflow: hidden; color: var(--ink-3); font: var(--text-sm) var(--font-read); text-overflow: ellipsis; white-space: nowrap; }
+.prompt-visual-modified-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait); }
+.prompt-visual-empty-list { padding: 14px; color: var(--ink-3); font-size: var(--text-sm); text-align: center; }
+
+.prompt-visual-detail { min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; gap: 7px; }
+.prompt-visual-detail-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.prompt-visual-detail-head > div:first-child { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.prompt-visual-detail-key { overflow-wrap: anywhere; font: var(--text-sm) var(--font-data); }
+.prompt-visual-detail-head .chip { text-transform: capitalize; }
+.prompt-visual-detail-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.prompt-visual-variables { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--ink-2); font-size: var(--text-sm); }
+.prompt-visual-variables > svg { color: var(--note-ink); }
+.prompt-visual-no-vars { color: var(--ink-3); }
+.prompt-visual-var { padding: 1px 7px; border: 1px solid; border-radius: var(--radius-chip); font: var(--text-xs) var(--font-data); }
+.prompt-visual-var.ok, .prompt-visual-var.neutral { border-color: var(--ok); color: var(--ok-ink); background: var(--ok-wash); }
+.prompt-visual-var.missing { border-color: var(--stop); color: var(--stop-ink); background: var(--stop-wash); }
+.prompt-visual-var.extra { border-color: var(--wait); color: var(--wait-ink); background: var(--wait-wash); }
+.prompt-visual-warning, .prompt-visual-invalid { flex: 0 0 auto; display: flex; align-items: flex-start; gap: 9px; padding: 8px 11px; border: 1px solid var(--stop); border-radius: var(--radius-sketch); color: var(--stop-ink); background: var(--stop-wash); font-size: var(--text-sm); line-height: 1.4; }
+.prompt-visual-warning > svg, .prompt-visual-invalid > svg { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; }
+.prompt-visual-invalid > div { display: grid; gap: 2px; }
+.prompt-visual-invalid strong { font-weight: 400; }
+/* The prompt text is a free-text editor, so it may scroll inside itself. */
+.prompt-visual-textarea { min-height: 90px; flex: 1 1 auto; width: 100%; resize: none; font: var(--text-sm)/1.55 var(--font-read); }
+.prompt-visual-meta { flex: 0 0 auto; display: flex; justify-content: space-between; color: var(--ink-3); font-size: var(--text-xs); }
+.prompt-visual-meta-over { color: var(--stop-ink); }
+

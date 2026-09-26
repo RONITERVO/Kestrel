@@ -125,6 +125,12 @@ describe("producer-owned Movie Studio", () => {
     expect(screen.getByRole("button", { name: /^Edit$/ })).toBeDisabled();
   });
 
+  it("says there is no story revision instead of showing an empty revision picker", async () => {
+    await openFixture(project(), workspace({ activeStoryRevisionId: "", storyRevisions: [] }));
+    expect(screen.getByText("No revision yet")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Story revision")).not.toBeInTheDocument();
+  });
+
   it("keeps scene context selection separate from native reference bindings", async () => {
     const reference = {
       assetId: "asset-image", tag: "<Image 1>", audioTag: "", name: "Mara portrait", kind: "image" as const,

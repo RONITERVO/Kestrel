@@ -10,6 +10,7 @@ import {
   type WordOffsetTracker,
 } from "./spokenHighlight";
 import { cleanProseForSpeech } from "../speech/text";
+import "./markdown.css";
 
 export interface MarkdownContentProps {
   value: string;

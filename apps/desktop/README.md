@@ -32,7 +32,8 @@ behavior. A change to application behavior needs that full verification before m
 
 | Location under `src` | Purpose |
 | --- | --- |
-| `app` | Navigation, window composition, and global CSS. |
+| `app` | Window composition, the banner and the shared dialogs. |
+| `app/book` | The Kestrel book: tokens, base controls, the index tabs, spreads, page turns and the WebGL book. |
 | `features/research` | Report reading and narration controls. |
 | `features/workspace` | Chat, Computer Tasks, attachment and transcript views. |
 | `features/studio/movie` | Story and scene forms, references, timeline drafts and render views. |
@@ -41,6 +42,7 @@ behavior. A change to application behavior needs that full verification before m
 | `features/speech` | Microphone interaction, playback, voice forms and device views. |
 | `features/control`, `features/setup` | Settings forms, local runtime status and setup views. |
 | `shared` | Presentation components and pure view helpers usable across features. |
+| `shared/book` | `FlowPages` and `PagedList`: turnable pages instead of scrollbars. |
 | `preview` | Development-only fixtures and command handlers for browser work. |
 | `platform/api.ts` | The small named API functions that components call. |
 | `contracts/index.ts` | Public imports for Rust-generated data. Never define types here. |
@@ -48,6 +50,18 @@ behavior. A change to application behavior needs that full verification before m
 Feature components may use other UI features. `shared` cannot depend on features; neither features
 nor platform can depend on `app`. Only the platform transport imports the Tauri SDK. The architecture
 check explains the offending file and boundary if an import goes in the wrong direction.
+
+## Styling the book
+
+Read [the Kestrel book guide](../../docs/KESTREL_BOOK.md) first. In short:
+
+- Each feature imports its own stylesheet next to its component, for example
+  `features/research/research.css`.
+- Colors, type faces, strokes and lifts come from `app/book/tokens.css`. `npm run ui:check`
+  rejects a raw color anywhere else, including inline styles.
+- Place a chapter on the spread with `.spread`, `.page-left`, `.page-right` or `.page-wide`.
+- Content that can outgrow its page goes in `FlowPages`, and lists go in `PagedList`, so nothing
+  hides behind a scrollbar. Put actions that must stay visible in the `footer` of `FlowPages`.
 
 ## Reading and editing data
 

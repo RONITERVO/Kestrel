@@ -1,6 +1,22 @@
 import ts from "typescript";
 import { posix } from "node:path";
 
+const colorLiteral = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/;
+const tokenSheet = "app/book/tokens.css";
+
+/** One palette: stylesheets name book tokens; only the token sheet may define colors. */
+export function checkStylesheet(path, source) {
+  path = path.replaceAll("\\", "/");
+  if (path === tokenSheet) return [];
+  const failures = [];
+  const text = source.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " ")).replace(/url\((?:[^()]|\([^()]*\))*\)/g, "url()");
+  text.split("\n").forEach((line, index) => {
+    const match = line.match(colorLiteral);
+    if (match) failures.push(`${path}:${index + 1}: raw color "${match[0]}"; use a token from ${tokenSheet} so every chapter keeps one palette.`);
+  });
+  return failures;
+}
+
 const capabilities = new Set(["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "localStorage", "sessionStorage", "indexedDB", "caches"]);
 
 /** Static guardrails for accidental boundary drift, not a sandbox for hostile source code. */
@@ -39,6 +55,9 @@ export function checkDesktopFile(path, source, generatedNames = new Set()) {
   }
 
   function visit(node) {
+    if (ts.isJsxAttribute(node) && node.name.getText(tree) === "style" && node.initializer && colorLiteral.test(node.initializer.getText(tree))) {
+      fail("Inline styles cannot carry raw colors; use a class with book tokens.");
+    }
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) checkImport(node.moduleSpecifier.text);
     if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
       if (node.arguments.length !== 1 || !ts.isStringLiteral(node.arguments[0])) fail("Dynamic imports need a static module path for boundary checking.");

@@ -1,5 +1,6 @@
 import type { ControlSettings } from "../../contracts/index";
 import { runtimePolicyCatalog as limits } from "../../contracts/index";
+import "./model-streams.css";
 
 export type RuntimePolicyValue = Pick<ControlSettings, "contextWindow" | "maxOutputTokens">;
 

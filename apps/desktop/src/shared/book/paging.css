@@ -1,0 +1,22 @@
+/* Paging instead of scrolling: flowing columns and whole-item lists with a folio. */
+
+.flow-pages { min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; }
+.flow-viewport { min-height: 0; flex: 1 1 auto; overflow: hidden; scrollbar-width: none; }
+.flow-viewport::-webkit-scrollbar { display: none; }
+.flow-columns { height: 100%; column-fill: auto; orphans: 2; widows: 2; }
+.flow-columns .keep-together { break-inside: avoid-column; }
+.flow-columns > *:first-child { margin-top: 0; }
+
+/* A paged list takes its height from its surroundings (a flex share or a max-height), never from its items. */
+.paged-list { min-height: 0; flex: 1 1 0; overflow: hidden; display: flex; flex-direction: column; }
+.paged-list-items { min-height: 0; display: grid; align-content: start; gap: 6px; }
+.paged-list > .page-turner { margin-top: auto; }
+
+.page-turner { min-height: 34px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 10px; padding-top: 4px; color: var(--ink-3); }
+.page-turner.single { opacity: .7; }
+.folio { font-family: var(--font-hand); font-size: var(--text-lg); line-height: 1; }
+.page-corner { width: 32px; height: 30px; display: grid; place-items: center; padding: 0; border: var(--stroke-soft); border-radius: var(--radius-sketch); color: var(--ink-2); background: var(--paper-raised); box-shadow: var(--lift); }
+.page-corner svg { width: 18px; height: 18px; }
+.page-corner:hover:not(:disabled) { border-color: var(--act-ink); color: var(--act-ink); background: var(--act-wash); }
+.page-corner:disabled { opacity: .35; box-shadow: none; }
+.flow-footer { flex: 0 0 auto; padding-top: 8px; border-top: 1px solid var(--rule); }

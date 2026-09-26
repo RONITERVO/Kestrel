@@ -1,0 +1,41 @@
+/* Live model notes and workspace runtime limits, shared by every studio collaborator. */
+
+.model-thinking-stream { min-width: 0; min-height: 112px; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-sunk); font-family: var(--font-ui); }
+.model-thinking-stream.live { border-color: var(--wait); box-shadow: inset 4px 0 var(--wait); }
+.model-thinking-stream.thinking-off { background: var(--paper); }
+.model-thinking-stream > header { min-height: 32px; padding: 5px 9px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px dashed var(--rule); }
+.model-thinking-stream > header > span:first-child { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.model-thinking-stream > header svg { width: 14px; height: 14px; color: var(--wait-ink); }
+.model-thinking-stream > header strong { font-weight: 400; }
+.model-thinking-meta { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.model-thinking-meta small { overflow: hidden; color: var(--ink-3); text-overflow: ellipsis; white-space: nowrap; }
+.model-thinking-meta button { min-height: 24px; padding: 0 8px; border: var(--stroke-soft); border-radius: var(--radius-sketch); color: var(--act-ink); background: var(--paper-raised); font-size: var(--text-xs); }
+/* A live log is the one reading surface that follows its newest line. */
+.model-thinking-stream > pre { min-height: 54px; max-height: 190px; margin: 0; padding: 8px 10px; overflow: auto; color: var(--ink-2); font: var(--text-xs)/1.5 var(--font-data); white-space: pre-wrap; overflow-wrap: anywhere; }
+.model-thinking-stream > pre.model-thinking-empty { color: var(--ink-3); font-family: var(--font-read); font-style: italic; }
+.model-thinking-stream > footer { padding: 4px 9px; border-top: 1px dashed var(--rule); color: var(--ink-3); font-size: var(--text-xs); line-height: 1.35; }
+.model-collaboration-streams { min-width: 0; min-height: 0; padding: 8px; overflow: hidden; display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 8px; }
+.model-result-stream { min-width: 0; min-height: 112px; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); }
+.model-result-stream > strong { padding: 6px 9px; border-bottom: 1px dashed var(--rule); font-weight: 400; }
+.model-result-stream > pre { min-height: 0; margin: 0; padding: 8px 10px; overflow: auto; font: var(--text-xs)/1.5 var(--font-data); white-space: pre-wrap; }
+
+.model-runtime-policy { min-width: 0; margin: 0; padding: 10px 12px; display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 8px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); }
+.model-runtime-policy legend { padding: 0 5px; color: var(--ink-3); font-size: var(--text-xs); letter-spacing: .08em; text-transform: uppercase; }
+.model-runtime-policy label { min-width: 0; display: grid; gap: 3px; color: var(--ink-2); font-size: var(--text-sm); }
+.model-runtime-policy label span { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.model-runtime-policy label small { color: var(--ink-3); white-space: nowrap; }
+.model-runtime-policy input { width: 100%; min-height: 30px; font-family: var(--font-data); font-size: var(--text-sm); }
+.model-runtime-policy-state { grid-column: 1 / -1; min-width: 0; display: grid; gap: 2px; }
+.model-runtime-policy-state strong { color: var(--act-ink); font-weight: 400; }
+.model-runtime-policy-state small { color: var(--ink-3); font-family: var(--font-read); line-height: 1.4; white-space: normal; }
+.model-runtime-policy > button { grid-column: 1 / -1; min-height: 30px; border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper); }
+.workspace-runtime-policy { margin-top: 7px; border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper); }
+.workspace-runtime-policy > summary { padding: 6px 10px; color: var(--ink-2); cursor: pointer; font-size: var(--text-sm); }
+.workspace-runtime-policy > .model-runtime-policy { margin: 0 7px 7px; }
+
+@media (max-width: 900px) {
+  .model-collaboration-streams { grid-template-columns: 1fr; }
+}
+
+.thinking-level-badge { padding: 0 6px; border: 1px solid var(--note); border-radius: var(--radius-chip); color: var(--note-ink); background: var(--note-wash); font-family: var(--font-ui); font-size: var(--text-xs); letter-spacing: .05em; }
+.thinking-off-badge { border-color: var(--rule-strong); color: var(--ink-3); background: var(--paper-sunk); }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkDesktopFile, checkNativeFile } from "./architecture-rules.mjs";
+import { checkDesktopFile, checkNativeFile, checkStylesheet } from "./architecture-rules.mjs";
 
 test("rejects contract duplication, including an empty replacement quarantine", () => {
   assert.ok(checkDesktopFile("contracts/index.ts", "export interface NewSettings { enabled: boolean }").length);
@@ -24,4 +24,12 @@ test("native code cannot depend on UI policy, bypass event typing or hide comman
   assert.ok(checkNativeFile("src-tauri/src/chat.rs", 'app.emit("event", json!({}));').length);
   assert.ok(checkNativeFile("src-tauri/src/chat.rs", '#[tauri::command] fn hidden() {}').length);
   assert.equal(checkNativeFile("src-tauri/src/ipc_events.rs", "app.emit(E::NAME, payload)").length, 0);
+});
+test("keeps one palette: raw colors live only in the book tokens", () => {
+  assert.ok(checkStylesheet("features/music/music.css", ".x { color: #fff; }").length);
+  assert.ok(checkStylesheet("features/music/music.css", ".x { box-shadow: 0 0 2px rgba(0, 0, 0, .2); }").length);
+  assert.equal(checkStylesheet("features/music/music.css", ".x { color: var(--ink); background: url(\"data:image/svg+xml,%3Csvg fill='%23000'%3E\"); }").length, 0);
+  assert.equal(checkStylesheet("app/book/tokens.css", ":root { --ink: #342d2b; }").length, 0);
+  assert.ok(checkDesktopFile("features/editor.tsx", 'const a = <div style={{ color: "#18201a" }} />;').length);
+  assert.equal(checkDesktopFile("features/editor.tsx", 'const a = <div style={{ width: `${percent}%` }} />;').length, 0);
 });
