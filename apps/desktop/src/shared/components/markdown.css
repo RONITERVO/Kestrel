@@ -50,3 +50,10 @@
 .speech-word-seekable { border-radius: 2px; cursor: pointer; }
 .speech-word-seekable:hover, .speech-word-seekable:focus-visible { background: var(--wait-wash); outline: 1px solid var(--wait); outline-offset: 1px; }
 pre .speech-word-active, code .speech-word-active { padding: 0; font-family: inherit; font-size: inherit; }
+
+/* Book pagination, the way a word processor keeps paragraphs: a block that fits on a page moves to
+   the next page whole, a heading stays with the text after it, and a block taller than a page
+   splits with at least three lines on each side. */
+.markdown-content { orphans: 3; widows: 3; }
+.markdown-h1, .markdown-h2, .markdown-h3, .markdown-h4, .markdown-h5, .markdown-h6 { break-inside: avoid; break-after: avoid; }
+.markdown-paragraph, .markdown-list > li, .markdown-blockquote, .markdown-table-wrapper, .markdown-code-card, .markdown-chart-card, .markdown-content img { break-inside: avoid; }

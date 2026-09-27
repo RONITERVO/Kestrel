@@ -201,6 +201,24 @@ export function BookShell({
     return () => window.removeEventListener("keydown", settle);
   }, [lifted, toggleLifted]);
 
+  // Pages never scroll. The browser can still scroll a clipped container to reveal a focused field,
+  // a find-in-page match or a scrollIntoView target, which slides the page under its headings.
+  // Put such containers back; turnable pages and the scrollers the book allows are left alone.
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const settle = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || !workspace.contains(target) || target.closest(".flow-viewport") === target) return;
+      const style = getComputedStyle(target);
+      if (style.overflowY !== "hidden" && style.overflowX !== "hidden") return;
+      if (style.overflowY === "hidden" && target.scrollTop) target.scrollTop = 0;
+      if (style.overflowX === "hidden" && target.scrollLeft) target.scrollLeft = 0;
+    };
+    workspace.addEventListener("scroll", settle, true);
+    return () => workspace.removeEventListener("scroll", settle, true);
+  }, []);
+
   // On the desk, dragging the desk orbits the book and a corner ring turns it.
   const orbit = (event: ReactPointerEvent<HTMLElement>, mode: "orbit" | "ring") => {
     const scene = sceneRef.current;

@@ -2,6 +2,9 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import "./paging.css";
 
+/** Blocks whose continuation onto the next page is worth a cue: whole replies and their text. */
+const CONTINUING_BLOCKS = ".markdown-content, p, li, pre, blockquote";
+
 export type FlowPagesController = {
   /** Turns to the page that holds this element (for contents links, citations and narration). */
   showElement: (element: Element) => void;
@@ -47,6 +50,7 @@ export function FlowPages({
   const [width, setWidth] = useState(0);
   const [page, setPage] = useState(0);
   const [pages, setPages] = useState(1);
+  const [continuing, setContinuing] = useState<ReadonlySet<number>>(() => new Set());
   const atEnd = useRef(true);
   const widthRef = useRef(0);
   const stride = width + gap;
@@ -66,6 +70,17 @@ export function FlowPages({
     }
     const total = Math.max(1, Math.round((columns.scrollWidth + gap) / (nextWidth + gap)));
     setPages(total);
+    // A page whose last reply or paragraph carries on gets a "continues" cue in its free foot line.
+    const origin = columns.getBoundingClientRect().left;
+    const found = new Set<number>();
+    for (const block of columns.querySelectorAll(CONTINUING_BLOCKS)) {
+      const fragments = block.getClientRects();
+      if (fragments.length < 2) continue;
+      const first = Math.floor((fragments[0].left - origin + 1) / (nextWidth + gap));
+      const last = Math.floor((fragments[fragments.length - 1].left - origin + 1) / (nextWidth + gap));
+      for (let index = first; index < last; index += 1) found.add(index);
+    }
+    setContinuing((current) => (current.size === found.size && [...found].every((index) => current.has(index)) ? current : found));
     if (anchors?.length && onAnchorPages) {
       const origin = columns.getBoundingClientRect().left;
       const found: Record<string, number> = {};
@@ -177,6 +192,11 @@ export function FlowPages({
           {children}
         </div>
       </div>
+      {continuing.has(page) && page < pages - 1 && (
+        <button type="button" className="flow-continues" aria-label={`Continues on page ${page + 2}`} onClick={() => turn(page + 1)}>
+          continues <ChevronRight aria-hidden="true" />
+        </button>
+      )}
       {footer && <div className="flow-footer">{footer}</div>}
       <PageTurner page={page} pages={pages} label={label} onTurn={turn} />
     </section>

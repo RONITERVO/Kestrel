@@ -851,6 +851,7 @@
 .producer-chat-panel > header small { font: var(--text-xs) var(--font-ui); }
 .producer-chat-panel > header button { border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper-raised); }
 .producer-chat-pages { min-height: 0; }
+.producer-chat-panel > header, .producer-chat-panel > footer, .producer-chat-panel > .producer-chat-compose { flex-shrink: 0; }
 .producer-chat-history { display: block; padding: 0; overflow: visible; }
 .producer-chat-history > * + * { margin-top: 9px; }
 .producer-chat-history > article { max-width: none; padding: 9px 12px; border: var(--stroke-soft); border-radius: var(--radius-card); color: var(--ink); background: var(--paper-raised); font: var(--text-sm)/1.55 var(--font-read); break-inside: avoid-column; }

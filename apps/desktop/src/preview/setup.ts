@@ -3,7 +3,7 @@ import { speechPreferencesDefaults } from "../contracts/index";
 import { demoReport, demoSnapshot } from "./fixtures";
 import { samplePromptPackText } from "./promptPack";
 import { sampleComputerTask } from "./computerTask";
-import { sampleConversation, sampleFinishedMovie, sampleFinishedMusic, sampleFinishedWorkspace, sampleImage, sampleImageAssets, sampleLyricsDocument, sampleMovie, sampleWorkspace } from "./studioFixtures";
+import { sampleConversation, sampleFinishedConversation, sampleFinishedMovie, sampleFinishedMusic, sampleFinishedWorkspace, sampleImage, sampleImageAssets, sampleLyricsDocument, sampleMovie, sampleWorkspace } from "./studioFixtures";
 
 const sampleModels = [
   ...demoSnapshot.control.models,
@@ -54,7 +54,7 @@ export function setupPreview(studioSamples = true): void {
     list_movies: () => [{ ...sampleMovie, clipCount: 0 }, { ...sampleFinishedMovie, clipCount: sampleFinishedMovie.clips.length }],
     get_movie: ({ id }) => structuredClone(id === sampleFinishedMovie.id ? sampleFinishedMovie : sampleMovie),
     get_movie_producer_workspace: ({ id }) => structuredClone(id === sampleFinishedMovie.id ? sampleFinishedWorkspace : sampleWorkspace),
-    get_movie_studio_conversation: () => structuredClone(sampleConversation),
+    get_movie_studio_conversation: ({ projectId }) => structuredClone(projectId === sampleFinishedMovie.id ? sampleFinishedConversation : sampleConversation),
     list_movie_image_assets: () => structuredClone(sampleImageAssets),
     get_movie_editor_state: () => ({ schemaVersion: 1, projectId: sampleMovie.id, editHash: "preview", jobs: [] }),
     list_image_projects: () => [{ ...sampleImage, takeCount: 0, activeTakePath: "" }],

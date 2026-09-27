@@ -1,9 +1,17 @@
 /* Paging instead of scrolling: flowing columns and whole-item lists with a folio. */
 
-.flow-pages { min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; }
-.flow-viewport { min-height: 0; flex: 1 1 auto; overflow: hidden; scrollbar-width: none; }
+/* Pages take the room that is left, never their content's height: a flex basis of auto would
+   squeeze the headings and footers that share the column. */
+.flow-pages { min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; }
+.flow-viewport { min-height: 0; flex: 1 1 0; overflow: hidden; scrollbar-width: none; }
 .flow-viewport::-webkit-scrollbar { display: none; }
-.flow-columns { height: 100%; column-fill: auto; orphans: 2; widows: 2; }
+/* Every page keeps one free line at its foot, so text never runs to the edge; a block that
+   continues on the next page says so in that line. */
+.flow-pages { --flow-foot: 24px; }
+.flow-columns { height: calc(100% - var(--flow-foot)); column-fill: auto; orphans: 3; widows: 3; }
+.flow-continues { height: var(--flow-foot); margin-top: calc(-1 * var(--flow-foot)); flex: 0 0 auto; align-self: flex-end; position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 3px; padding: 0 2px; border: 0; color: var(--ink-3); background: transparent; font: italic var(--text-sm) var(--font-read); }
+.flow-continues:hover { color: var(--act-ink); }
+.flow-continues svg { width: 14px; height: 14px; }
 .flow-columns .keep-together { break-inside: avoid-column; }
 .flow-columns > *:first-child { margin-top: 0; }
 

@@ -32,8 +32,12 @@ so a screenshot could not show what a page offered.
    the network.
 3. **Nothing hides below the fold.** Pages do not scroll. Long content flows onto turnable pages
    (`shared/book/FlowPages`), and lists show whole items a page at a time
-   (`shared/book/PagedList`). Every page shows "page n of m". Only four things may scroll inside
-   themselves:
+   (`shared/book/PagedList`). Every page shows "page n of m". Pages break the way a word processor
+   keeps paragraphs: a paragraph, list item, table or code block that fits on a page moves to the
+   next page whole, headings stay with the text after them, and a block taller than a page splits
+   with at least three lines on each side. Every page keeps one free line at its foot; when a reply
+   or paragraph carries on, that line says "continues". The model's text is never rewritten to
+   make it paginate. Only four things may scroll inside themselves:
    - free-text editors;
    - time axes, such as timelines and piano rolls;
    - the media bin of the Studio edit room, which is part of the editor's time-axis tools;
