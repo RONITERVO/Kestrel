@@ -124,6 +124,10 @@ function isAsciiChartLine(line: string): boolean {
   return false;
 }
 
+function indentOf(line: string): number {
+  return (line.match(/^[ \t]*/)?.[0] ?? "").replace(/\t/g, "    ").length;
+}
+
 export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
   if (!markdown) return [];
   const lines = markdown.split(/\r?\n/);
@@ -237,13 +241,18 @@ export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
       const ordered = Boolean(orderedMatch);
       const start = orderedMatch ? parseInt(orderedMatch[1], 10) : undefined;
       const items: string[] = [];
+      const baseIndent = indentOf(line);
 
       while (i < lines.length) {
         const cur = lines[i];
         const uMatch = cur.match(/^[ \t]*[*+-][ \t]+([^\n]+)$/);
         const oMatch = cur.match(/^[ \t]*\d+[.)][ \t]+([^\n]+)$/);
 
-        if (ordered && oMatch) {
+        // A marker indented deeper than the list is a nested entry of the item above.
+        if ((uMatch || oMatch) && items.length > 0 && indentOf(cur) > baseIndent + 1) {
+          items[items.length - 1] += `\n${cur.trim()}`;
+          i++;
+        } else if (ordered && oMatch) {
           items.push(oMatch[1]);
           i++;
         } else if (!ordered && uMatch) {
@@ -663,6 +672,46 @@ function TableView({
   );
 }
 
+const NESTED_MARKER = /^([*+-]|\d+[.)])[ \t]+(.*)$/;
+
+/**
+ * A list item's own text, then its nested entries as a sub-list. Parts render in source order so the
+ * spoken-word tracker counts the same words as the item text it was built from.
+ */
+function renderListItem(item: string, highlight: BlockHighlightContext | null): ReactNode[] {
+  const [lead, ...rest] = item.split("\n");
+  const text = [lead];
+  const nested: { ordered: boolean; items: { marker: string; text: string }[] }[] = [];
+  for (const line of rest) {
+    const marker = line.match(NESTED_MARKER);
+    const group = nested[nested.length - 1];
+    if (marker) {
+      const ordered = /\d/.test(marker[1]);
+      const entry = { marker: marker[1], text: marker[2] };
+      if (group && group.ordered === ordered) group.items.push(entry);
+      else nested.push({ ordered, items: [entry] });
+    } else if (group) {
+      group.items[group.items.length - 1].text += ` ${line}`;
+    } else {
+      text.push(line);
+    }
+  }
+  const out: ReactNode[] = [...renderInlineMarkdown(text.join(" "), highlight)];
+  nested.forEach((group, groupIndex) => {
+    const ListTag = group.ordered ? "ol" : "ul";
+    out.push(
+      <ListTag key={`nested-${groupIndex}`} className="markdown-list nested">
+        {group.items.map((entry, entryIndex) => {
+          // A numbered marker is one spoken word in the item text even though the list draws it.
+          if (highlight && group.ordered) highlight.tracker.current += 1;
+          return <li key={entryIndex}>{renderInlineMarkdown(entry.text, highlight)}</li>;
+        })}
+      </ListTag>,
+    );
+  });
+  return out;
+}
+
 export function MarkdownContent({
   value,
   streaming = false,
@@ -745,7 +794,7 @@ export function MarkdownContent({
                   const highlight = getBlockSpeechHighlight(`list-${index}-${itemIdx}`, activeHighlight, speechProgress, seekTargets);
                   return (
                     <li key={itemIdx}>
-                      {renderInlineMarkdown(item, highlight)}
+                      {renderListItem(item, highlight)}
                     </li>
                   );
                 })}

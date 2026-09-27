@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownContent } from "../../shared/components/MarkdownContent";
+import { TextParagraphs } from "../../shared/components/TextParagraphs";
 import { type SpeechProgressState } from "../../shared/components/spokenHighlight";
 import { FlowPages } from "../../shared/book/FlowPages";
 import { PagedList } from "../../shared/book/PagedList";
@@ -1770,7 +1771,9 @@ function ComputerTasks({
                   </header>
                   {["done", "question"].includes(event.kind)
                     ? <MarkdownContent className="task-answer" value={event.detail} />
-                    : <pre>{event.detail}</pre>}
+                    : ["reasoning", "thinking"].includes(event.kind)
+                      ? <TextParagraphs className="task-reasoning" text={event.detail} />
+                      : <pre>{event.detail}</pre>}
                   {["done", "question"].includes(event.kind) && event.detail.trim() && (
                     <SpeechPlaybackButton sourceKind="task" sourceId={run.id} passageId={`${event.kind}-${index}`} text={event.detail} label="Listen" />
                   )}
@@ -1893,7 +1896,7 @@ function Message({
       {message.reasoning && (
         <details>
           <summary>Reasoning</summary>
-          <pre>{message.reasoning}</pre>
+          <TextParagraphs className="saved-reasoning" text={message.reasoning} />
         </details>
       )}
       <MarkdownContent value={message.content} speechProgress={speechProgress} />

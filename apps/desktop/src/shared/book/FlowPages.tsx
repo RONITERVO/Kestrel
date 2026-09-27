@@ -2,8 +2,11 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import "./paging.css";
 
-/** Blocks whose continuation onto the next page is worth a cue: whole replies and their text. */
-const CONTINUING_BLOCKS = ".markdown-content, p, li, pre, blockquote";
+/**
+ * Blocks whose continuation onto the next page is worth a cue: messages, events and cards
+ * (articles), whole replies and reasoning, and their text.
+ */
+const CONTINUING_BLOCKS = "article, .markdown-content, .text-paragraphs, p, li, pre, blockquote";
 
 export type FlowPagesController = {
   /** Turns to the page that holds this element (for contents links, citations and narration). */

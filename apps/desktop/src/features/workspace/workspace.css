@@ -109,8 +109,8 @@
 .control-chat article > span button:hover { color: var(--act-ink); background: var(--act-wash); }
 .control-chat article > span button svg { width: 14px; }
 .control-chat details { margin-top: 6px; color: var(--ink-3); font-family: var(--font-ui); font-size: var(--text-sm); }
-/* Saved reasoning flows onto the transcript pages; the live block is a log that stays capped. */
-.control-chat details:not(.chat-reasoning-block) pre { margin: 6px 0 0; padding: 7px 9px; border-left: 3px solid var(--rule); color: var(--ink-2); background: var(--paper-sunk); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Saved reasoning is prose: reading type in paragraphs that page cleanly. The live block is a log that stays capped. */
+.control-chat .saved-reasoning { margin: 6px 0 0; padding: 7px 10px; border-left: 3px solid var(--rule); color: var(--ink-2); background: var(--paper-sunk); font: var(--text-sm)/1.55 var(--font-read); }
 .chat-reasoning-block pre { max-height: 26vh; margin: 6px 0 0; padding: 7px 9px; overflow: auto; border-left: 3px solid var(--rule); color: var(--ink-2); background: var(--paper-sunk); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-reasoning-block summary { display: flex; align-items: center; gap: 7px; cursor: pointer; }
 .chat-reasoning-block summary small { color: var(--wait-ink); }
@@ -203,6 +203,7 @@
 .task-event-title { display: flex; align-items: center; gap: 6px; font-weight: 400; }
 .task-event header > span { color: var(--ink-3); font-size: var(--text-xs); white-space: nowrap; }
 .task-answer { margin-top: 5px; font-size: var(--text-sm); }
+.task-reasoning { margin-top: 5px; color: var(--ink-2); font: var(--text-sm)/1.5 var(--font-read); }
 .task-event pre { margin: 5px 0 0; color: var(--ink-2); font-size: var(--text-xs); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .artifact-button { margin-top: 6px; display: inline-flex; align-items: center; gap: 5px; border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper-raised); }
 .artifact-button svg { width: 14px; }

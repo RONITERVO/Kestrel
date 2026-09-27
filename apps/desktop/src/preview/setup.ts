@@ -3,6 +3,7 @@ import { speechPreferencesDefaults } from "../contracts/index";
 import { demoReport, demoSnapshot } from "./fixtures";
 import { samplePromptPackText } from "./promptPack";
 import { sampleComputerTask } from "./computerTask";
+import { sampleChatSession } from "./chatSession";
 import { sampleConversation, sampleFinishedConversation, sampleFinishedMovie, sampleFinishedMusic, sampleFinishedWorkspace, sampleImage, sampleImageAssets, sampleLyricsDocument, sampleMovie, sampleWorkspace } from "./studioFixtures";
 
 const sampleModels = [
@@ -49,6 +50,7 @@ export function setupPreview(studioSamples = true): void {
     bootstrap: () => ({ ...demoSnapshot, control: sampleControl }),
     get_control_snapshot: () => sampleControl,
     list_chat_sessions: () => sampleSessions,
+    get_chat_session: ({ id }) => ({ ...structuredClone(sampleChatSession), id, title: sampleSessions.find((session) => session.id === id)?.title ?? sampleChatSession.title }),
     list_computer_tasks: () => [{ id: sampleComputerTask.id, objective: sampleComputerTask.objective, modelId: sampleComputerTask.modelId, access: sampleComputerTask.access, status: sampleComputerTask.status, updatedAt: sampleComputerTask.updatedAt, eventCount: sampleComputerTask.events.length, artifactCount: 0 }],
     get_computer_task: () => structuredClone(sampleComputerTask),
     list_movies: () => [{ ...sampleMovie, clipCount: 0 }, { ...sampleFinishedMovie, clipCount: sampleFinishedMovie.clips.length }],

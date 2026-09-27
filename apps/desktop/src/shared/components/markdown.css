@@ -57,3 +57,9 @@ pre .speech-word-active, code .speech-word-active { padding: 0; font-family: inh
 .markdown-content { orphans: 3; widows: 3; }
 .markdown-h1, .markdown-h2, .markdown-h3, .markdown-h4, .markdown-h5, .markdown-h6 { break-inside: avoid; break-after: avoid; }
 .markdown-paragraph, .markdown-list > li, .markdown-blockquote, .markdown-table-wrapper, .markdown-code-card, .markdown-chart-card, .markdown-content img { break-inside: avoid; }
+.markdown-list.nested { margin: 4px 0 2px; }
+
+/* Plain prose (reasoning) in paragraphs; each stays whole on a page when it fits. */
+.text-paragraphs { orphans: 3; widows: 3; }
+.text-paragraphs > p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; break-inside: avoid; }
+.text-paragraphs > p + p { margin-top: .8em; }
