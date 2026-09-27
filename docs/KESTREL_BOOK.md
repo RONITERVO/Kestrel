@@ -13,7 +13,8 @@ so a screenshot could not show what a page offered.
 ## Rules
 
 1. **One palette.** Colors live only in `apps/desktop/src/app/book/tokens.css`.
-   `npm run ui:check` rejects raw colors in any other stylesheet or inline style. Each color has
+   `npm run ui:check` rejects raw colors in any other stylesheet, inline style or code string; the
+   WebGL book and canvas painters read the tokens too. Each color has
    one meaning in every chapter:
    - `act`: the next action or a selection.
    - `ok`: ready or done.

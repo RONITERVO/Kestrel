@@ -47,6 +47,8 @@ export function MessagePages({
   // null follows the newest group; a number is a page the reader turned to.
   const [page, setPage] = useState<number | null>(null);
   const count = items.length;
+  // Wrappers are keyed by their message; a new key (a live reply saved, another conversation) is a new element to observe.
+  const keys = items.map((child) => String(child.key)).join("\u0000");
   const placement = useRef<{ page: number | null; groups: ReadonlyArray<readonly [number, number]> }>({ page: null, groups: [] });
 
   // Show the current group at the top of the window; the others sit outside it, hidden and inert.
@@ -108,7 +110,7 @@ export function MessagePages({
     observer.observe(frame);
     for (const node of list.children) observer.observe(node);
     return () => observer.disconnect();
-  }, [measure, count]);
+  }, [measure, keys]);
 
   useEffect(() => setPage(null), [resetKey]);
 

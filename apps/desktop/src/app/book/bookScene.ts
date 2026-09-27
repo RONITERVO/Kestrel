@@ -14,7 +14,7 @@ import {
   type PathPoint,
 } from "./sketch";
 
-type Palette = Record<"paper" | "paperEdge" | "cover" | "coverDeep" | "ribbon" | "ink" | "ink2" | "rule", string>;
+type Palette = Record<"paper" | "paperEdge" | "cover" | "coverDeep" | "coverLight" | "ribbon" | "ink" | "ink2" | "rule" | "contactShadow" | "contactShadowSoft", string>;
 
 const FOV = 18;
 const THICKNESS = 16;
@@ -22,18 +22,26 @@ const COVER = 4;
 const TURN_MS = 760;
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
+/** The WebGL book reads its colors from tokens.css like every stylesheet; it defines none of its own. */
 function readPalette(): Palette {
   const style = getComputedStyle(document.documentElement);
-  const token = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
+  const token = (name: string) => {
+    const value = style.getPropertyValue(name).trim();
+    if (!value) throw new Error(`The book color ${name} is missing from app/book/tokens.css.`);
+    return value;
+  };
   return {
-    paper: token("--paper", "#fbf6ea"),
-    paperEdge: token("--paper-edge", "#e2d3b1"),
-    cover: token("--cover", "#73534e"),
-    coverDeep: token("--cover-deep", "#553b37"),
-    ribbon: token("--ribbon", "#c39950"),
-    ink: token("--ink", "#342d2b"),
-    ink2: token("--ink-2", "#4f4842"),
-    rule: token("--rule", "#d5c7a7"),
+    paper: token("--paper"),
+    paperEdge: token("--paper-edge"),
+    cover: token("--cover"),
+    coverDeep: token("--cover-deep"),
+    coverLight: token("--cover-light"),
+    ribbon: token("--ribbon"),
+    ink: token("--ink"),
+    ink2: token("--ink-2"),
+    rule: token("--rule"),
+    contactShadow: token("--contact-shadow"),
+    contactShadowSoft: token("--contact-shadow-soft"),
   };
 }
 
@@ -274,7 +282,7 @@ export class BookScene {
       add(block);
     }
 
-    const cover = coverTexture(palette.cover, palette.coverDeep);
+    const cover = coverTexture(palette.cover, palette.coverDeep, palette.coverLight);
     cover.repeat.set(plane.width / 256, plane.height / 256);
     const coverMaterial = new THREE.MeshBasicMaterial({ map: cover });
     const coverEdge = new THREE.MeshBasicMaterial({ color: palette.coverDeep });
@@ -286,7 +294,7 @@ export class BookScene {
     add(board);
 
     // A soft, painted contact shadow on the desk.
-    const shadowMap = shadowTexture();
+    const shadowMap = shadowTexture(palette.contactShadow, palette.contactShadowSoft);
     const shadow = new THREE.Mesh(
       new THREE.PlaneGeometry(plane.width * 1.08, plane.height * 1.1),
       new THREE.MeshBasicMaterial({ map: shadowMap, transparent: true, depthWrite: false }),

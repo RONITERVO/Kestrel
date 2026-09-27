@@ -100,7 +100,9 @@ export function BookShell({
           const plane = planeRef.current;
           if (plane) plane.style.transform = transform ?? "";
         });
-      } catch {
+      } catch (error) {
+        // The CSS book stays; say why the WebGL one is missing.
+        console.warn("Kestrel book: drawing the 3D book failed; showing the CSS book.", error);
         return;
       }
       sceneRef.current = scene;
@@ -156,6 +158,7 @@ export function BookShell({
       paper: cssColor("--paper"),
       ink: cssColor("--ink"),
       rule: cssColor("--rule"),
+      spine: cssColor("--spine-shade"),
     });
     const setPhase = (phase: TurnPhase) => {
       if (phase === "done") {
@@ -186,8 +189,10 @@ export function BookShell({
   const toggleLifted = useCallback(() => {
     const scene = sceneRef.current;
     if (!scene) return;
+    // Reduced motion lays the book down at once instead of tweening the pose.
+    const animate = !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     setLifted((value) => {
-      scene.setPose(value ? READING_POSE : DESK_POSE, true);
+      scene.setPose(value ? READING_POSE : DESK_POSE, animate);
       return !value;
     });
   }, []);

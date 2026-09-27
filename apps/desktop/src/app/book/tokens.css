@@ -27,6 +27,16 @@
   --paper-edge: #e2d3b1;
   --cover: #73534e;
   --cover-deep: #553b37;
+  --cover-light: #8d6c64;
+  /* MIDI tracks: eight categorical colors that tell tracks apart in the piano roll. */
+  --track-1: #e6a33c;
+  --track-2: #4ca4cf;
+  --track-3: #9b73c8;
+  --track-4: #68ae78;
+  --track-5: #d66b63;
+  --track-6: #d8c35d;
+  --track-7: #5fb8ad;
+  --track-8: #c47ca5;
   --ribbon: #c39950;
 
   /* Graphite. Text uses ink to ink-3; ink-4 is only for decoration and disabled marks. */
@@ -38,6 +48,8 @@
   --rule-strong: #8f7f64;
   --shade: rgba(84, 70, 52, 0.14);
   --shade-strong: rgba(60, 48, 36, 0.24);
+  --contact-shadow: rgba(60, 46, 34, 0.34);
+  --contact-shadow-soft: rgba(60, 46, 34, 0.16);
   --scrim: rgba(52, 45, 43, 0.42);
   /* Binding shadows: the desk vignette, cover sheen, page curvature and spine. */
   --desk-vignette: rgba(120, 96, 64, 0.1);

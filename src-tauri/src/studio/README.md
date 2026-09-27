@@ -45,7 +45,7 @@ unapplied suggestion until a typed native boundary saves it.
 | `editor_media.rs` | Fit the entire H3 frame grid to the selected duration while retaining its final frame | Original master mutation |
 | `prompt_draft.rs` | Tool-free image/reference/music drafting from producer context | Applying proposals, movie-scene mutation, or rendering |
 | `model_stream.rs` | OpenAI-compatible SSE framing and explicit reasoning-channel extraction | Feature prompts, schemas, or persistence |
-| `image_assets.rs` | Durable H3 pseudo-image generations and exact graph/receipt provenance | Story or scene authority |
+| `image_assets.rs` | Listing and recovery of stills made by the retired H3 pseudo-image pass (new pictures come from Image Studio takes) | Generating images or story/scene authority |
 | `image_studio.rs` | Recoverable image projects, structured composition, native Ideogram graphs, immutable PNG takes | LLM process ownership or public-network fallback |
 | `live_preview.rs` | Bounded process-local preview state and visible preview events | Durable final-render truth |
 | `music.rs` | Recoverable song projects, producer arrangements, native Music 3 graphs, immutable takes and lyric revisions | LLM process ownership or fake stem claims |

@@ -6,7 +6,6 @@ import type { ImageProject } from "./ImageProject.js";
 import type { ModelDownloadRecord } from "./ModelDownloadRecord.js";
 import type { ModelInfo } from "./ModelInfo.js";
 import type { MovieEditorJob } from "./MovieEditorJob.js";
-import type { MovieImageAssetEvent } from "./MovieImageAssetEvent.js";
 import type { MovieProducerWorkspace } from "./MovieProducerWorkspace.js";
 import type { MovieProject } from "./MovieProject.js";
 import type { MovieRenderPreviewEvent } from "./MovieRenderPreviewEvent.js";
@@ -30,7 +29,6 @@ export type DesktopEvents = {
   "model-catalog-updated": Array<ModelInfo>;
   "model-download": ModelDownloadRecord;
   "movie-editor-job": MovieEditorJob;
-  "movie-image-asset": MovieImageAssetEvent;
   "movie-producer-workspace": MovieProducerWorkspace;
   "movie-project": MovieProject;
   "movie-render-preview": MovieRenderPreviewEvent;

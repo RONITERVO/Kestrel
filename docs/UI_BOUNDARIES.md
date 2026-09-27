@@ -79,7 +79,10 @@ authoritative. Do not use browser arithmetic to create durable identities or see
 duplicate generated contract names, forbidden browser storage/network capabilities, the read-only
 legacy bridge, native dependence on UI source files, raw native event emission, and commands
 outside the composition root. It also keeps one palette: raw colors are rejected in every
-stylesheet except `app/book/tokens.css`, and in inline styles. Negative fixtures test those guardrails. `ui:check` also compiles the
+stylesheet except `app/book/tokens.css`, in inline styles, and in code strings (canvas and WebGL
+painters read tokens). Two narrow exceptions are named in `scripts/architecture-rules.mjs`: the
+music lyric visualizers paint audio-reactive artwork into the video frame, and Image Studio shows
+example values of an image's own palette, which is project data. Negative fixtures test those guardrails. `ui:check` also compiles the
 typed command/event rejection examples. `bindings:check` compiles the actual native boundary and
 compares regenerated content, normalizing Windows line endings.
 

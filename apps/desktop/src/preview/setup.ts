@@ -61,6 +61,7 @@ export function setupPreview(studioSamples = true): void {
     get_movie_editor_state: () => ({ schemaVersion: 1, projectId: sampleMovie.id, editHash: "preview", jobs: [] }),
     list_image_projects: () => [{ ...sampleImage, takeCount: 0, activeTakePath: "" }],
     get_image_project: () => structuredClone(sampleImage),
+    create_image_project: ({ request }) => ({ ...structuredClone(sampleImage), id: "preview-new-image", title: request.title || "Untitled image", idea: request.idea, highLevelDescription: request.idea }),
     list_music_projects: () => [{ ...sampleFinishedMusic, takeCount: 1, activeTakePath: "" }],
     get_music_project: () => structuredClone(sampleFinishedMusic),
     get_music_lyrics_document: () => structuredClone({ project: sampleFinishedMusic, document: sampleLyricsDocument }),

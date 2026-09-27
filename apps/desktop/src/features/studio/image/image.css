@@ -243,3 +243,9 @@
 .image-viewbar button { color: var(--ink-2); }
 .image-viewbar button:hover:not(:disabled) { color: var(--ink); background: var(--paper-raised); }
 .image-viewbar button:disabled { color: var(--ink-4); }
+
+/* A production waiting for a picture: what it is for, and the button that sends the take back. */
+.image-handoff { position: absolute; z-index: 24; left: 50%; bottom: 14px; transform: translateX(-50%); width: max-content; max-width: min(760px, calc(100% - 40px)); padding: 8px 10px 8px 12px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--act-ink); border-radius: var(--radius-card); color: var(--ink); background: var(--paper-raised); box-shadow: 0 10px 30px var(--shade-strong); font-size: var(--text-sm); }
+.image-handoff > svg { width: 18px; height: 18px; flex: none; color: var(--act-ink); }
+.image-handoff strong { color: var(--act-ink); font-weight: 400; }
+.image-handoff > button { flex: none; }

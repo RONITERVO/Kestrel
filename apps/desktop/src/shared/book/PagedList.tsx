@@ -76,10 +76,17 @@ export function PagedList<T>({
     return () => observer.disconnect();
   }, [items.length]);
 
+  // Open the selected item's page when the selection or the page size changes, not on every parent
+  // render: a reader browsing older pages (while audio plays, say) must not be pulled back.
+  const shownSelection = useRef<string | null>(null);
   useLayoutEffect(() => {
     if (!perPage || selectedKey == null) return;
+    const signature = `${selectedKey}\u0000${perPage}`;
+    if (shownSelection.current === signature) return;
     const index = items.findIndex((item) => itemKey(item) === selectedKey);
-    if (index >= 0) setPage(Math.floor(index / perPage));
+    if (index < 0) return;
+    shownSelection.current = signature;
+    setPage(Math.floor(index / perPage));
   }, [itemKey, items, perPage, selectedKey]);
 
   const current = Math.min(page, pages - 1);

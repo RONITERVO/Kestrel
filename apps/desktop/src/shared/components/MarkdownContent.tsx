@@ -704,7 +704,8 @@ function renderListItem(item: string, highlight: BlockHighlightContext | null): 
         {group.items.map((entry, entryIndex) => {
           // A numbered marker is one spoken word in the item text even though the list draws it.
           if (highlight && group.ordered) highlight.tracker.current += 1;
-          return <li key={entryIndex}>{renderInlineMarkdown(entry.text, highlight)}</li>;
+          // Keep the written number (a continued "3." stays 3) instead of renumbering from 1.
+          return <li key={entryIndex} value={group.ordered ? Number.parseInt(entry.marker, 10) : undefined}>{renderInlineMarkdown(entry.text, highlight)}</li>;
         })}
       </ListTag>,
     );

@@ -17,6 +17,14 @@ export function checkStylesheet(path, source) {
   return failures;
 }
 
+/**
+ * Colors written outside the token sheet, each for a stated reason (docs/UI_BOUNDARIES.md): the
+ * lyric visualizers paint audio-reactive artwork into the video frame, and Image Studio shows
+ * example values of an image's own palette, which is project data rather than interface color.
+ */
+const paletteArtwork = new Set(["features/studio/music/MusicLyricSignalBloomVisualizer.ts", "features/studio/music/MusicLyricVisualizer.ts"]);
+const paletteData = new Map([["features/studio/image/ImageStudio.tsx", new Set(["#112233", "#24313A, #D9D2C3"])]]);
+
 const capabilities = new Set(["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "Worker", "SharedWorker", "localStorage", "sessionStorage", "indexedDB", "caches"]);
 
 /** Static guardrails for accidental boundary drift, not a sandbox for hostile source code. */
@@ -54,9 +62,15 @@ export function checkDesktopFile(path, source, generatedNames = new Set()) {
     }
   }
 
+  const paletteChecked = ["app", "features", "shared"].includes(layer) && !test && !paletteArtwork.has(path);
   function visit(node) {
     if (ts.isJsxAttribute(node) && node.name.getText(tree) === "style" && node.initializer && colorLiteral.test(node.initializer.getText(tree))) {
       fail("Inline styles cannot carry raw colors; use a class with book tokens.");
+    }
+    // Canvas and WebGL painters read colors from tokens too; a string that names a color is a second palette.
+    if (paletteChecked && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node))
+      && colorLiteral.test(node.text) && !paletteData.get(path)?.has(node.text)) {
+      fail(`Raw color "${node.text.match(colorLiteral)[0]}" in code; read a token from ${tokenSheet} (getComputedStyle or var()).`);
     }
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) checkImport(node.moduleSpecifier.text);
     if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {

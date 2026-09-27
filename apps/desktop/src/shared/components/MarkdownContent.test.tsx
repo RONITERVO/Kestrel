@@ -95,6 +95,12 @@ interface User {
     expect(outer.children[1].querySelectorAll(":scope > ul > li")).toHaveLength(1);
   });
 
+  it("keeps the written numbers of a nested numbered list", () => {
+    const { container } = render(<MarkdownContent value={"- Steps continued:\n  3. Heat the pan\n  4. Add the onions"} />);
+    const nested = [...container.querySelectorAll(".markdown-list.nested > li")] as HTMLLIElement[];
+    expect(nested.map((item) => item.value)).toEqual([3, 4]);
+  });
+
   it("detects and renders ASCII diagrams and text charts in chart cards", () => {
     const chartMarkdown = `
 Architecture Diagram:

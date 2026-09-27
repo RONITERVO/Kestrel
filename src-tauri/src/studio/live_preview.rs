@@ -44,8 +44,9 @@ impl LivePreviewRegistry {
     }
 
     fn record(&self, event: &MovieRenderPreviewEvent) {
-        let asset_key = format!("image:{}", event.job_id);
-        let project_id = event.project_id.as_ref().unwrap_or(&asset_key);
+        let Some(project_id) = event.project_id.as_ref() else {
+            return;
+        };
         if let Ok(mut previews) = self.movie_projects.lock() {
             if !previews.contains_key(project_id) && previews.len() >= MAX_RETAINED_MOVIE_PREVIEWS {
                 if let Some(oldest) = previews
@@ -88,16 +89,6 @@ pub(super) struct PreviewTarget {
 }
 
 impl PreviewTarget {
-    pub(super) fn image_asset(request_id: &str) -> Self {
-        Self {
-            target: "imageAsset",
-            job_id: request_id.into(),
-            project_id: None,
-            clip_id: None,
-            clip_index: None,
-        }
-    }
-
     pub(super) fn movie_clip(
         job_id: String,
         project_id: &str,
@@ -363,7 +354,7 @@ mod tests {
 
     #[test]
     fn accepts_only_bounded_preview_payloads_from_the_expected_node() {
-        let target = PreviewTarget::image_asset("job");
+        let target = PreviewTarget::movie_clip("job".into(), "movie-1", "clip-1", 0);
         let payload = serde_json::json!({
             "type":"kj_preview_override",
             "data":{

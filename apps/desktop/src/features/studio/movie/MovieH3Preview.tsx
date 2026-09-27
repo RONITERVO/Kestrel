@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { CircleStop, Video } from "lucide-react";
-import { getMovieImageAssetRenderState, getMovieRenderState, onMovieRenderPreview } from "../../../platform/api";
+import { getMovieRenderState, onMovieRenderPreview } from "../../../platform/api";
 import type { MovieRenderPreviewEvent } from "../../../contracts/index";
 
 export function retainPreview(previous: MovieRenderPreviewEvent | undefined, next: MovieRenderPreviewEvent): MovieRenderPreviewEvent {
@@ -9,8 +9,8 @@ export function retainPreview(previous: MovieRenderPreviewEvent | undefined, nex
     : next;
 }
 
-export function MovieH3Preview({ projectId, assetId, active, onStop }: {
-  projectId?: string; assetId?: string; active: boolean; onStop?: () => void;
+export function MovieH3Preview({ projectId, active, onStop }: {
+  projectId?: string; active: boolean; onStop?: () => void;
 }) {
   const [preview, setPreview] = useState<MovieRenderPreviewEvent>();
   const [failedPreview, setFailedPreview] = useState<MovieRenderPreviewEvent>();
@@ -21,15 +21,15 @@ export function MovieH3Preview({ projectId, assetId, active, onStop }: {
     setPreview(undefined);
     setFailedPreview(undefined);
     void onMovieRenderPreview((event) => {
-      if (!disposed && (assetId ? event.target === "imageAsset" && event.jobId === assetId : event.projectId === projectId && Boolean(projectId))) {
+      if (!disposed && event.projectId === projectId && Boolean(projectId)) {
         setPreview((previous) => retainPreview(previous, event));
       }
     }).then((dispose) => { if (disposed) dispose(); else unlisten = dispose; });
-    if ((projectId || assetId) && active) void (assetId ? getMovieImageAssetRenderState(assetId) : getMovieRenderState(projectId!)).then((state) => {
+    if (projectId && active) void getMovieRenderState(projectId).then((state) => {
       if (!disposed && state.preview) setPreview((current) => current ?? state.preview);
     }).catch(() => undefined);
     return () => { disposed = true; unlisten?.(); };
-  }, [projectId, assetId, active]);
+  }, [projectId, active]);
   if (!active) return null;
   return <section className="movie-h3-preview" aria-label="Live H3 preview">
     <header><strong><Video size={16} /> H3 live preview</strong>{onStop && <button onClick={onStop}><CircleStop size={15} /> Stop</button>}</header>

@@ -33,9 +33,9 @@ import type { MovieEditorJob } from "./MovieEditorJob.js";
 import type { MovieEditorRangeRequest } from "./MovieEditorRangeRequest.js";
 import type { MovieEditorState } from "./MovieEditorState.js";
 import type { MovieImageAssetGeneration } from "./MovieImageAssetGeneration.js";
-import type { MovieImageAssetRequest } from "./MovieImageAssetRequest.js";
 import type { MovieProducerWorkspace } from "./MovieProducerWorkspace.js";
 import type { MovieProject } from "./MovieProject.js";
+import type { MovieReferenceAsset } from "./MovieReferenceAsset.js";
 import type { MovieReferenceImport } from "./MovieReferenceImport.js";
 import type { MovieRenderState } from "./MovieRenderState.js";
 import type { MovieStudioChatRequest } from "./MovieStudioChatRequest.js";
@@ -94,7 +94,6 @@ export type DesktopCommands = {
   cancel_image_generation: { args: { id: string }; result: void };
   cancel_local_speech: { args: { jobId: string }; result: void };
   cancel_model_download: { args: Record<string, never>; result: void };
-  cancel_movie_image_asset: { args: { requestId: string }; result: void };
   cancel_movie_render: { args: { id: string }; result: void };
   cancel_movie_studio_chat: { args: { requestId: string }; result: void };
   cancel_music_generation: { args: { id: string }; result: void };
@@ -124,7 +123,6 @@ export type DesktopCommands = {
   get_local_speech_snapshot: { args: Record<string, never>; result: SpeechSnapshot };
   get_movie: { args: { id: string }; result: MovieProject };
   get_movie_editor_state: { args: { id: string }; result: MovieEditorState };
-  get_movie_image_asset_render_state: { args: { requestId: string }; result: MovieRenderState };
   get_movie_producer_workspace: { args: { id: string }; result: MovieProducerWorkspace };
   get_movie_render_state: { args: { id: string }; result: MovieRenderState };
   get_movie_studio_conversation: { args: { projectId: string; conversationId: string }; result: MovieStudioConversation };
@@ -139,6 +137,7 @@ export type DesktopCommands = {
   get_speech_preferences: { args: { legacy?: LegacySpeechPreferences | null }; result: SpeechPreferences };
   get_system_snapshot: { args: Record<string, never>; result: SystemSnapshot };
   get_voice_library: { args: Record<string, never>; result: VoiceLibrarySnapshot };
+  import_image_take_as_movie_reference: { args: { imageProjectId: string; takeId: string }; result: MovieReferenceAsset };
   import_prompt_pack: { args: { path: string }; result: string };
   import_setup_profile: { args: { path: string }; result: AppSnapshot };
   import_setup_profile_text: { args: { text: string }; result: AppSnapshot };
@@ -204,7 +203,6 @@ export type DesktopCommands = {
   start_local_model: { args: { modelId: string }; result: ControlSnapshot };
   start_model_download: { args: { request: ModelDownloadRequest }; result: ModelDownloadRecord };
   start_movie_editor_generation: { args: { request: MovieEditorGenerateRequest }; result: string };
-  start_movie_image_asset: { args: { request: MovieImageAssetRequest }; result: string };
   start_movie_studio_chat: { args: { request: MovieStudioChatRequest }; result: string };
   start_music_generation: { args: { id: string }; result: MusicProject };
   start_studio_prompt_draft: { args: { request: PromptDraftRequest }; result: string };

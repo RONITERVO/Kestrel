@@ -21,6 +21,7 @@ import { NewResearchDialog, ResearchChapter, ResearchProgressPanel } from "../fe
 import { SetupConsole } from "../features/setup/Setup";
 import { ImageStudio } from "../features/studio/image/ImageStudio";
 import { MovieStudio } from "../features/studio/movie/MovieStudio";
+import type { ImageHandoff } from "../features/studio/imageHandoff";
 import { MusicStudio } from "../features/studio/music/MusicStudio";
 import type {
   AppSnapshot,
@@ -64,6 +65,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [vramCleanup, setVramCleanup] = useState<VramCleanupPreview | null>(null);
   const [view, setView] = useState<AppView>("research");
+  // A production waiting for a picture made in Image Studio; it lives only while the producer makes it.
+  const [imageHandoff, setImageHandoff] = useState<ImageHandoff | null>(null);
   const [mountedViews, setMountedViews] = useState<Set<AppView>>(() => new Set(["research"]));
   const handleError = useCallback((message: string) => setError(message), []);
 
@@ -258,8 +261,8 @@ function App() {
               onStandalone={(id) => void openStandalone(id)}
             />
           ))}
-          {chapter("studio", <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId ?? undefined} controlSettings={snapshot.control.settings} onError={handleError} />)}
-          {chapter("image", <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId ?? undefined} controlSettings={snapshot.control.settings} onError={handleError} />)}
+          {chapter("studio", <MovieStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId ?? undefined} controlSettings={snapshot.control.settings} onError={handleError}  onRequestImage={(handoff) => { setImageHandoff(handoff); showView("image"); }} />)}
+          {chapter("image", <ImageStudio initialComfyRoot={snapshot.settings.comfyRoot} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId ?? undefined} controlSettings={snapshot.control.settings} onError={handleError}  handoff={imageHandoff} onHandoffDone={(delivered) => { setImageHandoff(null); if (delivered) showView("studio"); }} />)}
           {chapter("music", <MusicStudio initialComfyRoot={snapshot.settings.comfyRoot} installRoot={snapshot.settings.installRoot} muscriptorSetupReady={snapshot.setup.components.find((component) => component.id === "muscriptor")?.status === "ready"} advancedEnabled={snapshot.control.settings.advancedMode} models={snapshot.control.models} selectedModelId={snapshot.control.settings.selectedModelId ?? undefined} controlSettings={snapshot.control.settings} onError={handleError} />)}
           {chapter("developer", (
             <DeveloperConsole

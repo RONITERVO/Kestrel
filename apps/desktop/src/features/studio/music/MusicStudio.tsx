@@ -79,7 +79,9 @@ export function MusicStudio({
   const [newTitle, setNewTitle] = useState("");
   const [newIdea, setNewIdea] = useState("");
   const [selectedSectionId, setSelectedSectionId] = useState("");
-  const [showLibrary, setShowLibrary] = useState(true);
+  // The library is a column when the chapter has room and a drawer over the arranger when it does not;
+  // narrow windows start with the drawer closed.
+  const [showLibrary, setShowLibrary] = useState(() => window.matchMedia?.("(max-width: 1199px)").matches !== true);
   const [progress, setProgress] = useState<MusicGenerationEvent>();
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -571,6 +573,7 @@ export function MusicStudio({
   );
 
   return (
+    <div className="music-chapter">
     <div className={`music-studio ${showLibrary ? "library-visible" : ""}`}>
       <header className="music-transport">
         <div className="music-transport-left">
@@ -661,7 +664,7 @@ export function MusicStudio({
 
       <aside className="music-inspector">
         <div className="music-pane-heading inspector"><span><small>Inspector</small><strong>{selectedSection?.name ?? "Song"}</strong></span><Gauge /></div>
-        <FlowPages className="music-inspector-body" label="Section inspector pages" resetKey="section" controller={inspectorPages}>
+        <FlowPages className="music-inspector-body" label="Section inspector pages" resetKey={`${project.id}:${selectedSection?.id ?? "song"}`} controller={inspectorPages}>
           {selectedSection && <><div className="music-section-actions"><button aria-label="Move section left" disabled={busy} onClick={() => moveSection(-1)}><ChevronLeft /></button><button disabled={busy} onClick={addSection}><Plus /> Add</button><button disabled={busy} onClick={duplicateSection}><Copy /> Duplicate</button><button aria-label="Move section right" disabled={busy} onClick={() => moveSection(1)}><ChevronRight /></button><button aria-label="Remove section" disabled={busy || project.sections.length <= 1} onClick={removeSection}><Trash2 /></button></div>
           <fieldset disabled={busy}>
             <label>Section name<input value={selectedSection.name} onChange={(event) => patchSection(mutate, selectedSection.id, { name: event.target.value })} /></label>
@@ -780,8 +783,8 @@ export function MusicStudio({
         onCancelSync={() => { if (lyricsJobId.current) void cancelLocalSpeech(lyricsJobId.current); }}
         onClose={() => { setLyricsOpen(false); setLyricsDocument(undefined); }}
       />}
-
       {newOpen && <NewSongDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
+    </div>
     </div>
   );
 }

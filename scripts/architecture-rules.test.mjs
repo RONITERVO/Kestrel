@@ -32,4 +32,9 @@ test("keeps one palette: raw colors live only in the book tokens", () => {
   assert.equal(checkStylesheet("app/book/tokens.css", ":root { --ink: #342d2b; }").length, 0);
   assert.ok(checkDesktopFile("features/editor.tsx", 'const a = <div style={{ color: "#18201a" }} />;').length);
   assert.equal(checkDesktopFile("features/editor.tsx", 'const a = <div style={{ width: `${percent}%` }} />;').length, 0);
+  assert.ok(checkDesktopFile("app/book/sketch.ts", 'context.strokeStyle = "#8d6c64";').length);
+  assert.ok(checkDesktopFile("features/music/midi.tsx", "const color = `rgba(0, 0, 0, ${alpha})`;").length);
+  assert.equal(checkDesktopFile("features/music/midi.tsx", 'const color = "var(--track-1)";').length, 0);
+  assert.equal(checkDesktopFile("features/studio/music/MusicLyricVisualizer.ts", 'context.fillStyle = "#f4eee1";').length, 0);
+  assert.equal(checkDesktopFile("preview/fixtures.ts", 'const palette = ["#111111"];').length, 0);
 });

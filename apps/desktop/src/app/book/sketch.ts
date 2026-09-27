@@ -100,14 +100,14 @@ function grain(context: CanvasRenderingContext2D, width: number, height: number,
 }
 
 /** Brown bookcloth with dry-brush streaks. */
-export function coverTexture(color: string, deep: string): THREE.CanvasTexture {
+export function coverTexture(color: string, deep: string, light: string): THREE.CanvasTexture {
   const texture = canvasTexture(256, 256, (context) => {
     context.fillStyle = color;
     context.fillRect(0, 0, 256, 256);
     const random = seeded(19);
     context.globalAlpha = 0.16;
     for (let i = 0; i < 90; i++) {
-      context.strokeStyle = i % 3 ? deep : "#8d6c64";
+      context.strokeStyle = i % 3 ? deep : light;
       context.lineWidth = 1 + random() * 3;
       const y = random() * 256;
       context.beginPath();
@@ -145,18 +145,18 @@ export function pageEdgeTexture(paper: string, line: string): THREE.CanvasTextur
 }
 
 /** Soft contact shadow under the book, painted rather than lit. */
-export function shadowTexture(): THREE.CanvasTexture {
+export function shadowTexture(strong: string, soft: string): THREE.CanvasTexture {
   return canvasTexture(128, 128, (context) => {
     const gradient = context.createRadialGradient(64, 64, 10, 64, 64, 64);
-    gradient.addColorStop(0, "rgba(60,46,34,0.34)");
-    gradient.addColorStop(0.62, "rgba(60,46,34,0.16)");
-    gradient.addColorStop(1, "rgba(60,46,34,0)");
+    gradient.addColorStop(0, strong);
+    gradient.addColorStop(0.62, soft);
+    gradient.addColorStop(1, "transparent");
     context.fillStyle = gradient;
     context.fillRect(0, 0, 128, 128);
   });
 }
 
-export type LeafFace = { heading?: string; numeral?: string; hue: string; paper: string; ink: string; rule: string };
+export type LeafFace = { heading?: string; numeral?: string; hue: string; paper: string; ink: string; rule: string; spine: string };
 
 /** One side of a turning leaf: paper, a chapter wash and ruled pencil lines. */
 export function leafTexture(canvas: HTMLCanvasElement, face: LeafFace, mirrored: boolean) {
@@ -210,8 +210,8 @@ export function leafTexture(canvas: HTMLCanvasElement, face: LeafFace, mirrored:
   context.globalAlpha = 1;
   context.restore();
   const gradient = context.createLinearGradient(0, 0, width, 0);
-  gradient.addColorStop(0, "rgba(80,60,40,0.18)");
-  gradient.addColorStop(0.08, "rgba(80,60,40,0)");
+  gradient.addColorStop(0, face.spine);
+  gradient.addColorStop(0.08, "transparent");
   context.fillStyle = gradient;
   context.fillRect(0, 0, width, height);
 }

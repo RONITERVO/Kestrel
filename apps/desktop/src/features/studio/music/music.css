@@ -1,6 +1,7 @@
 /* Music Studio: arrangement across the spread, library and inspector at the edges.
    Geometry carried from the previous studio; colors and type are book tokens. */
 
+.music-chapter { container: music / inline-size; width: 100%; height: 100%; }
 .music-studio { --music-bg: var(--paper-raised); --music-panel: var(--paper-raised); --music-panel-2: var(--paper-sunk); --music-line: var(--rule); --music-muted: var(--ink-3); --music-text: var(--ink); --music-accent: var(--ch-studio); --music-blue: var(--act); position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-columns: minmax(0,1fr) 310px; grid-template-rows: 57px minmax(0,1fr); grid-template-areas: "transport transport" "arranger inspector"; color: var(--music-text); background: var(--music-bg); font-family: var(--font-ui); }
 .music-studio.library-visible { grid-template-columns: 218px minmax(0,1fr) 310px; grid-template-areas: "transport transport transport" "library arranger inspector"; }
 .music-studio button, .music-studio input, .music-studio select, .music-studio textarea { color: inherit; }
@@ -263,7 +264,8 @@
 .music-new-dialog footer { grid-column: 1/-1; display: flex; justify-content: flex-end; gap: 7px; }
 .music-new-dialog footer button { min-height: 35px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--rule-strong); border-radius: 5px; color: var(--ink-2); background: var(--paper-sunk); font-size: var(--text-xs); font-weight: 750; }
 .music-new-dialog footer svg { width: 13px; }
-@media (max-width: 1180px) {
+/* Widths below follow the chapter's own width: the book's tabs and cover take ~230 px of the window. */
+@container music (max-width: 1060px) {
   .midi-editor { grid-template-columns: 178px minmax(0,1fr) 220px; }
   .midi-editor-toolbar { grid-template-columns: minmax(190px,.7fr) minmax(330px,1.3fr) minmax(245px,.9fr); gap: 5px; }
   .midi-editor-toolbar button { padding-inline: 6px; }
@@ -278,9 +280,10 @@
   .music-assist-bar button svg { width: 13px; }
   .music-collaboration-sheet { right: 290px; width: min(520px,calc(100% - 310px)); }
 }
-@media (max-width: 900px) {
+@container music (max-width: 960px) {
   .music-studio, .music-studio.library-visible { grid-template-columns: minmax(0,1fr) 260px; grid-template-areas: "transport transport" "arranger inspector"; }
-  .music-library { display: none; }
+  /* No room for a library column: it opens as a drawer over the arranger. */
+  .music-studio.library-visible .music-library { grid-area: auto; position: absolute; z-index: 30; top: 57px; bottom: 0; left: 0; width: min(240px, 60%); border-right: var(--stroke); box-shadow: 10px 0 28px var(--shade-strong); }
   .music-transport { grid-template-columns: minmax(130px,1fr) auto minmax(90px,1fr); gap: 5px; }
   .music-tempo, .music-key { display: none; }
   .music-transport-left > input { width: 150px; }
@@ -457,7 +460,9 @@
 
 /* ---- Book layout for the music desk. ---- */
 .music-inspector-body.flow-pages { padding: 9px 11px 6px; overflow: hidden; }
-.music-inspector-body .flow-columns > * { break-inside: avoid-column; }
+/* Blocks stay whole; the section's fields may split between fields when a short window has no room. */
+.music-inspector-body .flow-columns > :not(fieldset) { break-inside: avoid-column; }
+.music-inspector-body .flow-columns > fieldset > * { break-inside: avoid-column; }
 .music-inspector textarea, .music-inspector input, .music-inspector select { font-weight: 400; }
 .music-track-row.arrangement .music-track-label { box-shadow: inset 4px 0 var(--ch-music); }
 .music-track-row.lyrics .music-track-label { box-shadow: inset 4px 0 var(--note); }
@@ -483,6 +488,12 @@
 .music-inspector .external-plan-exchange { margin: 0; }
 @media (max-height: 800px) {
   .music-timeline { grid-template-rows: 25px repeat(4, minmax(40px, auto)); }
+}
+/* On the shortest windows the transport already plays and times the take and the MIX row shows its
+   waveform, so the monitor steps aside for the writing desk. */
+@media (max-height: 720px) {
+  .music-arranger > .music-monitor { display: none; }
+  .music-writing-desk > textarea { min-height: 40px; flex-basis: 40px; }
 }
 
 .music-waveform > span { background: color-mix(in srgb, var(--wait) 14%, transparent); }
