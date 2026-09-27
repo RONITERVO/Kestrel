@@ -8,6 +8,9 @@ import "./paging.css";
  */
 const CONTINUING_BLOCKS = "article, .markdown-content, .text-paragraphs, p, li, pre, blockquote";
 
+/** Below this page height, keeping every paragraph whole wastes most of the page. */
+const SHORT_PAGE = 320;
+
 export type FlowPagesController = {
   /** Turns to the page that holds this element (for contents links, citations and narration). */
   showElement: (element: Element) => void;
@@ -19,6 +22,8 @@ export type FlowPagesController = {
  * columns, one column per page; turning a page moves by exactly one column. Everything stays in
  * the DOM, so search, focus and anchors keep working: focusing or scrolling to something on
  * another page turns to that page. `follow="end"` keeps the newest page open while content grows.
+ * `fit` sizes the pages to their content up to a cap (`--flow-max`), for a card that pages only
+ * when its text is longer than the room it has.
  */
 export function FlowPages({
   children,
@@ -32,6 +37,7 @@ export function FlowPages({
   anchors,
   onAnchorPages,
   footer,
+  fit = false,
 }: {
   children: ReactNode;
   label: string;
@@ -47,6 +53,8 @@ export function FlowPages({
   onAnchorPages?: (pages: Record<string, number>) => void;
   /** Controls that belong to every page of this document, shown above the folio. */
   footer?: ReactNode;
+  /** As tall as the content up to `--flow-max`; pages and a folio appear only past that height. */
+  fit?: boolean;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const columnsRef = useRef<HTMLDivElement>(null);
@@ -54,6 +62,7 @@ export function FlowPages({
   const [page, setPage] = useState(0);
   const [pages, setPages] = useState(1);
   const [continuing, setContinuing] = useState<ReadonlySet<number>>(() => new Set());
+  const [short, setShort] = useState(false);
   const atEnd = useRef(true);
   const widthRef = useRef(0);
   const stride = width + gap;
@@ -73,6 +82,8 @@ export function FlowPages({
     }
     const total = Math.max(1, Math.round((columns.scrollWidth + gap) / (nextWidth + gap)));
     setPages(total);
+    // On a short page paragraphs may split between lines (still three lines a side) instead of moving whole.
+    setShort(total > 1 && viewport.clientHeight < SHORT_PAGE);
     // A page whose last reply or paragraph carries on gets a "continues" cue in its free foot line.
     const origin = columns.getBoundingClientRect().left;
     const found = new Set<number>();
@@ -172,7 +183,7 @@ export function FlowPages({
 
   return (
     <section
-      className={`flow-pages ${className}`}
+      className={`flow-pages ${fit ? `flow-fit ${pages > 1 ? "is-paged" : ""}` : ""} ${short ? "flow-short" : ""} ${className}`}
       aria-label={label}
       onKeyDown={(event) => {
         const target = event.target as HTMLElement;
@@ -201,7 +212,7 @@ export function FlowPages({
         </button>
       )}
       {footer && <div className="flow-footer">{footer}</div>}
-      <PageTurner page={page} pages={pages} label={label} onTurn={turn} />
+      {(!fit || pages > 1) && <PageTurner page={page} pages={pages} label={label} onTurn={turn} />}
     </section>
   );
 }

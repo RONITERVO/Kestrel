@@ -12,7 +12,8 @@ import {
   revealMusicMidi, saveMusicMidiDocument, startStudioPromptDraft, startMusicGeneration,
   transcribeMusicLyrics, transcribeMusicMidi, translateMusicLyrics,
 } from "../../../platform/api";
-import { appendModelThinking, ModelThinkingStream } from "../../control/ModelThinkingStream";
+import { appendModelThinking } from "../../control/ModelThinkingStream";
+import { ModelReplyPages } from "../../control/ModelReplyPages";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "../../control/ModelRuntimePolicy";
 import type { RuntimePolicyValue } from "../../control/ModelRuntimePolicy";
 import { ExternalCollaborationExchange } from "../../../shared/collaboration/ExternalCollaborationExchange";
@@ -738,8 +739,16 @@ export function MusicStudio({
 
       {collaboration && <section className="music-collaboration-sheet">
         <header><span><Sparkles /><strong>{collaboration.target === "musicCaption" ? "Description proposal" : "Lyrics proposal"}</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header>
-        <div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} outputText={collaboration.text} active={assistantBusy} inferenceActive={assistantBusy && collaboration.status !== "queued"} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>{collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}</strong><pre>{collaboration.text || (assistantBusy ? "The proposal will stream here when the model begins its answer…" : "No proposal was returned.")}</pre></section></div>
-        <footer>{assistantBusy ? <button onClick={() => void cancelStudioPromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt.exactRequest, null, 2)}</pre></details>}</footer>
+        <ModelReplyPages request={advancedEnabled && collaboration.receipt ? JSON.stringify(collaboration.receipt.exactRequest, null, 2) : undefined} modelName={collaboration.modelName} inferenceActive={assistantBusy && collaboration.status !== "queued"}
+          label={collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}
+          answerLabel="Proposal"
+          text={collaboration.text}
+          reasoning={collaboration.reasoning}
+          live={assistantBusy}
+          thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)}
+          placeholder={assistantBusy ? "The proposal will appear here when the model begins its answer…" : "No proposal was returned."}
+        />
+        <footer>{assistantBusy ? <button onClick={() => void cancelStudioPromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}</footer>
       </section>}
 
       {midiOpen && midiDocument && midiTake && <MusicMidiEditor document={midiDocument} takeLabel={`Take ${project.takes.findIndex((take) => take.id === midiTake.id) + 1}`} currentTime={currentTime} playing={playing} busy={midiBusy} onTogglePlay={togglePlay} onSeek={(seconds) => { if (audioRef.current) { audioRef.current.currentTime = Math.min(midiTake.durationSeconds, Math.max(0, seconds)); setCurrentTime(audioRef.current.currentTime); } }} onSave={saveMidi} onExport={exportMidi} onReveal={revealMidi} onClose={() => { setMidiOpen(false); setMidiDocument(undefined); }} />}

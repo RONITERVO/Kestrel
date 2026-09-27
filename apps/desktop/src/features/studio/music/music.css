@@ -154,7 +154,7 @@
 .music-receipt dl { margin: 0; display: grid; grid-template-columns: 55px minmax(0,1fr); gap: 4px; font-size: var(--text-xs); }
 .music-receipt dt { color: var(--ink-3); }
 .music-receipt dd { min-width: 0; margin: 0; overflow: hidden; color: var(--ink-2); font-family: var(--font-data); text-overflow: ellipsis; white-space: nowrap; }
-.music-receipt pre, .music-collaboration-sheet pre { overflow: auto; padding: 8px; border: 1px solid var(--rule); border-radius: 4px; color: var(--ink-2); background: var(--paper-raised); font:var(--text-xs)/1.45 var(--font-data); white-space: pre-wrap; }
+.music-receipt pre { overflow: auto; padding: 8px; border: 1px solid var(--rule); border-radius: 4px; color: var(--ink-2); background: var(--paper-raised); font:var(--text-xs)/1.45 var(--font-data); white-space: pre-wrap; }
 .midi-editor { position: absolute; z-index: 40; inset: 57px 0 0; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-columns: 214px minmax(0,1fr) 252px; grid-template-rows: 55px minmax(0,1fr); grid-template-areas: "midi-toolbar midi-toolbar midi-toolbar" "midi-tracks midi-roll midi-inspector"; color: var(--ink); background: var(--paper-raised); box-shadow: 0 -8px 30px var(--shade-strong); }
 .midi-editor button, .midi-editor input, .midi-editor select { color: inherit; font: inherit; }
 .midi-editor-toolbar { grid-area: midi-toolbar; min-width: 0; padding: 6px 8px; display: grid; grid-template-columns: minmax(230px,.8fr) minmax(390px,1.4fr) minmax(300px,1fr); align-items: center; gap: 9px; border-bottom: 1px solid var(--rule); background: linear-gradient(var(--paper-sunk),var(--paper-sunk)); box-shadow: 0 2px 8px var(--shade-strong); }
@@ -233,18 +233,16 @@
 .midi-note-name button svg { width: 11px; }
 .midi-inspector-empty { min-height: 110px; padding: 16px; display: grid; place-content: center; justify-items: center; gap: 8px; border: 1px dashed var(--rule); border-radius: 5px; color: var(--ink-3); text-align: center; font-size: var(--text-xs); line-height: 1.45; }
 .midi-inspector-empty svg { width: 21px; }
-.music-collaboration-sheet { position: absolute; z-index: 20; right: 320px; bottom: 10px; width: min(560px,calc(100% - 340px)); max-height: calc(100% - 78px); overflow: hidden; display: grid; grid-template-rows: auto minmax(100px,1fr) auto; border: 1px solid var(--ch-studio); border-radius: 7px; background: var(--paper-sunk); box-shadow: 0 18px 55px var(--shade-strong); }
+.music-collaboration-sheet { position: absolute; z-index: 20; right: 320px; bottom: 10px; width: min(560px,calc(100% - 340px)); height: min(560px, calc(100% - 78px)); overflow: hidden; display: grid; grid-template-rows: auto minmax(0,1fr) auto; border: 1px solid var(--ch-studio); border-radius: 7px; background: var(--paper-sunk); box-shadow: 0 18px 55px var(--shade-strong); }
 .music-collaboration-sheet > header { min-height: 47px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--rule); background: var(--paper-sunk); }
 .music-collaboration-sheet > header > span { display: grid; grid-template-columns: 22px 1fr; }
 .music-collaboration-sheet > header svg { grid-row: 1/3; width: 15px; color: var(--stop-ink); }
 .music-collaboration-sheet > header strong { font-size: var(--text-sm); }
 .music-collaboration-sheet > header small { color: var(--ink-3); font-size: var(--text-xs); }
 .music-collaboration-sheet > header button { border: 0; color: var(--ink-3); background: transparent; font-size: var(--text-lg); }
-.music-collaboration-sheet > pre { min-height: 0; margin: 8px; font-size: var(--text-xs); }
 .music-collaboration-sheet > footer { padding: 8px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; border-top: 1px solid var(--rule); }
 .music-collaboration-sheet > footer > button { min-height: 30px; padding: 0 9px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--rule); border-radius: 4px; background: var(--paper-sunk); font-size: var(--text-xs); font-weight: 750; }
 .music-collaboration-sheet > footer svg { width: 12px; }
-.music-collaboration-sheet footer details { flex: 1 0 100%; color: var(--ink-3); font-size: var(--text-xs); }
 .music-studio-empty, .music-studio-loading { width: 100%; height: 100%; display: grid; place-content: center; justify-items: center; gap: 9px; overflow: hidden; color: var(--ink); background: radial-gradient(circle at center,var(--paper-sunk),var(--paper-raised) 65%); text-align: center; }
 .music-studio-loading { grid-auto-flow: column; }
 .music-studio-empty h1 { max-width: 680px; margin: 5px 20px; font:700 clamp(34px,5vw,58px)/1.02 var(--font-hand);  }

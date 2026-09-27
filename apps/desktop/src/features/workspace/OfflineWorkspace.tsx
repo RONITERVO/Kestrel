@@ -33,7 +33,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownContent } from "../../shared/components/MarkdownContent";
 import { TextParagraphs } from "../../shared/components/TextParagraphs";
 import { type SpeechProgressState } from "../../shared/components/spokenHighlight";
-import { FlowPages } from "../../shared/book/FlowPages";
+import { FlowPages, type FlowPagesController } from "../../shared/book/FlowPages";
+import { CardPages, MessagePages, ReplyViewToggle, type ReplyView } from "../../shared/book/MessagePages";
 import { PagedList } from "../../shared/book/PagedList";
 import { formatMib } from "../../shared/format";
 import "./workspace.css";
@@ -103,17 +104,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     [],
   );
   const pendingVoiceRecordingRef = useRef<SpeechRecordingAttachment | null>(null);
-  const [stream, setStream] = useState<{
-    requestId: string;
-    phase: string;
-    content: string;
-    reasoning: string;
-    notice?: string;
-    thinkingLevel?: string;
-    startedAt?: number;
-    data?: Record<string, unknown>;
-    metrics?: Record<string, unknown>;
-  } | null>(null);
+  const [stream, setStream] = useState<LiveStream | null>(null);
   const [tasks, setTasks] = useState<ComputerTaskSummary[]>([]);
   const [task, setTask] = useState<ComputerTaskRun | null>(null);
   const [objective, setObjective] = useState("");
@@ -149,7 +140,6 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   const latestTaskRef = useRef<ComputerTaskRun | null>(task);
   const taskStartingRef = useRef(false);
   const earlyTaskEventsRef = useRef<ComputerTaskEvent[]>([]);
-  const chatEndRef = useRef<HTMLDivElement>(null);
   const onChangedRef = useRef(onChanged);
   const enginePathHasValidName = /(?:^|[\\/])llama-server\.exe$/i.test(
     settings.enginePath.trim(),
@@ -224,11 +214,6 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     const timer = window.setInterval(refreshControl, 2_500);
     return () => window.clearInterval(timer);
   }, [visible]);
-
-  useEffect(() => {
-    if (typeof chatEndRef.current?.scrollIntoView === "function")
-      chatEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [session?.messages.length, stream?.content, stream?.reasoning]);
 
   function handleChatEvent(event: ChatStreamEvent) {
     if (chatRequestRef.current && event.requestId !== chatRequestRef.current)
@@ -1337,11 +1322,10 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
         </header>
         {kind === "chat" ? (
           <>
-            <FlowPages className="control-transcript" label="Conversation pages" follow={session?.messages.length || stream ? "end" : "start"} resetKey={session?.id ?? "new"}>
-            <div className="control-chat" aria-live="polite">
+            <MessagePages className="control-chat control-transcript" label="Conversation" resetKey={session?.id ?? "new"}>
               {working === "start" && runtimeProgress && (
-                <RuntimeNotice title="MODEL STARTUP" detail={runtimeProgress} />
-              )}{" "}
+                <RuntimeNotice key="runtime-notice" title="MODEL STARTUP" detail={runtimeProgress} />
+              )}
               {session?.messages.length ? (
                 session.messages.map((message) => (
                   <Message
@@ -1354,57 +1338,22 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
                 ))
               ) : (
                 <Welcome
+                  key="welcome"
                   models={control.models.length}
                   context={effectiveContext}
                   freeMib={gpu?.freeMib}
                 />
-              )}{" "}
-              {stream && (
-                <article className="assistant streaming">
-                  <span>
-                    {selected?.name ?? "MODEL"}
-                    <i>{stream.phase}</i>
-                  </span>
-                  {stream.notice && (
-                    <div className="context-notice">{stream.notice}</div>
-                  )}
-                  {stream.reasoning ? (
-                    <details open={!stream.content} className="chat-reasoning-block">
-                      <summary>
-                        <span>Reasoning</span>
-                        <span className="thinking-level-badge">{(stream.thinkingLevel || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel)).toUpperCase()}</span>
-                        <small>live</small>
-                      </summary>
-                      <pre>{stream.reasoning}</pre>
-                    </details>
-                  ) : (stream.thinkingLevel === "off" || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel) === "off") && stream.phase !== "queued" ? (
-                    <div className="chat-thinking-off-indicator">
-                      <span className="thinking-level-badge thinking-off-badge">THINKING OFF</span>
-                      <small>Generating direct response without reasoning channel</small>
-                    </div>
-                  ) : null}
-                  <MarkdownContent
-                    value={
-                      stream.content ||
-                      (stream.phase === "queued"
-                        ? "Waiting for the inference slot…"
-                        : "")
-                    }
-                    streaming={stream.phase === "generating"}
-                  />
-                  <Metrics
-                    data={stream.metrics}
-                    content={stream.content}
-                    reasoning={stream.reasoning}
-                    startedAt={stream.startedAt}
-                    active={stream.phase === "generating"}
-                    modelName={selected?.name}
-                  />
-                </article>
               )}
-              <div ref={chatEndRef} />
-            </div>
-            </FlowPages>
+              {stream && (
+                <LiveReply
+                  key={`live-${stream.requestId}`}
+                  stream={stream}
+                  model={selected?.name}
+                  thinkingLevel={stream.thinkingLevel || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel)}
+                  thinkingOff={(stream.thinkingLevel === "off" || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel) === "off") && stream.phase !== "queued"}
+                />
+              )}
+            </MessagePages>
             {resumableAnswer && (
               <div className="chat-resume">
                 <span>The partial answer is saved.</span>
@@ -1734,62 +1683,11 @@ function ComputerTasks({
               </button>
             )}
           </header>
-          <FlowPages className="task-pages" label="Task pages" follow="end" resetKey={run.id}>
-          <div className="task-timeline" aria-live="polite">
+          <MessagePages className="task-pages" label="Task steps" unit="steps" resetKey={run.id} live>
             {run.events.map((event, index) => (
-              <article
-                key={`${event.at}-${index}`}
-                className={`task-event ${event.kind}`}
-              >
-                <div className="event-glyph">
-                  {event.kind === "artifact" ? (
-                    <FileCode2 />
-                  ) : event.kind === "tool_start" ? (
-                    <Wrench />
-                  ) : event.kind === "thinking" || event.kind === "queued" ? (
-                    <LoaderCircle className="spin" />
-                  ) : event.kind === "done" ? (
-                    <Check />
-                  ) : (
-                    <ChevronRight />
-                  )}
-                </div>
-                <div>
-                  <header>
-                    <strong className="task-event-title">
-                      {event.title}
-                      {event.data?.thinkingLevel ? (
-                        <span className={`thinking-level-badge ${event.data.thinkingLevel === "off" ? "thinking-off-badge" : ""}`}>
-                          {String(event.data.thinkingLevel).toUpperCase()}
-                        </span>
-                      ) : null}
-                    </strong>
-                    <span>
-                      {event.step ? `Step ${event.step}` : "Setup"} ·{" "}
-                      {timeOnly(event.at)}
-                    </span>
-                  </header>
-                  {["done", "question"].includes(event.kind)
-                    ? <MarkdownContent className="task-answer" value={event.detail} />
-                    : ["reasoning", "thinking"].includes(event.kind)
-                      ? <TextParagraphs className="task-reasoning" text={event.detail} />
-                      : <pre>{event.detail}</pre>}
-                  {["done", "question"].includes(event.kind) && event.detail.trim() && (
-                    <SpeechPlaybackButton sourceKind="task" sourceId={run.id} passageId={`${event.kind}-${index}`} text={event.detail} label="Listen" />
-                  )}
-                  {event.kind === "artifact" && event.data?.path && (
-                    <button
-                      className="artifact-button"
-                      onClick={() => onOpen(event.data!.path!)}
-                    >
-                      <FolderOpen /> Open artifact
-                    </button>
-                  )}
-                </div>
-              </article>
+              <TaskEvent key={`${event.at}-${index}`} event={event} index={index} runId={run.id} onOpen={onOpen} />
             ))}
-          </div>
-          </FlowPages>
+          </MessagePages>
           {resumable && (
             <section className="task-question">
               <span className="eyebrow">
@@ -1867,12 +1765,24 @@ function Message({
   onError: (message: string) => void;
 }) {
   const [speechProgress, setSpeechProgress] = useState<SpeechProgressState | null>(null);
+  const [view, setView] = useState<ReplyView>("answer");
+  const cardRef = useRef<HTMLElement>(null);
+  const pages = useRef<FlowPagesController | null>(null);
   const speaking = Boolean(speechProgress?.active);
+  const reasoning = view === "reasoning" && message.reasoning;
+
+  // Reading aloud turns this message to the page that holds the spoken word.
+  useEffect(() => {
+    const word = cardRef.current?.querySelector(".speech-word-active");
+    if (word) pages.current?.showElement(word);
+  }, [speechProgress]);
 
   return (
     <article
+      ref={cardRef}
       className={`${message.role} ${speaking ? "speech-message-active" : ""}`}
       id={`chat-message-${message.id}`}
+      data-keep-with-next={message.role === "user" || undefined}
     >
       <span>
         {message.role === "user" ? "YOU" : (model ?? "MODEL")}
@@ -1883,6 +1793,7 @@ function Message({
               : "interrupted · partial saved"}
           </i>
         )}
+        {message.reasoning && <ReplyViewToggle view={view} onView={setView} />}
         <button
           title="Copy message"
           onClick={() => void navigator.clipboard.writeText(message.content)}
@@ -1892,14 +1803,12 @@ function Message({
       </span>
       {(message.attachments?.length ?? 0) > 0 && (
         <AttachmentShelf attachments={message.attachments!} onError={onError} />
-      )}{" "}
-      {message.reasoning && (
-        <details>
-          <summary>Reasoning</summary>
-          <TextParagraphs className="saved-reasoning" text={message.reasoning} />
-        </details>
       )}
-      <MarkdownContent value={message.content} speechProgress={speechProgress} />
+      <CardPages label={message.role === "user" ? "Your message" : "Reply"} resetKey={view} controller={pages}>
+        {reasoning
+          ? <TextParagraphs className="saved-reasoning" text={reasoning} />
+          : <MarkdownContent value={message.content} speechProgress={speechProgress} />}
+      </CardPages>
       {message.content.trim() && (message.role !== "user" || Boolean(message.recording)) && (
         <SpeechPlaybackButton
           sourceKind="chat"
@@ -1911,6 +1820,120 @@ function Message({
           onSpeechProgress={setSpeechProgress}
         />
       )}
+    </article>
+  );
+}
+
+/**
+ * One step of a Computer Task as a card. Long output and the final answer page inside the card; a
+ * tool call keeps its page with the result that follows it.
+ */
+function TaskEvent({ event, index, runId, onOpen }: { event: ComputerTaskEvent; index: number; runId: string; onOpen: (path: string) => void }) {
+  const answer = ["done", "question"].includes(event.kind);
+  return (
+    <article className={`task-event ${event.kind}`} data-keep-with-next={event.kind === "tool_start" || undefined}>
+      <div className="event-glyph">
+        {event.kind === "artifact" ? (
+          <FileCode2 />
+        ) : event.kind === "tool_start" ? (
+          <Wrench />
+        ) : event.kind === "thinking" || event.kind === "queued" ? (
+          <LoaderCircle className="spin" />
+        ) : event.kind === "done" ? (
+          <Check />
+        ) : (
+          <ChevronRight />
+        )}
+      </div>
+      <div>
+        <header>
+          <strong className="task-event-title">
+            {event.title}
+            {event.data?.thinkingLevel ? (
+              <span className={`thinking-level-badge ${event.data.thinkingLevel === "off" ? "thinking-off-badge" : ""}`}>
+                {String(event.data.thinkingLevel).toUpperCase()}
+              </span>
+            ) : null}
+          </strong>
+          <span>
+            {event.step ? `Step ${event.step}` : "Setup"} · {timeOnly(event.at)}
+          </span>
+        </header>
+        <CardPages label={answer ? "Answer" : event.title || "Step"}>
+          {answer
+            ? <MarkdownContent className="task-answer" value={event.detail} />
+            : ["reasoning", "thinking"].includes(event.kind)
+              ? <TextParagraphs className="task-reasoning" text={event.detail} />
+              : <pre>{event.detail}</pre>}
+        </CardPages>
+        {answer && event.detail.trim() && (
+          <SpeechPlaybackButton sourceKind="task" sourceId={runId} passageId={`${event.kind}-${index}`} text={event.detail} label="Listen" />
+        )}
+        {event.kind === "artifact" && event.data?.path && (
+          <button
+            className="artifact-button"
+            onClick={() => onOpen(event.data!.path!)}
+          >
+            <FolderOpen /> Open artifact
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+type LiveStream = {
+  requestId: string;
+  phase: string;
+  content: string;
+  reasoning: string;
+  notice?: string;
+  thinkingLevel?: string;
+  startedAt?: number;
+  data?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+};
+
+/**
+ * The reply being written. Reasoning shows while the model thinks and the answer takes over when it
+ * starts, unless the reader picked a view. The card follows its newest page.
+ */
+function LiveReply({ stream, model, thinkingLevel, thinkingOff }: { stream: LiveStream; model?: string; thinkingLevel: string; thinkingOff: boolean }) {
+  const [chosen, setChosen] = useState<ReplyView | null>(null);
+  const view: ReplyView = chosen ?? (stream.content || !stream.reasoning ? "answer" : "reasoning");
+  return (
+    <article className="assistant streaming" aria-live="polite">
+      <span>
+        {model ?? "MODEL"}
+        <i>{stream.phase}</i>
+        {stream.reasoning && <span className="thinking-level-badge">{thinkingLevel.toUpperCase()}</span>}
+        {stream.reasoning && <ReplyViewToggle view={view} onView={setChosen} live={!stream.content} />}
+      </span>
+      {stream.notice && <div className="context-notice">{stream.notice}</div>}
+      {!stream.reasoning && thinkingOff && (
+        <div className="chat-thinking-off-indicator">
+          <span className="thinking-level-badge thinking-off-badge">THINKING OFF</span>
+          <small>Generating direct response without reasoning channel</small>
+        </div>
+      )}
+      <CardPages label="Live reply" follow="end" resetKey={view}>
+        {view === "reasoning"
+          ? <TextParagraphs className="saved-reasoning" text={stream.reasoning} />
+          : (
+            <MarkdownContent
+              value={stream.content || (stream.phase === "queued" ? "Waiting for the inference slot…" : "")}
+              streaming={stream.phase === "generating"}
+            />
+          )}
+      </CardPages>
+      <Metrics
+        data={stream.metrics}
+        content={stream.content}
+        reasoning={stream.reasoning}
+        startedAt={stream.startedAt}
+        active={stream.phase === "generating"}
+        modelName={model}
+      />
     </article>
   );
 }

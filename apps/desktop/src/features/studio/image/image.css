@@ -161,7 +161,7 @@
 .image-license-note a { color: var(--stop-ink); font-size: var(--text-xs); }
 .image-advanced details { margin-top: 8px; border-top: 1px solid var(--rule); }
 .image-advanced summary { padding: 9px 0; color: var(--ink-2); font-size: var(--text-xs); font-weight: 750; cursor: pointer; }
-.image-advanced pre, .image-collaboration-sheet pre { overflow: auto; padding: 8px; border: 1px solid var(--rule); border-radius: 4px; color: var(--ink-2); background: var(--paper-raised); font:var(--text-xs)/1.45 var(--font-data); white-space: pre-wrap; }
+.image-advanced pre { overflow: auto; padding: 8px; border: 1px solid var(--rule); border-radius: 4px; color: var(--ink-2); background: var(--paper-raised); font:var(--text-xs)/1.45 var(--font-data); white-space: pre-wrap; }
 .image-advanced dl { display: grid; grid-template-columns: 58px minmax(0,1fr); gap: 4px; font-size: var(--text-xs); }
 .image-advanced dt { color: var(--ink-3); }
 .image-advanced dd { min-width: 0; margin: 0; overflow: hidden; font-family: var(--font-data); text-overflow: ellipsis; white-space: nowrap; }
@@ -169,18 +169,16 @@
 .image-seed-actions button { border-radius: 4px; }
 .image-backdrop-note { margin: 9px 0 0; padding: 7px; display: grid; grid-template-columns: 14px minmax(0,1fr); gap: 6px; border: 1px solid var(--mat-2); border-radius: 4px; color: var(--mat-ink); background: var(--mat-2); font-size: var(--text-xs); line-height: 1.4; }
 .image-backdrop-note svg { width: 13px; }
-.image-collaboration-sheet { position: absolute; z-index: 25; right: 340px; bottom: 10px; width: min(620px,calc(100% - 360px)); max-height: calc(100% - 76px); overflow: hidden; display: grid; grid-template-rows: auto minmax(120px,1fr) auto; border: 1px solid var(--note); border-radius: 7px; background: var(--paper-sunk); box-shadow: 0 20px 65px var(--shade-strong); }
+.image-collaboration-sheet { position: absolute; z-index: 25; right: 340px; bottom: 10px; width: min(620px,calc(100% - 360px)); height: min(600px, calc(100% - 76px)); overflow: hidden; display: grid; grid-template-rows: auto minmax(0,1fr) auto; border: 1px solid var(--note); border-radius: 7px; background: var(--paper-sunk); box-shadow: 0 20px 65px var(--shade-strong); }
 .image-collaboration-sheet > header { min-height: 48px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--rule); background: var(--note-wash); }
 .image-collaboration-sheet > header > span { display: grid; grid-template-columns: 22px 1fr; }
 .image-collaboration-sheet > header svg { grid-row: 1/3; width: 15px; color: var(--note-ink); }
 .image-collaboration-sheet > header strong { font-size: var(--text-xs); }
 .image-collaboration-sheet > header small { color: var(--ink-2); font-size: var(--text-xs); }
 .image-collaboration-sheet > header button { border: 0; color: var(--ink-2); background: transparent; font-size: var(--text-lg); }
-.image-collaboration-sheet > pre { min-height: 0; margin: 8px; font-size: var(--text-xs); }
 .image-collaboration-sheet > footer { padding: 8px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; border-top: 1px solid var(--rule); }
 .image-collaboration-sheet > footer > button { min-height: 30px; padding: 0 9px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--rule-strong); border-radius: 4px; background: var(--paper-sunk); font-size: var(--text-xs); font-weight: 750; }
 .image-collaboration-sheet footer svg { width: 12px; }
-.image-collaboration-sheet footer details { flex: 1 0 100%; color: var(--ink-3); font-size: var(--text-xs); }
 .image-studio-empty, .image-studio-loading { width: 100%; height: 100%; overflow: hidden; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--ink); background: radial-gradient(circle at 50% 42%,var(--paper-sunk),var(--paper-raised) 66%); text-align: center; }
 .image-studio-loading { grid-auto-flow: column; }
 .image-studio-empty > small { color: var(--note-ink); font-size: var(--text-xs); font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }

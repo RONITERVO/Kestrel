@@ -136,3 +136,7 @@ label { color: var(--ink-2); }
 .search-field:focus-within { border-color: var(--act); box-shadow: 0 0 0 2px var(--act-wash); }
 .search-field button { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* The reasoning level a model is using, shown beside its reply. */
+.thinking-level-badge { padding: 0 6px; border: 1px solid var(--note); border-radius: var(--radius-chip); color: var(--note-ink); background: var(--note-wash); font-family: var(--font-ui); font-size: var(--text-xs); letter-spacing: .05em; }
+.thinking-off-badge { border-color: var(--rule-strong); color: var(--ink-3); background: var(--paper-sunk); }

@@ -97,23 +97,18 @@
 .control-actions button { min-height: 32px; padding: 3px 11px; font-size: var(--text-sm); }
 .control-actions svg { width: 15px; height: 15px; }
 .control-transcript { min-height: 0; }
-.control-chat { display: block; }
-.control-chat > * + * { margin-top: 12px; }
 .control-chat article { padding: 10px 14px 12px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); font-family: var(--font-read); }
 .control-chat article.user { margin-left: 12%; border-color: color-mix(in srgb, var(--chapter) 45%, var(--rule)); background: color-mix(in srgb, var(--chapter) 9%, var(--paper-raised)); }
 .control-chat article.streaming { border-color: var(--wait); box-shadow: 0 0 0 2px var(--wait-wash); }
 .control-chat article.speech-message-active { border-color: var(--wait); }
 .control-chat article > span { display: flex; align-items: center; gap: 8px; color: var(--ink-3); font-family: var(--font-ui); font-size: var(--text-xs); letter-spacing: .08em; text-transform: uppercase; }
 .control-chat article > span i { padding: 0 6px; border: 1px solid var(--wait); border-radius: var(--radius-chip); color: var(--wait-ink); font-style: normal; letter-spacing: 0; text-transform: none; }
-.control-chat article > span button { width: 24px; height: 24px; margin-left: auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; color: var(--ink-3); background: transparent; }
-.control-chat article > span button:hover { color: var(--act-ink); background: var(--act-wash); }
-.control-chat article > span button svg { width: 14px; }
+.control-chat article > span > button { width: 24px; height: 24px; margin-left: auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; color: var(--ink-3); background: transparent; }
+.control-chat article > span > button:hover { color: var(--act-ink); background: var(--act-wash); }
+.control-chat article > span > button svg { width: 14px; }
 .control-chat details { margin-top: 6px; color: var(--ink-3); font-family: var(--font-ui); font-size: var(--text-sm); }
-/* Saved reasoning is prose: reading type in paragraphs that page cleanly. The live block is a log that stays capped. */
-.control-chat .saved-reasoning { margin: 6px 0 0; padding: 7px 10px; border-left: 3px solid var(--rule); color: var(--ink-2); background: var(--paper-sunk); font: var(--text-sm)/1.55 var(--font-read); }
-.chat-reasoning-block pre { max-height: 26vh; margin: 6px 0 0; padding: 7px 9px; overflow: auto; border-left: 3px solid var(--rule); color: var(--ink-2); background: var(--paper-sunk); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
-.chat-reasoning-block summary { display: flex; align-items: center; gap: 7px; cursor: pointer; }
-.chat-reasoning-block summary small { color: var(--wait-ink); }
+/* Reasoning is prose: reading type in paragraphs that page cleanly inside the reply card. */
+.control-chat .saved-reasoning { margin: 0; padding: 7px 10px; border-left: 3px solid var(--rule); color: var(--ink-2); background: var(--paper-sunk); font: var(--text-sm)/1.55 var(--font-read); }
 .chat-thinking-off-indicator { margin: 6px 0; padding: 4px 8px; display: flex; align-items: center; gap: 6px; border: 1px dashed var(--rule); border-radius: var(--radius-sketch); font-family: var(--font-ui); }
 .chat-thinking-off-indicator small { color: var(--ink-3); }
 .context-notice { margin: 6px 0; padding: 5px 8px; border: 1px solid var(--note); border-radius: var(--radius-sketch); color: var(--note-ink); background: var(--note-wash); font-family: var(--font-ui); font-size: var(--text-sm); }
@@ -231,3 +226,9 @@
   .control-drawer-page[data-left="drawer"] > .control-inspector, .control-drawer-page[data-left="inspector"] > .model-drawer { display: none; }
 }
 .control-welcome { min-height: 0; height: auto; padding: 18px 0; }
+
+/* One reply card: header, its own pages, and its actions. Answer and reasoning are two views. */
+.control-chat article > .card-pages { margin-top: 6px; }
+.task-pages .message-pages-list { gap: 0; }
+.task-event .card-pages { margin-top: 5px; }
+.task-event .card-pages pre, .task-event .card-pages .task-answer, .task-event .card-pages .task-reasoning { margin-top: 0; }

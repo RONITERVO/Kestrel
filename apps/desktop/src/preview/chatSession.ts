@@ -9,6 +9,8 @@ const reasoningParagraph = (topic: string) =>
 export const sampleChatSession = {
   id: "preview-chat-1", title: "Why is red associated with hot", modelId: "preview-model", createdAt: at, updatedAt: at,
   messages: [
+    { id: "preview-chat-hello", role: "user", content: "Quick one: what makes a sunset red?", createdAt: at },
+    { id: "preview-chat-hello-reply", role: "assistant", content: "Sunlight crosses more air near the horizon, so blue light scatters away and the remaining light looks red and orange.", createdAt: at },
     { id: "preview-chat-question", role: "user", content: "Why is red associated with hot... it is the coldest wavelength of rgb, least energy needed.", createdAt: at },
     {
       id: "preview-chat-answer", role: "assistant", createdAt: at,
@@ -21,6 +23,11 @@ export const sampleChatSession = {
         "2. **Hot objects glowing**\n   - When objects get hot, they emit thermal radiation.\n   - At lower temperatures they emit mostly infrared, which we cannot see.\n   - As they get hotter, the first visible color they emit is dull red.\n   - Red is not the hottest color; blue-white hot objects are hotter.",
         "So \"red hot\" means *hot enough to start glowing visibly*.",
       ].join("\n\n"),
+    },
+    { id: "preview-chat-follow", role: "user", content: "And blue flames are hotter?", createdAt: at },
+    {
+      id: "preview-chat-follow-reply", role: "assistant", createdAt: at,
+      content: "Usually, yes. A blue gas flame burns with plenty of oxygen and reaches a higher temperature than a sooty yellow flame.\n\n- **Blue:** complete combustion; excited molecules emit blue light.\n- **Yellow:** glowing soot particles, cooler and less complete burning.\n\nThe color comes from different processes, so it is a hint, not a thermometer.",
     },
   ],
 } satisfies ChatSession;

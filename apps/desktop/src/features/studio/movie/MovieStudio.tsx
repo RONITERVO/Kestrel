@@ -17,9 +17,12 @@ import {
   saveMovieStoryRevision, startMovieStudioChat, summarizeMovieStudioConversation,
 } from "../../../platform/api";
 import { FlowPages } from "../../../shared/book/FlowPages";
+import { CardPages, MessagePages, ReplyViewToggle, type ReplyView } from "../../../shared/book/MessagePages";
+import { TextParagraphs } from "../../../shared/components/TextParagraphs";
 import { PagedList } from "../../../shared/book/PagedList";
 import { MarkdownContent } from "../../../shared/components/MarkdownContent";
-import { appendModelThinking, ModelThinkingStream } from "../../control/ModelThinkingStream";
+import { appendModelThinking } from "../../control/ModelThinkingStream";
+import { useInferenceTelemetryReporter } from "../../control/InferenceTelemetry";
 import { MovieTimeline } from "./MovieTimeline";
 import { MovieGenerationPanel } from "./MovieGenerationPanel";
 import { GenerateAssetButton, MovieAssetCreator } from "./MovieAssetCreator";
@@ -515,15 +518,27 @@ function ConversationPanel({ kind, conversation, chat, instruction, modelId, mod
 }) {
   return <aside className="producer-chat-panel"><header><span><MessageSquare /><strong>{kind === "story" ? "Story collaborator" : "Scene collaborator"}</strong><small>{kind === "story" ? "Every response is a full Markdown revision" : `${selectedCount} scene card${selectedCount === 1 ? "" : "s"} in full context`}</small></span><div><button disabled={disabled || Boolean(chat.requestId) || !conversation?.messages.length} title="Summarize this conversation" onClick={onSummarize}><Sparkles /></button><button disabled={disabled || Boolean(chat.requestId) || !conversation} title="Clear and start a blank conversation" onClick={() => onReset(false)}><Trash2 /></button><button disabled={disabled || Boolean(chat.requestId) || !conversation?.summary} title="Start a new conversation carrying the saved summary" onClick={() => onReset(true)}><RotateCcw /></button></div></header>
     {conversation?.summary && <section className="producer-chat-summary"><strong>Carried summary</strong><MarkdownContent value={conversation.summary} /></section>}
-    <FlowPages className="producer-chat-pages" label="Collaborator pages" follow="end" resetKey={conversation?.id ?? kind}><div className="producer-chat-history">{conversation?.messages.map((message) => <article className={message.role} key={message.id}><small>{message.role === "producer" ? "You" : message.role === "collaborator" ? "Local collaborator" : "Kestrel"}{message.selectedSceneIds.length ? ` · ${message.selectedSceneIds.length} selected scenes` : ""}</small><MarkdownContent value={message.markdown} /></article>)}
-      {chat.text && <article className="collaborator live"><small>Local collaborator · live</small><MarkdownContent value={chat.text} streaming /></article>}
-      {!conversation?.messages.length && !chat.text && <div className="studio-room-empty"><MessageSquare /><strong>{kind === "story" ? "Revise by talking" : "Shape scenes by talking"}</strong><span>{kind === "story" ? "Ask for tone, structure, character, pacing, or a full rewrite. Every answer is saved as a new revision." : "Check only the cards the collaborator may change. It can add cards around the outline without seeing your media choices."}</span></div>}
-    </div></FlowPages>
-    {chat.reasoning && <ModelThinkingStream text={chat.reasoning} active={Boolean(chat.requestId)} />}
+    <MessagePages className="producer-chat-pages producer-chat-history" label={kind === "story" ? "Story conversation" : "Scene conversation"} resetKey={conversation?.id ?? kind} live>
+      {conversation?.messages.map((message) => <article className={message.role} key={message.id} data-keep-with-next={message.role === "producer" || undefined}><small>{message.role === "producer" ? "You" : message.role === "collaborator" ? "Local collaborator" : "Kestrel"}{message.selectedSceneIds.length ? ` · ${message.selectedSceneIds.length} selected scenes` : ""}</small><CardPages label={message.role === "producer" ? "Your note" : "Reply"}><MarkdownContent value={message.markdown} /></CardPages></article>)}
+      {(chat.text || (chat.reasoning && chat.requestId)) && <LiveCollaborator key={chat.requestId ?? "live"} chat={chat} modelName={models.find((model) => model.id === modelId)?.name} />}
+      {!conversation?.messages.length && !chat.text && !chat.reasoning && <div key="empty" className="studio-room-empty"><MessageSquare /><strong>{kind === "story" ? "Revise by talking" : "Shape scenes by talking"}</strong><span>{kind === "story" ? "Ask for tone, structure, character, pacing, or a full rewrite. Every answer is saved as a new revision." : "Check only the cards the collaborator may change. It can add cards around the outline without seeing your media choices."}</span></div>}
+    </MessagePages>
     {chat.status && <div className="producer-chat-status">{chat.requestId && <LoaderCircle className="spin" />}{chat.status}</div>}
     <div className="producer-chat-compose"><textarea aria-label={`${kind} collaborator direction`} maxLength={16000} value={instruction} onChange={(event) => onInstruction(event.target.value)} placeholder={kind === "story" ? "Make the ending quieter and let Mara choose to stay…" : selectedCount ? "Split the selected scene and make the second beat more intimate…" : "Create a first scene pass from the accepted story…"} /><div><select aria-label={`${kind} collaborator model`} value={modelId} disabled>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select>{chat.requestId ? <button className="danger" onClick={onStop}><CircleStop /> Stop</button> : <button disabled={disabled || !modelId || instruction.trim().length < 2} onClick={onSend}><Send /> Send</button>}</div></div>
     <footer><ShieldCheck /> Tool-free local inference. Conversation and revisions are durable.</footer>
   </aside>;
+}
+
+/** The collaborator's reply while it is written: reasoning first, then the answer, following its newest page. */
+function LiveCollaborator({ chat, modelName }: { chat: ChatState; modelName?: string }) {
+  const [chosen, setChosen] = useState<ReplyView | null>(null);
+  useInferenceTelemetryReporter({ active: Boolean(chat.requestId), text: chat.reasoning + chat.text, modelName });
+  const view: ReplyView = chosen ?? (chat.text || !chat.reasoning ? "answer" : "reasoning");
+  return <article className="collaborator live"><small>Local collaborator · live {chat.reasoning && <ReplyViewToggle view={view} onView={setChosen} live={!chat.text} />}</small>
+    <CardPages label="Live reply" follow="end" resetKey={view}>
+      {view === "reasoning" ? <TextParagraphs className="collaborator-reasoning" text={chat.reasoning} /> : <MarkdownContent value={chat.text} streaming={Boolean(chat.requestId)} />}
+    </CardPages>
+  </article>;
 }
 
 function ReferenceShelf({ references, generatedImages = [], editable = false, onReferences, onUseGenerated }: {

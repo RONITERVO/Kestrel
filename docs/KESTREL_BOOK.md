@@ -37,7 +37,11 @@ so a screenshot could not show what a page offered.
    next page whole, headings stay with the text after them, and a block taller than a page splits
    with at least three lines on each side. Every page keeps one free line at its foot; when a reply
    or paragraph carries on, that line says "continues". The model's text is never rewritten to
-   make it paginate. Only four things may scroll inside themselves:
+   make it paginate. Conversations (Control chat, Computer Tasks, the Studio collaborators) keep
+   chat order: `shared/book/MessagePages` shows whole messages a page at a time, a question
+   shares its page with its reply, and a reply longer than its room turns its own pages inside
+   its card (`CardPages`). Answer and reasoning are two views of one reply, so reasoning never
+   pushes the answer away. Only four things may scroll inside themselves:
    - free-text editors;
    - time axes, such as timelines and piano rolls;
    - the media bin of the Studio edit room, which is part of the editor's time-axis tools;
