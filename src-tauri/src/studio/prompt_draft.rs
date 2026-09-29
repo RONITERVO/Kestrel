@@ -621,6 +621,8 @@ mod tests {
             supports_vision: false,
             supports_audio: false,
             recommendation: String::new(),
+            engine: crate::model::ModelEngine::LlamaCpp,
+            fixed_context_window: None,
         }
     }
 

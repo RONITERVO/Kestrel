@@ -6,7 +6,7 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 
 - Research must complete with the public network unavailable and without Codex.
 - Research HTTP is fixed to loopback Bonsai and Kiwix endpoints. Never add a remote fallback.
-- `RuntimeManager` owns the only Kestrel model process and its semaphore owns the only inference slot. Research, chat, and Computer Tasks must acquire that gate.
+- `RuntimeManager` owns the only Kestrel model process (llama-server, or Strata's server with its engine inside one Windows job object) and its semaphore owns the only inference slot. Research, chat, and Computer Tasks must acquire that gate.
 - Ordinary chat is tool-free. Computer Tasks is the only local-model path with mutation authority; workspace access is the default and full access requires two explicit user opt-ins.
 - Chat sessions and task transcripts are durable user data. Never silently discard them or auto-resume an interrupted computer task.
 - Codex exists only in `developer.rs`, is user-triggered, repository-scoped, ephemeral, uncommitted, and unavailable during research.
@@ -21,6 +21,8 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `lib.rs`: Tauri commands, strict research lock, state boundaries.
 - `models.rs`: compatibility re-export only; new application contracts belong in `crates/app-core`.
 - `runtime.rs`: attach/start/stop model runtime and single inference lease.
+- `strata.rs`: read-only Strata install discovery, validated loopback launch plans, and the job object that owns Strata's process tree. Strata-only GGUF architectures never reach llama.cpp.
+- `structured_output.rs`: JSON-schema replies across engines; llama.cpp gets `response_format`, Strata gets the schema in the prompt, and native parsers stay the only authority.
 - `attachments.rs`: content-addressed local files, bounded extraction, and capability-gated media blocks.
 - `chat.rs`: cancellable SSE chat stream; never add tools here.
 - `agent.rs`: bounded Computer Tasks loop, typed tools, path policy, recovery copies, visible events.

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { demoSnapshot } from "../../preview/fixtures";
 import { mergeSetupControlSnapshot, SetupConsole } from "./Setup";
@@ -168,6 +168,45 @@ describe("SetupConsole", () => {
       component: "music",
       existingModelPaths: expect.objectContaining({ [musicId]: existingPath }),
     })));
+  });
+
+  it("offers the larger Strata assistant at the recommended size and sends the chosen size", async () => {
+    render(<SetupConsole snapshot={demoSnapshot} onChanged={vi.fn()} onError={vi.fn()} />);
+    const panel = screen.getByRole("region", { name: "Add a 125B assistant that fits this PC" });
+    expect(within(panel).getByText(/every expert in system RAM/)).toBeInTheDocument();
+    const card = screen.getByRole("heading", { name: "Qwen3.8-Flash-Next 125B via Strata" }).closest("article")!;
+    const sizes = within(card).getByRole("group", { name: "Qwen3.8-Flash-Next size" });
+    expect(within(sizes).getByRole("button", { name: /IQ3_S · recommended/ })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Install IQ3_S" }));
+    await waitFor(() => expect(setupApi.install).toHaveBeenCalledWith(expect.objectContaining({
+      component: "strata",
+      strataSize: "IQ3_S",
+    })));
+
+    fireEvent.click(within(sizes).getByRole("button", { name: /IQ2_XS/ }));
+    fireEvent.click(within(card).getByRole("button", { name: "Install IQ2_XS" }));
+    await waitFor(() => expect(setupApi.install).toHaveBeenLastCalledWith(expect.objectContaining({
+      component: "strata",
+      strataSize: "IQ2_XS",
+    })));
+  });
+
+  it("keeps Strata unavailable when this PC reports too little RAM", () => {
+    const small = {
+      ...demoSnapshot,
+      setup: {
+        ...demoSnapshot.setup,
+        systemMemoryBytes: 32 * 1024 ** 3,
+        strataChoices: demoSnapshot.setup.strataChoices.map((choice) => ({ ...choice, fits: false, recommended: false })),
+      },
+    };
+    render(<SetupConsole snapshot={small} onChanged={vi.fn()} onError={vi.fn()} />);
+    expect(screen.queryByRole("region", { name: "Add a 125B assistant that fits this PC" })).not.toBeInTheDocument();
+    const card = screen.getByRole("heading", { name: "Qwen3.8-Flash-Next 125B via Strata" }).closest("article")!;
+    expect(within(card).getByText(/at least a 48 GB PC/)).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: /^IQ3_S/ })).toBeDisabled();
+    expect(within(card).getByRole("button", { name: "Install IQ3_S" })).toBeDisabled();
   });
 
   it("merges downloader completion into the latest setup snapshot", () => {

@@ -910,6 +910,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
               <strong>{model.name}</strong>
               <small>
                 {model.source} · {model.quantization ?? "GGUF"}
+                {model.fixedContextWindow ? ` · ${Math.round(model.fixedContextWindow / 1024)}K fixed context` : ""}
                 {model.supportsVision ? " · vision" : ""}
                 {model.supportsAudio ? " · audio" : ""}
               </small>

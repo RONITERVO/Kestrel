@@ -19,7 +19,7 @@
 .setup-simple-panel h2 { margin: 2px 0 4px; font-size: var(--text-xl); }
 .setup-simple-panel p { color: var(--ink-2); font-family: var(--font-read); font-size: var(--text-sm); line-height: 1.45; }
 .setup-simple-panel small { display: block; margin-top: 4px; color: var(--ink-3); font-family: var(--font-read); font-size: var(--text-xs); line-height: 1.4; }
-.setup-production-panel.ready { border-left-color: var(--ok); }
+.setup-production-panel.ready, .setup-strata-panel.ready { border-left-color: var(--ok); }
 .setup-speed { display: grid; gap: 3px; }
 .setup-speed label { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); }
 .setup-speed input { width: 82px; text-align: right; }
@@ -102,6 +102,8 @@
 .wikipedia-choice button strong { font-weight: 400; }
 .wikipedia-choice button span { color: var(--ink-3); font-size: var(--text-xs); }
 .wikipedia-choice button.active { border-color: var(--act-ink); background: var(--act-wash); }
+.strata-choice button:disabled { opacity: .5; cursor: not-allowed; }
+.setup-strata-note { color: var(--ink-3); font-size: var(--text-xs); }
 .setup-existing-model { margin-top: 4px; display: grid; gap: 5px; padding: 8px 10px; border: 1px dashed var(--rule-strong); border-radius: var(--radius-sketch); }
 .setup-existing-model strong { font-weight: 400; font-size: var(--text-sm); }
 .setup-existing-model > span { color: var(--ink-2); font-family: var(--font-read); font-size: var(--text-xs); line-height: 1.45; }

@@ -1,4 +1,5 @@
 use crate::kiwix::KiwixClient;
+use crate::model::ModelEngine;
 use crate::models::{
     Finding, ResearchDraft, ResearchProgress, ResearchReport, ResearchSection, ResearchSettings,
     RunResearchRequest, Source, Term, TimelineItem,
@@ -238,8 +239,8 @@ impl ResearchHarness {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let mut plan: ResearchPlan = serde_json::from_str(&content)
-                .unwrap_or_else(|_| fallback_plan(query, settings.research_lanes));
+            let mut plan: ResearchPlan = crate::structured_output::parse(&content)
+                .unwrap_or_else(|| fallback_plan(query, settings.research_lanes));
             plan.lanes.truncate(settings.research_lanes as usize);
             emit(
                 app,
@@ -692,7 +693,13 @@ impl ResearchHarness {
         tools: Option<&Value>,
         options: CompletionOptions,
     ) -> Result<Value, ResearchError> {
-        let request = completion_request(&connection.model_id, messages, tools, options);
+        let request = completion_request(
+            &connection.model_id,
+            connection.engine,
+            messages,
+            tools,
+            options,
+        );
         let response = authorized(
             self.http
                 .post(format!("{}/chat/completions", connection.endpoint)),
@@ -724,6 +731,7 @@ impl ResearchHarness {
 
 fn completion_request(
     model_id: &str,
+    engine: ModelEngine,
     messages: &[Value],
     tools: Option<&Value>,
     options: CompletionOptions,
@@ -749,7 +757,7 @@ fn completion_request(
         request["parallel_tool_calls"] = json!(options.parallel_tool_calls);
     }
     if let Some(format) = options.response_format {
-        request["response_format"] = format;
+        crate::structured_output::apply(&mut request, format, engine);
     }
     request
 }
@@ -955,7 +963,13 @@ fn parse_research_draft(content: &str) -> Result<ResearchDraft, String> {
         .strip_suffix("```")
         .unwrap_or(without_prefix)
         .trim();
-    let value: Value = serde_json::from_str(trimmed).map_err(|error| error.to_string())?;
+    let value: Value = serde_json::from_str(trimmed)
+        .or_else(|error| {
+            crate::structured_output::json_object(original)
+                .and_then(|object| serde_json::from_str(object).ok())
+                .ok_or(error)
+        })
+        .map_err(|error| error.to_string())?;
     if let Ok(draft) = serde_json::from_value::<ResearchDraft>(value.clone()) {
         return Ok(draft);
     }
@@ -1344,6 +1358,7 @@ mod tests {
     fn advanced_request_preserves_validated_high_capacity_values() {
         let request = completion_request(
             "bonsai-27b",
+            ModelEngine::LlamaCpp,
             &[json!({"role":"user","content":"test"})],
             Some(&tool_schema(true, 65_536)),
             CompletionOptions {
@@ -1367,6 +1382,7 @@ mod tests {
     fn evidence_requests_force_the_required_archive_function() {
         let request = completion_request(
             "local-model",
+            ModelEngine::LlamaCpp,
             &[json!({"role":"user","content":"Where are jungles?"})],
             Some(&tool_schema(false, 40_000)),
             CompletionOptions {
@@ -1507,7 +1523,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a tool-capable local model on 127.0.0.1:8080, Kiwix on 127.0.0.1:8085, and KESTREL_LIVE_WIKIPEDIA_BOOK"]
+    #[ignore = "requires a tool-capable local model on 127.0.0.1:8080, Kiwix on 127.0.0.1:8085, and KESTREL_LIVE_WIKIPEDIA_BOOK; set KESTREL_LIVE_ENGINE=strata for a Strata server"]
     async fn live_simple_question_forces_search_and_inspects_evidence() {
         let directory = tempfile::tempdir().unwrap();
         let store = ResearchStore::open(directory.path().to_path_buf()).unwrap();
@@ -1543,12 +1559,19 @@ mod tests {
         assert!(!report.answer.trim().is_empty());
     }
 
+    /// `KESTREL_LIVE_ENGINE=strata` runs the same acceptance against Strata's own server on
+    /// port 8080, where schemas travel in the prompt instead of `response_format`.
     fn live_connection() -> ModelConnection {
+        let engine = match std::env::var("KESTREL_LIVE_ENGINE").as_deref() {
+            Ok("strata") => ModelEngine::Strata,
+            _ => ModelEngine::LlamaCpp,
+        };
         ModelConnection {
             endpoint: "http://127.0.0.1:8080/v1".into(),
             api_key: None,
             model_id: "bonsai-27b".into(),
             model_label: MODEL_LABEL.into(),
+            engine,
         }
     }
 }

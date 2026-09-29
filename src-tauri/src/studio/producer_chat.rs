@@ -143,10 +143,9 @@ impl MovieStudioChatJob {
             "stream_options": {"include_usage": true}
         });
         if request.kind == MovieStudioConversationKind::Scenes {
-            body["response_format"] = scene_response_schema();
+            let mut format = scene_response_schema();
             if let Some(batch) = batch {
-                let operations = &mut body["response_format"]["json_schema"]["schema"]
-                    ["properties"]["operations"];
+                let operations = &mut format["json_schema"]["schema"]["properties"]["operations"];
                 operations["minItems"] = json!(1);
                 operations["maxItems"] = json!(1);
                 operations["items"]["properties"]["action"]["enum"] = json!(["add"]);
@@ -156,6 +155,7 @@ impl MovieStudioChatJob {
                 operations["items"]["properties"]["scene"]["anyOf"][0]["properties"]
                     ["durationSeconds"] = json!({"type":"number", "minimum":batch.scene_seconds, "maximum":batch.scene_seconds});
             }
+            crate::structured_output::apply(&mut body, format, lease.connection.engine);
         }
         if thinking_level.is_off() || project.settings.thinking_budget == 0 {
             body["thinking_budget_tokens"] = json!(0);

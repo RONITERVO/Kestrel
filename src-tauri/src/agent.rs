@@ -45,7 +45,10 @@ pub async fn run(
     cancel: CancellationToken,
     continuation: Option<String>,
 ) -> Result<(), String> {
-    let settings = settings.for_model(&request.model_id);
+    let mut settings = settings.for_model(&request.model_id);
+    if let Some(model) = models.iter().find(|model| model.id == request.model_id) {
+        settings.context_window = model.serving_context(settings.context_window);
+    }
     let access = request.access;
     if access == Access::Full && !settings.allow_full_access_agent {
         return Err("Full computer access is locked in the runtime profile.".into());

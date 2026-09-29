@@ -47,7 +47,14 @@ zip = { version = "6", default-features = false, features = ["deflate"] }
 kestrel-app-core = { path = "../crates/app-core" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Power"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Power",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 ts-rs = { version = "12.0.1", features = ["no-serde-warnings", "serde-json-impl"] }

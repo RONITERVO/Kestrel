@@ -28,7 +28,7 @@ afterEach(() => {
 const model = {
   id: "bonsai-local", name: "Ternary Bonsai 27B", path: "bonsai.gguf", source: "test",
   bytes: 1, chatTemplate: true, supportsVision: false, supportsAudio: false,
-  recommendation: "Local collaborator",
+  recommendation: "Local collaborator", engine: "llamaCpp",
 } satisfies ModelInfo;
 
 const settings = {

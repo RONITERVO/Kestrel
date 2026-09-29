@@ -1,5 +1,5 @@
 import {
-  Check, ChevronDown, CircleStop, Download, FileMusic, Film, FolderOpen, HardDrive, Headphones, Image as ImageIcon,
+  BrainCircuit, Check, ChevronDown, CircleStop, Download, FileMusic, Film, FolderOpen, HardDrive, Headphones, Image as ImageIcon,
   Library, LoaderCircle, MessageSquare, Mic2, RefreshCw, Settings2, ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
@@ -16,6 +16,11 @@ import "./setup.css";
 
 const WHISPER_MODEL_ID = "speech:large-v3-turbo.pt";
 const MUSCRIPTOR_MODEL_ID = "muscriptor:model.safetensors";
+// Presentation only: which sizes fit this PC and what they download come from Rust.
+const STRATA_SIZE_NOTES: Record<string, string> = {
+  IQ3_S: "matches the full model",
+  IQ2_XS: "Strata’s recommended size, faster",
+};
 
 export function SetupConsole({ snapshot, onChanged, onError }: {
   snapshot: AppSnapshot;
@@ -24,6 +29,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
 }) {
   const [speed, setSpeed] = useState(50);
   const [edition, setEdition] = useState<"compact" | "complete">("compact");
+  const [strataSize, setStrataSize] = useState(() => recommendedStrataSize(snapshot));
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState<SetupProgress | null>(null);
   const [advanced, setAdvanced] = useState(false);
@@ -42,6 +48,10 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const advancedRef = useRef<HTMLElement>(null);
 
   useEffect(() => setLocations(fromSnapshot(snapshot)), [snapshot.settings]);
+  // Keep the producer's size while it still fits; otherwise fall back to the recommended one.
+  useEffect(() => setStrataSize((current) => snapshot.setup.strataChoices.some((choice) => choice.size === current && choice.fits)
+    ? current
+    : recommendedStrataSize(snapshot)), [snapshot.setup.strataChoices]);
   useEffect(() => {
     const dialog = ideogramLicenseDialogRef.current;
     if (!ideogramLicenseOpen || !dialog || dialog.open) return;
@@ -69,9 +79,16 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const productionIds = ["media", "studio", "music", "speech"];
   const productionReady = productionIds.every((id) => snapshot.setup.components.find((item) => item.id === id)?.status === "ready");
   const productionBytes = snapshot.setup.components.filter((item) => productionIds.includes(item.id) && item.status !== "ready").reduce((total, item) => total + item.downloadBytes, 0);
+  const strataComponent = snapshot.setup.components.find((item) => item.id === "strata");
+  const strataChoice = snapshot.setup.strataChoices.find((choice) => choice.size === strataSize);
+  const strataReady = strataComponent?.status === "ready";
+  const strataFits = snapshot.setup.strataChoices.some((choice) => choice.fits);
+  const strataOffered = !!strataComponent && (strataComponent.status !== "missing" || (!!snapshot.setup.gpuName && strataFits));
   const components = useMemo(() => snapshot.setup.components.map((item) => item.id === "wikipedia" && edition === "complete"
     ? { ...item, downloadBytes: 52_709_000_000, detail: item.status === "ready" ? item.detail : "Complete English Wikipedia text without images (about 49.1 GB)." }
-    : item), [snapshot.setup.components, edition]);
+    : item.id === "strata" && item.status !== "ready" && strataChoice
+      ? { ...item, downloadBytes: strataChoice.downloadBytes }
+      : item), [snapshot.setup.components, edition, strataChoice]);
 
   const saveLocations = async (): Promise<AppSnapshot> => {
     const enginePath = locations.enginePath.trim();
@@ -97,6 +114,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
         muscriptorCheckpointPath: component === "muscriptor" ? existingModelPaths[MUSCRIPTOR_MODEL_ID]?.trim() ?? "" : "",
         acceptMuscriptorNonCommercialLicense: acceptedMuscriptorLicense,
         existingModelPaths,
+        strataSize,
       });
       onChanged(next);
       setLocations(fromSnapshot(next));
@@ -126,6 +144,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
           muscriptorCheckpointPath: "",
           acceptMuscriptorNonCommercialLicense: false,
           existingModelPaths,
+          strataSize,
         });
         onChanged(next);
       }
@@ -170,6 +189,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
           muscriptorCheckpointPath: "",
           acceptMuscriptorNonCommercialLicense: false,
           existingModelPaths,
+          strataSize,
         });
         onChanged(next);
       }
@@ -188,7 +208,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     try { await openComfyUi(component); } catch (error) { onError(String(error)); } finally { setBusy(null); }
   };
 
-  const chooseFolder = async (field: "installRoot" | "bonsaiRoot" | "comfyRoot") => {
+  const chooseFolder = async (field: "installRoot" | "bonsaiRoot" | "comfyRoot" | "strataRoot") => {
     try {
       const value = await pickSetupFolder();
       if (value) setLocations((current) => ({ ...current, [field]: value }));
@@ -263,11 +283,16 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
           {!productionReady && <div className="setup-speed"><strong>{productionBytes ? `${formatBytes(productionBytes)} remaining` : "Models already present"}</strong><small>{productionBytes ? `Roughly ${formatTime(productionBytes, speed)} at ${speed} Mbps, plus extraction and verification.` : "Setup will verify them and add only missing support files."}</small></div>}
           <button className={productionReady ? "quiet-button" : "primary-button setup-main-button"} disabled={!!busy || productionReady} onClick={() => void installProductionSuite()}>{busy === "production" ? <LoaderCircle className="spin" /> : productionReady ? <Check /> : <Download />} {productionReady ? "Production ready" : "Set up production suite"}</button>
         </section>
+        {strataOffered && <section className={`setup-simple-panel setup-strata-panel ${strataReady ? "ready" : ""}`} aria-labelledby="setup-strata-title">
+          <div><span className="eyebrow">Larger local assistant</span><h2 id="setup-strata-title">{strataReady ? "Qwen3.8-Flash-Next is ready." : "Add a 125B assistant that fits this PC"}</h2><p>Strata runs Qwen3.8-Flash-Next, a 125-billion-parameter mixture-of-experts model, by keeping every expert in system RAM and the busiest ones on your graphics card. It joins your local models for chat, research, and computer tasks; the included model stays available.</p><small>While it is loaded it uses most of this PC’s memory. Movie, music, and image generation unload it first, and loading it again takes a minute or more. Context is fixed at 64K tokens by the install.</small></div>
+          {!strataReady && strataChoice && <div className="setup-speed"><strong>{strataChoice.downloadBytes ? `${formatBytes(strataChoice.downloadBytes)} for ${strataSize}` : `${strataSize} files already present`}</strong><small>{strataChoice.downloadBytes ? `Roughly ${formatTime(strataChoice.downloadBytes, speed)} at ${speed} Mbps, plus Strata’s own preparation.` : "Setup will verify them and let Strata prepare its pack."}</small></div>}
+          <button className={strataReady ? "quiet-button" : "primary-button setup-main-button"} disabled={!!busy || strataReady || !strataChoice?.fits} onClick={() => void install("strata")}>{busy === "strata" ? <LoaderCircle className="spin" /> : strataReady ? <Check /> : <BrainCircuit />} {strataReady ? "Assistant ready" : strataComponent?.status === "partial" ? `Resume ${strataSize}` : `Install ${strataSize}`}</button>
+        </section>}
         <button className="setup-advanced-toggle" aria-expanded={advanced} onClick={() => setAdvanced((value) => !value)}><Settings2 /> Use existing files or choose every location <ChevronDown className={advanced ? "open" : ""} /></button>
         {advanced && <section className="setup-advanced-panel" ref={advancedRef}>
           <div className="setup-advanced-heading"><div><span className="eyebrow">Advanced and portable</span><h2>Use files already on this PC</h2><p>Nothing is tied to a drive letter. These saved locations remain editable in the installed app.</p></div><TriangleAlert /></div>
           <section className="setup-model-reuse" aria-labelledby="setup-model-reuse-title">
-            <div className="setup-model-reuse-heading"><div><h3 id="setup-model-reuse-title">Reuse every supported model you already have</h3><p>Choose each AI folder once. Kestrel finds known Bonsai, H3, Music 3, Ideogram 4, Chatterbox, Whisper, and MuScriptor files recursively. Scan more than one folder when your library spans drives.</p></div><button className="quiet-button" disabled={!!busy || scanningModels} onClick={() => void findExistingModels()}>{scanningModels ? <LoaderCircle className="spin" /> : <FolderOpen />} Find models in a folder</button></div>
+            <div className="setup-model-reuse-heading"><div><h3 id="setup-model-reuse-title">Reuse every supported model you already have</h3><p>Choose each AI folder once. Kestrel finds known Bonsai, Qwen3.8-Flash-Next, H3, Music 3, Ideogram 4, Chatterbox, Whisper, and MuScriptor files recursively. Scan more than one folder when your library spans drives.</p></div><button className="quiet-button" disabled={!!busy || scanningModels} onClick={() => void findExistingModels()}>{scanningModels ? <LoaderCircle className="spin" /> : <FolderOpen />} Find models in a folder</button></div>
             {(modelScanRoot || modelScanMessage) && <div className="setup-model-scan-status" role="status" aria-live="polite"><strong>{modelScanRoot ? `Last scanned: ${modelScanRoot}` : "Existing model search"}</strong><span>{modelScanMessage}</span></div>}
             <div className="setup-model-assets">
               {(snapshot.setup.modelAssets ?? []).map((asset) => {
@@ -287,6 +312,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
           <PathField label="llama-server.exe" value={locations.enginePath} onChange={(value) => setLocations((current) => ({ ...current, enginePath: value }))} onBrowse={() => void chooseFile("enginePath", "engine")} />
           <PathField label="Wikipedia .zim" value={locations.wikipediaZimPath} onChange={(value) => setLocations((current) => ({ ...current, wikipediaZimPath: value }))} onBrowse={() => void chooseFile("wikipediaZimPath", "zim")} />
           <PathField label="kiwix-serve.exe" value={locations.kiwixServerPath} onChange={(value) => setLocations((current) => ({ ...current, kiwixServerPath: value }))} onBrowse={() => void chooseFile("kiwixServerPath", "engine")} />
+          <PathField label="Strata folder" value={locations.strataRoot} onChange={(value) => setLocations((current) => ({ ...current, strataRoot: value }))} onBrowse={() => void chooseFolder("strataRoot")} />
           <PathField label="ComfyUI folder" value={locations.comfyRoot} onChange={(value) => setLocations((current) => ({ ...current, comfyRoot: value }))} onBrowse={() => void chooseFolder("comfyRoot")} />
           <PathField label="ffmpeg.exe" value={locations.ffmpegPath} onChange={(value) => setLocations((current) => ({ ...current, ffmpegPath: value }))} onBrowse={() => void chooseFile("ffmpegPath", "ffmpeg")} />
           <PathField label="ffprobe.exe" value={locations.ffprobePath} onChange={(value) => setLocations((current) => ({ ...current, ffprobePath: value }))} onBrowse={() => void chooseFile("ffprobePath", "ffprobe")} />
@@ -311,15 +337,18 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
                 : selectedExisting ? "Verify & use existing"
                 : component.id === "speech" ? component.status === "partial" ? "Resume Whisper + voice" : "Install Whisper + voice"
                   : component.id === "muscriptor" ? component.status === "partial" ? "Resume MuScriptor setup" : "Prepare MuScriptor"
+                  : component.id === "strata" ? component.status === "partial" ? `Resume ${strataSize}` : `Install ${strataSize}`
                   : component.status === "partial" ? "Resume" : "Install";
             return <article className={`setup-component ${component.status}`} key={component.id}>
-            <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : component.id === "music" ? <Headphones /> : component.id === "image" ? <ImageIcon /> : component.id === "speech" ? <Mic2 /> : component.id === "muscriptor" ? <FileMusic /> : <Settings2 />}</div>
+            <div className="setup-component-icon">{component.id === "assistant" ? <MessageSquare /> : component.id === "wikipedia" ? <Library /> : component.id === "studio" ? <Film /> : component.id === "music" ? <Headphones /> : component.id === "image" ? <ImageIcon /> : component.id === "speech" ? <Mic2 /> : component.id === "muscriptor" ? <FileMusic /> : component.id === "strata" ? <BrainCircuit /> : <Settings2 />}</div>
             <div className="setup-component-copy"><div className="setup-component-title"><h2>{component.label}</h2><span className={`setup-state ${component.status} ${component.optional ? "optional" : "required"}`}>{component.status === "ready" ? <><Check /> Ready</> : component.status === "partial" ? "Resume available" : component.optional ? "Optional" : "Needed"}</span></div><p>{component.detail}</p><small>{component.status === "ready" ? component.path : component.downloadBytes ? `${formatBytes(component.downloadBytes)} download · about ${formatTime(component.downloadBytes, speed)} at ${speed} Mbps` : "Model files recognized · only verification or small setup files remain"}</small>
               {component.id === "wikipedia" && component.status !== "ready" && <div className="wikipedia-choice"><button className={edition === "compact" ? "active" : ""} onClick={() => setEdition("compact")}><strong>Compact</strong><span>11.7 GB · article summaries</span></button><button className={edition === "complete" ? "active" : ""} onClick={() => setEdition("complete")}><strong>Complete text</strong><span>49.1 GB · full articles</span></button></div>}
+              {component.id === "strata" && component.status !== "ready" && <div className="wikipedia-choice strata-choice" role="group" aria-label="Qwen3.8-Flash-Next size">{snapshot.setup.strataChoices.map((choice) => <button key={choice.size} className={strataSize === choice.size ? "active" : ""} aria-pressed={strataSize === choice.size} disabled={!choice.fits} onClick={() => setStrataSize(choice.size)}><strong>{choice.size}{choice.recommended ? " · recommended" : ""}</strong><span>{STRATA_SIZE_NOTES[choice.size] ?? "Qwen3.8-Flash-Next"} · {formatBytes(choice.downloadBytes)} · {Math.round(choice.memoryBytes / 1024 ** 3)} GB PC</span></button>)}</div>}
+              {component.id === "strata" && component.status !== "ready" && !strataFits && <small className="setup-strata-note">This PC reports {formatBytes(snapshot.setup.systemMemoryBytes)} of RAM. Strata keeps every expert in RAM, so it needs at least a 48 GB PC.</small>}
               {component.id === "speech" && component.status !== "ready" && <div className="setup-existing-model"><strong>Whisper is included in this Install button.</strong><span>Already have the official OpenAI-format <code>large-v3-turbo.pt</code>? Choose it here and Kestrel will verify and reuse it instead of downloading another 1.6 GB copy.</span><div className="setup-existing-model-field"><input aria-label="Existing Whisper large-v3-turbo checkpoint" value={existingModelPaths[WHISPER_MODEL_ID] ?? ""} onChange={(event) => setExistingModelPaths((current) => ({ ...current, [WHISPER_MODEL_ID]: event.target.value }))} placeholder="Optional existing large-v3-turbo.pt" /><button type="button" disabled={!!busy} onClick={() => void chooseModelFile(WHISPER_MODEL_ID)}><FolderOpen /> Choose</button></div></div>}
               {component.id === "muscriptor" && component.status !== "ready" && <div className="setup-existing-model muscriptor"><strong>One gated model download, then Kestrel handles the technical setup.</strong><span>1. <a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Open the official access page</a>, accept its separate non-commercial terms, and download the 5.1 GiB <code>model.safetensors</code>. 2. Wait until the browser download is complete. 3. Choose that file below. Kestrel then prepares roughly 3.3 GiB of isolated Windows CUDA dependencies and proves they work offline.</span><div className="setup-existing-model-field"><input aria-label="Existing MuScriptor large checkpoint" value={existingModelPaths[MUSCRIPTOR_MODEL_ID] ?? ""} onChange={(event) => setExistingModelPaths((current) => ({ ...current, [MUSCRIPTOR_MODEL_ID]: event.target.value }))} placeholder="Completed MuScriptor large model.safetensors" /><button type="button" disabled={!!busy} onClick={() => void chooseModelFile(MUSCRIPTOR_MODEL_ID)}><FolderOpen /> Choose</button></div></div>}
             </div>
-            <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !sharedComfy)} onClick={() => component.status === "ready" && sharedComfy ? void openStudio(component.id as "studio" | "music" | "image") : void install(component.id)}>{busy === component.id || opening ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : component.status === "ready" && component.id === "image" ? <ImageIcon /> : <Download />}{actionLabel}</button>
+            <button className={component.status === "ready" ? "quiet-button" : "primary-button"} disabled={!!busy || (component.status === "ready" && !sharedComfy) || (component.id === "strata" && component.status !== "ready" && !strataChoice?.fits)} onClick={() => component.status === "ready" && sharedComfy ? void openStudio(component.id as "studio" | "music" | "image") : void install(component.id)}>{busy === component.id || opening ? <LoaderCircle className="spin" /> : component.status === "partial" ? <RefreshCw /> : component.status === "ready" && component.id === "studio" ? <Film /> : component.status === "ready" && component.id === "music" ? <Headphones /> : component.status === "ready" && component.id === "image" ? <ImageIcon /> : <Download />}{actionLabel}</button>
           </article>})}
         </section>
         <section className="setup-model-library" aria-labelledby="setup-model-library-title">
@@ -364,7 +393,13 @@ function fromSnapshot(snapshot: AppSnapshot): SetupLocations {
     comfyRoot: snapshot.settings.comfyRoot,
     ffmpegPath: snapshot.settings.ffmpegPath,
     ffprobePath: snapshot.settings.ffprobePath,
+    strataRoot: snapshot.settings.strataRoot,
   };
+}
+
+function recommendedStrataSize(snapshot: AppSnapshot): string {
+  const choices = snapshot.setup.strataChoices;
+  return (choices.find((choice) => choice.recommended) ?? choices.find((choice) => choice.fits) ?? choices[0])?.size ?? "IQ3_S";
 }
 
 function formatBytes(bytes: number): string {

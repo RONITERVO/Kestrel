@@ -39,12 +39,35 @@ pub struct ContextAttachment {
     pub created_at: String,
 }
 
+/// The local program that serves a catalog model. Every engine runs behind the same single
+/// inference gate; the engine only changes how the model process is launched and addressed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum ModelEngine {
+    /// One GGUF served by a managed `llama-server.exe`.
+    #[default]
+    LlamaCpp,
+    /// A Strata install: its Python server drives `strata.exe`, which keeps the model's experts
+    /// in system RAM and the most-used ones on the GPU. The install fixes the context window.
+    Strata,
+}
+
+impl ModelEngine {
+    /// Strata ignores OpenAI `response_format`, so Kestrel must state the JSON schema in the
+    /// prompt and rely on native validation of the reply instead of grammar-constrained decoding.
+    pub fn enforces_json_schema(self) -> bool {
+        matches!(self, Self::LlamaCpp)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct ModelInfo {
     pub id: String,
     pub name: String,
+    /// The GGUF for llama.cpp models; the install's `strata-*.json` run configuration for Strata.
     pub path: String,
     pub source: String,
     pub bytes: u64,
@@ -62,6 +85,21 @@ pub struct ModelInfo {
     #[serde(default)]
     pub supports_audio: bool,
     pub recommendation: String,
+    #[serde(default)]
+    pub engine: ModelEngine,
+    /// Context the engine was installed with. Kestrel never asks such an engine for another
+    /// window, and every prompt budget for the model is capped to it.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub fixed_context_window: Option<u32>,
+}
+
+impl ModelInfo {
+    /// The context a request to this model may use, given the window the settings asked for.
+    pub fn serving_context(&self, requested: u32) -> u32 {
+        self.fixed_context_window
+            .map_or(requested, |fixed| requested.min(fixed))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -100,8 +138,33 @@ pub struct SetupSnapshot {
     #[ts(optional = nullable)]
     pub gpu_name: Option<String>,
     pub gpu_memory_bytes: u64,
+    /// Installed system RAM. Strata keeps every expert of its model in RAM, so this decides
+    /// which Qwen3.8-Flash-Next size Setup can offer.
+    #[serde(default)]
+    pub system_memory_bytes: u64,
+    /// Qwen3.8-Flash-Next sizes Setup can install through Strata, with what each still needs.
+    #[serde(default)]
+    pub strata_choices: Vec<SetupStrataChoice>,
     pub components: Vec<SetupComponent>,
     pub model_assets: Vec<SetupModelAsset>,
+}
+
+/// One Qwen3.8-Flash-Next size that Setup can install through Strata on this PC.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetupStrataChoice {
+    /// `IQ3_S` or `IQ2_XS`, sent back as `SetupInstallRequest::strata_size`.
+    pub size: String,
+    /// Bytes still to download for this size, including Strata itself when it is missing.
+    pub download_bytes: u64,
+    /// Installed RAM this size is made for (a 64 GB or 48 GB PC), because Strata keeps every
+    /// expert in RAM. A PC that reports slightly less, as Windows often does, still fits.
+    pub memory_bytes: u64,
+    /// False when this PC reports clearly less RAM than the size needs; Setup refuses it then.
+    pub fits: bool,
+    /// The best size that fits this PC.
+    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
@@ -116,6 +179,8 @@ pub struct SetupLocations {
     pub comfy_root: String,
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
+    #[serde(default)]
+    pub strata_root: String,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
@@ -136,6 +201,13 @@ pub struct SetupInstallRequest {
     pub accept_muscriptor_non_commercial_license: bool,
     #[serde(default)]
     pub existing_model_paths: BTreeMap<String, String>,
+    /// Qwen3.8-Flash-Next size for the Strata component: `IQ3_S` or `IQ2_XS`.
+    #[serde(default = "default_strata_size")]
+    pub strata_size: String,
+}
+
+fn default_strata_size() -> String {
+    "IQ3_S".into()
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -712,6 +784,9 @@ pub struct ResearchSettings {
     pub comfy_root: String,
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
+    /// Strata folder Setup installed or the producer chose. Other Strata folders that Strata
+    /// itself records for this Windows user are discovered too; this one is where Setup installs.
+    pub strata_root: String,
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub research_lanes: u32,
@@ -736,6 +811,7 @@ impl Default for ResearchSettings {
         let comfy_root = install_root
             .join("ComfyUI_windows_portable")
             .join("ComfyUI");
+        let strata_root = install_root.join("Strata");
         let wikipedia_book = wikipedia_zim
             .file_stem()
             .and_then(|value| value.to_str())
@@ -757,6 +833,7 @@ impl Default for ResearchSettings {
             comfy_root: comfy_root.to_string_lossy().into_owned(),
             ffmpeg_path: String::new(),
             ffprobe_path: String::new(),
+            strata_root: strata_root.to_string_lossy().into_owned(),
             context_window: 98_304,
             max_output_tokens: 32_768,
             research_lanes: 6,
