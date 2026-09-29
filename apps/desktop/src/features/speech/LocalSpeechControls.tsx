@@ -452,7 +452,9 @@ export function SpeechPlaybackButton({
               : narrationExport.state.stage === "saving"
                 ? "Choose where to save; Kestrel then joins the passages…"
                 : narrationExport.state.stage === "saved"
-                  ? describeExportedFiles(narrationExport.state.files)
+                  ? `${describeExportedFiles(narrationExport.state.files)}${narrationExport.state.untimed
+                    ? ` Whisper could not time ${narrationExport.state.untimed} passage${narrationExport.state.untimed === 1 ? "" : "s"}, so ${narrationExport.state.untimed === 1 ? "its" : "their"} words are spaced evenly.`
+                    : ""}`
                   : narrationExport.state.stage === "error"
                     ? narrationExport.state.message
                     : `${passages.length} passage${passages.length === 1 ? "" : "s"}, saved as one M4A audio file.`}

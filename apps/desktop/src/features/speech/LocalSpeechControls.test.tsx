@@ -301,6 +301,25 @@ Here is the performance overview:
     expect(await within(panel).findByText("Saved Story.m4a with its word timings (LRC, WebVTT, JSON) and a word-by-word player page in C:\\Audiobook.")).toBeInTheDocument();
   });
 
+  it("keeps exporting when Whisper cannot time one passage and says so", async () => {
+    speechApi.synthesize.mockImplementation(async (request: { passageId: string; jobId: string; modelId: string }) => ({
+      jobId: request.jobId, passageId: request.passageId, relativePath: `generated/chat/chat-1/${request.passageId}.opus`,
+      modelId: request.modelId, voiceProfileId: "voice-default", cacheHit: true, segments: [], words: [],
+    }));
+    speechApi.align.mockReset().mockRejectedValue(new Error("Whisper found no words to time in this passage"));
+    speechApi.exportNarration.mockReset().mockResolvedValue({ files: ["C:\Audiobook\Story.m4a", "C:\Audiobook\Story.html"] });
+    render(<LocalSpeechProvider><SpeechPlaybackButton sourceKind="chat" sourceId="chat-1" passageId="answer" text="First sentence." exportTitle="Story" /></LocalSpeechProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Export" }));
+    const panel = screen.getByRole("group", { name: "Export narration" });
+    await waitFor(() => expect(within(panel).getByRole("checkbox", { name: /Check for voice mistakes/ })).toBeEnabled());
+    fireEvent.click(within(panel).getByRole("button", { name: "Save audio file" }));
+
+    await waitFor(() => expect(speechApi.exportNarration).toHaveBeenCalledWith(expect.objectContaining({ wordTimings: true })));
+    expect(speechApi.align).toHaveBeenCalledWith(expect.objectContaining({ jobId: expect.stringContaining("export-align") }));
+    expect(await within(panel).findByText(/Whisper could not time 1 passage, so its words are spaced evenly\./)).toBeInTheDocument();
+  });
+
   it("lets a producer cast an individual response without changing the app-wide default", async () => {
     speechApi.snapshot.mockResolvedValueOnce({
       ...ready,

@@ -8,7 +8,8 @@ export type NarrationExportState =
   | { stage: "idle" }
   | { stage: "preparing"; done: number; total: number }
   | { stage: "saving" }
-  | { stage: "saved"; files: string[] }
+  /** `untimed` passages had no Whisper timings, so their words are spaced evenly. */
+  | { stage: "saved"; files: string[]; untimed: number }
   | { stage: "error"; message: string };
 
 export interface NarrationExportOptions {
@@ -42,6 +43,7 @@ export function useNarrationExport({ sourceKind, sourceId, passages, title }: {
   ) => {
     stoppedRef.current = false;
     const clips: NarrationExportPassage[] = [];
+    let untimed = 0;
     try {
       setState({ stage: "preparing", done: 0, total: passages.length });
       const { voice, profile } = await readyVoice();
@@ -61,10 +63,11 @@ export function useNarrationExport({ sourceKind, sourceId, passages, title }: {
           voiceProfileId: profile.id,
           checkMistakes,
         });
-        if (wordTimings && !clip.words.length && alignmentModel) {
+        if (wordTimings && !clip.words.length) {
           const alignJob = speechJobId("export-align");
           jobRef.current = alignJob;
-          await alignLocalSpeech({
+          // A passage Whisper cannot time still belongs in the export; its words are spaced evenly.
+          const timed = alignmentModel && await alignLocalSpeech({
             jobId: alignJob,
             sourceKind,
             sourceId,
@@ -74,7 +77,11 @@ export function useNarrationExport({ sourceKind, sourceId, passages, title }: {
             voiceModelId: voice.id,
             voiceProfileId: profile.id,
             alignmentModelId: alignmentModel.id,
+          }).then(() => true, (error: unknown) => {
+            if (stoppedRef.current) throw error;
+            return false;
           });
+          if (!timed) untimed += 1;
         }
         clips.push({ text: passage.text, relativePath: clip.relativePath });
       }
@@ -83,7 +90,7 @@ export function useNarrationExport({ sourceKind, sourceId, passages, title }: {
       const jobId = speechJobId("export-join");
       jobRef.current = jobId;
       const exported = await exportNarration({ jobId, title, passages: clips, wordTimings });
-      setState(exported ? { stage: "saved", files: exported.files } : { stage: "idle" });
+      setState(exported ? { stage: "saved", files: exported.files, untimed } : { stage: "idle" });
     } catch (error) {
       setState(stoppedRef.current ? { stage: "idle" } : { stage: "error", message: String(error) });
     } finally {

@@ -76,6 +76,9 @@ pub enum SpeechError {
     Invalid(String),
     #[error("Local speech is unavailable: {0}")]
     Unavailable(String),
+    /// Whisper listened but found no words it could time; the audio itself still plays.
+    #[error("Whisper found no words to time in this passage: {0}")]
+    Untimed(String),
     #[error("Local speech operation was stopped")]
     Cancelled,
 }
@@ -1044,6 +1047,34 @@ impl LocalSpeech {
         let result = self
             .execute_whisper_graph(&request.job_id, graph, context_mode, None, cancel)
             .await;
+        // Given the expected words as its prompt, Whisper sometimes discards audible speech (long
+        // runs of spelled-out numbers) and hears nothing. It then listens once more without the
+        // prompt, and the fuller hearing is kept.
+        let result = match result {
+            Ok(prompted)
+                if !transcription.prompt.is_empty()
+                    && heard_too_little(&prompted.words, &request.text) =>
+            {
+                let unprompted = SpeechTranscriptionRequest {
+                    prompt: String::new(),
+                    ..transcription.clone()
+                };
+                let graph = whisper_graph(
+                    &unprompted,
+                    &format!("kestrel_speech/{input_name}"),
+                    context_mode,
+                );
+                match self
+                    .execute_whisper_graph(&request.job_id, graph, context_mode, None, cancel)
+                    .await
+                {
+                    Ok(fresh) if fresh.words.len() > prompted.words.len() => Ok(fresh),
+                    Err(SpeechError::Cancelled) => Err(SpeechError::Cancelled),
+                    _ => Ok(prompted),
+                }
+            }
+            other => other,
+        };
         let _ = tokio::fs::remove_file(&input_path).await;
         let WhisperTranscriptionResult {
             segments, words, ..
@@ -1752,6 +1783,17 @@ fn check_alignment_request(
     }
 }
 
+/// Whether Whisper heard under half of a passage's words. Both sides count spoken words, so a
+/// hearing written with digits ("0.39") is not mistaken for a short one.
+fn heard_too_little(heard: &[SpeechTiming], spoken: &str) -> bool {
+    let expected = crate::speech_text::spoken_words(spoken).len();
+    let heard = heard
+        .iter()
+        .map(|word| crate::speech_text::spoken_words(&word.value).len())
+        .sum::<usize>();
+    heard == 0 || heard * 2 < expected
+}
+
 /// Whether the optional mistake check already ran on this audio.
 fn narration_checked(target: &Path) -> bool {
     read_receipt_recoverable(&sidecar_path(target))
@@ -1922,8 +1964,8 @@ fn write_synthesis_receipt(
     replace: bool,
 ) -> Result<(), SpeechError> {
     if !validate_timings(segments) || words.is_empty() || !validate_timings(words) {
-        return Err(SpeechError::Unavailable(
-            "ComfyUI Whisper returned no safe word alignment for this speech passage.".into(),
+        return Err(SpeechError::Untimed(
+            "it may be silent or too garbled to follow. The passage still plays; only its word-by-word timing is missing.".into(),
         ));
     }
     let receipt_path = sidecar_path(audio_path);
@@ -3679,6 +3721,30 @@ mod tests {
         let unterminated = clean_speech_text("Intro text\n```json\n{\"still_open\": true}");
         assert!(unterminated.contains("Intro text"));
         assert!(!unterminated.contains("```"));
+    }
+
+    #[test]
+    fn whisper_listens_again_only_when_it_heard_under_half_the_words() {
+        let heard = |words: &[&str]| {
+            words
+                .iter()
+                .enumerate()
+                .map(|(index, value)| SpeechTiming {
+                    value: (*value).into(),
+                    start: index as f64,
+                    end: index as f64 + 0.5,
+                })
+                .collect::<Vec<_>>()
+        };
+        let spoken =
+            "P sub impact equals one minus zero point three nine times zero point eight two";
+        assert!(heard_too_little(&[], spoken));
+        assert!(heard_too_little(&heard(&["P", "sub", "impact"]), spoken));
+        // Digits count as the words they stand for, so a complete hearing is not short.
+        assert!(!heard_too_little(
+            &heard(&["P", "sub", "impact", "equals", "1", "minus", "0.39", "times", "0.82"]),
+            spoken
+        ));
     }
 
     #[test]
