@@ -7,8 +7,8 @@
 //! repaired by guessing.
 
 use crate::model::ModelEngine;
-use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::{json, value::RawValue, Value};
 
 /// Attach a `{"type":"json_schema", ...}` response format in the form the engine honours.
 pub fn apply(request: &mut Value, format: Value, engine: ModelEngine) {
@@ -24,6 +24,62 @@ pub fn apply(request: &mut Value, format: Value, engine: ModelEngine) {
         request,
         &schema_instruction(&serde_json::to_string(&schema).unwrap_or_default()),
     );
+}
+
+/// A JSON schema whose property order is part of the requested format.
+///
+/// Kestrel's `serde_json` keeps object keys sorted, while llama.cpp builds its grammar in the
+/// order the properties arrive, so a `Value` schema would make the model write keys
+/// alphabetically. An ordered schema therefore stays literal JSON text and reaches the engine
+/// exactly as written.
+pub struct OrderedSchema {
+    pub name: &'static str,
+    pub text: &'static str,
+}
+
+/// A request ready to send, plus the same request as a `Value` for receipts. The receipt's
+/// `response_format` is the parsed schema, so only its key order differs from the wire bytes.
+pub struct PreparedRequest {
+    pub bytes: Vec<u8>,
+    pub receipt: Value,
+}
+
+/// Serialize a request that must follow an ordered schema, in the form the engine honours.
+pub fn prepare_ordered(
+    mut request: Value,
+    schema: &OrderedSchema,
+    engine: ModelEngine,
+) -> Result<PreparedRequest, serde_json::Error> {
+    if let Some(fields) = request.as_object_mut() {
+        fields.remove("response_format");
+    }
+    if !engine.enforces_json_schema() {
+        append_instruction(&mut request, &schema_instruction(schema.text));
+        return Ok(PreparedRequest {
+            bytes: serde_json::to_vec(&request)?,
+            receipt: request,
+        });
+    }
+    #[derive(Serialize)]
+    struct WithFormat<'a> {
+        #[serde(flatten)]
+        request: &'a Value,
+        response_format: &'a RawValue,
+    }
+    let format = RawValue::from_string(format!(
+        r#"{{"type":"json_schema","json_schema":{{"name":{},"strict":true,"schema":{}}}}}"#,
+        serde_json::to_string(schema.name)?,
+        schema.text
+    ))?;
+    let bytes = serde_json::to_vec(&WithFormat {
+        request: &request,
+        response_format: &format,
+    })?;
+    request["response_format"] = serde_json::from_str(format.get())?;
+    Ok(PreparedRequest {
+        bytes,
+        receipt: request,
+    })
 }
 
 fn schema_instruction(schema: &str) -> String {
@@ -112,6 +168,48 @@ mod tests {
         let messages = request["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");
+    }
+
+    const ORDERED: OrderedSchema = OrderedSchema {
+        name: "ordered",
+        text: r#"{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}},"required":["zeta","alpha"]}"#,
+    };
+
+    fn position(haystack: &str, needle: &str) -> usize {
+        haystack.find(needle).unwrap_or(usize::MAX)
+    }
+
+    #[test]
+    fn llama_cpp_receives_an_ordered_schema_exactly_as_written() {
+        let request = json!({"model":"m","messages":[{"role":"user","content":"Design."}],"response_format":{"stale":true}});
+        let prepared = prepare_ordered(request, &ORDERED, ModelEngine::LlamaCpp).unwrap();
+        let wire = String::from_utf8(prepared.bytes.clone()).unwrap();
+        assert!(
+            position(&wire, r#""zeta""#) < position(&wire, r#""alpha""#),
+            "{wire}"
+        );
+        assert!(!wire.contains("stale"));
+        let parsed: Value = serde_json::from_slice(&prepared.bytes).unwrap();
+        assert_eq!(parsed["model"], "m");
+        assert_eq!(parsed["messages"][0]["content"], "Design.");
+        assert_eq!(parsed["response_format"]["json_schema"]["name"], "ordered");
+        assert_eq!(parsed["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(
+            prepared.receipt["response_format"],
+            parsed["response_format"]
+        );
+    }
+
+    #[test]
+    fn strata_reads_an_ordered_schema_in_the_prompt_as_written() {
+        let request = json!({"model":"m","messages":[{"role":"user","content":"Design."}]});
+        let prepared = prepare_ordered(request, &ORDERED, ModelEngine::Strata).unwrap();
+        let parsed: Value = serde_json::from_slice(&prepared.bytes).unwrap();
+        assert!(parsed.get("response_format").is_none());
+        let content = parsed["messages"][0]["content"].as_str().unwrap();
+        assert!(content.starts_with("Design.\n\nReply with exactly one JSON object"));
+        assert!(content.ends_with(ORDERED.text));
+        assert_eq!(prepared.receipt, parsed);
     }
 
     #[test]

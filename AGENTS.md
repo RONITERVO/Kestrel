@@ -22,7 +22,7 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `models.rs`: compatibility re-export only; new application contracts belong in `crates/app-core`.
 - `runtime.rs`: attach/start/stop model runtime and single inference lease.
 - `strata.rs`: read-only Strata install discovery, validated loopback launch plans, and the job object that owns Strata's process tree. Strata-only GGUF architectures never reach llama.cpp.
-- `structured_output.rs`: JSON-schema replies across engines; llama.cpp gets `response_format`, Strata gets the schema in the prompt, and native parsers stay the only authority.
+- `structured_output.rs`: JSON-schema replies across engines; llama.cpp gets `response_format`, Strata gets the schema in the prompt, and native parsers stay the only authority. Schemas whose key order is part of the format (Ideogram 4 compositions) travel as literal JSON text, because `serde_json` sorts keys and llama.cpp builds its grammar in the order it receives.
 - `attachments.rs`: content-addressed local files, bounded extraction, and capability-gated media blocks.
 - `chat.rs`: cancellable SSE chat stream; never add tools here.
 - `agent.rs`: bounded Computer Tasks loop, typed tools, path policy, recovery copies, visible events.

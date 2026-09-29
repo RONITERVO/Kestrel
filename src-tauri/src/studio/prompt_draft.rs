@@ -2,6 +2,7 @@ pub use kestrel_app_core::prompt_draft::{
     PromptDraftEvent, PromptDraftMode, PromptDraftReceipt, PromptDraftRequest, PromptDraftTarget,
 };
 
+use crate::structured_output::{self, OrderedSchema, PreparedRequest};
 use crate::{
     model::ModelInfo,
     models::{ControlSettings, ThinkingLevel},
@@ -23,6 +24,29 @@ use super::{
 // Prompt drafting is an explicit producer action and may need a long private reasoning pass
 // before any visible prose arrives. Use its tested ceiling when the configured runtime allows it,
 // while respecting the runtime's explicit output limit.
+/// Ideogram 4's structured prompt, in the key order the format requires. It mirrors the proposal
+/// parser in `ImageStudio.tsx`: background is text, the style has exactly one of `photo` or
+/// `art_style`, boxes are four integers from 0 to 1000, and palettes are uppercase #RRGGBB
+/// (16 global, 5 per element). llama.cpp turns it into a grammar; Strata reads it in the prompt.
+const IMAGE_COMPOSITION_SCHEMA: OrderedSchema = OrderedSchema {
+    name: "kestrel_ideogram4_composition",
+    text: r##"{"type":"object","additionalProperties":false,
+"properties":{
+"high_level_description":{"type":"string","minLength":1},
+"style_description":{"anyOf":[
+{"type":"object","additionalProperties":false,"properties":{"aesthetics":{"type":"string","minLength":1},"lighting":{"type":"string","minLength":1},"photo":{"type":"string","minLength":1},"medium":{"type":"string","minLength":1},"color_palette":{"type":"array","maxItems":16,"items":{"type":"string","pattern":"^#[0-9A-F]{6}$"}}},"required":["aesthetics","lighting","photo","medium"]},
+{"type":"object","additionalProperties":false,"properties":{"aesthetics":{"type":"string","minLength":1},"lighting":{"type":"string","minLength":1},"medium":{"type":"string","minLength":1},"art_style":{"type":"string","minLength":1},"color_palette":{"type":"array","maxItems":16,"items":{"type":"string","pattern":"^#[0-9A-F]{6}$"}}},"required":["aesthetics","lighting","medium","art_style"]}
+]},
+"compositional_deconstruction":{"type":"object","additionalProperties":false,"properties":{
+"background":{"type":"string","minLength":1},
+"elements":{"type":"array","maxItems":64,"items":{"anyOf":[
+{"type":"object","additionalProperties":false,"properties":{"type":{"const":"obj"},"bbox":{"type":"array","minItems":4,"maxItems":4,"items":{"type":"integer","minimum":0,"maximum":1000}},"desc":{"type":"string","minLength":1},"color_palette":{"type":"array","maxItems":5,"items":{"type":"string","pattern":"^#[0-9A-F]{6}$"}}},"required":["type","bbox","desc"]},
+{"type":"object","additionalProperties":false,"properties":{"type":{"const":"text"},"bbox":{"type":"array","minItems":4,"maxItems":4,"items":{"type":"integer","minimum":0,"maximum":1000}},"text":{"type":"string","minLength":1},"desc":{"type":"string","minLength":1},"color_palette":{"type":"array","maxItems":5,"items":{"type":"string","pattern":"^#[0-9A-F]{6}$"}}},"required":["type","bbox","text","desc"]}
+]}}},
+"required":["background","elements"]}},
+"required":["high_level_description","style_description","compositional_deconstruction"]}"##,
+};
+
 const PROMPT_COLLABORATOR_MAX_TOKENS: u32 = 32_768;
 const PROMPT_COLLABORATOR_THINKING_BUDGET: u32 = 24_576;
 const PROMPT_COLLABORATOR_VISIBLE_OUTPUT_TOKENS: u32 = 8_192;
@@ -161,16 +185,21 @@ impl PromptDraftJob {
                 "enable_thinking": true
             });
         }
+        let prepared = prepare_request(body, request.target, lease.connection.engine)
+            .map_err(|error| format!("could not prepare the collaborator request: {error}"))?;
         let receipt = PromptDraftReceipt {
             target: request.target,
             mode: request.mode,
             model_id: lease.connection.model_id.clone(),
-            messages: messages.clone(),
+            messages: prepared.receipt["messages"]
+                .as_array()
+                .cloned()
+                .unwrap_or(messages),
             temperature,
             top_p,
             top_k,
             max_tokens,
-            exact_request: body.clone(),
+            exact_request: prepared.receipt,
         };
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -181,7 +210,8 @@ impl PromptDraftJob {
             client.post(format!("{}/chat/completions", lease.connection.endpoint)),
             &lease.connection,
         )
-        .json(&body)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(prepared.bytes)
         .send()
         .await
         .map_err(|error| error.to_string())?;
@@ -297,6 +327,21 @@ impl PromptDraftJob {
         );
         Ok(())
     }
+}
+
+/// Image compositions must follow Ideogram's structure; every other draft is free text.
+fn prepare_request(
+    body: Value,
+    target: PromptDraftTarget,
+    engine: crate::model::ModelEngine,
+) -> Result<PreparedRequest, serde_json::Error> {
+    if target == PromptDraftTarget::ImageComposition {
+        return structured_output::prepare_ordered(body, &IMAGE_COMPOSITION_SCHEMA, engine);
+    }
+    Ok(PreparedRequest {
+        bytes: serde_json::to_vec(&body)?,
+        receipt: body,
+    })
 }
 
 fn build_messages(request: &PromptDraftRequest) -> Vec<Value> {
@@ -747,6 +792,93 @@ mod tests {
 
         composition.target = PromptDraftTarget::Story;
         assert!(validate_request(&composition, &models).is_err());
+    }
+
+    #[test]
+    fn image_composition_schema_matches_the_proposal_parser_in_ideogram_order() {
+        let text = IMAGE_COMPOSITION_SCHEMA.text;
+        let schema: Value = serde_json::from_str(text).unwrap();
+        let order = |keys: &[&str]| {
+            let positions = keys
+                .iter()
+                .map(|key| text.find(&format!("\"{key}\":")).unwrap())
+                .collect::<Vec<_>>();
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1]),
+                "{keys:?}"
+            );
+        };
+        order(&[
+            "high_level_description",
+            "style_description",
+            "compositional_deconstruction",
+        ]);
+        order(&["background", "elements"]);
+        let composition = &schema["properties"]["compositional_deconstruction"];
+        assert_eq!(composition["properties"]["background"]["type"], "string");
+        assert_eq!(composition["properties"]["elements"]["maxItems"], 64);
+        let styles = schema["properties"]["style_description"]["anyOf"]
+            .as_array()
+            .unwrap();
+        let mut forms = styles
+            .iter()
+            .map(|style| style["required"][2].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        forms.sort();
+        assert_eq!(forms, ["medium", "photo"]);
+        for element in composition["properties"]["elements"]["items"]["anyOf"]
+            .as_array()
+            .unwrap()
+        {
+            let bbox = &element["properties"]["bbox"];
+            assert_eq!(bbox["minItems"], 4);
+            assert_eq!(bbox["maxItems"], 4);
+            assert_eq!(bbox["items"]["maximum"], 1000);
+            assert_eq!(element["properties"]["color_palette"]["maxItems"], 5);
+            assert_eq!(
+                element["properties"]["color_palette"]["items"]["pattern"],
+                "^#[0-9A-F]{6}$"
+            );
+        }
+    }
+
+    #[test]
+    fn only_image_compositions_carry_the_ideogram_schema() {
+        let body = json!({"model":"m","messages":[{"role":"user","content":"Develop the brief."}]});
+        let llama = prepare_request(
+            body.clone(),
+            PromptDraftTarget::ImageComposition,
+            crate::model::ModelEngine::LlamaCpp,
+        )
+        .unwrap();
+        let wire = String::from_utf8(llama.bytes).unwrap();
+        assert!(wire.contains(IMAGE_COMPOSITION_SCHEMA.text));
+        assert_eq!(
+            llama.receipt["response_format"]["json_schema"]["name"],
+            "kestrel_ideogram4_composition"
+        );
+
+        let strata = prepare_request(
+            body.clone(),
+            PromptDraftTarget::ImageComposition,
+            crate::model::ModelEngine::Strata,
+        )
+        .unwrap();
+        let content = strata.receipt["messages"][0]["content"].as_str().unwrap();
+        assert!(content.ends_with(IMAGE_COMPOSITION_SCHEMA.text));
+        assert!(strata.receipt.get("response_format").is_none());
+
+        for target in [
+            PromptDraftTarget::Story,
+            PromptDraftTarget::ImageAsset,
+            PromptDraftTarget::MusicCaption,
+            PromptDraftTarget::MusicLyrics,
+        ] {
+            let plain =
+                prepare_request(body.clone(), target, crate::model::ModelEngine::LlamaCpp).unwrap();
+            assert_eq!(plain.receipt, body);
+            assert_eq!(serde_json::from_slice::<Value>(&plain.bytes).unwrap(), body);
+        }
     }
 
     #[test]
