@@ -44,10 +44,7 @@ mod music_midi;
 mod producer;
 mod producer_chat;
 mod prompt_draft;
-pub use image_assets::{
-    emit_image_asset_error, MovieImageAssetGeneration, MovieImageAssetRequest,
-    MovieImageAssetRequestPolicy,
-};
+pub use image_assets::MovieImageAssetGeneration;
 pub use image_studio::{CreateImageProjectRequest, ImageProject, ImageStudio, ImageSummary};
 pub use live_preview::MovieRenderState;
 use live_preview::{
@@ -463,28 +460,17 @@ impl MovieStudio {
         })
     }
 
-    pub fn image_asset_render_state(
-        &self,
-        request_id: &str,
-        active: bool,
-    ) -> Result<MovieRenderState, StudioError> {
-        uuid::Uuid::parse_str(request_id)
-            .map_err(|_| StudioError::Invalid("Invalid image generation identity.".into()))?;
-        let key = format!("image:{request_id}");
-        if !active {
-            self.live_previews.clear_movie(&key);
-        }
-        Ok(MovieRenderState {
-            active,
-            preview: if active {
-                self.live_previews.movie(&key)
-            } else {
-                None
-            },
-        })
+    pub fn import_reference_path(&self, source: &Path) -> Result<MovieReferenceAsset, StudioError> {
+        self.import_reference_path_named(source, None)
     }
 
-    pub fn import_reference_path(&self, source: &Path) -> Result<MovieReferenceAsset, StudioError> {
+    /// Imports a media file into the reference library; `name` replaces the file name shown to the
+    /// producer (an Image Studio take is named after its project).
+    pub fn import_reference_path_named(
+        &self,
+        source: &Path,
+        name: Option<&str>,
+    ) -> Result<MovieReferenceAsset, StudioError> {
         let source = source.canonicalize().map_err(|error| {
             StudioError::Invalid(format!("Cannot open {}: {error}", source.display()))
         })?;
@@ -523,7 +509,7 @@ impl MovieStudio {
         }
         let asset = MovieReferenceAsset {
             id,
-            name: reference_name(&source),
+            name: name.map_or_else(|| reference_name(&source), str::to_string),
             kind,
             mime_type,
             bytes,
@@ -2477,6 +2463,30 @@ mod tests {
             graph["5"]["inputs"]["ref_audios.ref_audio_0"],
             json!(["16", 0])
         );
+    }
+
+    #[test]
+    #[ignore = "needs FFprobe on PATH or KESTREL_FFPROBE_PATH"]
+    fn an_image_studio_take_keeps_its_readable_name_in_the_reference_library() {
+        const ONE_PIXEL_PNG: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let root = tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let take = root.path().join("take-001-preview.png");
+        fs::write(&take, ONE_PIXEL_PNG).unwrap();
+
+        let asset = studio
+            .import_reference_path_named(&take, Some("Night / Form · take 1"))
+            .unwrap();
+        assert_eq!(asset.name, "Night / Form · take 1");
+        assert!(Path::new(&asset.path).is_file());
+        // The library is content-addressed: the same take imported again is the same reference.
+        assert_eq!(studio.import_reference_path(&take).unwrap().id, asset.id);
     }
 
     #[test]

@@ -2,7 +2,7 @@ import type { OrderedCaption } from "../../../contracts/index";
 import {
   Aperture, ArrowDown, ArrowUp, Bot, Check, ChevronLeft, ChevronRight, CircleStop,
   Copy, Download, Eye, EyeOff, FolderOpen, Frame, Image as ImageIcon, Layers3,
-  LayoutTemplate, LoaderCircle, Maximize2, PanelLeft, Plus, Save,
+  ImagePlus, LayoutTemplate, LoaderCircle, Maximize2, PanelLeft, Plus, Save,
   SlidersHorizontal, Sparkles, Square, Type, WandSparkles, X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -12,7 +12,9 @@ import {
   onStudioPromptDraft, revealImageProject, saveImageProject, startImageGeneration,
   startStudioPromptDraft,
 } from "../../../platform/api";
-import { appendModelThinking, ModelThinkingStream } from "../../control/ModelThinkingStream";
+import { appendModelThinking } from "../../control/ModelThinkingStream";
+import { ModelReplyPages } from "../../control/ModelReplyPages";
+import type { ImageHandoff } from "../imageHandoff";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "../../control/ModelRuntimePolicy";
 import type { RuntimePolicyValue } from "../../control/ModelRuntimePolicy";
 import { ExternalCollaborationExchange } from "../../../shared/collaboration/ExternalCollaborationExchange";
@@ -22,6 +24,8 @@ import type {
   PromptDraftReceipt, ThinkingLevel,
 } from "../../../contracts/index";
 import { effectiveThinkingLevelForModel } from "../../control/modelPolicy";
+import "./image.css";
+import { FlowPages } from "../../../shared/book/FlowPages";
 
 interface ImageCollaboration {
   id: string;
@@ -54,6 +58,8 @@ export function ImageStudio({
   selectedModelId,
   controlSettings,
   onError,
+  handoff,
+  onHandoffDone,
 }: {
   initialComfyRoot?: string;
   advancedEnabled: boolean;
@@ -61,6 +67,10 @@ export function ImageStudio({
   selectedModelId?: string;
   controlSettings?: ControlSettings;
   onError: (message: string) => void;
+  /** A production waiting for a picture made here. */
+  handoff?: ImageHandoff | null;
+  /** The producer used a take for the production (true) or cancelled the request (false). */
+  onHandoffDone?: (delivered: boolean) => void;
 }) {
   const [summaries, setSummaries] = useState<ImageSummary[]>([]);
   const [project, setProject] = useState<ImageProject>();
@@ -73,6 +83,17 @@ export function ImageStudio({
   const [newOpen, setNewOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newIdea, setNewIdea] = useState("");
+  const [delivering, setDelivering] = useState(false);
+  const shownHandoff = useRef<ImageHandoff | null>(null);
+  // A production asking for a picture starts a new project with its description.
+  useEffect(() => {
+    if (!handoff || shownHandoff.current === handoff) return;
+    shownHandoff.current = handoff;
+    const purpose = handoff.purpose.charAt(0).toUpperCase() + handoff.purpose.slice(1);
+    setNewTitle(`${purpose} · ${handoff.production}`.slice(0, 120));
+    setNewIdea(handoff.direction);
+    setNewOpen(true);
+  }, [handoff]);
   const [creating, setCreating] = useState(false);
   const [showLibrary, setShowLibrary] = useState(true);
   const [showLayout, setShowLayout] = useState(true);
@@ -143,6 +164,19 @@ export function ImageStudio({
   const completedTakes = project?.takes.filter((take) => take.status === "complete") ?? [];
   const activeTake = completedTakes.find((take) => take.id === project?.activeTakeId);
   const selectedElement = project?.elements.find((element) => element.id === selectedElementId);
+  // The selected take goes back to the production that asked for it.
+  const deliver = async () => {
+    if (!handoff || !project || !activeTake) return;
+    setDelivering(true);
+    try {
+      await handoff.deliver(project.id, activeTake.id);
+      onHandoffDone?.(true);
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setDelivering(false);
+    }
+  };
   const generating = project?.status === "generating";
   const assistantBusy = !!collaboration && ["queued", "thinking", "writing"].includes(collaboration.status);
   const busy = saving || creating || generating || assistantBusy;
@@ -384,6 +418,7 @@ export function ImageStudio({
       <div className="image-toolbar-center"><button title="Previous take" disabled={busy || !activeTake} onClick={() => cycleTake(-1)}><ChevronLeft /></button><span>{completedTakes.length ? `${Math.max(1, completedTakes.findIndex((take) => take.id === project.activeTakeId) + 1)} / ${completedTakes.length}` : "No takes"}</span><button title="Next take" disabled={busy || !activeTake} onClick={() => cycleTake(1)}><ChevronRight /></button></div>
       <div className="image-toolbar-right"><button disabled={!dirty || busy} onClick={() => void save()}>{saving ? <LoaderCircle className="spin" /> : <Save />} Save</button>{generating ? <button className="image-stop" onClick={() => void cancelImageGeneration(project.id)}><CircleStop /> Stop</button> : <button className="image-render" disabled={assistantBusy} onClick={() => void generate()}><WandSparkles /> Create image</button>}</div>
     </header>
+    {handoff && <div className="image-handoff" role="status"><ImagePlus /><span>Making the <strong>{handoff.purpose}</strong> for <strong>{handoff.production}</strong>. {activeTake ? "Use the selected take, or create another first." : "Create a take, then use it here."}</span><button className="primary-button compact" disabled={!activeTake || delivering || generating} onClick={() => void deliver()}>{delivering ? <LoaderCircle className="spin" /> : <Check />} Use in {handoff.production}</button><button className="quiet-button compact" disabled={delivering} onClick={() => onHandoffDone?.(false)}>Cancel</button></div>}
 
     {showLibrary && <aside className="image-library">
       <div className="image-pane-heading"><span><small>Private library</small><strong>Image projects</strong></span><button aria-label="Create new image project" onClick={() => setNewOpen(true)}><Plus /></button></div>
@@ -410,7 +445,7 @@ export function ImageStudio({
 
     <aside className="image-inspector">
       <nav><button className={inspectorTab === "compose" ? "active" : ""} onClick={() => setInspectorTab("compose")}><LayoutTemplate /> Compose</button><button className={inspectorTab === "output" ? "active" : ""} onClick={() => setInspectorTab("output")}><ImageIcon /> Takes</button>{advancedEnabled && <button className={inspectorTab === "advanced" ? "active" : ""} onClick={() => setInspectorTab("advanced")}><SlidersHorizontal /> Advanced</button>}</nav>
-      {inspectorTab === "compose" && <div className="image-inspector-body">
+      {inspectorTab === "compose" && <FlowPages className="image-inspector-body" label="Composition settings pages" resetKey={`${project.id}:compose`}>
         <label>Producer brief<textarea disabled={busy} value={project.idea} onChange={(event) => mutate((current) => ({ ...current, idea: event.target.value }))} placeholder="An idea, complete art direction, exact wording, or constraints…" /></label>
         <div className="image-assist">
           <Bot />
@@ -472,9 +507,9 @@ export function ImageStudio({
           {!project.elements.length && <div className="image-layout-hint"><span>Free-form images work, but a box gives Ideogram stronger placement direction.</span><button disabled={busy} onClick={() => addElement("obj", [0, 0, 1000, 1000])}><Maximize2 /> Full canvas subject</button></div>}
           {selectedElement && <fieldset disabled={busy}><div className="image-element-title"><strong>{selectedElement.kind === "text" ? "Exact text layer" : "Object layer"}</strong><span><button type="button" title="Move layer down" onClick={() => moveElementLayer(-1)}><ArrowDown /></button><button type="button" title="Move layer up" onClick={() => moveElementLayer(1)}><ArrowUp /></button><button type="button" title="Duplicate layer · Ctrl/Cmd+D" onClick={duplicateElement}><Copy /></button><button type="button" className="danger" title="Remove layer · Delete" onClick={removeElement}><X /></button></span></div>{selectedElement.kind === "text" && <label>Visible wording<input value={selectedElement.text} onChange={(event) => patchElement(mutate, selectedElement.id, { text: event.target.value })} /></label>}<label>Description<textarea value={selectedElement.description} onChange={(event) => patchElement(mutate, selectedElement.id, { description: event.target.value })} /></label><label>Layer palette · max 5<input value={selectedElement.colorPalette.join(", ")} onChange={(event) => patchElement(mutate, selectedElement.id, { colorPalette: parsePalette(event.target.value, 5) })} /></label><div className="image-box-fields">{["Top", "Left", "Bottom", "Right"].map((label, index) => <label key={label}>{label}<input type="number" min={0} max={1000} value={selectedElement.bbox[index]} onChange={(event) => patchBox(mutate, selectedElement, index, event.currentTarget.valueAsNumber)} /></label>)}</div><small className="image-key-hint">Alt-click cycles overlapping layers · arrows nudge · Shift+arrows move 10</small></fieldset>}
         </section>
-      </div>}
-      {inspectorTab === "output" && <div className="image-inspector-body image-output-inspector"><div className="image-output-heading"><span><small>Preserved output</small><strong>{project.takes.length} immutable takes</strong></span><button aria-label="Show image project in File Explorer" onClick={() => void revealImageProject(project.id)}><FolderOpen /></button></div>{[...project.takes].reverse().map((take, index) => <div className={`image-output-take ${take.id === project.activeTakeId ? "active" : ""}`} key={take.id}><button disabled={busy || take.status !== "complete"} onClick={() => mutate((current) => ({ ...current, activeTakeId: take.id }))}>{take.path ? <img src={imageMediaUrl(take.path)} alt="" /> : <ImageIcon />}<span><strong>Take {project.takes.length - index}{take.batchSize > 1 ? ` · variation ${take.batchIndex}/${take.batchSize}` : ""}</strong><small>{take.status} · {take.width}×{take.height} · seed {take.seed}</small><code>{take.sha256 ? `${take.sha256.slice(0, 16)}…` : take.detail}</code></span></button>{take.path && <a href={imageMediaUrl(take.path, true)} download aria-label={`Download take ${project.takes.length - index}`}><Download /></a>}</div>)}<div className="image-license-note"><strong>Non-commercial model</strong><p>{project.licenseNotice}</p><a href="https://github.com/ideogram-oss/ideogram4/blob/main/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL" target="_blank" rel="noreferrer">Read model agreement</a></div></div>}
-      {inspectorTab === "advanced" && advancedEnabled && <div className="image-inspector-body image-advanced">
+      </FlowPages>}
+      {inspectorTab === "output" && <FlowPages className="image-inspector-body image-output-inspector" label="Preserved output pages" resetKey={`${project.id}:output`}><div className="image-output-heading"><span><small>Preserved output</small><strong>{project.takes.length} immutable takes</strong></span><button aria-label="Show image project in File Explorer" onClick={() => void revealImageProject(project.id)}><FolderOpen /></button></div>{[...project.takes].reverse().map((take, index) => <div className={`image-output-take ${take.id === project.activeTakeId ? "active" : ""}`} key={take.id}><button disabled={busy || take.status !== "complete"} onClick={() => mutate((current) => ({ ...current, activeTakeId: take.id }))}>{take.path ? <img src={imageMediaUrl(take.path)} alt="" /> : <ImageIcon />}<span><strong>Take {project.takes.length - index}{take.batchSize > 1 ? ` · variation ${take.batchIndex}/${take.batchSize}` : ""}</strong><small>{take.status} · {take.width}×{take.height} · seed {take.seed}</small><code>{take.sha256 ? `${take.sha256.slice(0, 16)}…` : take.detail}</code></span></button>{take.path && <a href={imageMediaUrl(take.path, true)} download aria-label={`Download take ${project.takes.length - index}`}><Download /></a>}</div>)}<div className="image-license-note"><strong>Non-commercial model</strong><p>{project.licenseNotice}</p><a href="https://github.com/ideogram-oss/ideogram4/blob/main/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL" target="_blank" rel="noreferrer">Read model agreement</a></div></FlowPages>}
+      {inspectorTab === "advanced" && advancedEnabled && <FlowPages className="image-inspector-body image-advanced" label="Advanced image settings pages" resetKey={`${project.id}:advanced`}>
         <label>Sampling preset<select disabled={busy} value={project.settings.preset} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, preset: event.target.value as ImageProject["settings"]["preset"] } }))}><option value="quality">Quality · 48 steps</option><option value="standard">Standard · 20 steps</option><option value="turbo">Turbo · 12 steps</option></select></label>
         <label>Canvas size<select disabled={busy} value={`${project.settings.width}x${project.settings.height}`} onChange={(event) => { const [, width, height] = SIZE_PRESETS.find((item) => `${item[1]}x${item[2]}` === event.target.value) ?? SIZE_PRESETS[0]; mutate((current) => ({ ...current, settings: { ...current.settings, width, height } })); }}>{SIZE_PRESETS.map(([label, width, height]) => <option key={label} value={`${width}x${height}`}>{label} · {width}×{height}</option>)}</select></label>
         <div className="image-field-pair"><label>Width<input disabled={busy} type="number" min={256} max={2048} step={16} value={project.settings.width} onChange={(event) => finiteNumber(event.currentTarget.valueAsNumber, 256, 2048, (width) => mutate((current) => ({ ...current, settings: { ...current.settings, width: round16(width) } })))} /></label><label>Height<input disabled={busy} type="number" min={256} max={2048} step={16} value={project.settings.height} onChange={(event) => finiteNumber(event.currentTarget.valueAsNumber, 256, 2048, (height) => mutate((current) => ({ ...current, settings: { ...current.settings, height: round16(height) } })))} /></label></div>
@@ -483,10 +518,10 @@ export function ImageStudio({
         <div className="image-seed-actions"><button disabled={busy} onClick={() => mutate((current) => ({ ...current, settings: { ...current.settings, seed: 0 } }))}>Random every render</button><button disabled={busy} onClick={() => mutate((current) => ({ ...current, settings: { ...current.settings, seed: secureSeed() } }))}>New fixed seed</button></div>
         <p className="image-backdrop-note"><Eye /> The visible take is an alignment backdrop only. Ideogram receives the structured caption, seed, and boxes—not the image.</p>
         <details><summary>Composition draft preview</summary><pre>{JSON.stringify(imageCompositionPreview(project), null, 2)}</pre></details>{activeTake && <details><summary>Active take receipt</summary><dl><dt>Model</dt><dd>{activeTake.modelProfile}</dd><dt>Seed</dt><dd>{activeTake.seed}</dd><dt>SHA-256</dt><dd>{activeTake.sha256}</dd><dt>Prompt ID</dt><dd>{activeTake.promptId}</dd><dt>Batch</dt><dd>{activeTake.batchIndex}/{activeTake.batchSize}</dd></dl><pre>{activeTake.exactPromptText}</pre><p>Graph preview. The saved native artifact preserves exact numeric values.</p><pre>{JSON.stringify(activeTake.exactGraph, null, 2)}</pre></details>}
-      </div>}
+      </FlowPages>}
     </aside>
 
-    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} outputText={collaboration.text} active={assistantBusy} inferenceActive={assistantBusy && collaboration.status !== "queued"} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>Proposed production settings</strong><pre>{collaboration.text || (assistantBusy ? "The structured proposal will stream here when the model begins its answer…" : "No structured proposal was returned.")}</pre></section></div><footer>{assistantBusy ? <button onClick={() => void cancelStudioPromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt, null, 2)}</pre></details>}</footer></section>}
+    {collaboration && <section className="image-collaboration-sheet"><header><span><Sparkles /><strong>Structured design proposal</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header><ModelReplyPages request={advancedEnabled && collaboration.receipt ? JSON.stringify(collaboration.receipt, null, 2) : undefined} modelName={collaboration.modelName} inferenceActive={assistantBusy && collaboration.status !== "queued"} label="Proposed production settings" answerLabel="Proposal" preformatted text={collaboration.text} reasoning={collaboration.reasoning} live={assistantBusy} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} placeholder={assistantBusy ? "The structured proposal will appear here when the model begins its answer…" : "No structured proposal was returned."} /><footer>{assistantBusy ? <button onClick={() => void cancelStudioPromptDraft(collaboration.id)}><CircleStop /> Stop with checkpoint</button> : <><button onClick={() => void navigator.clipboard.writeText(collaboration.text)}><Copy /> Copy JSON</button><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Check /> Apply proposal</button></>}</footer></section>}
     {newOpen && <NewImageDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
   </div>;
 }

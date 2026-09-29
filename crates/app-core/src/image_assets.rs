@@ -1,26 +1,10 @@
 // Rust-owned wire and durable data. Native services retain execution authority.
+// Stills made by the retired H3 stable-frame pass stay readable and usable as references;
+// new pictures for a production come from Image Studio takes.
 use crate::MovieReferenceAsset;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieImageAssetRequest {
-    pub request_id: String,
-    pub prompt: String,
-    pub width: u32,
-    pub height: u32,
-    pub steps: u32,
-    #[serde(default)]
-    #[serde(with = "crate::seed_serde")]
-    #[ts(type = "number | string")]
-    pub seed: u64,
-    pub comfy_root: String,
-    #[serde(default = "default_stabilize")]
-    pub stabilize: bool,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -101,25 +85,6 @@ pub struct MovieImageAssetGeneration {
     pub candidates: Vec<MovieImageAssetCandidate>,
     #[serde(default)]
     pub exact_graph: Value,
-}
-
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct MovieImageAssetEvent {
-    pub request_id: String,
-    pub kind: String,
-    pub stage: String,
-    pub detail: String,
-    pub progress: u8,
-    pub at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub generation: Option<MovieImageAssetGeneration>,
-}
-
-pub fn default_stabilize() -> bool {
-    true
 }
 
 pub fn legacy_preview_provenance() -> String {

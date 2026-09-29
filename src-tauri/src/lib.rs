@@ -36,6 +36,7 @@ use attachments::AttachmentStore;
 use config::{ControlSettingsStore, SettingsStore};
 use developer::DeveloperAssistant;
 use harness::ResearchHarness;
+use kestrel_app_core::MovieReferenceAsset;
 use local_speech::{
     LocalSpeech, SpeechAlignmentRequest, SpeechClip, SpeechFileRangeTranscriptionRequest,
     SpeechFileTranscriptionRequest, SpeechSnapshot, SpeechSynthesisRequest, SpeechTranscription,
@@ -66,13 +67,13 @@ use std::{
     },
 };
 use store::ResearchStore;
-use studio::{summarize_studio_conversation, MovieImageAssetRequestPolicy};
+use studio::summarize_studio_conversation;
 use studio::{
     ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
-    ImageSummary, MovieEdit, MovieImageAssetGeneration, MovieImageAssetRequest, MovieProject,
-    MovieReferenceImport, MovieRenderState, MovieStudio, MovieStudioChatJob, MovieSummary,
-    MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject,
-    MusicStudio, MusicSummary, PromptDraftJob, PromptDraftRequest, RepairMusicLyricsRangeRequest,
+    ImageSummary, MovieEdit, MovieImageAssetGeneration, MovieProject, MovieReferenceImport,
+    MovieRenderState, MovieStudio, MovieStudioChatJob, MovieSummary, MusicLyricsRequest,
+    MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
+    MusicSummary, PromptDraftJob, PromptDraftRequest, RepairMusicLyricsRangeRequest,
     SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest,
 };
 use tauri::{AppHandle, Manager, State};
@@ -114,7 +115,6 @@ struct AppState {
     movie_jobs: Mutex<HashMap<String, CancellationToken>>,
     music_jobs: Mutex<HashMap<String, CancellationToken>>,
     image_generation_jobs: Mutex<HashMap<String, CancellationToken>>,
-    image_asset_jobs: Mutex<HashMap<String, CancellationToken>>,
     setup_job: Mutex<Option<CancellationToken>>,
     model_download_job: Mutex<Option<CancellationToken>>,
 }
@@ -1057,22 +1057,6 @@ async fn pick_movie_reference_files(
 }
 
 #[tauri::command]
-fn get_movie_image_asset_render_state(
-    request_id: String,
-    state: State<'_, AppState>,
-) -> Result<MovieRenderState, String> {
-    let active = state
-        .image_asset_jobs
-        .lock()
-        .map_err(|_| "Image generation registry is unavailable".to_string())?
-        .contains_key(&request_id);
-    state
-        .studio
-        .image_asset_render_state(&request_id, active)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 fn list_movie_image_assets(
     state: State<'_, AppState>,
 ) -> Result<Vec<MovieImageAssetGeneration>, String> {
@@ -1082,73 +1066,47 @@ fn list_movie_image_assets(
         .map_err(|error| error.to_string())
 }
 
+/// Brings a finished Image Studio take into the movie reference library so a production can use it
+/// as a frame or reference. The take is found by its project and take IDs; no path crosses IPC, and
+/// the file must still live inside that image project's folder.
 #[tauri::command]
-async fn start_movie_image_asset(
-    request: MovieImageAssetRequest,
-    app: AppHandle,
+async fn import_image_take_as_movie_reference(
+    image_project_id: String,
+    take_id: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
-    ensure_workspace_idle(&state)?;
-    let research = state
-        .research_settings
-        .load()
+) -> Result<MovieReferenceAsset, String> {
+    let project = state
+        .images
+        .get(&image_project_id)
         .map_err(|error| error.to_string())?;
-    request
-        .validate(research.advanced_mode)
-        .map_err(|error| error.to_string())?;
-    state
-        .work_active
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another local AI or Studio job is already active.".to_string())?;
-    let cancel = CancellationToken::new();
-    if state
-        .image_asset_jobs
-        .lock()
-        .map(|mut jobs| {
-            jobs.insert(request.request_id.clone(), cancel.clone());
-        })
-        .is_err()
-    {
-        state.work_active.store(false, Ordering::Release);
-        return Err("image asset job registry is unavailable".into());
+    let (index, take) = project
+        .takes
+        .iter()
+        .enumerate()
+        .find(|(_, take)| take.id == take_id)
+        .ok_or_else(|| "That image take no longer exists in its project.".to_string())?;
+    if take.status != "complete" {
+        return Err("Only a finished image take can be used in a movie.".into());
     }
-    let request_id = request.request_id.clone();
-    let task_id = request_id.clone();
-    let app_for_task = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let managed = app_for_task.state::<AppState>();
-        let _guard = WorkGuard(&managed.work_active);
-        let renderer_ready = managed
-            .runtime
-            .stop_managed()
-            .await
-            .map_err(|error| error.to_string());
-        if let Err(error) = renderer_ready {
-            studio::emit_image_asset_error(&app_for_task, &task_id, error);
-        } else {
-            let _ = managed
-                .studio
-                .generate_image_assets(request, &cancel, Some(&app_for_task))
-                .await;
-        }
-        if let Ok(mut jobs) = managed.image_asset_jobs.lock() {
-            jobs.remove(&task_id);
-        };
-    });
-    Ok(request_id)
-}
-
-#[tauri::command]
-fn cancel_movie_image_asset(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(cancel) = state
-        .image_asset_jobs
-        .lock()
-        .map_err(|_| "image asset job registry is unavailable".to_string())?
-        .get(&request_id)
-    {
-        cancel.cancel();
+    let folder = state
+        .images
+        .project_dir(&image_project_id)
+        .canonicalize()
+        .map_err(|error| format!("Cannot open the image project folder: {error}"))?;
+    let path = PathBuf::from(&take.path)
+        .canonicalize()
+        .map_err(|error| format!("Cannot open the image take {}: {error}", take.path))?;
+    if !path.starts_with(&folder) {
+        return Err(
+            "The image take is outside its project folder, so Kestrel will not import it.".into(),
+        );
     }
-    Ok(())
+    let name = format!("{} · take {}", project.title.trim(), index + 1);
+    let studio = state.studio.clone();
+    tokio::task::spawn_blocking(move || studio.import_reference_path_named(&path, Some(&name)))
+        .await
+        .map_err(|error| format!("Reference import stopped unexpectedly: {error}"))?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2690,13 +2648,6 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        let image_assets = state
-            .image_asset_jobs
-            .lock()
-            .map_err(|_| "image asset job registry is unavailable".to_string())?
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
         let music = state
             .music_jobs
             .lock()
@@ -2721,7 +2672,6 @@ async fn release_ai_memory(state: State<'_, AppState>) -> Result<ControlSnapshot
         research
             .into_iter()
             .chain(interactive)
-            .chain(image_assets)
             .chain(music)
             .chain(images)
             .chain(speech)
@@ -3633,7 +3583,6 @@ pub fn run() {
                 movie_jobs: Mutex::new(HashMap::new()),
                 music_jobs: Mutex::new(HashMap::new()),
                 image_generation_jobs: Mutex::new(HashMap::new()),
-                image_asset_jobs: Mutex::new(HashMap::new()),
                 setup_job: Mutex::new(None),
                 model_download_job: Mutex::new(None),
             });
@@ -3706,11 +3655,9 @@ pub fn run() {
             start_studio_prompt_draft,
             cancel_studio_prompt_draft,
             get_movie_render_state,
-            get_movie_image_asset_render_state,
             pick_movie_reference_files,
             list_movie_image_assets,
-            start_movie_image_asset,
-            cancel_movie_image_asset,
+            import_image_take_as_movie_reference,
             render_movie_scenes,
             cancel_movie_render,
             save_movie_edits,

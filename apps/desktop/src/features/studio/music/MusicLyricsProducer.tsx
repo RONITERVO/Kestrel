@@ -1,9 +1,11 @@
 import {
   Bot, Captions, ChevronLeft, CircleStop, Clock3, FileText, Languages, ListMusic, LoaderCircle, Pause, Play,
-  Palette, Plus, Save, Sparkles, Trash2, Wand2, WandSparkles,
+  Palette, Plus, Save, Sparkles, Trash2, Wand2, WandSparkles, X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getLocalSpeechSnapshot } from "../../../platform/api";
+import { FlowPages } from "../../../shared/book/FlowPages";
+import { PagedList } from "../../../shared/book/PagedList";
 import {
   applyMusicLyricFrameStyles,
   MusicLyricReactivity,
@@ -507,34 +509,58 @@ export function MusicLyricsProducer({
         <button className={editing ? "active" : ""} onClick={() => setEditing((value) => !value)}><Clock3 /> Edit timing</button>
       </footer>
 
-      {editing && <aside className="music-lyrics-editor" data-lyric-control>
-        <header><div><small>Durable take document</small><strong>Lyrics & timing</strong></div><button aria-label="Close lyric timing editor" onClick={() => setEditing(false)}>×</button></header>
-        <div className="music-lyrics-tab-bar">
-          <button type="button" className={editorTab === "cues" ? "active" : ""} onClick={() => setEditorTab("cues")}><ListMusic /> Cues & Words</button>
-          <button type="button" className={editorTab === "repair" ? "active" : ""} onClick={() => {
+      {editing && <aside className="music-lyrics-editor" data-lyric-control aria-label="Lyrics and timing">
+        <header className="music-lyrics-editor-head">
+          <div><span className="eyebrow">Durable take document</span><h3>Lyrics & timing</h3></div>
+          <button type="button" className="icon-button" aria-label="Close lyric timing editor" onClick={() => setEditing(false)}><X /></button>
+        </header>
+        <div className="segmented music-lyrics-tabs">
+          <button type="button" className={editorTab === "cues" ? "active" : ""} aria-pressed={editorTab === "cues"} onClick={() => setEditorTab("cues")}><ListMusic /> Cues & words</button>
+          <button type="button" className={editorTab === "repair" ? "active" : ""} aria-pressed={editorTab === "repair"} onClick={() => {
             setEditorTab("repair");
             if (selectedSegment) {
               setRepairStart(roundTime(selectedSegment.start));
               setRepairEnd(roundTime(selectedSegment.end));
               setRepairPrompt(truncateUtf8(selectedSegment.primary, 512));
             }
-          }}><Wand2 /> Repair with Whisper</button>
+          }}><Wand2 /> Whisper sync</button>
         </div>
 
         {editorTab === "repair" ? (
-          <section className="music-lyrics-range-repair">
-            <div className="music-lyrics-repair-guide">
-              <Sparkles />
-              <span>
-                <strong>Targeted, prompt-guided Whisper transcription</strong>
-                <small>Select a time range and prompt Whisper with expected words. 1.5s audio buffers prevent boundary clipping.</small>
-              </span>
+          <FlowPages
+            className="music-lyrics-pages"
+            label="Whisper sync"
+            footer={<div className="music-lyrics-whisper-actions">
+              {speechBusy
+                ? <button type="button" className="danger-button compact" onClick={onCancelSync}><CircleStop /> Stop safely</button>
+                : <>
+                  <button type="button" className="quiet-button compact" disabled={busy || !modelId} onClick={() => void onSync(modelId, language.trim() || "auto")}><WandSparkles /> Sync whole take</button>
+                  <button
+                    type="button"
+                    className="primary-button compact"
+                    disabled={busy || !modelId || !Number.isFinite(repairStart) || !Number.isFinite(repairEnd) || repairEnd <= repairStart || utf8ByteLength(repairPrompt) > 512}
+                    onClick={() => {
+                      if (onRepairRange && modelId) {
+                        void onRepairRange(modelId, language.trim() || "auto", repairStart, repairEnd, repairPrompt.trim());
+                      }
+                    }}
+                  >
+                    <WandSparkles /> Re-sync range
+                  </button>
+                </>}
+              {status && <p role="status">{busy && <LoaderCircle className="spin" />} {status}</p>}
+            </div>}
+          >
+            <div className="music-lyrics-note keep-together"><Sparkles /><span><strong>Local Whisper</strong><small>{speechDetail}</small></span></div>
+            <div className="music-lyrics-pair keep-together">
+              <label>Whisper model<select aria-label="Lyric transcription model" disabled={busy || !transcribers.length} value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Not installed</option>{transcribers.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+              <label>Language<input aria-label="Lyric transcription language" disabled={busy} value={language} maxLength={64} onChange={(event) => setLanguage(event.target.value)} placeholder="auto" /></label>
             </div>
+            <p className="music-lyrics-hint keep-together"><strong>Sync whole take</strong> times every sung word. <strong>Re-sync range</strong> repairs one passage: choose its time range and the words you expect. 1.5 s of audio on each side keeps the edge words intact.</p>
 
-            <div className="music-lyrics-time-fields">
-              <div className="music-lyrics-time-card">
-                <label>
-                  <span>Range Start ({formatTime(repairStart)})</span>
+            <div className="music-lyrics-pair keep-together">
+              <div className="music-lyrics-time">
+                <label>Range start ({formatTime(repairStart)})
                   <input
                     type="number"
                     min={0}
@@ -544,19 +570,12 @@ export function MusicLyricsProducer({
                     onChange={(e) => setRepairStart(clampFinite(e.currentTarget.valueAsNumber, 0, take.durationSeconds, repairStart))}
                   />
                 </label>
-                <button
-                  type="button"
-                  className="music-lyrics-set-btn"
-                  title="Set range start to playhead position"
-                  onClick={() => setRepairStart(roundTime(currentTime))}
-                >
-                  <Clock3 /> Set Start ({formatPreciseTime(currentTime)})
+                <button type="button" className="quiet-button compact" title="Set range start to playhead position" aria-label={`Set range start to playhead ${formatPreciseTime(currentTime)}`} onClick={() => setRepairStart(roundTime(currentTime))}>
+                  <Clock3 /> {formatPreciseTime(currentTime)}
                 </button>
               </div>
-
-              <div className="music-lyrics-time-card">
-                <label>
-                  <span>Range End ({formatTime(repairEnd)})</span>
+              <div className="music-lyrics-time">
+                <label>Range end ({formatTime(repairEnd)})
                   <input
                     type="number"
                     min={0.01}
@@ -566,13 +585,8 @@ export function MusicLyricsProducer({
                     onChange={(e) => setRepairEnd(clampFinite(e.currentTarget.valueAsNumber, 0.01, take.durationSeconds, repairEnd))}
                   />
                 </label>
-                <button
-                  type="button"
-                  className="music-lyrics-set-btn"
-                  title="Set range end to playhead position"
-                  onClick={() => setRepairEnd(roundTime(currentTime))}
-                >
-                  <Clock3 /> Set End ({formatPreciseTime(currentTime)})
+                <button type="button" className="quiet-button compact" title="Set range end to playhead position" aria-label={`Set range end to playhead ${formatPreciseTime(currentTime)}`} onClick={() => setRepairEnd(roundTime(currentTime))}>
+                  <Clock3 /> {formatPreciseTime(currentTime)}
                 </button>
               </div>
             </div>
@@ -580,22 +594,19 @@ export function MusicLyricsProducer({
             {selectedSegment && (
               <button
                 type="button"
-                className="music-lyrics-btn-sm music-lyrics-use-cue-btn"
+                className="quiet-button compact music-lyrics-use-cue"
                 onClick={() => {
                   setRepairStart(roundTime(selectedSegment.start));
                   setRepairEnd(roundTime(selectedSegment.end));
                   setRepairPrompt(truncateUtf8(selectedSegment.primary, 512));
                 }}
               >
-                <Clock3 /> Use Cue #{document.segments.findIndex((s) => s.id === selectedSegment.id) + 1} ({formatTime(selectedSegment.start)} – {formatTime(selectedSegment.end)})
+                <Clock3 /> Use cue {document.segments.findIndex((s) => s.id === selectedSegment.id) + 1} ({formatTime(selectedSegment.start)} – {formatTime(selectedSegment.end)})
               </button>
             )}
 
-            <label className="music-lyrics-field">
-              <div className="music-lyrics-prompt-header">
-                <span>Start prompt / Expected lyrics</span>
-                <small>{utf8ByteLength(repairPrompt)} / 512 bytes</small>
-              </div>
+            <label className="music-lyrics-field keep-together">
+              <span>Expected lyrics <small>{utf8ByteLength(repairPrompt)} / 512 bytes</small></span>
               <textarea
                 value={repairPrompt}
                 rows={3}
@@ -604,11 +615,11 @@ export function MusicLyricsProducer({
               />
             </label>
 
-            <div className="music-lyrics-prompt-fill-actions">
-              <span>Fill prompt from:</span>
+            <div className="music-lyrics-fill keep-together">
+              <span className="eyebrow">Fill from</span>
               <button
                 type="button"
-                className="music-lyrics-btn-sm"
+                className="quiet-button compact"
                 title="Extract matching lines from generated take lyrics"
                 onClick={() => {
                   const extracted = extractLyricsForRange(take.lyrics || project.caption, repairStart, repairEnd, take.durationSeconds);
@@ -618,19 +629,14 @@ export function MusicLyricsProducer({
                 <FileText /> Take lyrics
               </button>
               {selectedSegment && (
-                <button
-                  type="button"
-                  className="music-lyrics-btn-sm"
-                  title="Use selected cue text"
-                  onClick={() => setRepairPrompt(truncateUtf8(selectedSegment.primary, 512))}
-                >
+                <button type="button" className="quiet-button compact" title="Use selected cue text" onClick={() => setRepairPrompt(truncateUtf8(selectedSegment.primary, 512))}>
                   <Sparkles /> Current cue
                 </button>
               )}
               {onDraftAudioPrompt && audioModel && (
                 <button
                   type="button"
-                  className="music-lyrics-btn-sm music-lyrics-copilot-btn"
+                  className="quiet-button compact"
                   disabled={audioDraftBusy || busy}
                   title={`Listen to audio slice using ${audioModel.name} (native audio model)`}
                   onClick={async () => {
@@ -658,107 +664,74 @@ export function MusicLyricsProducer({
             </div>
 
             {audioDraftStatus && (
-              <div className="music-lyrics-copilot-status">
+              <p className="music-lyrics-status keep-together">
                 {audioDraftBusy && <LoaderCircle className="spin" />} {audioDraftStatus}
-              </div>
+              </p>
             )}
-
-            <div className="music-lyrics-repair-model-row">
-              <label>
-                <span>Whisper Model</span>
-                <select disabled={busy || !transcribers.length} value={modelId} onChange={(e) => setModelId(e.target.value)}>
-                  <option value="">Not installed</option>
-                  {transcribers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
-              </label>
-              <label>
-                <span>Language</span>
-                <input disabled={busy} value={language} maxLength={64} onChange={(e) => setLanguage(e.target.value)} placeholder="auto" />
-              </label>
-            </div>
-
-            <div className="music-lyrics-range-repair-actions">
-              {speechBusy ? (
-                <button type="button" className="danger" onClick={onCancelSync}>
-                  <CircleStop /> Stop safely
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="primary-button music-lyrics-repair-submit-btn"
-                  disabled={busy || !modelId || !Number.isFinite(repairStart) || !Number.isFinite(repairEnd) || repairEnd <= repairStart || utf8ByteLength(repairPrompt) > 512}
-                  onClick={() => {
-                    if (onRepairRange && modelId) {
-                      void onRepairRange(modelId, language.trim() || "auto", repairStart, repairEnd, repairPrompt.trim());
-                    }
-                  }}
-                >
-                  <WandSparkles /> Re-sync range with Whisper
-                </button>
-              )}
-              {status && <p role="status">{busy && <LoaderCircle className="spin" />} {status}</p>}
-            </div>
-          </section>
+          </FlowPages>
         ) : (
           <>
-            <section className="music-lyrics-sync">
-              <div><Sparkles /><span><strong>Local word sync</strong><small>{speechDetail}</small></span></div>
-              <label>Whisper model<select aria-label="Lyric transcription model" disabled={busy || !transcribers.length} value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Not installed</option>{transcribers.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
-              <label>Language<input aria-label="Lyric transcription language" disabled={busy} value={language} maxLength={64} onChange={(event) => setLanguage(event.target.value)} placeholder="auto" /></label>
-              {speechBusy
-                ? <button className="danger" onClick={onCancelSync}><CircleStop /> Stop safely</button>
-                : <button disabled={busy || !modelId} onClick={() => void onSync(modelId, language.trim() || "auto")}><WandSparkles /> Sync this take</button>}
-              {status && <p role="status">{busy && <LoaderCircle className="spin" />} {status}</p>}
-            </section>
-            <div className="music-lyrics-editor-actions">
-              <button onClick={addCue}><Plus /> Add cue</button>
-              <label className="music-lyrics-translation-toggle">
+            <div className="music-lyrics-toolbar">
+              <button type="button" className="quiet-button compact" onClick={addCue}><Plus /> Add cue</button>
+              <label className="check-line">
                 <input type="checkbox" checked={document.showTranslation} onChange={(event) => changeDocument({ ...documentRef.current, showTranslation: event.target.checked })} />
-                <Languages /> Show subtitles
+                Show subtitles
               </label>
               {onTranslateLyrics && (
-                <div className="music-lyrics-translation-bar">
+                <span className="music-lyrics-translate">
                   <select
                     aria-label="Target translation language"
                     disabled={translationBusy || busy}
                     value={targetLanguage}
                     onChange={(e) => setTargetLanguage(e.target.value)}
-                    className="music-lyrics-lang-select"
                     title="Select target language for local AI translation"
                   >
                     {LANGUAGE_PRESETS.map((l) => <option key={l} value={l}>{l}</option>)}
                   </select>
                   <button
                     type="button"
-                    className="music-lyrics-btn-sm music-lyrics-translate-all-btn"
+                    className="quiet-button compact"
                     disabled={translationBusy || busy || !document.segments.length}
                     title={`Translate all ${document.segments.length} cues into ${targetLanguage} using local AI`}
                     onClick={handleTranslateAll}
                   >
                     {translationBusy ? <LoaderCircle className="spin" /> : <Languages />} Translate all
                   </button>
-                </div>
+                </span>
               )}
             </div>
             {translationStatus && (
-              <div className="music-lyrics-translation-status">
+              <p className="music-lyrics-status">
                 {translationBusy && <LoaderCircle className="spin" />} {translationStatus}
-              </div>
+              </p>
             )}
-            <div className="music-lyrics-cue-list">
-              {document.segments.map((segment, index) => <button key={segment.id} className={`${segment.id === selectedId ? "selected" : ""} ${segment.id === activeSegment?.id ? "active" : ""}`} onClick={() => { setSelectedId(segment.id); onSeek(segment.start); }}><span>{index + 1}</span><strong>{segment.primary}</strong><small>{formatTime(segment.start)} – {formatTime(segment.end)}</small></button>)}
-              {!document.segments.length && <p>No vocal cues yet. Add one at the playhead or run local word sync.</p>}
-            </div>
+            <PagedList
+              className="music-lyrics-cue-list"
+              label="Lyric cues"
+              items={document.segments}
+              itemKey={(segment) => segment.id}
+              selectedKey={selectedId}
+              empty={<p className="music-lyrics-empty">No vocal cues yet. Add one at the playhead or run Whisper sync.</p>}
+              renderItem={(segment) => (
+                <button
+                  type="button"
+                  className={`${segment.id === selectedId ? "selected" : ""} ${segment.id === activeSegment?.id ? "active" : ""}`}
+                  aria-current={segment.id === selectedId ? "true" : undefined}
+                  onClick={() => { setSelectedId(segment.id); onSeek(segment.start); }}
+                >
+                  <span>{document.segments.indexOf(segment) + 1}</span><strong>{segment.primary || "(empty cue)"}</strong><small>{formatTime(segment.start)} – {formatTime(segment.end)}</small>
+                </button>
+              )}
+            />
             {selectedSegment && (
-              <fieldset disabled={busy} className="music-lyrics-cue-editor">
-                <div className="music-lyrics-cue-editor-header">
-                  <legend>
-                    Cue {document.segments.findIndex((s) => s.id === selectedSegment.id) + 1} of {document.segments.length}
-                  </legend>
-                  <div className="music-lyrics-cue-quick-actions">
+              <section className="music-lyrics-cue-editor" aria-label="Selected cue">
+                <header>
+                  <strong>Cue {document.segments.findIndex((s) => s.id === selectedSegment.id) + 1} of {document.segments.length}</strong>
+                  <span>
                     <button
                       type="button"
-                      className="music-lyrics-preview-btn"
+                      className="quiet-button compact"
+                      disabled={busy}
                       title="Preview cue from start"
                       onClick={() => {
                         onSeek(selectedSegment.start);
@@ -767,186 +740,143 @@ export function MusicLyricsProducer({
                     >
                       <Play /> Play cue
                     </button>
-                    <button
-                      type="button"
-                      className="danger music-lyrics-remove-cue-btn"
-                      title="Remove this cue"
-                      onClick={() => removeCue(selectedSegment.id)}
-                    >
+                    <button type="button" className="danger-button compact" disabled={busy} title="Remove this cue" aria-label="Remove this cue" onClick={() => removeCue(selectedSegment.id)}>
                       <Trash2 />
                     </button>
-                  </div>
-                </div>
+                  </span>
+                </header>
+                <FlowPages className="music-lyrics-pages" label={`Cue ${document.segments.findIndex((s) => s.id === selectedSegment.id) + 1}`} resetKey={selectedSegment.id}>
+                  <fieldset disabled={busy} className="music-lyrics-cue-fields">
+                    <div className="music-lyrics-pair keep-together">
+                      <div className="music-lyrics-time">
+                        <label>Start ({formatTime(selectedSegment.start)})
+                          <input
+                            type="number"
+                            min={0}
+                            max={take.durationSeconds}
+                            step={0.01}
+                            value={roundTime(selectedSegment.start)}
+                            onChange={(e) => patchSegment(selectedSegment.id, { start: e.currentTarget.valueAsNumber })}
+                          />
+                        </label>
+                        <button type="button" className="quiet-button compact" title="Set cue start to playhead position" aria-label={`Set cue start to playhead ${formatPreciseTime(currentTime)}`} onClick={() => patchSegment(selectedSegment.id, { start: roundTime(currentTime) })}>
+                          <Clock3 /> {formatPreciseTime(currentTime)}
+                        </button>
+                      </div>
+                      <div className="music-lyrics-time">
+                        <label>End ({formatTime(selectedSegment.end)})
+                          <input
+                            type="number"
+                            min={0.01}
+                            max={take.durationSeconds}
+                            step={0.01}
+                            value={roundTime(selectedSegment.end)}
+                            onChange={(e) => patchSegment(selectedSegment.id, { end: e.currentTarget.valueAsNumber })}
+                          />
+                        </label>
+                        <button type="button" className="quiet-button compact" title="Set cue end to playhead position" aria-label={`Set cue end to playhead ${formatPreciseTime(currentTime)}`} onClick={() => patchSegment(selectedSegment.id, { end: roundTime(currentTime) })}>
+                          <Clock3 /> {formatPreciseTime(currentTime)}
+                        </button>
+                      </div>
+                    </div>
 
-                <div className="music-lyrics-time-fields">
-                  <div className="music-lyrics-time-card">
-                    <label>
-                      <span>Start ({formatTime(selectedSegment.start)})</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={take.durationSeconds}
-                        step={0.01}
-                        value={roundTime(selectedSegment.start)}
-                        onChange={(e) => patchSegment(selectedSegment.id, { start: e.currentTarget.valueAsNumber })}
+                    <label className="music-lyrics-field keep-together">
+                      <span>Primary lyric</span>
+                      <textarea
+                        value={selectedSegment.primary}
+                        rows={2}
+                        onChange={(e) => patchSegment(selectedSegment.id, { primary: e.target.value })}
+                        placeholder="Lyric line text…"
                       />
                     </label>
-                    <button
-                      type="button"
-                      className="music-lyrics-set-btn"
-                      title="Set cue start to playhead position"
-                      onClick={() => patchSegment(selectedSegment.id, { start: roundTime(currentTime) })}
-                    >
-                      <Clock3 /> Set Start ({formatPreciseTime(currentTime)})
-                    </button>
-                  </div>
 
-                  <div className="music-lyrics-time-card">
-                    <label>
-                      <span>End ({formatTime(selectedSegment.end)})</span>
-                      <input
-                        type="number"
-                        min={0.01}
-                        max={take.durationSeconds}
-                        step={0.01}
-                        value={roundTime(selectedSegment.end)}
-                        onChange={(e) => patchSegment(selectedSegment.id, { end: e.currentTarget.valueAsNumber })}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      className="music-lyrics-set-btn"
-                      title="Set cue end to playhead position"
-                      onClick={() => patchSegment(selectedSegment.id, { end: roundTime(currentTime) })}
-                    >
-                      <Clock3 /> Set End ({formatPreciseTime(currentTime)})
-                    </button>
-                  </div>
-                </div>
+                    {document.showTranslation && (
+                      <label className="music-lyrics-field keep-together">
+                        <span>
+                          Translation ({targetLanguage})
+                          {onTranslateLyrics && (
+                            <button
+                              type="button"
+                              className="quiet-button compact"
+                              disabled={translationBusy || busy || !selectedSegment.primary.trim()}
+                              title={`Translate this cue into ${targetLanguage} using local AI`}
+                              onClick={() => handleTranslateCue(selectedSegment.id, selectedSegment.primary)}
+                            >
+                              {translationBusy ? <LoaderCircle className="spin" /> : <Languages />} Translate cue
+                            </button>
+                          )}
+                        </span>
+                        <textarea
+                          value={selectedSegment.translation}
+                          rows={2}
+                          onChange={(e) => patchSegment(selectedSegment.id, { translation: e.target.value })}
+                          placeholder={`Translated lyric in ${targetLanguage}…`}
+                        />
+                      </label>
+                    )}
 
-                <label className="music-lyrics-field">
-                  <span>Primary lyric</span>
-                  <textarea
-                    value={selectedSegment.primary}
-                    rows={2}
-                    onChange={(e) => patchSegment(selectedSegment.id, { primary: e.target.value })}
-                    placeholder="Lyric line text…"
-                  />
-                </label>
+                    <div className="music-lyrics-words-head keep-together">
+                      <strong>Word timings ({selectedSegment.words.length})</strong>
+                      <span>
+                        <button type="button" className="quiet-button compact" title="Add word at current playhead" onClick={() => addWordToSegment(selectedSegment.id)}>
+                          <Plus /> Add word
+                        </button>
+                        {selectedSegment.words.length === 0 && selectedSegment.primary.trim().length > 0 && (
+                          <button type="button" className="quiet-button compact" title="Generate word timings from primary lyric" onClick={() => splitWordsFromPrimary(selectedSegment.id)}>
+                            <Sparkles /> Split words
+                          </button>
+                        )}
+                      </span>
+                    </div>
 
-                {document.showTranslation && (
-                  <div className="music-lyrics-field">
-                    <div className="music-lyrics-field-header">
-                      <span>Translation ({targetLanguage})</span>
-                      {onTranslateLyrics && (
+                    {selectedSegment.words.length === 0 && <p className="music-lyrics-empty">No word timings yet. Add a word or split the primary lyric.</p>}
+                    {selectedSegment.words.map((word, wordIndex) => (
+                      <div key={`${wordIndex}-${word.start}`} className="music-lyrics-word">
+                        <input
+                          aria-label={`Word ${wordIndex + 1}`}
+                          value={word.value}
+                          onChange={(e) => patchWord(selectedSegment.id, wordIndex, { value: e.target.value })}
+                          placeholder="word"
+                        />
                         <button
                           type="button"
-                          className="music-lyrics-btn-xs"
-                          disabled={translationBusy || busy || !selectedSegment.primary.trim()}
-                          title={`Translate this cue into ${targetLanguage} using local AI`}
-                          onClick={() => handleTranslateCue(selectedSegment.id, selectedSegment.primary)}
+                          className="quiet-button compact"
+                          title={`Seek and play from "${word.value}" (${formatPreciseTime(word.start)})`}
+                          onClick={() => {
+                            onSeek(word.start);
+                            if (!playing) handleTogglePlay();
+                          }}
                         >
-                          {translationBusy ? <LoaderCircle className="spin" /> : <Languages />} Translate cue
+                          <Play /> {formatPreciseTime(word.start)} – {formatPreciseTime(word.end)}
                         </button>
-                      )}
-                    </div>
-                    <textarea
-                      value={selectedSegment.translation}
-                      rows={2}
-                      onChange={(e) => patchSegment(selectedSegment.id, { translation: e.target.value })}
-                      placeholder={`Translated lyric in ${targetLanguage}…`}
-                    />
-                  </div>
-                )}
-
-                <div className="music-lyrics-words-panel">
-                  <div className="music-lyrics-words-panel-header">
-                    <strong>Word Timings ({selectedSegment.words.length})</strong>
-                    <div className="music-lyrics-words-actions">
-                      <button
-                        type="button"
-                        className="music-lyrics-btn-sm"
-                        title="Add word at current playhead"
-                        onClick={() => addWordToSegment(selectedSegment.id)}
-                      >
-                        <Plus /> Add word
-                      </button>
-                      {selectedSegment.words.length === 0 && selectedSegment.primary.trim().length > 0 && (
+                        <button type="button" className="danger-button compact" title="Remove word" aria-label={`Remove word ${word.value}`} onClick={() => removeWordFromSegment(selectedSegment.id, wordIndex)}>
+                          <Trash2 />
+                        </button>
                         <button
                           type="button"
-                          className="music-lyrics-btn-sm"
-                          title="Generate word timings from primary lyric"
-                          onClick={() => splitWordsFromPrimary(selectedSegment.id)}
+                          className="quiet-button compact"
+                          title={`Set start of "${word.value}" to playhead (${formatPreciseTime(currentTime)})`}
+                          onClick={() => setWordStart(selectedSegment.id, wordIndex)}
                         >
-                          <Sparkles /> Split words
+                          Start at {formatPreciseTime(currentTime)}
                         </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {selectedSegment.words.length === 0 ? (
-                    <div className="music-lyrics-no-words">
-                      <span>No individual word timings. Add words or click Split words above.</span>
-                    </div>
-                  ) : (
-                    <div className="music-lyrics-word-list">
-                      {selectedSegment.words.map((word, wordIndex) => (
-                        <div key={`${wordIndex}-${word.start}`} className="music-lyrics-word-item">
-                          <div className="music-lyrics-word-main">
-                            <input
-                              className="music-lyrics-word-text-input"
-                              value={word.value}
-                              onChange={(e) => patchWord(selectedSegment.id, wordIndex, { value: e.target.value })}
-                              placeholder="word"
-                            />
-                            <button
-                              type="button"
-                              className="music-lyrics-word-play-btn"
-                              title={`Seek and play from "${word.value}" (${formatPreciseTime(word.start)})`}
-                              onClick={() => {
-                                onSeek(word.start);
-                                if (!playing) handleTogglePlay();
-                              }}
-                            >
-                              <Play /> {formatPreciseTime(word.start)} – {formatPreciseTime(word.end)}
-                            </button>
-                            <button
-                              type="button"
-                              className="music-lyrics-word-del-btn"
-                              title="Remove word"
-                              onClick={() => removeWordFromSegment(selectedSegment.id, wordIndex)}
-                            >
-                              <Trash2 />
-                            </button>
-                          </div>
-                          <div className="music-lyrics-word-timing-bar">
-                            <button
-                              type="button"
-                              className="music-lyrics-word-set-btn"
-                              title={`Set start of "${word.value}" to playhead (${formatPreciseTime(currentTime)})`}
-                              onClick={() => setWordStart(selectedSegment.id, wordIndex)}
-                            >
-                              Set start ({formatPreciseTime(currentTime)})
-                            </button>
-                            <button
-                              type="button"
-                              className="music-lyrics-word-set-btn"
-                              title={`Set end of "${word.value}" to playhead (${formatPreciseTime(currentTime)})`}
-                              onClick={() => setWordEnd(selectedSegment.id, wordIndex)}
-                            >
-                              Set end ({formatPreciseTime(currentTime)})
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </fieldset>
+                        <button
+                          type="button"
+                          className="quiet-button compact"
+                          title={`Set end of "${word.value}" to playhead (${formatPreciseTime(currentTime)})`}
+                          onClick={() => setWordEnd(selectedSegment.id, wordIndex)}
+                        >
+                          End at {formatPreciseTime(currentTime)}
+                        </button>
+                      </div>
+                    ))}
+                  </fieldset>
+                </FlowPages>
+              </section>
             )}
           </>
         )}
-        <footer><span>{document.segments.length} cues · saved revision {savedRevision}{dirty ? " · unsaved edits" : ""}</span><button disabled={busy || !dirty} onClick={() => void saveCurrentDocument()}><Save /> {dirty ? "Save revision" : "Saved"}</button></footer>
+        <footer className="music-lyrics-editor-foot"><span>{document.segments.length} cues · saved revision {savedRevision}{dirty ? " · unsaved edits" : ""}</span><button type="button" className="primary-button compact" disabled={busy || !dirty} onClick={() => void saveCurrentDocument()}><Save /> {dirty ? "Save revision" : "Saved"}</button></footer>
       </aside>}
     </section>
   );

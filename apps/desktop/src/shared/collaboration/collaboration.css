@@ -1,0 +1,36 @@
+/* Exchange with another chat or agent: copy the brief out, validate the answer back in. */
+.external-plan-exchange { margin: 16px 0; border: 1px solid var(--rule); border-radius: 9px; background: var(--paper-raised); }
+.external-plan-exchange > summary { min-height: 48px; padding: 9px 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; list-style: none; }
+.external-plan-exchange > summary::-webkit-details-marker { display: none; }
+.external-plan-exchange > summary span { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); font:750 var(--text-xs) var(--font-ui); }
+.external-plan-exchange > summary span svg { width: 14px; color: var(--act-ink); }
+.external-plan-exchange > summary small { color: var(--ink-3); text-align: right; font:var(--text-xs)/1.4 var(--font-ui); }
+.external-plan-body { padding: 13px; display: grid; gap: 12px; border-top: 1px solid var(--rule); }
+.external-plan-step { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.external-plan-step > span { min-width: 0; display: grid; grid-template-columns: 22px 1fr; gap: 2px 7px; }
+.external-plan-step b { grid-row: 1 / 3; width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid var(--rule-strong); border-radius: 50%; color: var(--act-ink); font:var(--text-xs) var(--font-ui); }
+.external-plan-step strong { color: var(--ink-2); font:750 var(--text-xs) var(--font-ui); }
+.external-plan-step small { color: var(--ink-3); font:var(--text-xs)/1.45 var(--font-ui); }
+.external-plan-body > label { color: var(--ink-3); font:var(--text-xs) var(--font-ui); text-transform: uppercase; }
+.external-plan-body > label textarea { min-height: 128px; margin-top: 5px; font:var(--text-xs)/1.45 var(--font-data); }
+.external-plan-file { min-height: 33px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--rule); border-radius: 7px; color: var(--ink-2); background: var(--paper-raised); cursor: pointer; white-space: nowrap; font:750 var(--text-xs) var(--font-ui); }
+.external-plan-file svg { width: 14px; }
+.external-plan-file input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.external-plan-drop { padding: 7px; border: 1px dashed var(--rule-strong); border-radius: 8px; background: var(--paper-raised); }
+.external-plan-drop:focus-within { border-color: var(--rule-strong); }
+.external-plan-drop textarea { min-height: 150px; border: 0; background: transparent; font:var(--text-xs)/1.5 var(--font-data); }
+.external-plan-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.external-plan-actions span { min-width: 0; color: var(--ink-3); font:var(--text-xs)/1.45 var(--font-ui); }
+.external-collaboration-exchange[aria-busy="true"] > summary { cursor: default; opacity: .68; }
+.external-plan-exchange > summary span { flex: 0 0 auto; font-size: var(--text-sm); font-weight: 400; }
+.external-plan-exchange > summary small { min-width: 0; flex: 1 1 auto; }
+
+/* The exchange carries its own controls, so it reads the same in any chapter's panel. */
+.external-plan-exchange .external-plan-body button { min-height: 32px; padding: 3px 11px; display: inline-flex; align-items: center; gap: 6px; border: var(--stroke-soft); border-radius: var(--radius-sketch); color: var(--ink); background: var(--paper-raised); box-shadow: var(--lift); font: var(--text-sm) var(--font-ui); white-space: nowrap; }
+.external-plan-exchange .external-plan-body button.accent { border-color: var(--act-ink); color: var(--on-pigment); background: var(--act); }
+.external-plan-exchange .external-plan-body button:disabled { opacity: .5; box-shadow: none; }
+.external-plan-exchange .external-plan-body button svg, .external-plan-exchange .external-plan-file svg { width: 14px; height: 14px; }
+.external-plan-exchange .external-plan-file { position: relative; display: inline-flex; font-size: var(--text-sm); white-space: nowrap; }
+.external-plan-exchange .external-plan-step { flex-wrap: wrap; }
+.external-plan-exchange > summary { flex-direction: column; align-items: flex-start; gap: 3px; }
+.external-plan-exchange > summary small { text-align: left; }

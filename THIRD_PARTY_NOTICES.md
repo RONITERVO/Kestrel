@@ -22,3 +22,19 @@ Copyright (c) 2025 GPU Memory Cleaner
 
 Licensed under the MIT License. A copy is included in
 [LICENSES/GpuClean-MIT.txt](LICENSES/GpuClean-MIT.txt).
+
+## Ink Battle sketchbook
+
+The Kestrel book's pencil stroke geometry, pigment grain and paper conventions are adapted from
+Ink Battle's spatial sketchbook. Copyright 2026 Roni Tervo. Licensed under the Apache License,
+Version 2.0; see [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt).
+Source: <https://github.com/RONITERVO/Ink-Battle>.
+
+## three.js
+
+The WebGL book uses three.js 0.186.1, copyright 2010-2026 three.js authors, under the MIT License.
+
+## Caveat and Patrick Hand fonts
+
+Bundled from Google Fonts under the SIL Open Font License 1.1. The original notices are kept in
+`apps/desktop/src/app/book/fonts/OFL-Caveat.txt` and `OFL-PatrickHand.txt`.

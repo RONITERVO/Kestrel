@@ -1,10 +1,18 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PromptPackVisualEditor } from "./PromptPackVisualEditor";
+import { PromptPackChooser, PromptPackPromptEditor, usePromptPackEditor } from "./PromptPackVisualEditor";
 
 afterEach(() => {
   cleanup();
 });
+
+// The System spread shows the chooser on the left page and the open prompt on the right.
+function PromptPackVisualEditor({ jsonText, savedJsonText, defaultJsonText, disabled, onChange }: {
+  jsonText: string; savedJsonText: string; defaultJsonText: string; disabled: boolean; onChange: (next: string) => void;
+}) {
+  const editor = usePromptPackEditor(jsonText, savedJsonText, defaultJsonText);
+  return <><PromptPackChooser editor={editor}/><PromptPackPromptEditor editor={editor} disabled={disabled} onChange={onChange}/></>;
+}
 
 function pack(prompts: Record<string, string>): string {
   return JSON.stringify({ format: "kestrel.prompt-pack", version: 1, prompts }, null, 2);

@@ -85,6 +85,22 @@ interface User {
     expect(items[0]).toHaveTextContent("First line continued detail");
   });
 
+  it("renders indented bullets under a numbered item as a nested list", () => {
+    const { container } = render(<MarkdownContent value={"1. **Photon energy**\n   - Red light has the longest wavelength.\n   - It has the lowest photon energy.\n2. **Hot objects glowing**\n   - They emit infrared first."} />);
+    const outer = container.querySelector(".markdown-content > ol")!;
+    expect(outer.children).toHaveLength(2);
+    const nested = outer.children[0].querySelectorAll(":scope > ul > li");
+    expect([...nested].map((item) => item.textContent)).toEqual(["Red light has the longest wavelength.", "It has the lowest photon energy."]);
+    expect(outer.children[0].firstChild?.textContent).toBe("Photon energy");
+    expect(outer.children[1].querySelectorAll(":scope > ul > li")).toHaveLength(1);
+  });
+
+  it("keeps the written numbers of a nested numbered list", () => {
+    const { container } = render(<MarkdownContent value={"- Steps continued:\n  3. Heat the pan\n  4. Add the onions"} />);
+    const nested = [...container.querySelectorAll(".markdown-list.nested > li")] as HTMLLIElement[];
+    expect(nested.map((item) => item.value)).toEqual([3, 4]);
+  });
+
   it("detects and renders ASCII diagrams and text charts in chart cards", () => {
     const chartMarkdown = `
 Architecture Diagram:

@@ -41,9 +41,8 @@ import type {
   SetupProgress,
   SetupSnapshot,
   MovieEdit,
-  MovieImageAssetEvent,
   MovieImageAssetGeneration,
-  MovieImageAssetRequest,
+  MovieReferenceAsset,
   MovieProject,
   MovieRenderPreviewEvent,
   MovieRenderState,
@@ -87,10 +86,6 @@ import type {
 
 export async function getMovieEditorState(id: string): Promise<MovieEditorState> {
   return invoke("get_movie_editor_state", { id });
-}
-
-export async function getMovieImageAssetRenderState(requestId: string): Promise<MovieRenderState> {
-  return invoke("get_movie_image_asset_render_state", { requestId });
 }
 
 export async function prepareMovieEditorRange(request: MovieEditorRangeRequest, edit: MovieEdit): Promise<MovieEditorJob> {
@@ -275,16 +270,9 @@ export async function listMovieImageAssets(): Promise<MovieImageAssetGeneration[
   return invoke("list_movie_image_assets");
 }
 
-export async function startMovieImageAsset(request: MovieImageAssetRequest): Promise<string> {
-  return invoke("start_movie_image_asset", { request });
-}
-
-export async function cancelMovieImageAsset(requestId: string): Promise<void> {
-  await invoke("cancel_movie_image_asset", { requestId });
-}
-
-export async function onMovieImageAsset(callback: (event: MovieImageAssetEvent) => void): Promise<UnlistenFn> {
-  return listen("movie-image-asset", (event) => callback(event.payload));
+/** Imports a finished Image Studio take into the movie reference library (by IDs; no path crosses IPC). */
+export async function importImageTakeAsMovieReference(imageProjectId: string, takeId: string): Promise<MovieReferenceAsset> {
+  return invoke("import_image_take_as_movie_reference", { imageProjectId, takeId });
 }
 
 export async function onMovieRenderPreview(callback: (event: MovieRenderPreviewEvent) => void): Promise<UnlistenFn> {

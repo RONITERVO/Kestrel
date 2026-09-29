@@ -8,7 +8,6 @@ import type { MovieRenderPreviewEvent } from "../../../contracts/index";
 vi.mock("../../../platform/api", () => ({
   onMovieRenderPreview: vi.fn(async () => () => undefined),
   getMovieRenderState: vi.fn(async () => ({ active: true })),
-  getMovieImageAssetRenderState: vi.fn(async () => ({ active: true })),
 }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -52,10 +51,10 @@ it("shows playback failure while keeping progress and Stop usable, then recovers
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
-it("shows an image decode failure for image-asset previews too", async () => {
-  render(<MovieH3Preview assetId="asset" active />);
+it("shows an image decode failure for still-frame render previews too", async () => {
+  render(<MovieH3Preview projectId="movie" active />);
   await waitFor(() => expect(api.onMovieRenderPreview).toHaveBeenCalledTimes(1));
-  await send({ ...frame, target: "imageAsset", projectId: undefined, jobId: "asset", mimeType: "image/jpeg", dataUrl: "data:image/jpeg;base64,AQID" });
+  await send({ ...frame, mimeType: "image/jpeg", dataUrl: "data:image/jpeg;base64,AQID" });
   fireEvent.error(screen.getByRole("img", { name: "Approximate H3 generation preview" }));
   expect(screen.getByRole("alert")).toBeVisible();
 });

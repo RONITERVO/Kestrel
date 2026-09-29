@@ -1,0 +1,17 @@
+/* Workspace runtime limits, shared by every studio collaborator. */
+
+/* A live log is the one reading surface that follows its newest line. */
+
+.model-runtime-policy { min-width: 0; margin: 0; padding: 10px 12px; display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 8px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); }
+.model-runtime-policy legend { padding: 0 5px; color: var(--ink-3); font-size: var(--text-xs); letter-spacing: .08em; text-transform: uppercase; }
+.model-runtime-policy label { min-width: 0; display: grid; gap: 3px; color: var(--ink-2); font-size: var(--text-sm); }
+.model-runtime-policy label span { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.model-runtime-policy label small { color: var(--ink-3); white-space: nowrap; }
+.model-runtime-policy input { width: 100%; min-height: 30px; font-family: var(--font-data); font-size: var(--text-sm); }
+.model-runtime-policy-state { grid-column: 1 / -1; min-width: 0; display: grid; gap: 2px; }
+.model-runtime-policy-state strong { color: var(--act-ink); font-weight: 400; }
+.model-runtime-policy-state small { color: var(--ink-3); font-family: var(--font-read); line-height: 1.4; white-space: normal; }
+.model-runtime-policy > button { grid-column: 1 / -1; min-height: 30px; border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper); }
+.workspace-runtime-policy { margin-top: 7px; border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper); }
+.workspace-runtime-policy > summary { padding: 6px 10px; color: var(--ink-2); cursor: pointer; font-size: var(--text-sm); }
+.workspace-runtime-policy > .model-runtime-policy { margin: 0 7px 7px; }

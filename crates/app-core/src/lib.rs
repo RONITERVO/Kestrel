@@ -1535,8 +1535,7 @@ pub use movie::{
 
 pub mod image_assets;
 pub use image_assets::{
-    GeneratedImageProvenance, MovieImageAssetCandidate, MovieImageAssetEvent,
-    MovieImageAssetGeneration, MovieImageAssetRequest,
+    GeneratedImageProvenance, MovieImageAssetCandidate, MovieImageAssetGeneration,
 };
 
 pub mod live_preview;

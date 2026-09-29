@@ -9,6 +9,7 @@ import {
   FileCode2,
   FileText,
   FolderOpen,
+  Gauge,
   History,
   Image,
   LoaderCircle,
@@ -30,7 +31,13 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownContent } from "../../shared/components/MarkdownContent";
+import { TextParagraphs } from "../../shared/components/TextParagraphs";
 import { type SpeechProgressState } from "../../shared/components/spokenHighlight";
+import { FlowPages, type FlowPagesController } from "../../shared/book/FlowPages";
+import { CardPages, MessagePages, ReplyViewToggle, type ReplyView } from "../../shared/book/MessagePages";
+import { PagedList } from "../../shared/book/PagedList";
+import { formatMib } from "../../shared/format";
+import "./workspace.css";
 import { useInferenceTelemetryReporter } from "../control/InferenceTelemetry";
 import { SpeechDictationButton, SpeechPlaybackButton } from "../speech/LocalSpeechControls";
 import {
@@ -86,6 +93,8 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     control.settings.selectedModelId ?? control.models[0]?.id ?? "",
   );
   const [filter, setFilter] = useState("");
+  // On narrow pages the drawer and the session inspector take turns on the left page.
+  const [leftView, setLeftView] = useState<"drawer" | "inspector">("drawer");
   const [settings, setSettings] = useState(control.settings);
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [session, setSession] = useState<ChatSession | null>(null);
@@ -95,17 +104,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     [],
   );
   const pendingVoiceRecordingRef = useRef<SpeechRecordingAttachment | null>(null);
-  const [stream, setStream] = useState<{
-    requestId: string;
-    phase: string;
-    content: string;
-    reasoning: string;
-    notice?: string;
-    thinkingLevel?: string;
-    startedAt?: number;
-    data?: Record<string, unknown>;
-    metrics?: Record<string, unknown>;
-  } | null>(null);
+  const [stream, setStream] = useState<LiveStream | null>(null);
   const [tasks, setTasks] = useState<ComputerTaskSummary[]>([]);
   const [task, setTask] = useState<ComputerTaskRun | null>(null);
   const [objective, setObjective] = useState("");
@@ -141,7 +140,6 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   const latestTaskRef = useRef<ComputerTaskRun | null>(task);
   const taskStartingRef = useRef(false);
   const earlyTaskEventsRef = useRef<ComputerTaskEvent[]>([]);
-  const chatEndRef = useRef<HTMLDivElement>(null);
   const onChangedRef = useRef(onChanged);
   const enginePathHasValidName = /(?:^|[\\/])llama-server\.exe$/i.test(
     settings.enginePath.trim(),
@@ -216,11 +214,6 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     const timer = window.setInterval(refreshControl, 2_500);
     return () => window.clearInterval(timer);
   }, [visible]);
-
-  useEffect(() => {
-    if (typeof chatEndRef.current?.scrollIntoView === "function")
-      chatEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [session?.messages.length, stream?.content, stream?.reasoning]);
 
   function handleChatEvent(event: ChatStreamEvent) {
     if (chatRequestRef.current && event.requestId !== chatRequestRef.current)
@@ -844,12 +837,13 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   const gpu = control.gpu;
 
   return (
-    <div className="control-plane offline-workspace" data-mode={kind}>
+    <div className="control-plane offline-workspace spread" data-mode={kind}>
+      <div className="page page-left control-drawer-page" data-left={leftView}>
+      <div className="segmented control-left-switch" role="group" aria-label="Left page">
+        <button type="button" className={leftView === "drawer" ? "active" : ""} aria-pressed={leftView === "drawer"} onClick={() => setLeftView("drawer")}><Bot /> Models & history</button>
+        <button type="button" className={leftView === "inspector" ? "active" : ""} aria-pressed={leftView === "inspector"} onClick={() => setLeftView("inspector")}><Gauge /> Session</button>
+      </div>
       <aside className="model-drawer">
-        <div className="control-product">
-          <strong>KESTREL</strong>
-          <span>OFFLINE WORKSPACE</span>
-        </div>
         <div className="work-mode-switch">
           <button
             className={kind === "chat" ? "active" : ""}
@@ -874,52 +868,58 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
         </div>
         <div className="drawer-title">
           <span>MODEL</span>
-          <button
-            title="Read-only rescan"
-            onClick={() => void act("scan", scanLocalModels)}
-          >
-            {working === "scan" ? (
-              <LoaderCircle className="spin" />
-            ) : (
-              <RefreshCw />
-            )}
-          </button>
-        </div>
-        <div className="control-models compact-models">
-          {visibleModels.map((model) => (
+          <span className="drawer-title-actions">
             <button
-              key={model.id}
-              disabled={active}
-              className={selectedId === model.id ? "selected" : ""}
-              onClick={() => {
-                if (session && model.id !== session.modelId) newConversation();
-                setSelectedId(model.id);
-              }}
+              type="button"
+              title="Add local model folder"
+              aria-label="Add local model folder"
+              onClick={() => void addModelFolder()}
+              disabled={working === "attach"}
             >
-              <Bot />
-              <span>
-                <strong>{model.name}</strong>
-                <small>
-                  {model.source} · {model.quantization ?? "GGUF"}
-                  {model.supportsVision ? " · vision" : ""}
-                  {model.supportsAudio ? " · audio" : ""}
-                </small>
-              </span>
-              {control.runtime.modelId === model.id && (
-                <i>{control.runtime.phase}</i>
+              {working === "attach" ? <LoaderCircle className="spin" /> : <FolderOpen />}
+            </button>
+            <button
+              title="Read-only rescan"
+              onClick={() => void act("scan", scanLocalModels)}
+            >
+              {working === "scan" ? (
+                <LoaderCircle className="spin" />
+              ) : (
+                <RefreshCw />
               )}
             </button>
-          ))}
+          </span>
         </div>
-        <button
-          type="button"
-          className="drawer-model-add"
-          onClick={() => void addModelFolder()}
-          disabled={working === "attach"}
-        >
-          {working === "attach" ? <LoaderCircle className="spin" /> : <FolderOpen />}
-          Add local model folder
-        </button>
+        <PagedList
+          className="control-models compact-models"
+          label="Local models"
+          items={visibleModels}
+          itemKey={(model) => model.id}
+          selectedKey={selectedId}
+          renderItem={(model) => (
+          <button
+            disabled={active}
+            className={selectedId === model.id ? "selected" : ""}
+            onClick={() => {
+              if (session && model.id !== session.modelId) newConversation();
+              setSelectedId(model.id);
+            }}
+          >
+            <Bot />
+            <span>
+              <strong>{model.name}</strong>
+              <small>
+                {model.source} · {model.quantization ?? "GGUF"}
+                {model.supportsVision ? " · vision" : ""}
+                {model.supportsAudio ? " · audio" : ""}
+              </small>
+            </span>
+            {control.runtime.modelId === model.id && (
+              <i>{control.runtime.phase}</i>
+            )}
+          </button>
+          )}
+        />
         {settings.extraModelRoots.length > 0 && <div className="drawer-model-roots" aria-label="Additional model folders">
           {settings.extraModelRoots.map((root) => <div key={root}>
             <span title={root}>{root}</span>
@@ -953,11 +953,15 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
             </button>
           )}
         </div>
-        <div className="history-list">
-          {kind === "chat"
-            ? sessions.map((item) => (
+        {kind === "chat" ? (
+          <PagedList
+            className="history-list"
+            label="Conversations"
+            items={sessions}
+            itemKey={(item) => item.id}
+            selectedKey={session?.id}
+            renderItem={(item) => (
                 <div
-                  key={item.id}
                   className={session?.id === item.id ? "active" : ""}
                 >
                   <button
@@ -978,10 +982,17 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
                     <Trash2 />
                   </button>
                 </div>
-              ))
-            : tasks.map((item) => (
+            )}
+          />
+        ) : (
+          <PagedList
+            className="history-list"
+            label="Task history"
+            items={tasks}
+            itemKey={(item) => item.id}
+            selectedKey={task?.id}
+            renderItem={(item) => (
                 <button
-                  key={item.id}
                   disabled={!!taskRunRef.current}
                   className={task?.id === item.id ? "active" : ""}
                   onClick={() => void openTask(item)}
@@ -992,311 +1003,33 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
                     {relativeTime(item.updatedAt)}
                   </small>
                 </button>
-              ))}
-        </div>
-        <div className="local-lock">
-          <ShieldCheck />
-          <span>
-            <strong>Offline execution</strong>
-            <small>
-              Loopback model · durable transcripts · one inference lease
-            </small>
-          </span>
-        </div>
-      </aside>
-
-      <section className="control-center">
-        <header className="control-top">
-          <div>
-            <span className="eyebrow">
-              {kind === "chat" ? "LOCAL CONVERSATION" : "VISIBLE COMPUTER WORK"}
-            </span>
-            <h1>
-              {kind === "chat"
-                ? (session?.title ?? selected?.name ?? "Choose a model")
-                : (task?.objective ?? "Computer Tasks")}
-            </h1>
-          </div>
-          <div className="control-actions">
-            {kind === "chat" ? (
-              <button
-                className="quiet-button"
-                disabled={!!stream}
-                onClick={newConversation}
-              >
-                <MessageSquarePlus /> New chat
-              </button>
-            ) : (
-              <>
-                <button
-                  className="quiet-button"
-                  disabled={!!stream}
-                  onClick={newConversation}
-                >
-                  <MessageSquarePlus /> New chat
-                </button>
-                <button
-                  className="quiet-button"
-                  disabled={active}
-                  onClick={newTask}
-                >
-                  <MessageSquarePlus /> New task
-                </button>
-              </>
             )}
-            {control.runtime.phase === "ready" ? (
-              <button
-                className="quiet-button"
-                disabled={active}
-                onClick={() => void act("stop", stopLocalModel)}
-              >
-                {working === "stop" ? (
-                  <LoaderCircle className="spin" />
-                ) : (
-                  <CircleStop />
-                )}
-                {control.runtime.mode === "attached" ? "Detach" : "Stop"}
-              </button>
-            ) : (
-              <button
-                className="primary-button"
-                disabled={!selected || !!working}
-                onClick={() =>
-                  selected &&
-                  void act("start", () => startLocalModel(selected.id))
-                }
-              >
-                {working === "start" ? (
-                  <LoaderCircle className="spin" />
-                ) : (
-                  <Play />
-                )}{" "}
-                Load model
-              </button>
-            )}
-          </div>
-        </header>
-        {kind === "chat" ? (
-          <>
-            <div className="control-chat" aria-live="polite">
-              {working === "start" && runtimeProgress && (
-                <RuntimeNotice title="MODEL STARTUP" detail={runtimeProgress} />
-              )}{" "}
-              {session?.messages.length ? (
-                session.messages.map((message) => (
-                  <Message
-                    key={message.id}
-                    message={message}
-                    sessionId={session.id}
-                    model={selected?.name}
-                    onError={onError}
-                  />
-                ))
-              ) : (
-                <Welcome
-                  models={control.models.length}
-                  context={effectiveContext}
-                  freeMib={gpu?.freeMib}
-                />
-              )}{" "}
-              {stream && (
-                <article className="assistant streaming">
-                  <span>
-                    {selected?.name ?? "MODEL"}
-                    <i>{stream.phase}</i>
-                  </span>
-                  {stream.notice && (
-                    <div className="context-notice">{stream.notice}</div>
-                  )}
-                  {stream.reasoning ? (
-                    <details open={!stream.content} className="chat-reasoning-block">
-                      <summary>
-                        <span>Reasoning</span>
-                        <span className="thinking-level-badge">{(stream.thinkingLevel || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel)).toUpperCase()}</span>
-                        <small>live</small>
-                      </summary>
-                      <pre>{stream.reasoning}</pre>
-                    </details>
-                  ) : (stream.thinkingLevel === "off" || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel) === "off") && stream.phase !== "queued" ? (
-                    <div className="chat-thinking-off-indicator" style={{ display: "flex", alignItems: "center", gap: 6, margin: "6px 0", padding: "4px 8px", background: "rgba(30,35,30,0.5)", borderRadius: 4, border: "1px solid rgba(80,90,80,0.3)" }}>
-                      <span className="thinking-level-badge thinking-off-badge">THINKING OFF</span>
-                      <small style={{ color: "#8a948c", font: "8px var(--sans)" }}>Generating direct response without reasoning channel</small>
-                    </div>
-                  ) : null}
-                  <MarkdownContent
-                    value={
-                      stream.content ||
-                      (stream.phase === "queued"
-                        ? "Waiting for the inference slot…"
-                        : "")
-                    }
-                    streaming={stream.phase === "generating"}
-                  />
-                  <Metrics
-                    data={stream.metrics}
-                    content={stream.content}
-                    reasoning={stream.reasoning}
-                    startedAt={stream.startedAt}
-                    active={stream.phase === "generating"}
-                    modelName={selected?.name}
-                  />
-                </article>
-              )}
-              <div ref={chatEndRef} />
-            </div>
-            {resumableAnswer && (
-              <div className="chat-resume">
-                <span>The partial answer is saved.</span>
-                <button onClick={() => void continueGeneration()}>
-                  <Play /> Continue answer
-                </button>
-              </div>
-            )}
-            <div className={`control-composer ${stream ? "steerable" : ""}`}>
-              {chatAttachments.length > 0 && (
-                <AttachmentShelf
-                  attachments={chatAttachments}
-                  removable
-                  onError={onError}
-                  onRemove={(id) =>
-                    setChatAttachments((items) =>
-                      items.filter((item) => item.id !== id),
-                    )
-                  }
-                />
-              )}
-              <div className="composer-toolbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 6px", fontSize: 11 }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 6, color: "#8b948d", fontSize: 10 }}>
-                  <span>Thinking:</span>
-                  <select
-                    value={chatThinkingLevel}
-                    onChange={(e) => setChatThinkingLevel(e.target.value as ThinkingLevel | "default")}
-                    style={{ background: "#18201a", color: "#b0c0b4", border: "1px solid #334036", borderRadius: 4, padding: "1px 4px", fontSize: 10 }}
-                  >
-                    <option value="default">Model default ({effectiveThinkingLevel})</option>
-                    <option value="off">Off (direct)</option>
-                    <option value="low">Low reasoning</option>
-                    <option value="medium">Medium reasoning</option>
-                    <option value="high">High reasoning</option>
-                    <option value="max">Max reasoning</option>
-                  </select>
-                </span>
-              </div>
-              <div className="composer-row">
-                <button
-                  className="attach-button"
-                  title="Attach local context"
-                  disabled={
-                    control.runtime.phase !== "ready" ||
-                    !!taskRunRef.current ||
-                    working === "attach"
-                  }
-                  onClick={() => void attachFiles("chat")}
-                >
-                  {working === "attach" ? (
-                    <LoaderCircle className="spin" />
-                  ) : (
-                    <Paperclip />
-                  )}
-                </button>
-                <SpeechDictationButton
-                  sourceKind="chat"
-                  sourceId={session?.id ?? "chat-draft"}
-                  value={draft}
-                  onChange={setDraft}
-                  onRecordingComplete={(recording) => {
-                    pendingVoiceRecordingRef.current = recording;
-                  }}
-                  onActiveChange={setChatDictating}
-                  disabled={control.runtime.phase !== "ready" || !!taskRunRef.current || !!stream}
-                  label="Dictate message"
-                />
-                <textarea
-                  value={draft}
-                  readOnly={chatDictating}
-                  onChange={(event) => setDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (!chatDictating && event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void send();
-                    }
-                  }}
-                  placeholder={
-                    control.runtime.phase !== "ready"
-                      ? "Load a model to begin"
-                      : taskRunRef.current
-                        ? "Computer task is using the inference slot…"
-                        : stream
-                          ? "Add context or a message to redirect this answer…"
-                          : "Message the active local model…"
-                  }
-                  disabled={
-                    control.runtime.phase !== "ready" || !!taskRunRef.current
-                  }
-                />
-                {stream && !draft.trim() && chatAttachments.length === 0 ? (
-                  <button
-                    title="Stop generation"
-                    className="stop-generation"
-                    onClick={() => void cancelGeneration()}
-                  >
-                    <Square />
-                  </button>
-                ) : (
-                  <button
-                    title={
-                      stream ? "Send and redirect the current answer" : "Send"
-                    }
-                    onClick={() => void send()}
-                    disabled={
-                      (!draft.trim() && chatAttachments.length === 0) ||
-                      chatDictating ||
-                      control.runtime.phase !== "ready" ||
-                      !!taskRunRef.current
-                    }
-                  >
-                    {stream ? <Zap /> : <Send />}
-                  </button>
-                )}
-              </div>
-            </div>
-          </>
-        ) : (
-          <ComputerTasks
-            run={task}
-            objective={objective}
-            attachments={taskAttachments}
-            answer={taskAnswer}
-            access={access}
-            ready={control.runtime.phase === "ready"}
-            running={!!taskRunRef.current}
-            stopping={stoppingTask}
-            resuming={working === "task"}
-            attaching={working === "attach"}
-            fullUnlocked={settings.allowFullAccessAgent}
-            onObjective={setObjective}
-            onRemoveAttachment={(id) =>
-              setTaskAttachments((items) =>
-                items.filter((item) => item.id !== id),
-              )
-            }
-            onAttach={() => void attachFiles("task")}
-            onAnswer={setTaskAnswer}
-            onAccess={setAccess}
-            onRun={() => void runTask()}
-            onResume={() => void resumeTask()}
-            onStop={() => void stopTask()}
-            thinkingLevel={taskThinkingLevel}
-            effectiveThinkingLevel={effectiveThinkingLevel}
-            onThinkingLevel={setTaskThinkingLevel}
-            onOpen={(path) => task && void openTaskArtifact(task.id, path)}
-            onError={onError}
           />
         )}
-      </section>
+      </aside>
 
       <aside className="control-inspector">
         <span className="eyebrow">SESSION INSPECTOR</span>
+        <FlowPages
+          className="control-inspector-pages"
+          label="Session inspector pages"
+          resetKey={kind}
+          footer={<>
+            {selectedOverride && settings.advancedMode && (
+              <div className="control-warning">
+                Invalid or oversized values can stop startup or exhaust VRAM.
+              </div>
+            )}
+            <button
+              className="quiet-button inspector-save"
+              disabled={!!working || active}
+              onClick={() => void save()}
+            >
+              {working === "save" ? <LoaderCircle className="spin" /> : <Check />}{" "}
+              Save complete profile
+            </button>
+          </>}
+        >
         <div className="control-metric-grid">
           <Metric label="Runtime" value={control.runtime.phase} />
           <Metric label="Ownership" value={control.runtime.mode} />
@@ -1483,19 +1216,6 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
             </div>
           </div>
         </section>}
-        {selectedOverride && settings.advancedMode && (
-          <div className="control-warning">
-            Invalid or oversized values can stop startup or exhaust VRAM.
-          </div>
-        )}
-        <button
-          className="quiet-button inspector-save"
-          disabled={!!working || active}
-          onClick={() => void save()}
-        >
-          {working === "save" ? <LoaderCircle className="spin" /> : <Check />}{" "}
-          Save complete profile
-        </button>
         {control.runtime.launchArgs.length > 0 && (
           <details className="launch-proof">
             <summary>Exact engine launch</summary>
@@ -1516,7 +1236,274 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
               : "Attached runtimes do not expose process logs. Managed runtime output will appear here."}
           </pre>
         </details>
+        </FlowPages>
+        <div className="local-lock">
+          <ShieldCheck />
+          <span>
+            <strong>Offline execution</strong>
+            <small>
+              Loopback model · durable transcripts · one inference lease
+            </small>
+          </span>
+        </div>
       </aside>
+      </div>
+
+      <section className="page page-right control-center">
+        <header className="control-top">
+          <div>
+            <span className="eyebrow">
+              {kind === "chat" ? "LOCAL CONVERSATION" : "VISIBLE COMPUTER WORK"}
+            </span>
+            <h1>
+              {kind === "chat"
+                ? (session?.title ?? selected?.name ?? "Choose a model")
+                : (task?.objective ?? "Computer Tasks")}
+            </h1>
+          </div>
+          <div className="control-actions">
+            {kind === "chat" ? (
+              <button
+                className="quiet-button"
+                disabled={!!stream}
+                onClick={newConversation}
+              >
+                <MessageSquarePlus /> New chat
+              </button>
+            ) : (
+              <>
+                <button
+                  className="quiet-button"
+                  disabled={!!stream}
+                  onClick={newConversation}
+                >
+                  <MessageSquarePlus /> New chat
+                </button>
+                <button
+                  className="quiet-button"
+                  disabled={active}
+                  onClick={newTask}
+                >
+                  <MessageSquarePlus /> New task
+                </button>
+              </>
+            )}
+            {control.runtime.phase === "ready" ? (
+              <button
+                className="quiet-button"
+                disabled={active}
+                onClick={() => void act("stop", stopLocalModel)}
+              >
+                {working === "stop" ? (
+                  <LoaderCircle className="spin" />
+                ) : (
+                  <CircleStop />
+                )}
+                {control.runtime.mode === "attached" ? "Detach" : "Stop"}
+              </button>
+            ) : (
+              <button
+                className="primary-button"
+                disabled={!selected || !!working}
+                onClick={() =>
+                  selected &&
+                  void act("start", () => startLocalModel(selected.id))
+                }
+              >
+                {working === "start" ? (
+                  <LoaderCircle className="spin" />
+                ) : (
+                  <Play />
+                )}{" "}
+                Load model
+              </button>
+            )}
+          </div>
+        </header>
+        {kind === "chat" ? (
+          <>
+            <MessagePages className="control-chat control-transcript" label="Conversation" resetKey={session?.id ?? "new"}>
+              {working === "start" && runtimeProgress && (
+                <RuntimeNotice key="runtime-notice" title="MODEL STARTUP" detail={runtimeProgress} />
+              )}
+              {session?.messages.length ? (
+                session.messages.map((message) => (
+                  <Message
+                    key={message.id}
+                    message={message}
+                    sessionId={session.id}
+                    model={selected?.name}
+                    onError={onError}
+                  />
+                ))
+              ) : (
+                <Welcome
+                  key="welcome"
+                  models={control.models.length}
+                  context={effectiveContext}
+                  freeMib={gpu?.freeMib}
+                />
+              )}
+              {stream && (
+                <LiveReply
+                  key={`live-${stream.requestId}`}
+                  stream={stream}
+                  model={selected?.name}
+                  thinkingLevel={stream.thinkingLevel || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel)}
+                  thinkingOff={(stream.thinkingLevel === "off" || (chatThinkingLevel === "default" ? effectiveThinkingLevel : chatThinkingLevel) === "off") && stream.phase !== "queued"}
+                />
+              )}
+            </MessagePages>
+            {resumableAnswer && (
+              <div className="chat-resume">
+                <span>The partial answer is saved.</span>
+                <button onClick={() => void continueGeneration()}>
+                  <Play /> Continue answer
+                </button>
+              </div>
+            )}
+            <div className={`control-composer ${stream ? "steerable" : ""}`}>
+              {chatAttachments.length > 0 && (
+                <AttachmentShelf
+                  attachments={chatAttachments}
+                  removable
+                  onError={onError}
+                  onRemove={(id) =>
+                    setChatAttachments((items) =>
+                      items.filter((item) => item.id !== id),
+                    )
+                  }
+                />
+              )}
+              <div className="composer-toolbar">
+                <label className="thinking-choice">
+                  <span>Thinking:</span>
+                  <select
+                    value={chatThinkingLevel}
+                    onChange={(e) => setChatThinkingLevel(e.target.value as ThinkingLevel | "default")}
+                  >
+                    <option value="default">Model default ({effectiveThinkingLevel})</option>
+                    <option value="off">Off (direct)</option>
+                    <option value="low">Low reasoning</option>
+                    <option value="medium">Medium reasoning</option>
+                    <option value="high">High reasoning</option>
+                    <option value="max">Max reasoning</option>
+                  </select>
+                </label>
+              </div>
+              <div className="composer-row">
+                <button
+                  className="attach-button"
+                  title="Attach local context"
+                  disabled={
+                    control.runtime.phase !== "ready" ||
+                    !!taskRunRef.current ||
+                    working === "attach"
+                  }
+                  onClick={() => void attachFiles("chat")}
+                >
+                  {working === "attach" ? (
+                    <LoaderCircle className="spin" />
+                  ) : (
+                    <Paperclip />
+                  )}
+                </button>
+                <SpeechDictationButton
+                  sourceKind="chat"
+                  sourceId={session?.id ?? "chat-draft"}
+                  value={draft}
+                  onChange={setDraft}
+                  onRecordingComplete={(recording) => {
+                    pendingVoiceRecordingRef.current = recording;
+                  }}
+                  onActiveChange={setChatDictating}
+                  disabled={control.runtime.phase !== "ready" || !!taskRunRef.current || !!stream}
+                  label="Dictate message"
+                />
+                <textarea
+                  value={draft}
+                  readOnly={chatDictating}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (!chatDictating && event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void send();
+                    }
+                  }}
+                  placeholder={
+                    control.runtime.phase !== "ready"
+                      ? "Load a model to begin"
+                      : taskRunRef.current
+                        ? "Computer task is using the inference slot…"
+                        : stream
+                          ? "Add context or a message to redirect this answer…"
+                          : "Message the active local model…"
+                  }
+                  disabled={
+                    control.runtime.phase !== "ready" || !!taskRunRef.current
+                  }
+                />
+                {stream && !draft.trim() && chatAttachments.length === 0 ? (
+                  <button
+                    title="Stop generation"
+                    className="stop-generation"
+                    onClick={() => void cancelGeneration()}
+                  >
+                    <Square />
+                  </button>
+                ) : (
+                  <button
+                    title={
+                      stream ? "Send and redirect the current answer" : "Send"
+                    }
+                    onClick={() => void send()}
+                    disabled={
+                      (!draft.trim() && chatAttachments.length === 0) ||
+                      chatDictating ||
+                      control.runtime.phase !== "ready" ||
+                      !!taskRunRef.current
+                    }
+                  >
+                    {stream ? <Zap /> : <Send />}
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
+        ) : (
+          <ComputerTasks
+            run={task}
+            objective={objective}
+            attachments={taskAttachments}
+            answer={taskAnswer}
+            access={access}
+            ready={control.runtime.phase === "ready"}
+            running={!!taskRunRef.current}
+            stopping={stoppingTask}
+            resuming={working === "task"}
+            attaching={working === "attach"}
+            fullUnlocked={settings.allowFullAccessAgent}
+            onObjective={setObjective}
+            onRemoveAttachment={(id) =>
+              setTaskAttachments((items) =>
+                items.filter((item) => item.id !== id),
+              )
+            }
+            onAttach={() => void attachFiles("task")}
+            onAnswer={setTaskAnswer}
+            onAccess={setAccess}
+            onRun={() => void runTask()}
+            onResume={() => void resumeTask()}
+            onStop={() => void stopTask()}
+            thinkingLevel={taskThinkingLevel}
+            effectiveThinkingLevel={effectiveThinkingLevel}
+            onThinkingLevel={setTaskThinkingLevel}
+            onOpen={(path) => task && void openTaskArtifact(task.id, path)}
+            onError={onError}
+          />
+        )}
+      </section>
+
     </div>
   );
 }
@@ -1646,12 +1633,11 @@ function ComputerTasks({
               </span>
             </button>
             {onThinkingLevel && (
-              <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", background: "#151c16", border: "1px solid #334036", borderRadius: 6, color: "#d0ded2", fontSize: 12 }}>
+              <label className="thinking-choice task-thinking-choice">
                 <span>Thinking:</span>
                 <select
                   value={thinkingLevel}
                   onChange={(e) => onThinkingLevel(e.target.value as ThinkingLevel | "default")}
-                  style={{ background: "#0e1410", color: "#b0c0b4", border: "1px solid #2f3e33", borderRadius: 4, padding: "4px 8px", fontSize: 12 }}
                 >
                   <option value="default">Model default ({effectiveThinkingLevel})</option>
                   <option value="off">Off (direct action)</option>
@@ -1697,56 +1683,11 @@ function ComputerTasks({
               </button>
             )}
           </header>
-          <div className="task-timeline" aria-live="polite">
+          <MessagePages className="task-pages" label="Task steps" unit="steps" resetKey={run.id} live>
             {run.events.map((event, index) => (
-              <article
-                key={`${event.at}-${index}`}
-                className={`task-event ${event.kind}`}
-              >
-                <div className="event-glyph">
-                  {event.kind === "artifact" ? (
-                    <FileCode2 />
-                  ) : event.kind === "tool_start" ? (
-                    <Wrench />
-                  ) : event.kind === "thinking" || event.kind === "queued" ? (
-                    <LoaderCircle className="spin" />
-                  ) : event.kind === "done" ? (
-                    <Check />
-                  ) : (
-                    <ChevronRight />
-                  )}
-                </div>
-                <div>
-                  <header>
-                    <strong style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      {event.title}
-                      {event.data?.thinkingLevel ? (
-                        <span className={`thinking-level-badge ${event.data.thinkingLevel === "off" ? "thinking-off-badge" : ""}`}>
-                          {String(event.data.thinkingLevel).toUpperCase()}
-                        </span>
-                      ) : null}
-                    </strong>
-                    <span>
-                      {event.step ? `Step ${event.step}` : "Setup"} ·{" "}
-                      {timeOnly(event.at)}
-                    </span>
-                  </header>
-                  <pre>{event.detail}</pre>
-                  {["done", "question"].includes(event.kind) && event.detail.trim() && (
-                    <SpeechPlaybackButton sourceKind="task" sourceId={run.id} passageId={`${event.kind}-${index}`} text={event.detail} label="Listen" />
-                  )}
-                  {event.kind === "artifact" && event.data?.path && (
-                    <button
-                      className="artifact-button"
-                      onClick={() => onOpen(event.data!.path!)}
-                    >
-                      <FolderOpen /> Open artifact
-                    </button>
-                  )}
-                </div>
-              </article>
+              <TaskEvent key={`${event.at}-${index}`} event={event} index={index} runId={run.id} onOpen={onOpen} />
             ))}
-          </div>
+          </MessagePages>
           {resumable && (
             <section className="task-question">
               <span className="eyebrow">
@@ -1824,12 +1765,24 @@ function Message({
   onError: (message: string) => void;
 }) {
   const [speechProgress, setSpeechProgress] = useState<SpeechProgressState | null>(null);
+  const [view, setView] = useState<ReplyView>("answer");
+  const cardRef = useRef<HTMLElement>(null);
+  const pages = useRef<FlowPagesController | null>(null);
   const speaking = Boolean(speechProgress?.active);
+  const reasoning = view === "reasoning" && message.reasoning;
+
+  // Reading aloud turns this message to the page that holds the spoken word.
+  useEffect(() => {
+    const word = cardRef.current?.querySelector(".speech-word-active");
+    if (word) pages.current?.showElement(word);
+  }, [speechProgress]);
 
   return (
     <article
+      ref={cardRef}
       className={`${message.role} ${speaking ? "speech-message-active" : ""}`}
       id={`chat-message-${message.id}`}
+      data-keep-with-next={message.role === "user" || undefined}
     >
       <span>
         {message.role === "user" ? "YOU" : (model ?? "MODEL")}
@@ -1840,6 +1793,7 @@ function Message({
               : "interrupted · partial saved"}
           </i>
         )}
+        {message.reasoning && <ReplyViewToggle view={view} onView={setView} />}
         <button
           title="Copy message"
           onClick={() => void navigator.clipboard.writeText(message.content)}
@@ -1849,14 +1803,12 @@ function Message({
       </span>
       {(message.attachments?.length ?? 0) > 0 && (
         <AttachmentShelf attachments={message.attachments!} onError={onError} />
-      )}{" "}
-      {message.reasoning && (
-        <details>
-          <summary>Reasoning</summary>
-          <pre>{message.reasoning}</pre>
-        </details>
       )}
-      <MarkdownContent value={message.content} speechProgress={speechProgress} />
+      <CardPages label={message.role === "user" ? "Your message" : "Reply"} resetKey={view} controller={pages}>
+        {reasoning
+          ? <TextParagraphs className="saved-reasoning" text={reasoning} />
+          : <MarkdownContent value={message.content} speechProgress={speechProgress} />}
+      </CardPages>
       {message.content.trim() && (message.role !== "user" || Boolean(message.recording)) && (
         <SpeechPlaybackButton
           sourceKind="chat"
@@ -1868,6 +1820,120 @@ function Message({
           onSpeechProgress={setSpeechProgress}
         />
       )}
+    </article>
+  );
+}
+
+/**
+ * One step of a Computer Task as a card. Long output and the final answer page inside the card; a
+ * tool call keeps its page with the result that follows it.
+ */
+function TaskEvent({ event, index, runId, onOpen }: { event: ComputerTaskEvent; index: number; runId: string; onOpen: (path: string) => void }) {
+  const answer = ["done", "question"].includes(event.kind);
+  return (
+    <article className={`task-event ${event.kind}`} data-keep-with-next={event.kind === "tool_start" || undefined}>
+      <div className="event-glyph">
+        {event.kind === "artifact" ? (
+          <FileCode2 />
+        ) : event.kind === "tool_start" ? (
+          <Wrench />
+        ) : event.kind === "thinking" || event.kind === "queued" ? (
+          <LoaderCircle className="spin" />
+        ) : event.kind === "done" ? (
+          <Check />
+        ) : (
+          <ChevronRight />
+        )}
+      </div>
+      <div>
+        <header>
+          <strong className="task-event-title">
+            {event.title}
+            {event.data?.thinkingLevel ? (
+              <span className={`thinking-level-badge ${event.data.thinkingLevel === "off" ? "thinking-off-badge" : ""}`}>
+                {String(event.data.thinkingLevel).toUpperCase()}
+              </span>
+            ) : null}
+          </strong>
+          <span>
+            {event.step ? `Step ${event.step}` : "Setup"} · {timeOnly(event.at)}
+          </span>
+        </header>
+        <CardPages label={answer ? "Answer" : event.title || "Step"}>
+          {answer
+            ? <MarkdownContent className="task-answer" value={event.detail} />
+            : ["reasoning", "thinking"].includes(event.kind)
+              ? <TextParagraphs className="task-reasoning" text={event.detail} />
+              : <pre>{event.detail}</pre>}
+        </CardPages>
+        {answer && event.detail.trim() && (
+          <SpeechPlaybackButton sourceKind="task" sourceId={runId} passageId={`${event.kind}-${index}`} text={event.detail} label="Listen" />
+        )}
+        {event.kind === "artifact" && event.data?.path && (
+          <button
+            className="artifact-button"
+            onClick={() => onOpen(event.data!.path!)}
+          >
+            <FolderOpen /> Open artifact
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+type LiveStream = {
+  requestId: string;
+  phase: string;
+  content: string;
+  reasoning: string;
+  notice?: string;
+  thinkingLevel?: string;
+  startedAt?: number;
+  data?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+};
+
+/**
+ * The reply being written. Reasoning shows while the model thinks and the answer takes over when it
+ * starts, unless the reader picked a view. The card follows its newest page.
+ */
+function LiveReply({ stream, model, thinkingLevel, thinkingOff }: { stream: LiveStream; model?: string; thinkingLevel: string; thinkingOff: boolean }) {
+  const [chosen, setChosen] = useState<ReplyView | null>(null);
+  const view: ReplyView = chosen ?? (stream.content || !stream.reasoning ? "answer" : "reasoning");
+  return (
+    <article className="assistant streaming" aria-live="polite">
+      <span>
+        {model ?? "MODEL"}
+        <i>{stream.phase}</i>
+        {stream.reasoning && <span className="thinking-level-badge">{thinkingLevel.toUpperCase()}</span>}
+        {stream.reasoning && <ReplyViewToggle view={view} onView={setChosen} live={!stream.content} />}
+      </span>
+      {stream.notice && <div className="context-notice">{stream.notice}</div>}
+      {!stream.reasoning && thinkingOff && (
+        <div className="chat-thinking-off-indicator">
+          <span className="thinking-level-badge thinking-off-badge">THINKING OFF</span>
+          <small>Generating direct response without reasoning channel</small>
+        </div>
+      )}
+      <CardPages label="Live reply" follow="end" resetKey={view}>
+        {view === "reasoning"
+          ? <TextParagraphs className="saved-reasoning" text={stream.reasoning} />
+          : (
+            <MarkdownContent
+              value={stream.content || (stream.phase === "queued" ? "Waiting for the inference slot…" : "")}
+              streaming={stream.phase === "generating"}
+            />
+          )}
+      </CardPages>
+      <Metrics
+        data={stream.metrics}
+        content={stream.content}
+        reasoning={stream.reasoning}
+        startedAt={stream.startedAt}
+        active={stream.phase === "generating"}
+        modelName={model}
+      />
     </article>
   );
 }
@@ -2069,11 +2135,6 @@ function timeOnly(value: string) {
 }
 function fileName(path: string) {
   return path.split(/[\\/]/).pop() ?? path;
-}
-function formatMib(value: number) {
-  return value >= 1024
-    ? `${(value / 1024).toFixed(1)} GiB`
-    : `${value.toLocaleString()} MiB`;
 }
 function formatBytes(value: number) {
   if (value >= 1024 * 1024 * 1024)

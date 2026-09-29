@@ -30,7 +30,6 @@ events! {
     ModelCatalog: Vec<crate::ModelInfo> => "model-catalog-updated",
     ModelDownload: crate::ModelDownloadRecord => "model-download",
     MovieEditorJob: crate::MovieEditorJob => "movie-editor-job",
-    MovieImageAsset: crate::MovieImageAssetEvent => "movie-image-asset",
     MovieProducerWorkspace: crate::MovieProducerWorkspace => "movie-producer-workspace",
     MovieProject: crate::MovieProject => "movie-project",
     MovieRenderPreview: crate::MovieRenderPreviewEvent => "movie-render-preview",

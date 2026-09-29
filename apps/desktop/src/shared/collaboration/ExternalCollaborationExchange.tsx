@@ -1,6 +1,7 @@
 import { Check, Copy, FileUp, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import { MAX_EXTERNAL_COLLABORATION_BYTES } from "./externalCollaboration";
+import "./collaboration.css";
 
 export function ExternalCollaborationExchange<T>({
   title,

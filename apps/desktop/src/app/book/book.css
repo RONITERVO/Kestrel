@@ -1,0 +1,233 @@
+/* The bound book: desk, banner, cover, index tabs, running heads and the open spread.
+   WebGL draws the cover, page block, ribbon and rings when available (.has-gl). Without it the
+   same object is drawn here (.no-gl), so tests, lost contexts and reduced graphics keep the book. */
+
+.app-shell {
+  --banner-h: 60px;
+  --tab-out: clamp(96px, 6.4vw, 112px);
+  --tab-h: clamp(40px, calc((100dvh - var(--banner-h) - 150px) / 8.6), 58px);
+  --cover: 12px;
+  --gutter: 30px;
+  --head-h: 28px;
+  --page-pad-x: clamp(16px, 1.7vw, 32px);
+  --page-pad-y: 14px;
+  width: 100%;
+  height: 100dvh;
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: var(--banner-h) minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--ink);
+  background:
+    var(--deckle),
+    radial-gradient(ellipse at 50% 55%, transparent 55%, var(--desk-vignette)),
+    var(--desk);
+}
+
+/* The desk under the book. */
+.book-stage { position: relative; min-height: 0; overflow: hidden; touch-action: none; }
+.app-shell.is-lifted .book-stage { cursor: grab; }
+.app-shell.is-lifted .book-stage:active { cursor: grabbing; }
+.book-gl { width: 100%; height: 100%; position: absolute; inset: 0; z-index: 30; pointer-events: none; }
+
+.book-plane {
+  position: absolute;
+  top: 8px;
+  right: calc(var(--tab-out) + 6px);
+  bottom: 30px;
+  left: calc(var(--tab-out) + 6px);
+  z-index: 20;
+  transform-origin: 0 0;
+}
+.app-shell.no-gl .book-plane {
+  border-radius: 5px 9px 7px 6px;
+  background:
+    var(--grain),
+    linear-gradient(180deg, var(--cover-sheen), var(--cover-shadow)),
+    var(--cover);
+  box-shadow: 0 0 0 1.5px var(--cover-deep), 10px 14px 24px var(--shade-strong);
+}
+.app-shell.no-gl .book-plane::after {
+  content: "";
+  width: 13px;
+  height: 46px;
+  position: absolute;
+  left: calc(50% + 4px);
+  bottom: -24px;
+  z-index: -1;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 82%, 0 100%);
+  background: var(--ribbon);
+}
+
+/* The open spread. Every chapter lays out against these page lines. */
+.workspace {
+  position: absolute;
+  inset: var(--cover);
+  overflow: hidden;
+  background:
+    var(--grain),
+    linear-gradient(90deg, var(--page-shade), transparent 7%, transparent 93%, var(--page-shade)),
+    radial-gradient(ellipse 60% 40% at 96% 2%, color-mix(in srgb, var(--chapter) 12%, transparent), transparent 70%),
+    var(--paper);
+}
+.app-shell.no-gl .workspace {
+  box-shadow:
+    0 2px 0 var(--paper-edge), 0 4px 0 var(--paper-deep), 0 6px 0 var(--paper-edge), 0 8px 0 var(--paper-deep),
+    2px 0 0 var(--paper-edge), -2px 0 0 var(--paper-edge);
+}
+.book-gutter {
+  width: calc(var(--gutter) * 2.4);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  z-index: 25;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--spine-shade-soft) 30%, var(--spine-shade) 49%, var(--spine-light) 51%, var(--spine-shade-soft) 70%, transparent);
+}
+.app-shell.is-wide .book-gutter { display: none; }
+
+.running-heads {
+  height: var(--head-h);
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--gutter) minmax(0, 1fr);
+  align-items: end;
+  padding: 0 var(--page-pad-x);
+  color: var(--ink-3);
+  font-size: var(--text-xs);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.running-heads span { overflow: hidden; padding-bottom: 3px; border-bottom: 1px solid var(--rule); white-space: nowrap; text-overflow: ellipsis; }
+.running-head-left::before { content: ""; width: 18px; height: 3px; display: inline-block; margin: 0 8px 3px 0; vertical-align: middle; border-radius: 2px; background: var(--chapter); }
+.running-head-right { grid-column: 3; text-align: right; }
+
+.main-stage { position: absolute; top: var(--head-h); right: 0; bottom: 0; left: 0; min-height: 0; overflow: hidden; }
+.retained-app-view { position: absolute; inset: 0; min-height: 0; overflow: hidden; }
+.retained-app-view[hidden] { display: none; }
+
+/* Spread grid: a chapter places blocks on the left page, the right page, or across both. */
+.spread {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: [left-start] minmax(0, 1fr) [left-end] var(--gutter) [right-start] minmax(0, 1fr) [right-end];
+  grid-template-rows: minmax(0, 1fr);
+}
+.spread > .page-left { grid-column: left-start / left-end; }
+.spread > .page-right { grid-column: right-start / right-end; }
+.spread > .page-wide { grid-column: left-start / right-end; }
+.page { min-width: 0; min-height: 0; padding: var(--page-pad-y) var(--page-pad-x) 18px; overflow: hidden; display: flex; flex-direction: column; gap: var(--space-3); }
+
+/* Chapter turns: the outgoing chapter stays on the near page until the leaf covers it. */
+.app-shell[data-turn-phase="lifting"] .retained-app-view[data-turn-role="from"] { display: block; }
+.app-shell[data-turn-phase="lifting"] .retained-app-view[data-turn-role="to"] { visibility: hidden; }
+.app-shell[data-turn-phase="turning"] .retained-app-view[data-turn-role="from"] { display: block; z-index: 2; }
+.app-shell[data-turn-phase="turning"][data-turn-direction="forward"] .retained-app-view[data-turn-role="from"] { clip-path: inset(0 50% 0 0); }
+.app-shell[data-turn-phase="turning"][data-turn-direction="forward"] .retained-app-view[data-turn-role="to"] { clip-path: inset(0 0 0 50%); }
+.app-shell[data-turn-phase="turning"][data-turn-direction="backward"] .retained-app-view[data-turn-role="from"] { clip-path: inset(0 0 0 50%); }
+.app-shell[data-turn-phase="turning"][data-turn-direction="backward"] .retained-app-view[data-turn-role="to"] { clip-path: inset(0 50% 0 0); }
+
+/* Index tabs: paper slips at the fore-edges. Earlier chapters rest on the left edge,
+   the open chapter and later ones on the right, at fixed heights, always labelled. */
+.book-tabs { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
+.book-tabs button {
+  --tab-hue: var(--ch-control);
+  width: calc(var(--tab-out) + 14px);
+  height: var(--tab-h);
+  position: absolute;
+  top: calc(var(--cover) + var(--head-h) + 10px + var(--tab-index) * (var(--tab-h) + 6px));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  justify-items: start;
+  row-gap: 1px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 22px;
+  pointer-events: auto;
+  border: var(--stroke);
+  color: var(--ink-2);
+  background:
+    var(--grain),
+    linear-gradient(90deg, color-mix(in srgb, var(--tab-hue) 34%, var(--paper-raised)), color-mix(in srgb, var(--tab-hue) 18%, var(--paper-raised)));
+  box-shadow: var(--lift);
+  font-family: var(--font-ui);
+  font-size: var(--text-md);
+  text-align: left;
+  transition: transform .18s ease, background-color .18s ease;
+}
+.book-tabs button[data-side="right"] { left: calc(100% - 14px); border-left: 0; border-radius: 0 12px 9px 0; }
+.book-tabs button[data-side="left"] { right: calc(100% - 14px); justify-items: end; padding: 0 22px 0 10px; border-right: 0; border-radius: 12px 0 0 9px; text-align: right; }
+.book-tabs button svg { width: 15px; height: 15px; color: color-mix(in srgb, var(--tab-hue) 70%, var(--ink)); }
+.book-tabs button span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.book-tabs button:hover { color: var(--ink); }
+.book-tabs button[data-side="right"]:hover { transform: translateX(4px); }
+.book-tabs button[data-side="left"]:hover { transform: translateX(-4px); }
+.book-tabs button.active {
+  z-index: 2;
+  color: var(--ink);
+  background: var(--grain), linear-gradient(90deg, var(--paper), color-mix(in srgb, var(--tab-hue) 42%, var(--paper-raised)) 55%);
+  box-shadow: var(--lift-strong);
+}
+.book-tabs button.active::after { content: ""; width: 5px; position: absolute; top: 6px; right: 7px; bottom: 6px; border-radius: 3px; background: var(--tab-hue); }
+.book-tabs button[data-chapter="setup"] { --tab-hue: var(--ch-setup); }
+.book-tabs button[data-chapter="control"] { --tab-hue: var(--ch-control); }
+.book-tabs button[data-chapter="research"] { --tab-hue: var(--ch-research); }
+.book-tabs button[data-chapter="studio"] { --tab-hue: var(--ch-studio); }
+.book-tabs button[data-chapter="image"] { --tab-hue: var(--ch-image); }
+.book-tabs button[data-chapter="music"] { --tab-hue: var(--ch-music); }
+.book-tabs button[data-chapter="developer"] { --tab-hue: var(--ch-developer); }
+.book-tabs button[data-chapter="system"] { --tab-hue: var(--ch-system); }
+
+/* Corner rings carry the book when it lies on the desk (and later in mixed reality). */
+.book-ring { width: 46px; height: 40px; position: absolute; z-index: 45; display: none; border-radius: 50%; cursor: grab; }
+.app-shell.is-lifted .book-ring { display: block; }
+.app-shell.no-gl.is-lifted .book-ring { border: 1.5px solid var(--ink-2); }
+.book-ring-tl { top: -20px; left: -23px; }
+.book-ring-tr { top: -20px; right: -23px; }
+.book-ring-br { right: -23px; bottom: -20px; }
+.book-ring-bl { bottom: -20px; left: -23px; }
+
+/* The banner: a paper strip taped across the top of the desk. It carries identity and status. */
+.book-banner {
+  height: calc(var(--banner-h) - 10px);
+  position: relative;
+  z-index: 60;
+  margin: 6px 14px 4px;
+  padding: 0 12px 0 14px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  border: var(--stroke-soft);
+  border-radius: 3px 8px 4px 6px;
+  background: var(--grain), var(--paper-raised);
+  box-shadow: var(--lift);
+}
+.book-banner::before, .book-banner::after { content: ""; width: 58px; height: 18px; position: absolute; top: -8px; background: color-mix(in srgb, var(--wait-wash) 70%, transparent); box-shadow: 0 1px 0 var(--shade); }
+.book-banner::before { left: 36px; transform: rotate(-4deg); }
+.book-banner::after { right: 42px; transform: rotate(3deg); }
+.banner-brand { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.banner-mark { width: 34px; height: 34px; display: grid; place-items: center; border: var(--stroke-ink); border-radius: 50% 46% 52% 44%; color: var(--ink); background: color-mix(in srgb, var(--chapter) 30%, var(--paper-raised)); }
+.banner-mark svg { width: 19px; height: 19px; }
+.banner-brand strong { font-family: var(--font-hand); font-size: 32px; font-weight: 700; line-height: 1; }
+.banner-brand span { color: var(--ink-3); font-size: var(--text-sm); white-space: nowrap; }
+.banner-status { min-width: 0; display: flex; align-items: center; justify-content: center; gap: 8px; overflow: hidden; }
+.banner-actions { display: flex; align-items: center; gap: 8px; }
+
+@media (max-width: 1180px) {
+  .app-shell { --gutter: 22px; --page-pad-x: 14px; }
+  .book-tabs button { padding-left: 18px; font-size: var(--text-sm); }
+  .book-tabs button[data-side="left"] { padding-right: 18px; }
+  .book-tabs button svg { display: none; }
+  .banner-brand span, .banner-status .status-pill:first-child { display: none; }
+}

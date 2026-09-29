@@ -474,8 +474,9 @@ function isBlackKey(pitch: number): boolean {
   return [1, 3, 6, 8, 10].includes(pitch % 12);
 }
 
+/** Eight categorical track colors from the book tokens (--track-1 … --track-8). */
 function trackColor(index: number): string {
-  return ["#e6a33c", "#4ca4cf", "#9b73c8", "#68ae78", "#d66b63", "#d8c35d", "#5fb8ad", "#c47ca5"][Math.max(0, index) % 8];
+  return `var(--track-${(Math.max(0, index) % 8) + 1})`;
 }
 
 function audition(pitch: number, velocity: number) {

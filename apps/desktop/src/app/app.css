@@ -1,0 +1,40 @@
+/* Application-level marks: boot sheet, attention slip and banner status. */
+
+.app-boot { height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 12px; background: var(--deckle), var(--desk); text-align: center; }
+.app-boot h1 { font-size: 64px; }
+.app-boot p { max-width: 50ch; color: var(--ink-2); font-family: var(--font-read); }
+.banner-mark.large { width: 72px; height: 72px; }
+.banner-mark.large svg { width: 34px; height: 34px; }
+
+.error-banner {
+  width: min(640px, calc(100vw - 40px));
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  z-index: 950;
+  padding: 10px 12px 10px 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1.5px solid var(--stop);
+  border-radius: var(--radius-card);
+  color: var(--stop-ink);
+  background: var(--grain), var(--stop-wash);
+  box-shadow: var(--lift-strong), 0 14px 34px var(--shade);
+  transform: translateX(-50%) rotate(-.4deg);
+}
+.error-banner > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.error-banner strong { font-family: var(--font-hand); font-size: var(--text-xl); }
+.error-banner span { overflow-wrap: anywhere; color: var(--ink); font-family: var(--font-read); font-size: var(--text-sm); }
+
+.status-pill { max-width: 280px; }
+.status-pill > :not(.status-dot):not(small) { overflow: hidden; text-overflow: ellipsis; }
+.status-pill small { color: inherit; opacity: .75; }
+.status-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--ink-4); }
+.status-pill.ok .status-dot { background: var(--ok); }
+.status-pill.wait .status-dot { background: var(--wait); }
+.status-pill.stop .status-dot { background: var(--stop); }
+.privacy-pill svg { color: var(--ok-ink); }
+.book-pose-toggle[aria-pressed="true"] { border-color: var(--act-ink); background: var(--act-wash); }
+.preview-notice { position: fixed; bottom: 6px; left: 50%; z-index: 10000; padding: 2px 12px; border: 1px dashed var(--rule-strong); border-radius: var(--radius-chip); color: var(--ink-3); background: var(--paper-raised); font-size: var(--text-xs); pointer-events: none; transform: translateX(-50%); }

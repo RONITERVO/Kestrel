@@ -12,7 +12,8 @@ import {
   revealMusicMidi, saveMusicMidiDocument, startStudioPromptDraft, startMusicGeneration,
   transcribeMusicLyrics, transcribeMusicMidi, translateMusicLyrics,
 } from "../../../platform/api";
-import { appendModelThinking, ModelThinkingStream } from "../../control/ModelThinkingStream";
+import { appendModelThinking } from "../../control/ModelThinkingStream";
+import { ModelReplyPages } from "../../control/ModelReplyPages";
 import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls } from "../../control/ModelRuntimePolicy";
 import type { RuntimePolicyValue } from "../../control/ModelRuntimePolicy";
 import { ExternalCollaborationExchange } from "../../../shared/collaboration/ExternalCollaborationExchange";
@@ -24,6 +25,9 @@ import type {
   PromptDraftMode, PromptDraftReceipt, PromptDraftTarget, ThinkingLevel,
 } from "../../../contracts/index";
 import { effectiveThinkingLevelForModel } from "../../control/modelPolicy";
+import "./music.css";
+import { FlowPages, type FlowPagesController } from "../../../shared/book/FlowPages";
+import { PagedList } from "../../../shared/book/PagedList";
 
 const SECTION_TAGS: MusicSection["tag"][] = [
   "Intro", "Verse", "Pre-Chorus", "Chorus", "Post-Chorus", "Bridge",
@@ -75,7 +79,9 @@ export function MusicStudio({
   const [newTitle, setNewTitle] = useState("");
   const [newIdea, setNewIdea] = useState("");
   const [selectedSectionId, setSelectedSectionId] = useState("");
-  const [showLibrary, setShowLibrary] = useState(true);
+  // The library is a column when the chapter has room and a drawer over the arranger when it does not;
+  // narrow windows start with the drawer closed.
+  const [showLibrary, setShowLibrary] = useState(() => window.matchMedia?.("(max-width: 1199px)").matches !== true);
   const [progress, setProgress] = useState<MusicGenerationEvent>();
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -150,6 +156,8 @@ export function MusicStudio({
 
   const inheritedRuntimePolicy = effectiveModelRuntimePolicy(controlSettings, modelId);
   const runtimePolicy = runtimePolicyOverride ?? inheritedRuntimePolicy;
+  const inspectorPages = useRef<FlowPagesController | null>(null);
+  const elsewhereRef = useRef<HTMLElement>(null);
   const selectedSection = project?.sections.find((section) => section.id === selectedSectionId) ?? project?.sections[0];
   const activeTake = project?.takes.find((take) => take.id === project.activeTakeId && take.status === "complete")
     ?? [...(project?.takes ?? [])].reverse().find((take) => take.status === "complete");
@@ -565,6 +573,7 @@ export function MusicStudio({
   );
 
   return (
+    <div className="music-chapter">
     <div className={`music-studio ${showLibrary ? "library-visible" : ""}`}>
       <header className="music-transport">
         <div className="music-transport-left">
@@ -591,14 +600,12 @@ export function MusicStudio({
 
       {showLibrary && <aside className="music-library">
         <div className="music-pane-heading"><span><small>Library</small><strong>Projects</strong></span><button aria-label="New song" disabled={busy} onClick={() => setNewOpen(true)}><Plus /></button></div>
-        <div className="music-project-list">
-          {summaries.map((summary) => <button key={summary.id} className={summary.id === project.id ? "active" : ""} disabled={lyricsBusy} onClick={() => void chooseProject(summary.id)}><Disc3 /><span><strong>{summary.title}</strong><small>{summary.takeCount} {summary.takeCount === 1 ? "take" : "takes"} · {summary.status}</small></span></button>)}
-        </div>
+        <PagedList className="music-project-list" label="Music projects" items={summaries} itemKey={(summary) => summary.id} selectedKey={project.id}
+          renderItem={(summary) => <button className={summary.id === project.id ? "active" : ""} disabled={lyricsBusy} onClick={() => void chooseProject(summary.id)}><Disc3 /><span><strong>{summary.title}</strong><small>{summary.takeCount} {summary.takeCount === 1 ? "take" : "takes"} · {summary.status}</small></span></button>} />
         <div className="music-pane-heading takes"><span><small>Project audio</small><strong>Preserved takes</strong></span><button aria-label="Reveal project files" onClick={() => void revealMusicProject(project.id)}><FolderOpen /></button></div>
-        <div className="music-take-list">
-          {[...project.takes].reverse().map((take, reverseIndex) => <button key={take.id} className={take.id === project.activeTakeId ? "active" : ""} disabled={take.status !== "complete" || lyricsBusy} onClick={() => mutate((current) => ({ ...current, activeTakeId: take.id }))}><FileMusic /><span><strong>Take {project.takes.length - reverseIndex}</strong><small>{take.status === "complete" ? `${formatTime(take.durationSeconds)} · seed ${take.seed}${take.midiPath ? ` · MIDI r${take.midiRevision ?? 0}` : ""}${take.lyricsDocumentPath ? ` · Lyrics r${take.lyricsRevision ?? 0}` : ""}` : take.status}</small></span>{take.status === "complete" && <Play />}</button>)}
-          {!project.takes.length && <div className="music-list-empty"><AudioLines /><span>Your generated takes will stay here.</span></div>}
-        </div>
+        <PagedList className="music-take-list" label="Preserved takes" items={[...project.takes].reverse()} itemKey={(take) => take.id} selectedKey={project.activeTakeId}
+          empty={<div className="music-list-empty"><AudioLines /><span>Your generated takes will stay here.</span></div>}
+          renderItem={(take) => { const number = project.takes.indexOf(take) + 1; return <button className={take.id === project.activeTakeId ? "active" : ""} disabled={take.status !== "complete" || lyricsBusy} onClick={() => mutate((current) => ({ ...current, activeTakeId: take.id }))}><FileMusic /><span><strong>Take {number}</strong><small>{take.status === "complete" ? `${formatTime(take.durationSeconds)} · seed ${take.seed}${take.midiPath ? ` · MIDI r${take.midiRevision ?? 0}` : ""}${take.lyricsDocumentPath ? ` · Lyrics r${take.lyricsRevision ?? 0}` : ""}` : take.status}</small></span>{take.status === "complete" && <Play />}</button>; }} />
         <div className="music-library-footer"><span>Offline project</span><small>Masters and receipts stay in your private library.</small></div>
       </aside>}
 
@@ -650,8 +657,48 @@ export function MusicStudio({
             <select aria-label="Music collaborator mode" disabled={assistantBusy || busy} value={draftMode} onChange={(event) => setDraftMode(event.target.value as PromptDraftMode)}><option value="develop">Develop idea / notes</option><option value="continue">Continue exact draft</option></select>
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicCaption")}><Sparkles /> Develop description</button>
             <button disabled={assistantBusy || busy || !modelId} onClick={() => void startCollaboration("musicLyrics")}><ListMusic /> Write full lyrics</button>
+            <button className="music-elsewhere-link" onClick={() => { if (elsewhereRef.current) inspectorPages.current?.showElement(elsewhereRef.current); }}><Copy /> Another chat or agent</button>
           </div>
-          <div className="music-external-collaborators">
+        </section>
+      </main>
+
+      <aside className="music-inspector">
+        <div className="music-pane-heading inspector"><span><small>Inspector</small><strong>{selectedSection?.name ?? "Song"}</strong></span><Gauge /></div>
+        <FlowPages className="music-inspector-body" label="Section inspector pages" resetKey={`${project.id}:${selectedSection?.id ?? "song"}`} controller={inspectorPages}>
+          {selectedSection && <><div className="music-section-actions"><button aria-label="Move section left" disabled={busy} onClick={() => moveSection(-1)}><ChevronLeft /></button><button disabled={busy} onClick={addSection}><Plus /> Add</button><button disabled={busy} onClick={duplicateSection}><Copy /> Duplicate</button><button aria-label="Move section right" disabled={busy} onClick={() => moveSection(1)}><ChevronRight /></button><button aria-label="Remove section" disabled={busy || project.sections.length <= 1} onClick={removeSection}><Trash2 /></button></div>
+          <fieldset disabled={busy}>
+            <label>Section name<input value={selectedSection.name} onChange={(event) => patchSection(mutate, selectedSection.id, { name: event.target.value })} /></label>
+            <div className="music-field-row"><label>Type<select value={selectedSection.tag} onChange={(event) => patchSection(mutate, selectedSection.id, { tag: event.target.value as MusicSection["tag"] })}>{SECTION_TAGS.map((tag) => <option key={tag}>{tag}</option>)}</select></label><label>Bars<input type="number" min={1} max={128} value={selectedSection.bars} onChange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value) && value >= 1 && value <= 128) patchSection(mutate, selectedSection.id, { bars: value }); }} /></label></div>
+            <label>Section direction<textarea value={selectedSection.direction} onChange={(event) => patchSection(mutate, selectedSection.id, { direction: event.target.value })} placeholder="What enters, drops out, changes, or should be performed here…" /></label>
+            <label className="lyrics-field">Lyrics<textarea disabled={project.instrumental} value={selectedSection.lyrics} onChange={(event) => patchSection(mutate, selectedSection.id, { lyrics: event.target.value })} placeholder={project.instrumental ? "Instrumental mode is on" : "Write only the words sung in this section…"} /></label>
+            <label className="music-toggle"><input type="checkbox" checked={project.instrumental} onChange={(event) => mutate((current) => ({ ...current, instrumental: event.target.checked }))} /><span><strong>Instrumental</strong><small>Keep section structure, generate without sung lyrics</small></span></label>
+          </fieldset></>}
+
+          <details className="music-generation-settings" open>
+            <summary><span><SlidersHorizontal /> Generation</span><ChevronDown /></summary>
+            <fieldset disabled={busy}>
+              <label>Maximum length <span>{formatTime(project.settings.maxDurationSeconds)}</span><input aria-label="Maximum song duration" type="range" min={15} max={300} step={1} value={project.settings.maxDurationSeconds} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, maxDurationSeconds: Number(event.target.value) } }))} /></label>
+              {advancedEnabled && <><div className="music-field-row"><label>Steps<input type="number" min={1} max={100} value={project.settings.steps} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 100, (steps) => mutate((current) => ({ ...current, settings: { ...current.settings, steps } })))} /></label><label>Seed<input inputMode="numeric" pattern="[0-9]*" value={project.settings.seed} onChange={(event) => { const seed = event.currentTarget.value; if (/^\d{0,20}$/.test(seed)) mutate((current) => ({ ...current, settings: { ...current.settings, seed: seed || 0 } })); }} /></label></div><div className="music-field-row"><label>CFG<input type="number" min={0} max={100} step={.1} value={project.settings.cfgScale} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 0, 100, (cfgScale) => mutate((current) => ({ ...current, settings: { ...current.settings, cfgScale } })))} /></label><label>Top K<input type="number" min={1} max={16384} value={project.settings.topK} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 16384, (topK) => mutate((current) => ({ ...current, settings: { ...current.settings, topK } })))} /></label></div><label>Model<select value={project.settings.modelVariant} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, modelVariant: event.target.value as MusicProject["settings"]["modelVariant"] } }))}><option value="auto">Auto · best installed</option><option value="int8">INT8 · lower VRAM</option><option value="fp16">FP16 · maximum fidelity</option></select></label><label className="music-toggle"><input type="checkbox" checked={project.settings.tiledDecode} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, tiledDecode: event.target.checked } }))} /><span><strong>Tiled full-quality decode</strong><small>Lower VRAM; never changes the preserved source format</small></span></label></>}
+            </fieldset>
+          </details>
+
+          <details className="music-midi-panel">
+            <summary><span><FileMusic /> Audio → editable MIDI</span><ChevronDown /></summary>
+            <p>Optional MuScriptor pass under separate gated non-commercial terms. Setup can prepare its isolated NVIDIA runner; this project then uses it offline without command-line work.</p>
+            <fieldset disabled={busy}>
+              <div className="music-midi-setup"><a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Official model terms</a><button disabled={!installRoot || !muscriptorSetupReady} title={muscriptorSetupReady ? "Use the runner and checkpoint verified by Kestrel Setup" : "Finish MuScriptor preparation in Setup, or choose your existing runner and checkpoint below"} onClick={() => { const paths = managedMuscriptorPaths(installRoot ?? ""); mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: paths.executable, modelPath: paths.model } })); }}><FileMusic /> {muscriptorSetupReady ? "Use Kestrel Setup" : "Setup not ready"}</button></div>
+              <div className="music-path-field"><label>MuScriptor runner<input value={project.midi.executablePath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: event.target.value } }))} /></label><button aria-label="Browse for muscriptor executable" onClick={() => void pickSetupFile("muscriptor").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
+              <div className="music-path-field"><label>Accepted checkpoint<input value={project.midi.modelPath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: event.target.value } }))} /></label><button aria-label="Browse for MuScriptor checkpoint" onClick={() => void pickSetupFile("muscriptorModel").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
+              <label>Expected instruments<input value={project.midi.instruments} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, instruments: event.target.value } }))} placeholder="acoustic_piano,acoustic_guitar,acoustic_bass" /></label>
+              <button disabled={!activeTake || midiBusy} onClick={() => activeTake && void transcribe(activeTake)}>{midiBusy ? <LoaderCircle className="spin" /> : <FileMusic />} Transcribe active take</button>
+              {activeTake?.midiPath && <div className="music-midi-ready"><span><Download /> Revision {activeTake.midiRevision ?? 0} preserved beside the take</span><div><button onClick={() => void openMidi(activeTake)}><FileMusic /> Open piano roll</button><button aria-label="Reveal active MIDI file" onClick={() => void revealMidi()}><FolderOpen /></button><button aria-label="Export active MIDI file" onClick={() => void exportMidi()}><Download /></button></div></div>}
+            </fieldset>
+          </details>
+
+          {advancedEnabled && activeTake && <details className="music-receipt"><summary><span><Gauge /> Exact generation receipt</span><ChevronDown /></summary><dl><dt>Model</dt><dd>{activeTake.resolvedModel}</dd><dt>Seed</dt><dd>{activeTake.seed}</dd><dt>Prompt ID</dt><dd>{activeTake.promptId}</dd><dt>SHA-256</dt><dd>{activeTake.sha256}</dd></dl><p>Graph preview. The saved native artifact preserves exact numeric values.</p><pre>{JSON.stringify(activeTake.exactGraph, null, 2)}</pre></details>}
+
+          <section ref={elsewhereRef} className="music-elsewhere" aria-label="Write with another chat or agent">
+            <span className="eyebrow">Write with another chat or agent</span>
             <ExternalCollaborationExchange
               title="Develop description in another chat or agent"
               summary="Copy the song idea, section map, lyrics, and Music 3 writing contract; validate the returned description here."
@@ -688,52 +735,23 @@ export function MusicStudio({
               parseResponse={(text) => parseExternalTextResult(text, "music-lyrics")}
               onApply={(lyrics) => mutate((current) => ({ ...current, sections: applyTaggedLyrics(current.sections, lyrics) }))}
             />
-          </div>
-          <details className="workspace-runtime-policy"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} disabled={assistantBusy || busy} expert={advancedEnabled} scope="Music collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
-        </section>
-      </main>
-
-      <aside className="music-inspector">
-        <div className="music-pane-heading inspector"><span><small>Inspector</small><strong>{selectedSection?.name ?? "Song"}</strong></span><Gauge /></div>
-        {selectedSection && <div className="music-inspector-body">
-          <div className="music-section-actions"><button aria-label="Move section left" disabled={busy} onClick={() => moveSection(-1)}><ChevronLeft /></button><button disabled={busy} onClick={addSection}><Plus /> Add</button><button disabled={busy} onClick={duplicateSection}><Copy /> Duplicate</button><button aria-label="Move section right" disabled={busy} onClick={() => moveSection(1)}><ChevronRight /></button><button aria-label="Remove section" disabled={busy || project.sections.length <= 1} onClick={removeSection}><Trash2 /></button></div>
-          <fieldset disabled={busy}>
-            <label>Section name<input value={selectedSection.name} onChange={(event) => patchSection(mutate, selectedSection.id, { name: event.target.value })} /></label>
-            <div className="music-field-row"><label>Type<select value={selectedSection.tag} onChange={(event) => patchSection(mutate, selectedSection.id, { tag: event.target.value as MusicSection["tag"] })}>{SECTION_TAGS.map((tag) => <option key={tag}>{tag}</option>)}</select></label><label>Bars<input type="number" min={1} max={128} value={selectedSection.bars} onChange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value) && value >= 1 && value <= 128) patchSection(mutate, selectedSection.id, { bars: value }); }} /></label></div>
-            <label>Section direction<textarea value={selectedSection.direction} onChange={(event) => patchSection(mutate, selectedSection.id, { direction: event.target.value })} placeholder="What enters, drops out, changes, or should be performed here…" /></label>
-            <label className="lyrics-field">Lyrics<textarea disabled={project.instrumental} value={selectedSection.lyrics} onChange={(event) => patchSection(mutate, selectedSection.id, { lyrics: event.target.value })} placeholder={project.instrumental ? "Instrumental mode is on" : "Write only the words sung in this section…"} /></label>
-            <label className="music-toggle"><input type="checkbox" checked={project.instrumental} onChange={(event) => mutate((current) => ({ ...current, instrumental: event.target.checked }))} /><span><strong>Instrumental</strong><small>Keep section structure, generate without sung lyrics</small></span></label>
-          </fieldset>
-
-          <details className="music-generation-settings" open>
-            <summary><span><SlidersHorizontal /> Generation</span><ChevronDown /></summary>
-            <fieldset disabled={busy}>
-              <label>Maximum length <span>{formatTime(project.settings.maxDurationSeconds)}</span><input aria-label="Maximum song duration" type="range" min={15} max={300} step={1} value={project.settings.maxDurationSeconds} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, maxDurationSeconds: Number(event.target.value) } }))} /></label>
-              {advancedEnabled && <><div className="music-field-row"><label>Steps<input type="number" min={1} max={100} value={project.settings.steps} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 100, (steps) => mutate((current) => ({ ...current, settings: { ...current.settings, steps } })))} /></label><label>Seed<input inputMode="numeric" pattern="[0-9]*" value={project.settings.seed} onChange={(event) => { const seed = event.currentTarget.value; if (/^\d{0,20}$/.test(seed)) mutate((current) => ({ ...current, settings: { ...current.settings, seed: seed || 0 } })); }} /></label></div><div className="music-field-row"><label>CFG<input type="number" min={0} max={100} step={.1} value={project.settings.cfgScale} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 0, 100, (cfgScale) => mutate((current) => ({ ...current, settings: { ...current.settings, cfgScale } })))} /></label><label>Top K<input type="number" min={1} max={16384} value={project.settings.topK} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 16384, (topK) => mutate((current) => ({ ...current, settings: { ...current.settings, topK } })))} /></label></div><label>Model<select value={project.settings.modelVariant} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, modelVariant: event.target.value as MusicProject["settings"]["modelVariant"] } }))}><option value="auto">Auto · best installed</option><option value="int8">INT8 · lower VRAM</option><option value="fp16">FP16 · maximum fidelity</option></select></label><label className="music-toggle"><input type="checkbox" checked={project.settings.tiledDecode} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, tiledDecode: event.target.checked } }))} /><span><strong>Tiled full-quality decode</strong><small>Lower VRAM; never changes the preserved source format</small></span></label></>}
-            </fieldset>
-          </details>
-
-          <details className="music-midi-panel">
-            <summary><span><FileMusic /> Audio → editable MIDI</span><ChevronDown /></summary>
-            <p>Optional MuScriptor pass under separate gated non-commercial terms. Setup can prepare its isolated NVIDIA runner; this project then uses it offline without command-line work.</p>
-            <fieldset disabled={busy}>
-              <div className="music-midi-setup"><a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Official model terms</a><button disabled={!installRoot || !muscriptorSetupReady} title={muscriptorSetupReady ? "Use the runner and checkpoint verified by Kestrel Setup" : "Finish MuScriptor preparation in Setup, or choose your existing runner and checkpoint below"} onClick={() => { const paths = managedMuscriptorPaths(installRoot ?? ""); mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: paths.executable, modelPath: paths.model } })); }}><FileMusic /> {muscriptorSetupReady ? "Use Kestrel Setup" : "Setup not ready"}</button></div>
-              <div className="music-path-field"><label>MuScriptor runner<input value={project.midi.executablePath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: event.target.value } }))} /></label><button aria-label="Browse for muscriptor executable" onClick={() => void pickSetupFile("muscriptor").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, executablePath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
-              <div className="music-path-field"><label>Accepted checkpoint<input value={project.midi.modelPath} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: event.target.value } }))} /></label><button aria-label="Browse for MuScriptor checkpoint" onClick={() => void pickSetupFile("muscriptorModel").then((value) => value && mutate((current) => ({ ...current, midi: { ...current.midi, modelPath: value } }))).catch((error) => onError(String(error)))}><FolderOpen /></button></div>
-              <label>Expected instruments<input value={project.midi.instruments} onChange={(event) => mutate((current) => ({ ...current, midi: { ...current.midi, instruments: event.target.value } }))} placeholder="acoustic_piano,acoustic_guitar,acoustic_bass" /></label>
-              <button disabled={!activeTake || midiBusy} onClick={() => activeTake && void transcribe(activeTake)}>{midiBusy ? <LoaderCircle className="spin" /> : <FileMusic />} Transcribe active take</button>
-              {activeTake?.midiPath && <div className="music-midi-ready"><span><Download /> Revision {activeTake.midiRevision ?? 0} preserved beside the take</span><div><button onClick={() => void openMidi(activeTake)}><FileMusic /> Open piano roll</button><button aria-label="Reveal active MIDI file" onClick={() => void revealMidi()}><FolderOpen /></button><button aria-label="Export active MIDI file" onClick={() => void exportMidi()}><Download /></button></div></div>}
-            </fieldset>
-          </details>
-
-          {advancedEnabled && activeTake && <details className="music-receipt"><summary><span><Gauge /> Exact generation receipt</span><ChevronDown /></summary><dl><dt>Model</dt><dd>{activeTake.resolvedModel}</dd><dt>Seed</dt><dd>{activeTake.seed}</dd><dt>Prompt ID</dt><dd>{activeTake.promptId}</dd><dt>SHA-256</dt><dd>{activeTake.sha256}</dd></dl><p>Graph preview. The saved native artifact preserves exact numeric values.</p><pre>{JSON.stringify(activeTake.exactGraph, null, 2)}</pre></details>}
-        </div>}
+          </section>
+          <details className="workspace-runtime-policy music-model-limits"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} disabled={assistantBusy || busy} expert={advancedEnabled} scope="Music collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
+        </FlowPages>
       </aside>
 
       {collaboration && <section className="music-collaboration-sheet">
         <header><span><Sparkles /><strong>{collaboration.target === "musicCaption" ? "Description proposal" : "Lyrics proposal"}</strong><small>{collaboration.modelName} · {collaboration.status}</small></span><button aria-label="Close proposal" disabled={assistantBusy} onClick={() => setCollaboration(undefined)}>×</button></header>
-        <div className="model-collaboration-streams"><ModelThinkingStream text={collaboration.reasoning} outputText={collaboration.text} active={assistantBusy} inferenceActive={assistantBusy && collaboration.status !== "queued"} modelName={collaboration.modelName} thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)} /><section className="model-result-stream"><strong>{collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}</strong><pre>{collaboration.text || (assistantBusy ? "The proposal will stream here when the model begins its answer…" : "No proposal was returned.")}</pre></section></div>
-        <footer>{assistantBusy ? <button onClick={() => void cancelStudioPromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}{advancedEnabled && collaboration.receipt && <details><summary>Exact model request</summary><pre>{JSON.stringify(collaboration.receipt.exactRequest, null, 2)}</pre></details>}</footer>
+        <ModelReplyPages request={advancedEnabled && collaboration.receipt ? JSON.stringify(collaboration.receipt.exactRequest, null, 2) : undefined} modelName={collaboration.modelName} inferenceActive={assistantBusy && collaboration.status !== "queued"}
+          label={collaboration.target === "musicCaption" ? "Proposed music description" : "Proposed lyrics"}
+          answerLabel="Proposal"
+          text={collaboration.text}
+          reasoning={collaboration.reasoning}
+          live={assistantBusy}
+          thinkingLevel={collaboration.thinkingLevel ?? effectiveThinkingLevelForModel(controlSettings, modelId)}
+          placeholder={assistantBusy ? "The proposal will appear here when the model begins its answer…" : "No proposal was returned."}
+        />
+        <footer>{assistantBusy ? <button onClick={() => void cancelStudioPromptDraft(collaboration.id)}><CircleStop /> Stop and keep checkpoint</button> : <><button onClick={() => setCollaboration(undefined)}>Discard</button><button className="primary-button" disabled={!collaboration.text.trim()} onClick={applyCollaboration}><Save /> Apply to project</button></>}</footer>
       </section>}
 
       {midiOpen && midiDocument && midiTake && <MusicMidiEditor document={midiDocument} takeLabel={`Take ${project.takes.findIndex((take) => take.id === midiTake.id) + 1}`} currentTime={currentTime} playing={playing} busy={midiBusy} onTogglePlay={togglePlay} onSeek={(seconds) => { if (audioRef.current) { audioRef.current.currentTime = Math.min(midiTake.durationSeconds, Math.max(0, seconds)); setCurrentTime(audioRef.current.currentTime); } }} onSave={saveMidi} onExport={exportMidi} onReveal={revealMidi} onClose={() => { setMidiOpen(false); setMidiDocument(undefined); }} />}
@@ -765,8 +783,8 @@ export function MusicStudio({
         onCancelSync={() => { if (lyricsJobId.current) void cancelLocalSpeech(lyricsJobId.current); }}
         onClose={() => { setLyricsOpen(false); setLyricsDocument(undefined); }}
       />}
-
       {newOpen && <NewSongDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
+    </div>
     </div>
   );
 }
