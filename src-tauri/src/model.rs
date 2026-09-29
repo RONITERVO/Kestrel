@@ -2,6 +2,7 @@
 //!
 //! This module deliberately has no runtime, network, or mutation authority. Model identity is a
 //! fast path-independent content signature so a cached selection survives drive/user changes.
+//! Strata installs are discovered by `strata.rs` and merged here into the same catalog.
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -15,10 +16,11 @@ use std::{
 };
 use walkdir::WalkDir;
 
-pub use kestrel_app_core::ModelInfo;
+pub use kestrel_app_core::{ModelEngine, ModelInfo};
 
 // Version 2 invalidates catalogs that inferred vision support from an unverified projector path.
-const CATALOG_SCHEMA_VERSION: u32 = 2;
+// Version 3 records each model's engine and drops Strata-only shards listed as llama.cpp models.
+const CATALOG_SCHEMA_VERSION: u32 = 3;
 const MAX_CATALOG_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -174,6 +176,23 @@ pub fn default_roots(extra: &[String], bonsai_root: &str) -> Vec<PathBuf> {
     roots
 }
 
+/// Where one catalog refresh looks: GGUF folders for llama.cpp and Strata install folders.
+#[derive(Debug, Clone, Default)]
+pub struct CatalogSources {
+    pub gguf_roots: Vec<PathBuf>,
+    pub strata_installs: Vec<PathBuf>,
+}
+
+/// One complete read-only catalog refresh across every engine.
+pub fn scan_sources(sources: &CatalogSources) -> Vec<ModelInfo> {
+    let mut models = scan(&sources.gguf_roots);
+    models.extend(crate::strata::discover(&sources.strata_installs));
+    models.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    let mut seen = std::collections::HashSet::new();
+    models.retain(|model| seen.insert(model.id.clone()));
+    models
+}
+
 pub fn scan(roots: &[PathBuf]) -> Vec<ModelInfo> {
     let mut models = Vec::new();
     for root in roots.iter().filter(|path| path.exists()) {
@@ -217,6 +236,15 @@ fn inspect(path: &Path) -> io::Result<ModelInfo> {
     let bytes = path.metadata()?.len();
     let metadata = read_gguf_metadata(path)?;
     let architecture = string_value(metadata.get("general.architecture"));
+    if architecture
+        .as_deref()
+        .is_some_and(|value| crate::strata::STRATA_ONLY_ARCHITECTURES.contains(&value))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this GGUF needs the Strata engine; Kestrel lists it through its Strata install",
+        ));
+    }
     let context_length = architecture
         .as_ref()
         .and_then(|value| metadata.get(&format!("{value}.context_length")))
@@ -261,6 +289,8 @@ fn inspect(path: &Path) -> io::Result<ModelInfo> {
         supports_vision,
         supports_audio,
         recommendation: recommendation.into(),
+        engine: ModelEngine::LlamaCpp,
+        fixed_context_window: None,
     })
 }
 
@@ -270,7 +300,7 @@ pub(crate) fn inspect_file(path: &Path) -> io::Result<ModelInfo> {
     inspect(path)
 }
 
-fn content_identity(path: &Path, bytes: u64) -> io::Result<String> {
+pub(crate) fn content_identity(path: &Path, bytes: u64) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     hasher.update(bytes.to_le_bytes());
@@ -405,7 +435,7 @@ fn quantization_name(value: u64) -> String {
     }
 }
 
-fn read_gguf_metadata(path: &Path) -> io::Result<HashMap<String, Value>> {
+pub(crate) fn read_gguf_metadata(path: &Path) -> io::Result<HashMap<String, Value>> {
     let mut reader = BufReader::new(File::open(path)?);
     let mut magic = [0; 4];
     reader.read_exact(&mut magic)?;
@@ -587,6 +617,32 @@ mod tests {
     }
 
     #[test]
+    fn strata_only_shards_are_not_offered_to_llama_cpp() {
+        use std::io::Write as _;
+        let directory = tempfile::tempdir().unwrap();
+        let shard = directory
+            .path()
+            .join("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf");
+        let mut file = File::create(&shard).unwrap();
+        let key = "general.architecture";
+        let value = "qwen4exp";
+        file.write_all(b"GGUF").unwrap();
+        file.write_all(&3u32.to_le_bytes()).unwrap();
+        file.write_all(&0u64.to_le_bytes()).unwrap();
+        file.write_all(&1u64.to_le_bytes()).unwrap();
+        file.write_all(&(key.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(key.as_bytes()).unwrap();
+        file.write_all(&8u32.to_le_bytes()).unwrap();
+        file.write_all(&(value.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(value.as_bytes()).unwrap();
+        drop(file);
+
+        assert!(is_candidate(&shard));
+        assert!(inspect(&shard).is_err());
+        assert!(scan(&[directory.path().to_path_buf()]).is_empty());
+    }
+
+    #[test]
     fn catalog_cache_restores_only_existing_unchanged_models() {
         let directory = tempfile::tempdir().unwrap();
         let model_path = directory.path().join("model.gguf");
@@ -606,6 +662,8 @@ mod tests {
             supports_vision: false,
             supports_audio: false,
             recommendation: "Inspect metadata".into(),
+            engine: ModelEngine::LlamaCpp,
+            fixed_context_window: None,
         };
         store.save(std::slice::from_ref(&model)).unwrap();
         assert_eq!(store.load().unwrap(), vec![model]);
@@ -652,6 +710,8 @@ mod tests {
             supports_vision: false,
             supports_audio: false,
             recommendation: "Recovered".into(),
+            engine: ModelEngine::LlamaCpp,
+            fixed_context_window: None,
         };
         store.save(std::slice::from_ref(&model)).unwrap();
         fs::write(directory.path().join("model-catalog.json"), b"broken").unwrap();

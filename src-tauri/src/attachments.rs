@@ -884,6 +884,8 @@ mod tests {
             supports_vision: true,
             supports_audio: false,
             recommendation: "test".into(),
+            engine: crate::model::ModelEngine::LlamaCpp,
+            fixed_context_window: None,
         };
         let prepared = store
             .prepare_message(
@@ -933,6 +935,8 @@ mod tests {
             supports_vision: true,
             supports_audio: false,
             recommendation: "test".into(),
+            engine: crate::model::ModelEngine::LlamaCpp,
+            fixed_context_window: None,
         };
 
         let prepared = store
@@ -982,6 +986,8 @@ mod tests {
             supports_vision: false,
             supports_audio: false,
             recommendation: "test".into(),
+            engine: crate::model::ModelEngine::LlamaCpp,
+            fixed_context_window: None,
         };
 
         let prepared = store

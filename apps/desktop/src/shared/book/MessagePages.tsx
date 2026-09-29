@@ -212,13 +212,13 @@ export function CardPages({
   );
 }
 
-export type ReplyView = "answer" | "reasoning" | "request";
+export type ReplyView = "answer" | "reasoning" | "request" | "edited";
 
 /**
- * Answer, reasoning and (for advanced receipts) the exact model request are views of one reply
- * card, so none of them pushes the others away and each turns its own pages.
+ * Answer, reasoning, the producer's edit and (for advanced receipts) the exact model request are
+ * views of one reply card, so none of them pushes the others away and each turns its own pages.
  */
-export function ReplyViewToggle({ view, onView, live = false, answerLabel = "Answer", reasoning = true, request = false }: {
+export function ReplyViewToggle({ view, onView, live = false, answerLabel = "Answer", reasoning = true, request = false, edited = false }: {
   view: ReplyView;
   onView: (view: ReplyView) => void;
   live?: boolean;
@@ -227,9 +227,12 @@ export function ReplyViewToggle({ view, onView, live = false, answerLabel = "Ans
   reasoning?: boolean;
   /** Offer the exact model request view. */
   request?: boolean;
+  /** Offer the producer's edited copy of the reply. */
+  edited?: boolean;
 }) {
   const options: Array<[ReplyView, string]> = [["answer", answerLabel]];
   if (reasoning) options.push(["reasoning", `Reasoning${live ? " · live" : ""}`]);
+  if (edited) options.push(["edited", "Your edit"]);
   if (request) options.push(["request", "Model request"]);
   return (
     <span className="reply-view" role="group" aria-label="Show in this card">

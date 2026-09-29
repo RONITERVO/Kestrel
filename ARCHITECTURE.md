@@ -67,8 +67,10 @@ React WebView
   | typed IPC and progress events
   v
 Rust application boundary
-  |-- RuntimeManager: one authenticated managed llama-server + one inference semaphore
+  |-- RuntimeManager: one authenticated managed model process + one inference semaphore
+  |     |-- llama-server for GGUF models, or Strata's server and engine in one Windows job
   |     |-- app-wide runtime defaults with optional per-model exceptions
+  |     |-- engines with an install-fixed context (Strata) cap every prompt budget
   |     `-- model/workspace selection resolved before every lease
   |-- ResearchHarness: selected-model two-tool loop + citation validation
   |     |-- Kiwix on 127.0.0.1:8085

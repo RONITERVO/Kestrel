@@ -1,7 +1,8 @@
 import { useSpeechPreferences } from "./useSpeechPreferences";
-import { speechPreferencesDefaults, type ResearchSpeechPreferences } from "../../contracts/index";
+import { speechPreferencesDefaults, type NarrationPreferences, type ResearchSpeechPreferences } from "../../contracts/index";
 import {
   Check,
+  Download,
   LoaderCircle,
   Mic,
   Pause,
@@ -49,6 +50,8 @@ import {
   VoiceActivityDetector,
   type VadSettings,
 } from "./voiceActivityDetection";
+import { useNarrationExport } from "./useNarrationExport";
+import { describeExportedFiles } from "../../shared/format";
 import "./speech.css";
 
 export { claimPlayback, clearPlayback };
@@ -62,6 +65,8 @@ type SpeechContextValue = {
   openVoiceLibrary: () => void;
   researchSpeechPreferences: ResearchSpeechPreferences;
   updateResearchSpeechPreferences: (patch: Partial<ResearchSpeechPreferences>) => void;
+  narrationPreferences: NarrationPreferences;
+  updateNarrationPreferences: (patch: Partial<NarrationPreferences>) => void;
   vadSettings: VadSettings;
   updateVadSettings: (updater: Partial<VadSettings> | ((prev: VadSettings) => VadSettings)) => void;
   resetVadSettings: () => void;
@@ -73,7 +78,7 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<LocalSpeechSnapshot | null>(null);
   const [voiceLibraryOpen, setVoiceLibraryOpen] = useState(false);
   const preferences = useSpeechPreferences();
-  const { vadSettings, updateVadSettings, resetVadSettings, researchSpeechPreferences, updateResearchSpeechPreferences, preferenceError } = preferences;
+  const { vadSettings, updateVadSettings, resetVadSettings, researchSpeechPreferences, updateResearchSpeechPreferences, narrationPreferences, updateNarrationPreferences, preferenceError } = preferences;
 
   const refresh = useCallback(async () => {
     const next = await getLocalSpeechSnapshot();
@@ -100,11 +105,13 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
       openVoiceLibrary: () => setVoiceLibraryOpen(true),
       researchSpeechPreferences,
       updateResearchSpeechPreferences,
+      narrationPreferences,
+      updateNarrationPreferences,
       vadSettings,
       updateVadSettings,
       resetVadSettings,
     }),
-    [prepare, refresh, resetVadSettings, snapshot, updateVadSettings, vadSettings, researchSpeechPreferences, updateResearchSpeechPreferences],
+    [prepare, refresh, resetVadSettings, snapshot, updateVadSettings, vadSettings, researchSpeechPreferences, updateResearchSpeechPreferences, narrationPreferences, updateNarrationPreferences],
   );
 
   const updateVoiceLibrary = useCallback((library: VoiceLibrarySnapshot) => {
@@ -115,7 +122,7 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
     } : current);
   }, []);
 
-  return <SpeechContext.Provider value={value}>{preferenceError && <div role="alert">{preferenceError}</div>}{children}{voiceLibraryOpen && snapshot && <VoiceLibraryDialog snapshot={{ profiles: snapshot.voiceProfiles, defaultProfileId: snapshot.defaultVoiceProfileId }} onSnapshot={updateVoiceLibrary} onClose={() => setVoiceLibraryOpen(false)} />}</SpeechContext.Provider>;
+  return <SpeechContext.Provider value={value}>{preferenceError && <div role="alert">{preferenceError}</div>}{children}{voiceLibraryOpen && snapshot && <VoiceLibraryDialog snapshot={{ profiles: snapshot.voiceProfiles, defaultProfileId: snapshot.defaultVoiceProfileId }} onSnapshot={updateVoiceLibrary} onClose={() => setVoiceLibraryOpen(false)} narration={narrationPreferences} onNarrationChange={updateNarrationPreferences} mistakeCheckAvailable={snapshot.transcriptionAvailable} />}</SpeechContext.Provider>;
 }
 
 export function useSpeech() {
@@ -129,6 +136,8 @@ export function useSpeech() {
       openVoiceLibrary: () => undefined,
       researchSpeechPreferences: speechPreferencesDefaults.research,
       updateResearchSpeechPreferences: () => undefined,
+      narrationPreferences: speechPreferencesDefaults.narration,
+      updateNarrationPreferences: () => undefined,
       vadSettings: DEFAULT_VAD_SETTINGS,
       updateVadSettings: () => undefined,
       resetVadSettings: () => undefined,
@@ -220,6 +229,7 @@ export function SpeechPlaybackButton({
   text,
   label = "Listen",
   recording,
+  exportTitle,
   onActiveChange,
   onSpeechProgress,
 }: {
@@ -228,6 +238,8 @@ export function SpeechPlaybackButton({
   passageId: string;
   text: string;
   label?: string;
+  /** Offers exporting this narration as one audio file with this title. */
+  exportTitle?: string;
   recording?: {
     audioRelativePath: string;
     words: SpeechTiming[];
@@ -235,7 +247,7 @@ export function SpeechPlaybackButton({
   onActiveChange?: (active: boolean) => void;
   onSpeechProgress?: (progress: SpeechProgressState | null) => void;
 }) {
-  const { snapshot, prepare, selectedVoiceProfile, openVoiceLibrary } = useSpeech();
+  const { snapshot, prepare, selectedVoiceProfile, openVoiceLibrary, narrationPreferences } = useSpeech();
   const passages = useMemo(
     () => buildSpeechPassages(text, { stripCodeBlocks: true, basePassageId: passageId, label }),
     [label, passageId, text],
@@ -321,6 +333,29 @@ export function SpeechPlaybackButton({
     text,
   ]);
 
+  const narrationExport = useNarrationExport({ sourceKind, sourceId, passages, title: exportTitle ?? label });
+  const [exportOpen, setExportOpen] = useState(false);
+  const [checkExport, setCheckExport] = useState(narrationPreferences.checkMistakes);
+  const [timedExport, setTimedExport] = useState(true);
+  const exporting = narrationExport.state.stage === "preparing" || narrationExport.state.stage === "saving";
+
+  // The voice this reply is read in: the one chosen for it, else the app-wide default.
+  const readyVoice = async () => {
+    const ready = snapshot?.narrationAvailable ? snapshot : await prepare();
+    const voice = ready.voices[0];
+    const profile = ready.voiceProfiles.find((candidate) => candidate.id === voiceProfileId)
+      ?? ready.voiceProfiles.find((candidate) => candidate.id === ready.defaultVoiceProfileId)
+      ?? ready.voiceProfiles[0];
+    if (!ready.narrationAvailable || !voice || !profile) throw new Error(ready.detail);
+    return { voice, profile };
+  };
+
+  const startExport = () => void narrationExport.start(readyVoice, {
+    checkMistakes: checkExport,
+    wordTimings: timedExport,
+    alignmentModel,
+  });
+
   const toggle = () => {
     if (player.status === "playing" || (player.status === "paused" && player.audioRef.current?.src)) {
       player.togglePlayback();
@@ -331,13 +366,8 @@ export function SpeechPlaybackButton({
         await player.startAt(player.status === "complete" ? 0 : player.currentIndex, null, null);
         return;
       }
-      const ready = snapshot?.narrationAvailable ? snapshot : await prepare();
-      const readyVoice = ready.voices[0];
-      const readyProfile = ready.voiceProfiles.find((profile) => profile.id === voiceProfileId)
-        ?? ready.voiceProfiles.find((profile) => profile.id === ready.defaultVoiceProfileId)
-        ?? ready.voiceProfiles[0];
-      if (!ready.narrationAvailable || !readyVoice || !readyProfile) throw new Error(ready.detail);
-      await player.startAt(player.status === "complete" ? 0 : player.currentIndex, readyVoice, readyProfile);
+      const { voice, profile } = await readyVoice();
+      await player.startAt(player.status === "complete" ? 0 : player.currentIndex, voice, profile);
     };
     void start().catch((error) => {
       player.setStatus("error");
@@ -369,6 +399,7 @@ export function SpeechPlaybackButton({
       </button>
       {!recording && snapshot && snapshot.voiceProfiles.length > 1 && <select className="inline-voice-select" aria-label={`Voice for ${label.toLowerCase()}`} value={passageVoiceProfile?.id ?? ""} disabled={state === "preparing" || state === "playing"} onChange={(event) => { player.clearModelCache(); setVoiceProfileId(event.target.value); }}>{snapshot.voiceProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select>}
       {!recording && <button type="button" className="inline-voice-button" title={`Voice: ${passageVoiceProfile?.name ?? "default"}`} aria-label="Open Voice Library" disabled={state === "preparing" || state === "playing"} onClick={openVoiceLibrary}><UserRoundCog /><span>{passageVoiceProfile?.name ?? "Voice"}</span></button>}
+      {!recording && exportTitle && passages.length > 0 && <button type="button" className="inline-voice-button" aria-expanded={exportOpen} title="Save this narration as one audio file" onClick={() => setExportOpen((open) => !open)}><Download /><span>Export</span></button>}
       {state !== "ready" && state !== "complete" && (
         <button
           type="button"
@@ -394,6 +425,44 @@ export function SpeechPlaybackButton({
       )}
       {state === "error" && (
         <small className="speech-inline-error">{player.error ?? player.detail}</small>
+      )}
+      {exportOpen && (
+        <div className="inline-speech-export" role="group" aria-label="Export narration">
+          <label>
+            <input
+              type="checkbox"
+              checked={checkExport && Boolean(snapshot?.transcriptionAvailable)}
+              disabled={exporting || !snapshot?.transcriptionAvailable}
+              onChange={(event) => setCheckExport(event.currentTarget.checked)}
+            />
+            <span>Check for voice mistakes and redo them (slower)</span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={timedExport}
+              disabled={exporting}
+              onChange={(event) => setTimedExport(event.currentTarget.checked)}
+            />
+            <span>Also save word timings and a page that plays it word by word</span>
+          </label>
+          <span className="inline-speech-export-status" role="status">
+            {narrationExport.state.stage === "preparing"
+              ? `Preparing passage ${narrationExport.state.done + 1} of ${narrationExport.state.total}…`
+              : narrationExport.state.stage === "saving"
+                ? "Choose where to save; Kestrel then joins the passages…"
+                : narrationExport.state.stage === "saved"
+                  ? `${describeExportedFiles(narrationExport.state.files)}${narrationExport.state.untimed
+                    ? ` Whisper could not time ${narrationExport.state.untimed} passage${narrationExport.state.untimed === 1 ? "" : "s"}, so ${narrationExport.state.untimed === 1 ? "its" : "their"} words are spaced evenly.`
+                    : ""}`
+                  : narrationExport.state.stage === "error"
+                    ? narrationExport.state.message
+                    : `${passages.length} passage${passages.length === 1 ? "" : "s"}, saved as one M4A audio file.`}
+          </span>
+          {exporting
+            ? <button type="button" onClick={narrationExport.stop}><Square /> Stop</button>
+            : <button type="button" onClick={startExport}><Download /> Save audio file</button>}
+        </div>
       )}
     </div>
   );

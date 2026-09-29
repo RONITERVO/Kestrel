@@ -15,14 +15,19 @@ mod local_speech;
 mod model;
 mod model_download;
 mod models;
+mod narration;
 mod profile;
 mod prompt_catalog;
 mod runtime;
 mod services;
 mod setup;
 mod speech_preferences;
+mod speech_text;
 mod store;
+mod strata;
+mod structured_output;
 mod studio;
+mod timed_text;
 mod voice_library;
 mod workspace;
 
@@ -172,6 +177,14 @@ fn save_vad_settings(
     state: State<'_, AppState>,
 ) -> Result<kestrel_app_core::SpeechPreferences, String> {
     state.speech_preferences.save_vad(settings)
+}
+
+#[tauri::command]
+fn save_narration_speech_preferences(
+    settings: kestrel_app_core::NarrationPreferences,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::SpeechPreferences, String> {
+    state.speech_preferences.save_narration(settings)
 }
 
 #[tauri::command]
@@ -413,21 +426,24 @@ async fn synthesize_local_speech(
         .voice_library
         .resolve(&request.voice_profile_id)
         .map_err(|error| error.to_string())?;
-    if let Some(clip) = state
-        .speech
-        .cached_clip(&settings.comfy_root, &request, &voice)
-        .map_err(|error| error.to_string())?
-    {
+    let check_model = narration_check_model(&state, &request, &settings.comfy_root);
+    // A cached passage plays at once, unless the mistake check is on and has not heard it yet.
+    let ready = || -> Result<Option<SpeechClip>, String> {
+        let clip = state
+            .speech
+            .cached_clip(&settings.comfy_root, &request, &voice)
+            .map_err(|error| error.to_string())?;
+        Ok(clip.filter(|_| {
+            check_model.is_none() || !state.speech.needs_narration_check(&request, &voice)
+        }))
+    };
+    if let Some(clip) = ready()? {
         return Ok(clip);
     }
     let cancel = register_speech_job(&state, &request.job_id)?;
     let result: Result<SpeechClip, String> = async {
         let _turn = wait_for_speech_turn(&state, &cancel).await?;
-        if let Some(clip) = state
-            .speech
-            .cached_clip(&settings.comfy_root, &request, &voice)
-            .map_err(|error| error.to_string())?
-        {
+        if let Some(clip) = ready()? {
             return Ok(clip);
         }
         let _guard = claim_workspace(&state)?;
@@ -442,15 +458,148 @@ async fn synthesize_local_speech(
             .ensure_comfy(&settings.comfy_root, &cancel)
             .await
             .map_err(|error| error.to_string())?;
-        state
-            .speech
-            .synthesize(&settings.comfy_root, &request, &voice, &cancel, Some(&app))
-            .await
-            .map_err(|error| error.to_string())
+        match &check_model {
+            Some(alignment_model) => state
+                .speech
+                .synthesize_checked(
+                    &settings.comfy_root,
+                    &request,
+                    alignment_model,
+                    &voice,
+                    &cancel,
+                    Some(&app),
+                )
+                .await
+                .map_err(|error| error.to_string()),
+            None => state
+                .speech
+                .synthesize(&settings.comfy_root, &request, &voice, &cancel, Some(&app))
+                .await
+                .map_err(|error| error.to_string()),
+        }
     }
     .await;
     finish_speech_job(&state, &request.job_id);
     result
+}
+
+/// The Whisper model that checks this passage for voice mistakes, when the producer turned the
+/// check on or an export chose it. Without an installed Whisper model there is no check.
+fn narration_check_model(
+    state: &AppState,
+    request: &SpeechSynthesisRequest,
+    comfy_root: &str,
+) -> Option<String> {
+    // A request's own choice (an export's checkbox) wins over the saved preference.
+    request
+        .check_mistakes
+        .unwrap_or_else(|| state.speech_preferences.check_narration())
+        .then(|| local_speech::discover_whisper_models(std::path::Path::new(comfy_root)))
+        .and_then(|models| models.into_iter().next())
+        .map(|model| model.id)
+}
+
+/// Longest narration an export may join: a long book at a few hundred words a passage.
+const MAX_EXPORT_PASSAGES: usize = 4_000;
+
+/// Ask where to save an exported M4A, suggesting a name from its title. Nothing when the
+/// producer closes the dialog.
+async fn choose_export_file(title: &str) -> Option<std::path::PathBuf> {
+    let file = rfd::AsyncFileDialog::new()
+        .set_title("Save audio")
+        .add_filter("Audio (M4A)", &["m4a"])
+        .set_file_name(narration::export_file_name(title))
+        .save_file()
+        .await?;
+    let mut destination = file.path().to_path_buf();
+    if !destination
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("m4a"))
+    {
+        destination.set_extension("m4a");
+    }
+    Some(destination)
+}
+
+fn exported_files(files: Vec<std::path::PathBuf>) -> kestrel_app_core::ExportedFiles {
+    kestrel_app_core::ExportedFiles {
+        files: files
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+    }
+}
+
+/// Join a reply's generated passages into one audio file saved where the producer chooses, with
+/// the words timed beside it when asked. Nothing when the producer closes the save dialog.
+#[tauri::command]
+async fn export_narration(
+    request: kestrel_app_core::NarrationExportRequest,
+    state: State<'_, AppState>,
+) -> Result<Option<kestrel_app_core::ExportedFiles>, String> {
+    if request.passages.is_empty() || request.passages.len() > MAX_EXPORT_PASSAGES {
+        return Err(format!(
+            "A narration export needs 1 to {MAX_EXPORT_PASSAGES} passages."
+        ));
+    }
+    let clips = request
+        .passages
+        .iter()
+        .map(|passage| {
+            state
+                .speech
+                .export_clip(&passage.relative_path, &passage.text)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let Some(destination) = choose_export_file(&request.title).await else {
+        return Ok(None);
+    };
+    let cancel = register_speech_job(&state, &request.job_id)?;
+    let result = async {
+        let spans = narration::write_narration_audio(&clips, &destination, &cancel).await?;
+        let mut files = vec![destination.clone()];
+        if request.word_timings {
+            let text = narration::narration_timed_text(&request.title, &clips, &spans);
+            files.extend(timed_text::write_companions(&text, &destination)?);
+        }
+        Ok::<_, String>(files)
+    }
+    .await;
+    finish_speech_job(&state, &request.job_id);
+    result.map(|files| Some(exported_files(files)))
+}
+
+/// Save a take as M4A with its saved lyrics, timed word by word beside it when asked. Only a
+/// lyric revision that still matches its take is exported. Nothing when the dialog is closed.
+#[tauri::command]
+async fn export_music_lyrics(
+    request: kestrel_app_core::MusicLyricsExportRequest,
+    state: State<'_, AppState>,
+) -> Result<Option<kestrel_app_core::ExportedFiles>, String> {
+    let lyrics = MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let loaded = state
+        .music
+        .load_lyrics_document(lyrics.clone())
+        .map_err(|error| error.to_string())?;
+    let source = state
+        .music
+        .lyrics_audio_source(&lyrics)
+        .map_err(|error| error.to_string())?;
+    let Some(destination) = choose_export_file(&loaded.project.title).await else {
+        return Ok(None);
+    };
+    let cancel = CancellationToken::new();
+    narration::write_song_audio(&source.path, &destination, &cancel).await?;
+    let mut files = vec![destination.clone()];
+    if request.word_timings {
+        let text = timed_text::song_timed_text(&loaded.project.title, &loaded.document);
+        files.extend(timed_text::write_companions(&text, &destination)?);
+    }
+    Ok(Some(exported_files(files)))
 }
 
 #[tauri::command]
@@ -466,10 +615,13 @@ fn get_cached_local_speech_clip(
         .voice_library
         .resolve(&request.voice_profile_id)
         .map_err(|error| error.to_string())?;
-    state
+    let check = narration_check_model(&state, &request, &settings.comfy_root).is_some();
+    let clip = state
         .speech
         .cached_clip(&settings.comfy_root, &request, &voice)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    // With the mistake check on, an unchecked passage is generated through the check first.
+    Ok(clip.filter(|_| !check || !state.speech.needs_narration_check(&request, &voice)))
 }
 
 #[tauri::command]
@@ -622,6 +774,7 @@ async fn run_research(
         settings.context_window = effective.context_window;
         settings.max_output_tokens = effective.max_output_tokens;
     }
+    settings.context_window = model.serving_context(settings.context_window);
     let lease = state
         .runtime
         .lease_research(&model.id, &models, &control, &settings, Some(&app))
@@ -1955,7 +2108,13 @@ async fn get_setup_snapshot(state: State<'_, AppState>) -> Result<setup::SetupSn
         .load()
         .map_err(|error| error.to_string())?;
     let gpu = services::gpu_snapshot().await;
-    Ok(setup::snapshot(&research, &control, gpu.as_ref()))
+    let strata_gpu = strata::detected_gpu().await;
+    Ok(setup::snapshot(
+        &research,
+        &control,
+        gpu.as_ref(),
+        strata_gpu.as_ref(),
+    ))
 }
 
 #[tauri::command]
@@ -1999,6 +2158,7 @@ async fn save_setup_locations(
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
+    let previous_strata_root = research.strata_root.clone();
     setup::apply_locations(&mut research, &mut control, locations)
         .map_err(|error| error.to_string())?;
     let comfy_root = std::path::Path::new(&research.comfy_root);
@@ -2018,6 +2178,16 @@ async fn save_setup_locations(
         .map_err(|error| error.to_string())?;
     apply_media_paths(&research);
     refresh_engine_candidates(&state, &control, &research).await;
+    if research.strata_root != previous_strata_root {
+        let sources = catalog_sources(&state, &control, &research);
+        let found = tokio::task::spawn_blocking(move || model::scan_sources(&sources))
+            .await
+            .map_err(|error| format!("model scan failed after choosing Strata: {error}"))?;
+        if let Err(error) = state.model_catalog.save(&found) {
+            eprintln!("Kestrel found the Strata models, but its disposable catalog could not be saved: {error}");
+        }
+        *state.models.write().await = found;
+    }
     snapshot(&state).await
 }
 
@@ -2073,6 +2243,14 @@ async fn install_setup_component(
         .research_settings
         .load()
         .map_err(|error| error.to_string())?;
+    if request.component == "strata" {
+        // Strata's setup may replace strata.exe, which Windows keeps locked while it runs.
+        state
+            .runtime
+            .stop_managed()
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     let cancel = CancellationToken::new();
     {
         let mut active = state
@@ -2108,8 +2286,10 @@ async fn install_setup_component(
             .control_settings
             .save(&control)
             .map_err(|error| error.to_string())?;
-        let roots = model_roots(&state, &control, &research);
-        let found = tokio::task::spawn_blocking(move || model::scan(&roots))
+    }
+    if matches!(request.component.as_str(), "assistant" | "strata") {
+        let sources = catalog_sources(&state, &control, &research);
+        let found = tokio::task::spawn_blocking(move || model::scan_sources(&sources))
             .await
             .map_err(|error| format!("model scan failed after setup: {error}"))?;
         state
@@ -2155,7 +2335,8 @@ async fn gpu_cleanup_protection(
     if let Some(pid) = state.runtime.owned_process_id().await {
         protected_pids.push(pid);
     }
-    let protected_roots = [
+    let strata_installs = strata::known_installs(&[research.strata_root.as_str()]);
+    let mut protected_roots = [
         research.install_root,
         research.bonsai_root,
         research.comfy_root,
@@ -2164,6 +2345,7 @@ async fn gpu_cleanup_protection(
     .filter(|path| !path.trim().is_empty())
     .map(PathBuf::from)
     .collect::<Vec<_>>();
+    protected_roots.extend(strata_installs);
     let mut protected_paths = [
         control.engine_path,
         research.ffmpeg_path,
@@ -2243,8 +2425,8 @@ async fn scan_local_models(state: State<'_, AppState>) -> Result<ControlSnapshot
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let roots = model_roots(&state, &control, &research);
-    let found = tokio::task::spawn_blocking(move || model::scan(&roots))
+    let sources = catalog_sources(&state, &control, &research);
+    let found = tokio::task::spawn_blocking(move || model::scan_sources(&sources))
         .await
         .map_err(|error| format!("model scan failed: {error}"))?;
     if let Err(error) = state.model_catalog.save(&found) {
@@ -2481,8 +2663,8 @@ async fn finish_profile_import(
         .await
         .map_err(|error| error.to_string())?;
     apply_media_paths(&imported.research);
-    let roots = model_roots(state, &imported.control, &imported.research);
-    match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
+    let sources = catalog_sources(state, &imported.control, &imported.research);
+    match tokio::task::spawn_blocking(move || model::scan_sources(&sources)).await {
         Ok(found) => {
             if let Err(error) = state.model_catalog.save(&found) {
                 eprintln!("Kestrel imported the profile and found its models, but the disposable catalog could not be saved: {error}");
@@ -2739,6 +2921,31 @@ fn get_chat_session(id: String, state: State<'_, AppState>) -> Result<ChatSessio
 #[tauri::command]
 fn delete_chat_session(id: String, state: State<'_, AppState>) -> Result<(), String> {
     state.workspace.delete_chat(&id)
+}
+
+/// Save the producer's edited copy of a model reply for listening and narration export. The
+/// model keeps reading its original reply.
+#[tauri::command]
+fn save_chat_reply_edit(
+    session_id: String,
+    message_id: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<ChatSession, String> {
+    state
+        .workspace
+        .set_reply_edit(&session_id, &message_id, Some(content))
+}
+
+#[tauri::command]
+fn discard_chat_reply_edit(
+    session_id: String,
+    message_id: String,
+    state: State<'_, AppState>,
+) -> Result<ChatSession, String> {
+    state
+        .workspace
+        .set_reply_edit(&session_id, &message_id, None)
 }
 
 #[tauri::command]
@@ -3268,7 +3475,13 @@ async fn snapshot(state: &AppState) -> Result<AppSnapshot, String> {
         &control.settings,
         &control.models,
     );
-    let setup = setup::snapshot(&settings, &control.settings, control.gpu.as_ref());
+    let strata_gpu = strata::detected_gpu().await;
+    let setup = setup::snapshot(
+        &settings,
+        &control.settings,
+        control.gpu.as_ref(),
+        strata_gpu.as_ref(),
+    );
     Ok(AppSnapshot {
         status,
         reports,
@@ -3309,7 +3522,11 @@ async fn system_console_snapshot(state: &AppState) -> Result<SystemSnapshot, Str
     value.runtime.context_window = if managed_runtime.context_window > 0 {
         managed_runtime.context_window
     } else {
-        effective.context_window
+        selected.map_or(effective.context_window, |model| {
+            model
+                .fixed_context_window
+                .unwrap_or(effective.context_window)
+        })
     };
     value.runtime.max_output_tokens = effective.max_output_tokens;
     value.runtime.model_root = selected
@@ -3317,7 +3534,10 @@ async fn system_console_snapshot(state: &AppState) -> Result<SystemSnapshot, Str
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_default();
     value.runtime.kv_cache = if managed_runtime.phase == "ready" {
-        "managed by llama.cpp".into()
+        match selected.map(|model| model.engine) {
+            Some(model::ModelEngine::Strata) => "managed by Strata".into(),
+            _ => "managed by llama.cpp".into(),
+        }
     } else {
         "not loaded".into()
     };
@@ -3401,16 +3621,19 @@ async fn refresh_engine_candidates(
     }
 }
 
-fn model_roots(
+fn catalog_sources(
     state: &AppState,
     control: &ControlSettings,
     research: &ResearchSettings,
-) -> Vec<std::path::PathBuf> {
+) -> model::CatalogSources {
     let mut roots = default_roots(&control.extra_model_roots, &research.bonsai_root);
     roots.push(state.model_downloads.models_root().to_path_buf());
     roots.sort();
     roots.dedup();
-    roots
+    model::CatalogSources {
+        gguf_roots: roots,
+        strata_installs: strata::known_installs(&[research.strata_root.as_str()]),
+    }
 }
 
 async fn refresh_model_catalog(
@@ -3425,8 +3648,8 @@ async fn refresh_model_catalog(
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let roots = model_roots(state, &control, &research);
-    let found = tokio::task::spawn_blocking(move || model::scan(&roots))
+    let sources = catalog_sources(state, &control, &research);
+    let found = tokio::task::spawn_blocking(move || model::scan_sources(&sources))
         .await
         .map_err(|error| format!("model scan failed after download: {error}"))?;
     state.model_catalog.save(&found).map_err(|error| {
@@ -3600,8 +3823,8 @@ pub fn run() {
                     Ok(value) => value,
                     Err(_) => return,
                 };
-                let roots = model_roots(&state, &control, &research);
-                let found = match tokio::task::spawn_blocking(move || model::scan(&roots)).await {
+                let sources = catalog_sources(&state, &control, &research);
+                let found = match tokio::task::spawn_blocking(move || model::scan_sources(&sources)).await {
                     Ok(value) => value,
                     Err(error) => {
                         eprintln!("Kestrel's background model scan could not finish: {error}");
@@ -3622,6 +3845,9 @@ pub fn run() {
             get_speech_preferences,
             save_vad_settings,
             save_research_speech_preferences,
+            save_narration_speech_preferences,
+            export_narration,
+            export_music_lyrics,
             bootstrap,
             get_report,
             get_local_speech_snapshot,
@@ -3736,6 +3962,8 @@ pub fn run() {
             list_chat_sessions,
             get_chat_session,
             delete_chat_session,
+            save_chat_reply_edit,
+            discard_chat_reply_edit,
             pick_context_files,
             open_context_attachment,
             pick_local_model_folder,

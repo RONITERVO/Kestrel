@@ -11,6 +11,7 @@ pub use kestrel_app_core::speech::{
     SpeechTranscriptionRequest,
 };
 
+use crate::narration::{check_narration, export_outpoint, ExportClip, NarrationCheck};
 use crate::{
     models::MAX_TRANSCRIPT_TIMINGS, store::default_research_root, voice_library::VoiceConditioning,
 };
@@ -75,6 +76,9 @@ pub enum SpeechError {
     Invalid(String),
     #[error("Local speech is unavailable: {0}")]
     Unavailable(String),
+    /// Whisper listened but found no words it could time; the audio itself still plays.
+    #[error("Whisper found no words to time in this passage: {0}")]
+    Untimed(String),
     #[error("Local speech operation was stopped")]
     Cancelled,
 }
@@ -366,16 +370,38 @@ impl LocalSpeech {
         if cancel.is_cancelled() {
             return Err(SpeechError::Cancelled);
         }
+        let target = self.cache_target(request, voice)?;
+        self.generate(comfy_root, request, voice, 0, &target, cancel, app)
+            .await?;
+        clip_receipt(&self.cache_root, request, voice, &target, false)
+    }
+
+    /// Run the Chatterbox graph once and save its audio at `target`. `attempt` selects the seed,
+    /// so a second attempt gives the voice a different take on the same words.
+    #[allow(clippy::too_many_arguments)]
+    async fn generate(
+        &self,
+        comfy_root: &str,
+        request: &SpeechSynthesisRequest,
+        voice: &VoiceConditioning,
+        attempt: u64,
+        target: &Path,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<(), SpeechError> {
         emit_progress(
             app,
             request,
             "generating",
-            "ComfyUI is generating this passage with the selected local voice model.",
+            if attempt == 0 {
+                "ComfyUI is generating this passage with the selected local voice model."
+            } else {
+                "The voice drifted from the text; ComfyUI is generating another take of this passage."
+            },
         );
-        let target = self.cache_target(request, voice)?;
-        let prefix = format!("kestrel_speech/{}", cache_key(request, voice));
+        let prefix = format!("kestrel_speech/{}-{attempt}", cache_key(request, voice));
         let voice_input = prepare_voice_input(Path::new(comfy_root), voice)?;
-        let graph = chatterbox_graph(request, &prefix, voice, voice_input.as_deref());
+        let graph = chatterbox_graph(request, &prefix, voice, voice_input.as_deref(), attempt);
         let client_id = format!("kestrel-local-tts-{}", uuid::Uuid::new_v4().simple());
         let response = self
             .http
@@ -460,9 +486,9 @@ impl LocalSpeech {
                             "ComfyUI produced an unreadable Opus passage.".into(),
                         ));
                     }
-                    if let Err(error) = tokio::fs::rename(&temporary, &target).await {
+                    if let Err(error) = tokio::fs::rename(&temporary, target).await {
                         let _ = tokio::fs::remove_file(&temporary).await;
-                        if !valid_cached_audio(&target) {
+                        if !valid_cached_audio(target) {
                             return Err(error.into());
                         }
                     }
@@ -472,7 +498,7 @@ impl LocalSpeech {
                         "complete",
                         "The next passage is ready locally.",
                     );
-                    return clip_receipt(&self.cache_root, request, voice, &target, false);
+                    return Ok(());
                 }
             }
             tokio::select! {
@@ -483,6 +509,153 @@ impl LocalSpeech {
                 },
             }
         }
+    }
+
+    /// Whether a cached passage still needs the optional mistake check before it plays.
+    pub fn needs_narration_check(
+        &self,
+        request: &SpeechSynthesisRequest,
+        voice: &VoiceConditioning,
+    ) -> bool {
+        self.cache_target(request, voice)
+            .map(|target| !narration_checked(&target))
+            .unwrap_or(true)
+    }
+
+    /// Synthesize a passage and check it before it plays. Whisper listens to the take; one that
+    /// lost the text, repeated itself, or kept talking after its last word is generated once more
+    /// with another seed, and the better take is kept. The verdict is recorded beside the audio so
+    /// a checked passage is never checked again.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn synthesize_checked(
+        &self,
+        comfy_root: &str,
+        request: &SpeechSynthesisRequest,
+        alignment_model_id: &str,
+        voice: &VoiceConditioning,
+        cancel: &CancellationToken,
+        app: Option<&AppHandle>,
+    ) -> Result<SpeechClip, SpeechError> {
+        let first = self
+            .synthesize(comfy_root, request, voice, cancel, app)
+            .await?;
+        let target = self.cache_target(request, voice)?;
+        if narration_checked(&target) {
+            return Ok(first);
+        }
+        let spoken = spoken_text(&request.text);
+        let first_alignment =
+            check_alignment_request(request, &first.relative_path, alignment_model_id, "check");
+        let aligned = match self
+            .align(comfy_root, &first_alignment, voice, cancel, app)
+            .await
+        {
+            Ok(aligned) => aligned,
+            Err(SpeechError::Cancelled) => return Err(SpeechError::Cancelled),
+            // Whisper could not follow this take (badly garbled audio can yield no usable
+            // timings). The take still plays, unchecked, and is not checked again every time.
+            Err(error) => {
+                record_unfinished_check(&target, &error.to_string())?;
+                return Ok(first);
+            }
+        };
+        let first_check = check_narration(&spoken, &aligned.words);
+        if first_check.passed {
+            record_narration_check(&target, &first_check, 1)?;
+            return Ok(aligned);
+        }
+
+        let retake_path = target.with_extension("retake.opus");
+        let retake = async {
+            self.generate(comfy_root, request, voice, 1, &retake_path, cancel, app)
+                .await?;
+            let relative = relative_cache_path(&self.cache_root, &retake_path)?;
+            self.align(
+                comfy_root,
+                &check_alignment_request(request, &relative, alignment_model_id, "retake"),
+                voice,
+                cancel,
+                app,
+            )
+            .await
+        }
+        .await;
+        let retake_receipt = sidecar_path(&retake_path);
+        let chosen = match retake {
+            Ok(retake) => {
+                let retake_check = check_narration(&spoken, &retake.words);
+                // The first take stays when it is at least as good, or when the audio is in use.
+                if retake_check.score() > first_check.score()
+                    && fs::rename(&retake_path, &target).is_ok()
+                {
+                    write_synthesis_receipt(
+                        &target,
+                        &spoken_alignment_request(&first_alignment),
+                        voice,
+                        &retake.segments,
+                        &retake.words,
+                        Some(alignment_model_id),
+                        true,
+                    )?;
+                    let clip = SpeechClip {
+                        job_id: request.job_id.clone(),
+                        relative_path: first.relative_path.clone(),
+                        ..retake
+                    };
+                    Some((clip, retake_check))
+                } else {
+                    None
+                }
+            }
+            Err(SpeechError::Cancelled) => {
+                let _ = fs::remove_file(&retake_path);
+                let _ = fs::remove_file(&retake_receipt);
+                return Err(SpeechError::Cancelled);
+            }
+            // A failed second take leaves the first one playable.
+            Err(_) => None,
+        };
+        let _ = fs::remove_file(&retake_path);
+        let _ = fs::remove_file(&retake_receipt);
+        let (clip, check) = chosen.unwrap_or((aligned, first_check));
+        record_narration_check(&target, &check, 2)?;
+        Ok(clip)
+    }
+
+    /// A generated passage for a narration export, and where to stop reading it so speech the
+    /// voice added after the text is left out.
+    pub fn export_clip(&self, relative_path: &str, text: &str) -> Result<ExportClip, SpeechError> {
+        if !safe_relative_path(relative_path)
+            || !relative_path.starts_with("generated/")
+            || !relative_path.ends_with(".opus")
+        {
+            return Err(SpeechError::Invalid(
+                "a narration export may only use passages Kestrel generated".into(),
+            ));
+        }
+        if text.trim().is_empty() || text.len() > MAX_TEXT_BYTES {
+            return Err(SpeechError::Invalid(format!(
+                "narration passage text must contain 1-{MAX_TEXT_BYTES} UTF-8 bytes"
+            )));
+        }
+        let path = self.cache_root.join(relative_path);
+        if !valid_cached_audio(&path) {
+            return Err(SpeechError::Unavailable(
+                "A passage's audio is missing from the speech cache. Listen to the reply once more, then export again.".into(),
+            ));
+        }
+        let heard = read_receipt_recoverable(&sidecar_path(&path))
+            .as_ref()
+            .and_then(receipt_timings)
+            .map(|(_, words)| words)
+            .unwrap_or_default();
+        let outpoint = export_outpoint(&spoken_text(text), &heard);
+        Ok(ExportClip {
+            path,
+            outpoint,
+            text: text.to_string(),
+            heard,
+        })
     }
 
     pub async fn transcribe(
@@ -874,6 +1047,34 @@ impl LocalSpeech {
         let result = self
             .execute_whisper_graph(&request.job_id, graph, context_mode, None, cancel)
             .await;
+        // Given the expected words as its prompt, Whisper sometimes discards audible speech (long
+        // runs of spelled-out numbers) and hears nothing. It then listens once more without the
+        // prompt, and the fuller hearing is kept.
+        let result = match result {
+            Ok(prompted)
+                if !transcription.prompt.is_empty()
+                    && heard_too_little(&prompted.words, &request.text) =>
+            {
+                let unprompted = SpeechTranscriptionRequest {
+                    prompt: String::new(),
+                    ..transcription.clone()
+                };
+                let graph = whisper_graph(
+                    &unprompted,
+                    &format!("kestrel_speech/{input_name}"),
+                    context_mode,
+                );
+                match self
+                    .execute_whisper_graph(&request.job_id, graph, context_mode, None, cancel)
+                    .await
+                {
+                    Ok(fresh) if fresh.words.len() > prompted.words.len() => Ok(fresh),
+                    Err(SpeechError::Cancelled) => Err(SpeechError::Cancelled),
+                    _ => Ok(prompted),
+                }
+            }
+            other => other,
+        };
         let _ = tokio::fs::remove_file(&input_path).await;
         let WhisperTranscriptionResult {
             segments, words, ..
@@ -1250,7 +1451,7 @@ fn discover_chatterbox_models(comfy_root: &Path) -> Vec<SpeechModel> {
     models
 }
 
-fn discover_whisper_models(comfy_root: &Path) -> Vec<SpeechModel> {
+pub(crate) fn discover_whisper_models(comfy_root: &Path) -> Vec<SpeechModel> {
     let root = comfy_root.join(WHISPER_MODEL_ROOT);
     let mut models = fs::read_dir(root)
         .ok()
@@ -1561,6 +1762,77 @@ fn write_recording_atomic(target: &Path, bytes: &[u8]) -> Result<PathBuf, Speech
     }
 }
 
+/// Whisper alignment for the optional mistake check; its job ID derives from the synthesis job.
+fn check_alignment_request(
+    request: &SpeechSynthesisRequest,
+    relative_path: &str,
+    alignment_model_id: &str,
+    purpose: &str,
+) -> SpeechAlignmentRequest {
+    let base = &request.job_id[..request.job_id.len().min(MAX_ID_BYTES - purpose.len() - 1)];
+    SpeechAlignmentRequest {
+        job_id: format!("{base}-{purpose}"),
+        source_kind: request.source_kind.clone(),
+        source_id: request.source_id.clone(),
+        passage_id: request.passage_id.clone(),
+        text: request.text.clone(),
+        relative_path: relative_path.into(),
+        voice_model_id: request.model_id.clone(),
+        voice_profile_id: request.voice_profile_id.clone(),
+        alignment_model_id: alignment_model_id.into(),
+    }
+}
+
+/// Whether Whisper heard under half of a passage's words. Both sides count spoken words, so a
+/// hearing written with digits ("0.39") is not mistaken for a short one.
+fn heard_too_little(heard: &[SpeechTiming], spoken: &str) -> bool {
+    let expected = crate::speech_text::spoken_words(spoken).len();
+    let heard = heard
+        .iter()
+        .map(|word| crate::speech_text::spoken_words(&word.value).len())
+        .sum::<usize>();
+    heard == 0 || heard * 2 < expected
+}
+
+/// Whether the optional mistake check already ran on this audio.
+fn narration_checked(target: &Path) -> bool {
+    read_receipt_recoverable(&sidecar_path(target))
+        .is_some_and(|receipt| receipt.get("narrationCheck").is_some())
+}
+
+fn record_narration_check(
+    target: &Path,
+    check: &NarrationCheck,
+    attempts: u32,
+) -> Result<(), SpeechError> {
+    let receipt_path = sidecar_path(target);
+    let Some(mut receipt) = read_receipt_recoverable(&receipt_path) else {
+        return Ok(());
+    };
+    receipt["narrationCheck"] = json!({
+        "attempts": attempts,
+        "passed": check.passed,
+        "matched": check.matched,
+        "tailWords": check.tail_words,
+        "checkedAt": chrono::Utc::now().to_rfc3339(),
+    });
+    replace_json_recoverable(&receipt_path, &receipt)
+}
+
+/// Record that the check could not listen to this take, so playback does not retry it each time.
+/// A take without Whisper timings has no receipt yet; one is written with no timings.
+fn record_unfinished_check(target: &Path, reason: &str) -> Result<(), SpeechError> {
+    let receipt_path = sidecar_path(target);
+    let mut receipt = read_receipt_recoverable(&receipt_path).unwrap_or_else(|| json!({}));
+    receipt["narrationCheck"] = json!({
+        "attempts": 1,
+        "passed": false,
+        "unfinished": truncate(reason, 300),
+        "checkedAt": chrono::Utc::now().to_rfc3339(),
+    });
+    replace_json_recoverable(&receipt_path, &receipt)
+}
+
 fn sidecar_path(target: &Path) -> PathBuf {
     let mut name = target
         .file_name()
@@ -1692,8 +1964,8 @@ fn write_synthesis_receipt(
     replace: bool,
 ) -> Result<(), SpeechError> {
     if !validate_timings(segments) || words.is_empty() || !validate_timings(words) {
-        return Err(SpeechError::Unavailable(
-            "ComfyUI Whisper returned no safe word alignment for this speech passage.".into(),
+        return Err(SpeechError::Untimed(
+            "it may be silent or too garbled to follow. The passage still plays; only its word-by-word timing is missing.".into(),
         ));
     }
     let receipt_path = sidecar_path(audio_path);
@@ -1747,29 +2019,13 @@ fn relative_cache_path(cache_root: &Path, target: &Path) -> Result<String, Speec
     Ok(value)
 }
 
-fn expand_decimal_points(raw: &str) -> String {
-    let characters = raw.chars().collect::<Vec<_>>();
-    let mut expanded = String::with_capacity(raw.len());
-    for (index, character) in characters.iter().enumerate() {
-        if *character == '.'
-            && index > 0
-            && index + 1 < characters.len()
-            && characters[index - 1].is_ascii_digit()
-            && characters[index + 1].is_ascii_digit()
-        {
-            expanded.push_str(" point ");
-        } else {
-            expanded.push(*character);
-        }
-    }
-    expanded
-}
-
+/// The exact text Chatterbox speaks and Whisper aligns against: code blocks become a short cue,
+/// numbers and units become words, and symbols a voice would stumble on are removed.
 pub fn clean_speech_text(raw: &str) -> String {
     if raw.trim().is_empty() {
         return String::new();
     }
-    let mut text = expand_decimal_points(raw)
+    let mut text = raw
         .replace("e.g.", "for example")
         .replace("E.g.", "For example")
         .replace("i.e.", "that is")
@@ -1792,6 +2048,7 @@ pub fn clean_speech_text(raw: &str) -> String {
             text.replace_range(start..start + 3, " ");
         }
     }
+    let text = crate::speech_text::speak_numbers(&text);
 
     let mut cleaned = String::with_capacity(text.len());
     let mut prev_char = ' ';
@@ -1858,15 +2115,18 @@ fn chatterbox_graph(
     prefix: &str,
     voice: &VoiceConditioning,
     voice_input: Option<&str>,
+    attempt: u64,
 ) -> Value {
     let pack = request
         .model_id
         .strip_prefix("chatterbox:")
         .unwrap_or_default();
     let speech_text = spoken_text(&request.text);
-    let word_count = speech_text.split_whitespace().count() as u32;
-    let max_new_tokens = (word_count.saturating_mul(18).saturating_add(96)).clamp(128, 1_600);
-    let seed = deterministic_seed(request, voice);
+    let max_new_tokens = speech_token_budget(&speech_text, &voice.performance);
+    // Each further attempt is another deterministic take of the same words.
+    let seed = deterministic_seed(request, voice)
+        .wrapping_add(attempt.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        .max(1);
     let (flow_cfg_scale, exaggeration, temperature, cfg_weight) =
         performance_parameters(&voice.performance);
     let mut graph = json!({
@@ -1901,6 +2161,22 @@ fn chatterbox_graph(
         graph["1"]["inputs"]["audio_prompt"] = json!(["0", 0]);
     }
     graph
+}
+
+/// Chatterbox speech tokens (25 per second) one passage may generate. Numbers are already words,
+/// so the word count is what is actually said: natural reading takes about 10 tokens a word,
+/// slow passages up to 14. The limit leaves room for that plus three seconds, and stops a
+/// looping generation before it runs on for a minute.
+fn speech_token_budget(speech_text: &str, performance: &str) -> u32 {
+    let per_word = match performance {
+        "expressive" | "dramatic" => 17,
+        _ => 15,
+    };
+    let words = speech_text.split_whitespace().count() as u32;
+    words
+        .saturating_mul(per_word)
+        .saturating_add(75)
+        .clamp(128, 1_600)
 }
 
 fn performance_parameters(performance: &str) -> (f64, f64, f64, f64) {
@@ -2324,11 +2600,14 @@ fn deterministic_seed(request: &SpeechSynthesisRequest, voice: &VoiceConditionin
         voice.profile_id,
         voice.fingerprint(),
         voice.performance,
-        request.text.trim()
+        spoken_text(&request.text)
     ));
     u64::from_le_bytes(digest[..8].try_into().expect("eight-byte digest prefix")).max(1)
 }
 
+/// Cached narration is keyed by what the voice actually says, so a change to the speech cleanup
+/// re-renders exactly the passages whose spoken words changed and never replays audio made from
+/// older wording. Passages with the same spoken words, as in an edited reply, share their audio.
 fn cache_key(request: &SpeechSynthesisRequest, voice: &VoiceConditioning) -> String {
     let digest = Sha256::digest(format!(
         "{TTS_ADAPTER_REVISION}\0{}\0{}\0{}\0{}\0{}",
@@ -2336,7 +2615,7 @@ fn cache_key(request: &SpeechSynthesisRequest, voice: &VoiceConditioning) -> Str
         voice.profile_id,
         voice.fingerprint(),
         voice.performance,
-        request.text.trim()
+        spoken_text(&request.text)
     ));
     hex::encode(digest)
 }
@@ -2943,6 +3222,7 @@ mod tests {
             text: text.into(),
             model_id: "chatterbox:resembleai_default_voice".into(),
             voice_profile_id: "voice-default".into(),
+            check_mistakes: None,
         }
     }
 
@@ -3081,7 +3361,15 @@ mod tests {
     fn graph_is_a_bounded_deterministic_chatterbox_workflow() {
         let request = request("A concise locally generated research passage.");
         let voice = default_conditioning();
-        let graph = chatterbox_graph(&request, "kestrel_research/test", &voice, None);
+        let graph = chatterbox_graph(&request, "kestrel_research/test", &voice, None, 0);
+        // A second take of the same words uses another seed; a first take stays reproducible.
+        let retake = chatterbox_graph(&request, "kestrel_research/test", &voice, None, 1);
+        assert_ne!(graph["1"]["inputs"]["seed"], retake["1"]["inputs"]["seed"]);
+        assert_eq!(
+            graph["1"]["inputs"]["seed"],
+            chatterbox_graph(&request, "kestrel_research/test", &voice, None, 0)["1"]["inputs"]
+                ["seed"]
+        );
         assert_eq!(graph["1"]["class_type"], "ChatterboxTTS");
         assert_eq!(
             graph["1"]["inputs"]["model_pack_name"],
@@ -3095,6 +3383,16 @@ mod tests {
         assert_ne!(
             cache_key(&request, &voice),
             cache_key(&self::request("Different text."), &voice)
+        );
+        // The key follows the spoken words: digits and their spelled-out form are one clip, and
+        // a number read differently is a new one.
+        assert_eq!(
+            cache_key(&self::request("It is 0.5 m."), &voice),
+            cache_key(&self::request("It is 0 point 5 m."), &voice)
+        );
+        assert_ne!(
+            cache_key(&self::request("It is 0.5 m."), &voice),
+            cache_key(&self::request("It is 0.6 m."), &voice)
         );
     }
 
@@ -3113,6 +3411,7 @@ mod tests {
             "kestrel_research/custom",
             &custom,
             Some("kestrel_speech/voices/reference.wav"),
+            0,
         );
 
         assert_eq!(graph["0"]["class_type"], "LoadAudio");
@@ -3400,18 +3699,66 @@ mod tests {
         assert!(cleaned.contains("foo bar baz"));
 
         let dashboard = clean_speech_text("O₂ ≥ 20%; CO₂ ≤ 0.45%; Δ O₂ → stable ↑ while reserve ↓");
-        assert!(dashboard.contains("oxygen at least 20%"));
-        assert!(dashboard.contains("carbon dioxide at most 0 point 45%"));
+        assert!(dashboard.contains("oxygen at least twenty percent"));
+        assert!(dashboard.contains("carbon dioxide at most zero point four five percent"));
         assert!(dashboard.contains("change in oxygen then stable rising"));
         assert!(dashboard.ends_with("reserve falling"));
+        // The desktop's captions arrive with digits and a spelled "point"; the voice gets words.
         assert_eq!(
-            expand_decimal_points("19.8 and v1.2.3"),
-            "19 point 8 and v1 point 2 point 3"
+            clean_speech_text("P of H2 given D equals 0 point 042 over 0 point 5875, about 23,500 kg at 5 km per s."),
+            "P of H two given D equals zero point zero four two over zero point five eight seven five, about twenty-three thousand five hundred kilograms at five kilometers per second."
+        );
+        let code = clean_speech_text(
+            "Values ```text
+0.55 | 0.82
+``` follow.",
+        );
+        assert!(
+            code.contains("Code block on screen.") && !code.contains("zero"),
+            "{code}"
         );
 
         let unterminated = clean_speech_text("Intro text\n```json\n{\"still_open\": true}");
         assert!(unterminated.contains("Intro text"));
         assert!(!unterminated.contains("```"));
+    }
+
+    #[test]
+    fn whisper_listens_again_only_when_it_heard_under_half_the_words() {
+        let heard = |words: &[&str]| {
+            words
+                .iter()
+                .enumerate()
+                .map(|(index, value)| SpeechTiming {
+                    value: (*value).into(),
+                    start: index as f64,
+                    end: index as f64 + 0.5,
+                })
+                .collect::<Vec<_>>()
+        };
+        let spoken =
+            "P sub impact equals one minus zero point three nine times zero point eight two";
+        assert!(heard_too_little(&[], spoken));
+        assert!(heard_too_little(&heard(&["P", "sub", "impact"]), spoken));
+        // Digits count as the words they stand for, so a complete hearing is not short.
+        assert!(!heard_too_little(
+            &heard(&["P", "sub", "impact", "equals", "1", "minus", "0.39", "times", "0.82"]),
+            spoken
+        ));
+    }
+
+    #[test]
+    fn chatterbox_length_follows_the_words_actually_spoken() {
+        let text = clean_speech_text("It was 0.5875 at 23,500 kg.");
+        assert_eq!(
+            text,
+            "It was zero point five eight seven five at twenty-three thousand five hundred kilograms."
+        );
+        let words = text.split_whitespace().count() as u32;
+        assert_eq!(speech_token_budget(&text, "natural"), words * 15 + 75);
+        assert_eq!(speech_token_budget(&text, "dramatic"), words * 17 + 75);
+        assert_eq!(speech_token_budget("Hi.", "natural"), 128);
+        assert_eq!(speech_token_budget(&"word ".repeat(500), "natural"), 1_600);
     }
 
     #[tokio::test]
@@ -3671,6 +4018,7 @@ mod tests {
                 text: text.into(),
                 model_id: voice_model.clone(),
                 voice_profile_id: voice.profile_id.clone(),
+                check_mistakes: None,
             };
             let clip = speech
                 .synthesize(

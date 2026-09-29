@@ -16,6 +16,16 @@ afterEach(() => {
 });
 
 describe("MarkdownContent component", () => {
+  it("shows a local model's LaTeX math as readable text and keeps code literal", () => {
+    const { container } = render(
+      <MarkdownContent value={"Let \\(u = x^3\\), so\n\n\\[\n\\left\\lfloor \\frac{1000}{3} \\right\\rfloor = 333\n\\]\n\n```\n\\(kept\\)\n```"} />,
+    );
+    expect(container.textContent).toContain("Let u = x³, so");
+    expect(container.textContent).toContain("⌊1000/3⌋ = 333");
+    expect(container.textContent).not.toContain("\\frac");
+    expect(container.querySelector("pre code")?.textContent).toBe("\\(kept\\)");
+  });
+
   it("renders GitHub-style markdown tables with header alignment and cell data", () => {
     const tableMarkdown = `
 # Benchmark Results

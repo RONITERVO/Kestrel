@@ -41,7 +41,10 @@ impl ChatStreamJob {
             settings,
             cancel,
         } = self;
-        let settings = settings.for_model(&request.model_id);
+        let mut settings = settings.for_model(&request.model_id);
+        if let Some(model) = models.iter().find(|model| model.id == request.model_id) {
+            settings.context_window = model.serving_context(settings.context_window);
+        }
         emit(app.as_ref(), &request_id, &session_id, "queued", None, None);
         let session = store.get_chat(&session_id)?;
         let max_output_tokens = if settings.advanced_mode {
@@ -52,11 +55,11 @@ impl ChatStreamJob {
                 .max(1)
                 .min(settings.max_output_tokens.max(1))
         };
-        let prompt_chars = max_output_tokens
-            .checked_add(1_024)
-            .and_then(|reserved| settings.context_window.checked_sub(reserved))
-            .unwrap_or(1_024)
-            .saturating_mul(4) as usize;
+        let prompt_chars = crate::models::prompt_char_budget(
+            settings.context_window,
+            max_output_tokens.saturating_add(1_024),
+        )
+        .unwrap_or(4_096);
         let system_prompt = prompt_catalog::text(PromptId::ChatSystem);
         let history_budget = prompt_chars.max(4_096).saturating_sub(system_prompt.len());
         let (history, omitted, attachment_budget) =
@@ -75,7 +78,7 @@ impl ChatStreamJob {
             for message in history {
                 let content = if message.role == "user" && !message.attachments.is_empty() {
                     let prepared = attachments.prepare_message_cached(
-                        &message.content,
+                        model_text(&message),
                         &message.attachments,
                         &model,
                         attachment_budget,
@@ -86,7 +89,7 @@ impl ChatStreamJob {
                     }
                     prepared.content
                 } else {
-                    Value::String(message.content.clone())
+                    Value::String(model_text(&message).to_string())
                 };
                 messages.push(json!({"role": message.role, "content": content}));
             }
@@ -381,6 +384,13 @@ fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
+/// What the model reads for a message: always the original text. A producer's edited copy of a
+/// reply is for listening and export only, so the conversation the model continues is the one it
+/// actually had.
+fn model_text(message: &ChatMessage) -> &str {
+    &message.content
+}
+
 fn fit_chat_history(
     messages: &[ChatMessage],
     history_budget: usize,
@@ -515,6 +525,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_model_reads_its_original_reply_never_the_producers_edit() {
+        let mut reply = chat_message("assistant", "The original answer.");
+        reply.edited = Some(crate::models::EditedReply {
+            content: "The producer's corrected answer.".into(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        });
+        let (history, _, _) = fit_chat_history(&[chat_message("user", "Question?"), reply], 8_192);
+        assert_eq!(model_text(&history[1]), "The original answer.");
+    }
+
     fn chat_message(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -524,6 +545,7 @@ mod tests {
             status: None,
             attachments: Vec::new(),
             recording: None,
+            edited: None,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }

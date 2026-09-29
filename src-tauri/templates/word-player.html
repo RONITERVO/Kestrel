@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>
+  :root {
+    --bg: #f3ead8; --bg-2: #e8dcc2; --ink: #2b2620; --soft: #9a8e7c; --past: #4a4037;
+    --lit: #b4471f; --wash: rgba(180, 71, 31, 0.12); --panel: rgba(255, 252, 244, 0.72); --line: rgba(43, 38, 32, 0.12);
+    color-scheme: light;
+  }
+  body[data-theme="night"] {
+    --bg: #0b0e1d; --bg-2: #1a1540; --ink: #eef0ff; --soft: #6d7299; --past: #c3c7e8;
+    --lit: #ffd36e; --wash: rgba(255, 211, 110, 0.16); --panel: rgba(16, 18, 38, 0.72); --line: rgba(238, 240, 255, 0.12);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    body[data-theme="paper"] {
+      --bg: #1d1a16; --bg-2: #2a241c; --ink: #f2eadb; --soft: #8c826f; --past: #d8cdb8;
+      --lit: #f0a27a; --wash: rgba(240, 162, 122, 0.16); --panel: rgba(34, 30, 25, 0.78); --line: rgba(242, 234, 219, 0.12);
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; color: var(--ink);
+    background: radial-gradient(120% 90% at 20% 0%, var(--bg-2), var(--bg) 60%) fixed;
+    font: 22px/1.55 Georgia, "Iowan Old Style", "Book Antiqua", serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 1; padding: 14px 16px 12px; background: var(--panel);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+  }
+  h1 { margin: 0 0 8px; font: 600 15px/1.3 system-ui, "Segoe UI", sans-serif; letter-spacing: 0.02em; color: var(--soft); }
+  audio { width: 100%; display: block; }
+  main { flex: 1; width: 100%; max-width: 44rem; margin: 0 auto; padding: 28px 16px 45vh; }
+  .line { margin: 0 0 0.85em; color: var(--soft); transition: color 0.35s, transform 0.35s, opacity 0.35s; transform-origin: left center; }
+  .line.done { color: var(--past); opacity: 0.75; }
+  .line.current { color: var(--soft); transform: scale(1.025); opacity: 1; }
+  .line .translation { display: block; margin-top: 0.15em; font-size: 0.72em; font-style: italic; color: var(--soft); }
+  .word { cursor: pointer; border-radius: 0.2em; transition: color 0.15s, background-color 0.15s; }
+  .word:hover { background-color: var(--wash); }
+  .line.current .word.past { color: var(--ink); }
+  /* The spoken word fills with light from left to right as it is heard. */
+  .line.current .word.now {
+    color: transparent; -webkit-background-clip: text; background-clip: text;
+    background-image: linear-gradient(90deg, var(--lit) var(--fill, 0%), var(--soft) var(--fill, 0%));
+  }
+  body[data-theme="night"] .line.current .word.now { filter: drop-shadow(0 0 10px rgba(255, 211, 110, 0.45)); }
+  footer { padding: 10px 16px 16px; text-align: center; font: 12px/1.4 system-ui, sans-serif; color: var(--soft); }
+  @media (prefers-reduced-motion: reduce) { .line { transition: none; } .line.current { transform: none; } }
+  @media (max-width: 560px) { body { font-size: 19px; } }
+</style>
+</head>
+<body data-theme="{{THEME}}">
+<header>
+  <h1>{{TITLE}}</h1>
+  <audio id="audio" controls preload="auto"></audio>
+</header>
+<main id="lines"></main>
+<footer>Click any word to play from it. Space plays and pauses. Made with Kestrel.</footer>
+<script type="application/json" id="timed-text">{{DATA}}</script>
+<script type="application/octet-stream" id="audio-data">{{AUDIO}}</script>
+<script>
+(() => {
+  const data = JSON.parse(document.getElementById("timed-text").textContent);
+  const audio = document.getElementById("audio");
+  const raw = atob(document.getElementById("audio-data").textContent.trim());
+  const bytes = new Uint8Array(raw.length);
+  for (let index = 0; index < raw.length; index++) bytes[index] = raw.charCodeAt(index);
+  audio.src = URL.createObjectURL(new Blob([bytes], { type: "{{MIME}}" }));
+
+  const main = document.getElementById("lines");
+  const lines = data.lines.map((line) => {
+    const element = document.createElement("p");
+    element.className = "line";
+    const words = line.words.map((word) => {
+      const span = document.createElement("span");
+      span.className = "word";
+      span.textContent = word.text;
+      span.addEventListener("click", () => { audio.currentTime = word.start; void audio.play(); });
+      element.append(span, " ");
+      return { word, span };
+    });
+    if (!words.length) {
+      element.textContent = line.text;
+      element.addEventListener("click", () => { audio.currentTime = line.start; void audio.play(); });
+    }
+    if (line.translation) {
+      const translation = document.createElement("span");
+      translation.className = "translation";
+      translation.textContent = line.translation;
+      element.append(translation);
+    }
+    main.append(element);
+    return { line, element, words };
+  });
+
+  // The last line that has started; lines are in time order.
+  const lineAt = (time) => {
+    let low = 0, high = lines.length - 1, found = -1;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      if (lines[middle].line.start <= time) { found = middle; low = middle + 1; } else high = middle - 1;
+    }
+    return found;
+  };
+
+  let current = -1;
+  const render = () => {
+    const time = audio.currentTime;
+    const index = lineAt(time);
+    if (index !== current) {
+      lines.forEach((entry, position) => {
+        entry.element.classList.toggle("current", position === index);
+        entry.element.classList.toggle("done", position < index);
+      });
+      current = index;
+      if (index >= 0) lines[index].element.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    if (index < 0) return;
+    for (const { word, span } of lines[index].words) {
+      const past = time >= word.end;
+      const now = !past && time >= word.start;
+      span.classList.toggle("past", past);
+      span.classList.toggle("now", now);
+      if (now) {
+        const fill = word.end > word.start ? Math.min(100, ((time - word.start) / (word.end - word.start)) * 100) : 100;
+        span.style.setProperty("--fill", `${fill.toFixed(1)}%`);
+      }
+    }
+  };
+  const frame = () => { render(); if (!audio.paused) requestAnimationFrame(frame); };
+  audio.addEventListener("play", () => requestAnimationFrame(frame));
+  audio.addEventListener("seeked", render);
+  audio.addEventListener("timeupdate", render);
+  document.addEventListener("keydown", (event) => {
+    if (event.code !== "Space" || event.target instanceof HTMLButtonElement) return;
+    event.preventDefault();
+    if (audio.paused) void audio.play(); else audio.pause();
+  });
+  render();
+})();
+</script>
+</body>
+</html>

@@ -118,6 +118,7 @@ pub fn preview(
     portable_research.wikipedia_zim_path = portable_path(&portable_research.wikipedia_zim_path);
     portable_research.kiwix_server_path = portable_path(&portable_research.kiwix_server_path);
     portable_research.comfy_root = portable_path(&portable_research.comfy_root);
+    portable_research.strata_root = portable_path(&portable_research.strata_root);
     portable_research.ffmpeg_path = portable_path(&portable_research.ffmpeg_path);
     portable_research.ffprobe_path = portable_path(&portable_research.ffprobe_path);
     let selected_model_id = control
@@ -238,6 +239,7 @@ fn apply_profile(
     let imported_wikipedia = localize_path(&profile.research.wikipedia_zim_path);
     let imported_kiwix = localize_path(&profile.research.kiwix_server_path);
     let imported_comfy = localize_path(&profile.research.comfy_root);
+    let imported_strata = localize_path(&profile.research.strata_root);
     let imported_ffmpeg = localize_path(&profile.research.ffmpeg_path);
     let imported_ffprobe = localize_path(&profile.research.ffprobe_path);
     let mut research = profile.research;
@@ -271,6 +273,15 @@ fn apply_profile(
         imported_comfy
     } else {
         current_research.comfy_root.clone()
+    };
+    research.strata_root = if Path::new(&imported_strata)
+        .join("serve")
+        .join("server.py")
+        .is_file()
+    {
+        imported_strata
+    } else {
+        current_research.strata_root.clone()
     };
     research.ffmpeg_path = existing_named_file(&imported_ffmpeg, "ffmpeg.exe")
         .unwrap_or_else(|| current_research.ffmpeg_path.clone());
@@ -559,6 +570,8 @@ mod tests {
             supports_vision: false,
             supports_audio: false,
             recommendation: "Bonsai".into(),
+            engine: crate::model::ModelEngine::LlamaCpp,
+            fixed_context_window: None,
         };
         let transfer = export(
             directory.path(),
@@ -580,6 +593,8 @@ mod tests {
                     supports_vision: false,
                     supports_audio: false,
                     recommendation: String::new(),
+                    engine: crate::model::ModelEngine::LlamaCpp,
+                    fixed_context_window: None,
                 },
             ],
         )
@@ -688,6 +703,8 @@ mod tests {
             supports_vision: false,
             supports_audio: false,
             recommendation: String::new(),
+            engine: crate::model::ModelEngine::LlamaCpp,
+            fixed_context_window: None,
         };
         let text = preview(&desired_research, &desired_control, &[portable_model]).unwrap();
         let research_store = SettingsStore::new(directory.path());

@@ -1,7 +1,7 @@
 import { invoke, listen, type UnlistenFn } from "./transport";
 import type { MovieEditorGenerateRequest, MovieEditorJob, MovieEditorRangeRequest, MovieEditorState } from "../contracts/index";
 import { readLegacySpeechPreferences } from "./legacySpeechPreferences";
-import type { DesktopCommands, ResearchSpeechPreferences, VadSettings } from "../contracts/index";
+import type { DesktopCommands, ExportedFiles, NarrationExportRequest, NarrationPreferences, ResearchSpeechPreferences, VadSettings } from "../contracts/index";
 import type {
   AppSnapshot,
   ChatSession,
@@ -108,6 +108,13 @@ export function saveVadSettings(settings: VadSettings) {
 }
 export function saveResearchSpeechPreferences(settings: ResearchSpeechPreferences) {
   return invoke("save_research_speech_preferences", { settings });
+}
+export function saveNarrationSpeechPreferences(settings: NarrationPreferences) {
+  return invoke("save_narration_speech_preferences", { settings });
+}
+/** Joins generated passages into one audio file (and its word timings when asked); null when the save dialog is closed. */
+export function exportNarration(request: NarrationExportRequest): Promise<ExportedFiles | null> {
+  return invoke("export_narration", { request });
 }
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -470,6 +477,11 @@ export async function exportMusicMidi(projectId: string, takeId: string): Promis
   return (await invoke("export_music_midi", { request: { projectId, takeId } })) ?? undefined;
 }
 
+/** Saves a take as M4A with its saved lyrics timed word by word beside it when asked. */
+export async function exportMusicLyrics(projectId: string, takeId: string, wordTimings: boolean): Promise<ExportedFiles | undefined> {
+  return (await invoke("export_music_lyrics", { request: { projectId, takeId, wordTimings } })) ?? undefined;
+}
+
 export async function revealMusicMidi(projectId: string, takeId: string): Promise<void> {
   await invoke("reveal_music_midi", { request: { projectId, takeId } });
 }
@@ -673,6 +685,15 @@ export async function getChatSession(id: string): Promise<ChatSession> {
 
 export async function deleteChatSession(id: string): Promise<void> {
   await invoke("delete_chat_session", { id });
+}
+
+/** Saves the producer's edited copy of a model reply; the model keeps reading the original. */
+export async function saveChatReplyEdit(sessionId: string, messageId: string, content: string): Promise<ChatSession> {
+  return invoke("save_chat_reply_edit", { sessionId, messageId, content });
+}
+
+export async function discardChatReplyEdit(sessionId: string, messageId: string): Promise<ChatSession> {
+  return invoke("discard_chat_reply_edit", { sessionId, messageId });
 }
 
 export async function pickContextFiles(): Promise<ContextAttachmentImport> {

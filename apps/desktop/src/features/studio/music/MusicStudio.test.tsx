@@ -147,6 +147,24 @@ describe("MusicStudio", () => {
     canvas.mockRestore();
   });
 
+  it("exports the song with its word-timed lyrics and says what was saved", async () => {
+    const take = { id: "take-1", durationSeconds: 10, resolvedModel: "Music 3" } as MusicTake;
+    const project = { id: "project-1", title: "Night signal", takes: [take] } as MusicProject;
+    const lyricDocument = {
+      revision: 2, source: "local-sync", language: "en", theme: "signal-bloom", updatedAt: "2026-08-29T00:00:00Z",
+      showTranslation: false, translationLanguage: "", translationModelId: "",
+      segments: [{ id: "cue-1", start: 2, end: 5, primary: "stay here", translation: "", words: [{ value: "stay", start: 2, end: 3 }, { value: "here", start: 3, end: 4 }] }],
+    } as MusicLyricsDocument;
+    const onExport = vi.fn(async () => ({ files: ["D:/Songs/Night signal.m4a", "D:/Songs/Night signal.lrc", "D:/Songs/Night signal.vtt", "D:/Songs/Night signal.json", "D:/Songs/Night signal.html"] }));
+    const canvas = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    render(<MusicLyricsProducer project={project} take={take} document={lyricDocument} audio={null} currentTime={0} playing={false} busy={false} status="" onTogglePlay={vi.fn()} onSeek={vi.fn()} onChange={vi.fn()} onSave={vi.fn()} onSync={vi.fn()} onCancelSync={vi.fn()} onExport={onExport} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Export$/ }));
+    await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Saved Night signal.m4a with its word timings (LRC, WebVTT, JSON) and a word-by-word player page in D:/Songs.")).toBeInTheDocument();
+    canvas.mockRestore();
+  });
+
   it("previews the second visual theme through the shared producer and saves it explicitly", async () => {
     const take = { id: "take-1", durationSeconds: 10, resolvedModel: "Music 3" } as MusicTake;
     const project = { id: "project-1", title: "Night signal", takes: [take] } as MusicProject;

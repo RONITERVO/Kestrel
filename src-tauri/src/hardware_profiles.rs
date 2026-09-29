@@ -34,6 +34,38 @@ pub fn all_proven_profiles() -> Vec<ProvenHardwareProfile> {
             proven_speed_notes: "100% in VRAM with 128k long-context capacity".into(),
         },
 
+        // --- Qwen3.8-Flash-Next 125B MoE via Strata (context is fixed by the Strata install) ---
+        ProvenHardwareProfile {
+            id: "qwen-flash-next-strata-iq3s".into(),
+            model_pattern: "flash-next".into(),
+            quantization_pattern: Some("iq3_s".into()),
+            display_name: "Qwen3.8-Flash-Next 125B (IQ3_S) via Strata, 12GB+ RTX 50 GPU and 64GB RAM"
+                .into(),
+            min_vram_mib: 12_000,
+            max_vram_mib: None,
+            recommended_context_window: 65_536,
+            recommended_max_output_tokens: 32_768,
+            recommended_thinking_level: ThinkingLevel::High,
+            recommended_threads: 16,
+            description: "Strata keeps all ~50 GB of experts in system RAM and caches the busiest on the GPU, so this size needs a 64 GB PC with little else running, whatever the VRAM. Setup installs it with a fixed 64K context.".into(),
+            proven_speed_notes: "Tested in Kestrel on an RTX 5070 12GB with 64GB RAM: 54-57 GB of RAM, nearly all the VRAM, about 40 tok/s".into(),
+        },
+        ProvenHardwareProfile {
+            id: "qwen-flash-next-strata-iq2xs".into(),
+            model_pattern: "flash-next".into(),
+            quantization_pattern: Some("iq2_xs".into()),
+            display_name: "Qwen3.8-Flash-Next 125B (IQ2_XS) via Strata, 12GB+ RTX 50 GPU and 64GB RAM"
+                .into(),
+            min_vram_mib: 12_000,
+            max_vram_mib: None,
+            recommended_context_window: 65_536,
+            recommended_max_output_tokens: 32_768,
+            recommended_thinking_level: ThinkingLevel::High,
+            recommended_threads: 16,
+            description: "About 36 GB of experts stay in system RAM. Strata's recommended size; Kestrel supports it on the same tested 64 GB PC as IQ3_S and installs it with a fixed 64K context.".into(),
+            proven_speed_notes: "Strata's published RTX 5070 12GB + 64GB figures: ~74 tok/s short replies, ~1,240 tok/s prompt reading".into(),
+        },
+
         // --- Ternary Bonsai 27B Family ---
         ProvenHardwareProfile {
             id: "bonsai-27b-12gb-q2_0".into(),
@@ -137,6 +169,18 @@ mod tests {
         let profile = find_proven_profile("Qwen3.8-27B-UD-Q4_K_M.gguf", Some(24_576)).unwrap();
         assert_eq!(profile.id, "qwen-27b-24gb");
         assert_eq!(profile.recommended_context_window, 131_072);
+    }
+
+    #[test]
+    fn matches_strata_flash_next_by_size() {
+        let profile =
+            find_proven_profile("Qwen3.8-Flash-Next GSQ-RCO IQ3_S (Strata)", Some(12_227)).unwrap();
+        assert_eq!(profile.id, "qwen-flash-next-strata-iq3s");
+        assert_eq!(profile.recommended_context_window, 65_536);
+        let profile =
+            find_proven_profile("Qwen3.8-Flash-Next GSQ-RCO IQ2_XS (Strata)", Some(24_576))
+                .unwrap();
+        assert_eq!(profile.id, "qwen-flash-next-strata-iq2xs");
     }
 
     #[test]

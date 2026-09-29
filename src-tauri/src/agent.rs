@@ -45,7 +45,10 @@ pub async fn run(
     cancel: CancellationToken,
     continuation: Option<String>,
 ) -> Result<(), String> {
-    let settings = settings.for_model(&request.model_id);
+    let mut settings = settings.for_model(&request.model_id);
+    if let Some(model) = models.iter().find(|model| model.id == request.model_id) {
+        settings.context_window = model.serving_context(settings.context_window);
+    }
     let access = request.access;
     if access == Access::Full && !settings.allow_full_access_agent {
         return Err("Full computer access is locked in the runtime profile.".into());
@@ -227,11 +230,11 @@ pub async fn run(
             &thinking_detail,
             Some(json!({"thinkingLevel": thinking_level.as_str()})),
         );
-        let prompt_chars = max_output_tokens
-            .checked_add(2_048)
-            .and_then(|reserved| settings.context_window.checked_sub(reserved))
-            .unwrap_or(4_096)
-            .saturating_mul(4) as usize;
+        let prompt_chars = crate::models::prompt_char_budget(
+            settings.context_window,
+            max_output_tokens.saturating_add(2_048),
+        )
+        .unwrap_or(16_384);
         messages = compact_messages(messages, prompt_chars.max(16_384));
         let mut request_body = json!({
             "model": lease.connection.model_id,

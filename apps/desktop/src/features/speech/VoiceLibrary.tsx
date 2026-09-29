@@ -14,6 +14,7 @@ import {
 } from "./voiceReferenceProcessing";
 import type {
   CreateVoiceProfileRequest,
+  NarrationPreferences,
   VoiceLibrarySnapshot,
   VoiceProfile,
 } from "../../contracts/index";
@@ -134,10 +135,18 @@ export function VoiceLibraryDialog({
   snapshot,
   onSnapshot,
   onClose,
+  narration,
+  onNarrationChange,
+  mistakeCheckAvailable = false,
 }: {
   snapshot: VoiceLibrarySnapshot;
   onSnapshot: (snapshot: VoiceLibrarySnapshot) => void;
   onClose: () => void;
+  /** The saved narration preferences; the mistake check is offered only when these are given. */
+  narration?: NarrationPreferences;
+  onNarrationChange?: (patch: Partial<NarrationPreferences>) => void;
+  /** Whisper is installed, so passages can be checked. */
+  mistakeCheckAvailable?: boolean;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -431,6 +440,24 @@ export function VoiceLibraryDialog({
       </header>
 
       <FlowPages className="voice-library-body" label="Voice Library pages">
+        {narration && onNarrationChange && (
+          <section className="voice-narration-setting" aria-label="Narration">
+            <label>
+              <input
+                type="checkbox"
+                checked={narration.checkMistakes && mistakeCheckAvailable}
+                disabled={!mistakeCheckAvailable}
+                onChange={(event) => onNarrationChange({ checkMistakes: event.currentTarget.checked })}
+              />
+              <span>
+                <strong>Check each passage for voice mistakes</strong>
+                <small>{mistakeCheckAvailable
+                  ? "Whisper listens to each new passage before it plays, and the voice reads it again when it lost the text, repeated itself, or kept talking. Slower: each new passage waits for the check."
+                  : "Needs Whisper dictation. Install Whisper + voice in Setup to use the check."}</small>
+              </span>
+            </label>
+          </section>
+        )}
         <section className="voice-profile-grid" aria-label="Available voices">
           {snapshot.profiles.map((profile) => {
             const selected = snapshot.defaultProfileId === profile.id;

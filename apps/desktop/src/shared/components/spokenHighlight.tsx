@@ -289,21 +289,177 @@ export interface CandidateBlock {
   text: string;
 }
 
-export type HighlightResolution = { activeId: string; activeWordIndex: number };
+export type HighlightResolution = {
+  activeId: string;
+  activeWordIndex: number;
+  /** Position of the highlighted word among all visible words, used to read on from here. */
+  documentWord?: number;
+};
+
+interface DocumentWords {
+  words: string[];
+  block: Int32Array;
+  offset: Int32Array;
+}
+
+const documentWordsCache = new WeakMap<CandidateBlock[], DocumentWords>();
+
+function documentWords(candidates: CandidateBlock[]): DocumentWords {
+  const cached = documentWordsCache.get(candidates);
+  if (cached) return cached;
+  const words: string[] = [];
+  const blocks: number[] = [];
+  const offsets: number[] = [];
+  candidates.forEach((candidate, blockIndex) => {
+    extractSpeechWords(candidate.text).forEach((word, offset) => {
+      words.push(word);
+      blocks.push(blockIndex);
+      offsets.push(offset);
+    });
+  });
+  const document = { words, block: Int32Array.from(blocks), offset: Int32Array.from(offsets) };
+  documentWordsCache.set(candidates, document);
+  return document;
+}
+
+interface PassageAnchor {
+  /** The visible word each passage word stands for, or -1 for words only spoken ("equals"). */
+  positions: Int32Array;
+  /** Whether enough of the passage was found to trust the placement. */
+  placed: boolean;
+}
+
+const passageAnchorCache = new WeakMap<CandidateBlock[], Map<string, PassageAnchor>>();
+// Beyond this many visible words, a passage is placed within a window around the reading
+// position so a very long document stays cheap to align.
+const MAX_ANCHOR_WINDOW = 15_000;
+const SPOKEN_ONLY_COST = 0.55;
+const VISIBLE_ONLY_COST = 0.55;
+
+/**
+ * Places a spoken passage in the visible document by aligning all of its words in order. Words
+ * that are only spoken ("equals", "point", "Code block on screen") and visible words that are
+ * not spoken are gaps, so a passage full of numbers lands on its own blocks instead of on
+ * whichever table repeats the same digits. `hint` (the word being read before this passage)
+ * decides between equally good places, preferring to read on rather than jump back.
+ */
+function anchorPassage(candidates: CandidateBlock[], text: string, hint: number): PassageAnchor {
+  let anchors = passageAnchorCache.get(candidates);
+  if (!anchors) {
+    anchors = new Map();
+    passageAnchorCache.set(candidates, anchors);
+  }
+  const key = `${hint}\u0000${text}`;
+  const cached = anchors.get(key);
+  if (cached) return cached;
+
+  const document = documentWords(candidates);
+  const spoken = extractSpeechWords(text);
+  const positions = new Int32Array(spoken.length).fill(-1);
+  const windowStart = document.words.length > MAX_ANCHOR_WINDOW
+    ? Math.max(0, Math.min(hint - 3_000, document.words.length - MAX_ANCHOR_WINDOW))
+    : 0;
+  const visible = document.words.slice(windowStart, windowStart + MAX_ANCHOR_WINDOW);
+  const rows = spoken.length;
+  const columns = visible.length;
+  const width = columns + 1;
+  const costs = new Float32Array((rows + 1) * width);
+  const moves = new Uint8Array((rows + 1) * width);
+  const starts = new Int32Array((rows + 1) * width);
+  // The passage may begin anywhere in the document at no cost.
+  for (let column = 0; column <= columns; column++) starts[column] = column;
+  for (let row = 1; row <= rows; row++) {
+    const here = row * width;
+    const above = (row - 1) * width;
+    costs[here] = row * SPOKEN_ONLY_COST;
+    moves[here] = 1;
+    for (let column = 1; column <= columns; column++) {
+      const diagonal = costs[above + column - 1]
+        + tokenSubstitutionCost(spoken[row - 1], visible[column - 1]);
+      const spokenOnly = costs[above + column] + SPOKEN_ONLY_COST;
+      const visibleOnly = costs[here + column - 1] + VISIBLE_ONLY_COST;
+      if (diagonal <= spokenOnly && diagonal <= visibleOnly) {
+        costs[here + column] = diagonal;
+        moves[here + column] = 0;
+        starts[here + column] = starts[above + column - 1];
+      } else if (spokenOnly <= visibleOnly) {
+        costs[here + column] = spokenOnly;
+        moves[here + column] = 1;
+        starts[here + column] = starts[above + column];
+      } else {
+        costs[here + column] = visibleOnly;
+        moves[here + column] = 2;
+        starts[here + column] = starts[here + column - 1];
+      }
+    }
+  }
+
+  // The passage may also end anywhere. Among equally good places, read on from the hint.
+  const last = rows * width;
+  let end = 0;
+  let best = Number.POSITIVE_INFINITY;
+  for (let column = 0; column <= columns; column++) {
+    const start = windowStart + starts[last + column];
+    const bias = start >= hint ? (start - hint) * 1e-6 : 0.25 + (hint - start) * 1e-6;
+    if (costs[last + column] + bias < best) {
+      best = costs[last + column] + bias;
+      end = column;
+    }
+  }
+
+  let matched = 0;
+  let row = rows;
+  let column = end;
+  while (row > 0) {
+    const move = column > 0 ? moves[row * width + column] : 1;
+    if (move === 0) {
+      if (tokenSubstitutionCost(spoken[row - 1], visible[column - 1]) < 1) {
+        positions[row - 1] = windowStart + column - 1;
+        matched += 1;
+      }
+      row -= 1;
+      column -= 1;
+    } else if (move === 1) {
+      row -= 1;
+    } else {
+      column -= 1;
+    }
+  }
+  // A lone common word ("on" in "Code block on screen") is not a placement; most of a passage,
+  // or most of a short visible text the passage covers, is.
+  const placed = matched >= Math.min(2, rows)
+    && (matched >= rows * 0.25 || matched >= columns * 0.5);
+  const anchor = { positions, placed };
+  anchors.set(key, anchor);
+  return anchor;
+}
+
+function resolutionAt(candidates: CandidateBlock[], documentWord: number): HighlightResolution | null {
+  const document = documentWords(candidates);
+  if (documentWord < 0 || documentWord >= document.words.length) return null;
+  return {
+    activeId: candidates[document.block[documentWord]].id,
+    activeWordIndex: document.offset[documentWord],
+    documentWord,
+  };
+}
 
 export function speechResolutionCacheKey(progress: SpeechProgressState): string {
   return `${progress.sourceKind ?? "unknown"}\u0000${progress.sourceId ?? "unknown"}\u0000${progress.passageId}`;
 }
 
 /**
- * Resolves which candidate block and which word index inside that block
- * corresponds to the currently spoken word at progress.seconds.
- * Tolerant to inserted grammatical expansions and smoothly bridges frame boundaries.
+ * Resolves which candidate block and which word index inside that block corresponds to the
+ * currently spoken word at progress.seconds. The passage is first placed in the document as a
+ * whole, so the highlight follows the passage being read and holds still on words that are only
+ * spoken ("equals", "point") or on audio the voice added after the text, instead of jumping to a
+ * matching word elsewhere in the reply. `hint` is the word read before this passage began.
  */
 export function resolveActiveBlockAndWord(
   candidates: CandidateBlock[],
   progress?: SpeechProgressState | null,
   previous?: HighlightResolution | null,
+  hint = previous?.documentWord ?? 0,
 ): HighlightResolution | null {
   const canResolve = Boolean(progress?.active || (progress?.onSeek && progress.timings.length));
   if (!progress || !canResolve || !progress.text || candidates.length === 0) {
@@ -331,154 +487,54 @@ export function resolveActiveBlockAndWord(
     progWords.length - 1,
     Math.max(0, timingMap[rawIdx] ?? rawIdx),
   );
-  let targetWord = progWords[currentProgIdx];
-  let targetProgIdx = currentProgIdx;
 
-  const candidateWordLists = candidates.map((candidate) => ({
-    candidate,
-    words: extractSpeechWords(candidate.text),
-  }));
-  if (!candidateWordLists.some(({ words }) => words.includes(targetWord))) {
-    for (let delta = 1; delta <= 3; delta++) {
-      const alternatives = [currentProgIdx + delta, currentProgIdx - delta];
-      const alternative = alternatives.find((index) =>
-        index >= 0
-        && index < progWords.length
-        && candidateWordLists.some(({ words }) => words.includes(progWords[index]))
-      );
-      if (alternative !== undefined) {
-        targetProgIdx = alternative;
-        targetWord = progWords[alternative];
-        break;
-      }
-    }
+  // Hold still across passages the document does not show ("Code block on screen.").
+  const hold = () => previous ?? (progress.seconds > 0 && hint > 0 ? resolutionAt(candidates, hint) : null);
+  const anchor = anchorPassage(candidates, progress.text, hint);
+  if (!anchor.placed) return hold();
+
+  // A spoken-only word keeps the highlight on the last shown word before it.
+  let documentWord = -1;
+  for (let index = currentProgIdx; index >= 0 && documentWord < 0; index--) {
+    documentWord = anchor.positions[index];
   }
-
-  let bestCandidateId: string | null = null;
-  let bestWordIndexInBlock = -1;
-  let bestScore = -1;
-
-  for (const { candidate, words: blockWords } of candidateWordLists) {
-    if (blockWords.length === 0) continue;
-
-    for (let bIdx = 0; bIdx < blockWords.length; bIdx++) {
-      if (blockWords[bIdx] !== targetWord) continue;
-
-      let score = 10;
-      let left = 1;
-      while (
-        targetProgIdx - left >= 0 &&
-        bIdx - left >= 0 &&
-        progWords[targetProgIdx - left] === blockWords[bIdx - left]
-      ) {
-        score += 10;
-        left++;
-      }
-
-      let right = 1;
-      while (
-        targetProgIdx + right < progWords.length &&
-        bIdx + right < blockWords.length &&
-        progWords[targetProgIdx + right] === blockWords[bIdx + right]
-      ) {
-        score += 10;
-        right++;
-      }
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestCandidateId = candidate.id;
-        bestWordIndexInBlock = Math.min(blockWords.length - 1, Math.max(0, bIdx));
-      }
-    }
+  for (let index = currentProgIdx + 1; index < progWords.length && documentWord < 0; index++) {
+    documentWord = anchor.positions[index];
   }
-
-  if (bestCandidateId && bestScore >= 5 && bestWordIndexInBlock >= 0) {
-    const result = {
-      activeId: bestCandidateId,
-      activeWordIndex: bestWordIndexInBlock,
-    };
-    return result;
-  }
-
-  // Boundary bridge: maintain steady visual focus across audio block tails
-  if (previous && progress.seconds > 0) {
-    return previous;
-  }
-
-  return null;
+  return documentWord >= 0 ? resolutionAt(candidates, documentWord) : hold();
 }
 
-/** Maps every exact cached timing onto its visible Markdown block and word. */
+/** Maps every exact cached timing onto its visible Markdown block and word. Passages are placed
+ * in the order given, each reading on from where the previous one was found. */
 export function buildSpeechSeekTargets(
   candidates: CandidateBlock[],
   passages: SpeechSeekPassage[],
 ): SpeechSeekTargetMap {
   const targets: SpeechSeekTargetMap = new Map();
-  const candidateWords = candidates.map((candidate) => ({
-    id: candidate.id,
-    words: extractSpeechWords(candidate.text),
-  }));
+  const document = documentWords(candidates);
+  let hint = 0;
 
   for (const passage of passages) {
     if (!passage.text || !passage.timings.length) continue;
-    const passageWords = extractSpeechWords(passage.text);
+    const anchor = anchorPassage(candidates, passage.text, hint);
+    if (!anchor.placed) continue;
     const timingMap = mapSpeechTimingsToTextWords(passage.text, passage.timings);
-    const sourceTargets = new Map<number, { blockId: string; wordIndex: number }>();
 
     for (let timingIndex = 0; timingIndex < passage.timings.length; timingIndex++) {
       const timing = passage.timings[timingIndex];
       if (!Number.isFinite(timing.start)) continue;
-      const sourceIndex = timingMap[timingIndex] ?? -1;
-      const sourceWord = passageWords[sourceIndex];
-      if (!sourceWord) continue;
-      let resolved = sourceTargets.get(sourceIndex);
-      if (!resolved) {
-        let bestScore = Number.NEGATIVE_INFINITY;
-        for (const candidate of candidateWords) {
-          for (let wordIndex = 0; wordIndex < candidate.words.length; wordIndex++) {
-            if (candidate.words[wordIndex] !== sourceWord) continue;
-            let score = 10;
-            let left = 1;
-            while (
-              sourceIndex - left >= 0
-              && wordIndex - left >= 0
-              && passageWords[sourceIndex - left] === candidate.words[wordIndex - left]
-            ) {
-              score += 10;
-              left += 1;
-            }
-            let right = 1;
-            while (
-              sourceIndex + right < passageWords.length
-              && wordIndex + right < candidate.words.length
-              && passageWords[sourceIndex + right] === candidate.words[wordIndex + right]
-            ) {
-              score += 10;
-              right += 1;
-            }
-            if (targets.get(candidate.id)?.has(wordIndex)) score -= 1;
-            if (score > bestScore) {
-              bestScore = score;
-              resolved = { blockId: candidate.id, wordIndex };
-            }
-          }
-        }
-        if (bestScore <= 10 && passageWords.length > 1) resolved = undefined;
-        if (!resolved) continue;
-        sourceTargets.set(sourceIndex, resolved);
-      }
-      let blockTargets = targets.get(resolved.blockId);
+      const documentWord = anchor.positions[timingMap[timingIndex] ?? -1] ?? -1;
+      if (documentWord < 0) continue;
+      hint = Math.max(hint, documentWord);
+      const blockId = candidates[document.block[documentWord]].id;
+      let blockTargets = targets.get(blockId);
       if (!blockTargets) {
         blockTargets = new Map();
-        targets.set(resolved.blockId, blockTargets);
+        targets.set(blockId, blockTargets);
       }
-      const existing = blockTargets.get(resolved.wordIndex);
-      if (!existing) {
-        blockTargets.set(resolved.wordIndex, {
-          passageId: passage.passageId,
-          seconds: timing.start,
-        });
+      const wordIndex = document.offset[documentWord];
+      if (!blockTargets.has(wordIndex)) {
+        blockTargets.set(wordIndex, { passageId: passage.passageId, seconds: timing.start });
       }
     }
   }
@@ -519,11 +575,16 @@ export function useResolvedSpeechHighlight(
   progress?: SpeechProgressState | null,
 ): HighlightResolution | null {
   const cacheRef = useRef(new Map<string, HighlightResolution>());
+  const lastWordRef = useRef(0);
   const key = progress ? speechResolutionCacheKey(progress) : null;
+  // Each passage is placed reading on from the last word highlighted before it started.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const hint = useMemo(() => lastWordRef.current, [key, candidates]);
   const resolved = useMemo(
-    () => resolveActiveBlockAndWord(candidates, progress, key ? cacheRef.current.get(key) : null),
+    () => resolveActiveBlockAndWord(candidates, progress, key ? cacheRef.current.get(key) : null, hint),
     [
       candidates,
+      hint,
       key,
       progress?.active,
       progress?.duration,
@@ -540,6 +601,7 @@ export function useResolvedSpeechHighlight(
     }
     if (resolved) {
       cacheRef.current.set(key, resolved);
+      if (resolved.documentWord !== undefined) lastWordRef.current = resolved.documentWord;
     }
   }, [key, resolved]);
   return resolved;

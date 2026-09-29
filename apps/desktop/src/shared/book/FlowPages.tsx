@@ -11,6 +11,22 @@ const CONTINUING_BLOCKS = "article, .markdown-content, .text-paragraphs, p, li, 
 /** Below this page height, keeping every paragraph whole wastes most of the page. */
 const SHORT_PAGE = 320;
 
+/**
+ * How far an element sits from the start of the columns, in layout pixels. Offsets ignore CSS
+ * transforms, so this stays exact while the book lies on the desk under a 3D projection, where
+ * getBoundingClientRect reports the tilted on-screen box and would name the wrong page.
+ */
+export function layoutOffset(element: Element, columns: HTMLElement): number {
+  const fromPage = (node: Element) => {
+    let left = 0;
+    for (let current = node as HTMLElement | null; current; current = current.offsetParent as HTMLElement | null) {
+      left += current.offsetLeft;
+    }
+    return left;
+  };
+  return fromPage(element) - fromPage(columns);
+}
+
 export type FlowPagesController = {
   /** Turns to the page that holds this element (for contents links, citations and narration). */
   showElement: (element: Element) => void;
@@ -85,22 +101,22 @@ export function FlowPages({
     // On a short page paragraphs may split between lines (still three lines a side) instead of moving whole.
     setShort(total > 1 && viewport.clientHeight < SHORT_PAGE);
     // A page whose last reply or paragraph carries on gets a "continues" cue in its free foot line.
-    const origin = columns.getBoundingClientRect().left;
+    // A block's fragments fill consecutive pages from the one it starts on; both the start and the
+    // fragment count are layout facts, so the cue stays right while the book is tilted.
+    const pageOf = (element: Element) => Math.max(0, Math.floor((layoutOffset(element, columns) + 1) / (nextWidth + gap)));
     const found = new Set<number>();
     for (const block of columns.querySelectorAll(CONTINUING_BLOCKS)) {
-      const fragments = block.getClientRects();
-      if (fragments.length < 2) continue;
-      const first = Math.floor((fragments[0].left - origin + 1) / (nextWidth + gap));
-      const last = Math.floor((fragments[fragments.length - 1].left - origin + 1) / (nextWidth + gap));
-      for (let index = first; index < last; index += 1) found.add(index);
+      const fragments = block.getClientRects().length;
+      if (fragments < 2) continue;
+      const first = pageOf(block);
+      for (let index = first; index < first + fragments - 1; index += 1) found.add(index);
     }
     setContinuing((current) => (current.size === found.size && [...found].every((index) => current.has(index)) ? current : found));
     if (anchors?.length && onAnchorPages) {
-      const origin = columns.getBoundingClientRect().left;
       const found: Record<string, number> = {};
       for (const id of anchors) {
         const element = columns.ownerDocument.getElementById(id);
-        if (element && columns.contains(element)) found[id] = Math.max(0, Math.floor((element.getBoundingClientRect().left - origin + 1) / (nextWidth + gap)));
+        if (element && columns.contains(element)) found[id] = pageOf(element);
       }
       onAnchorPages(found);
     }
@@ -160,8 +176,7 @@ export function FlowPages({
       showElement: (element) => {
         const columns = columnsRef.current;
         if (!columns || !stride || !columns.contains(element)) return;
-        const offset = element.getBoundingClientRect().left - columns.getBoundingClientRect().left;
-        turn(Math.floor((offset + 1) / stride));
+        turn(Math.floor((layoutOffset(element, columns) + 1) / stride));
       },
     };
     return () => {

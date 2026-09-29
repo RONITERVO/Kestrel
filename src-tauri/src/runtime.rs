@@ -2,9 +2,10 @@
 //!
 //! Research, chat, and future local tools must obtain an `InferenceLease`. The semaphore is the
 //! VRAM/KV safety boundary: the detected GPU never receives competing Kestrel generations or
-//! duplicate Kestrel-managed model processes. Every catalog model uses the same managed path.
+//! duplicate Kestrel-managed model processes. Every catalog model uses the same managed path;
+//! the model's engine only decides how that one process (or Strata's job-owned tree) starts.
 
-use crate::model::ModelInfo;
+use crate::model::{ModelEngine, ModelInfo};
 use crate::models::{
     ControlSettings, EngineCandidate, ManagedRuntimeSnapshot, ResearchSettings, RuntimeLog,
 };
@@ -27,6 +28,9 @@ use tokio::{
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(300);
+/// Strata reads 35-55 GB of experts into RAM before it answers; a cold first start can take
+/// several minutes on a busy disk.
+const STRATA_STARTUP_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const ENGINE_SOURCE_CONFIGURED: &str = "Configured";
 const ENGINE_SOURCE_BUNDLED: &str = "Kestrel bundled engine";
 const ENGINE_SOURCE_JAN: &str = "Jan backend";
@@ -147,6 +151,8 @@ pub enum RuntimeError {
     Json(#[from] serde_json::Error),
     #[error("local runtime maintenance failed: {0}")]
     Maintenance(String),
+    #[error("Strata model is not ready: {0}")]
+    Strata(String),
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +161,9 @@ pub struct ModelConnection {
     pub api_key: Option<String>,
     pub model_id: String,
     pub model_label: String,
+    /// The serving engine, so callers can adapt requests it does not honour (see
+    /// `structured_output`).
+    pub engine: ModelEngine,
 }
 
 pub struct InferenceLease {
@@ -165,8 +174,23 @@ pub struct InferenceLease {
 struct RuntimeProcess {
     child: Option<Child>,
     api_key_file: Option<PathBuf>,
+    /// Strata's server, engine, and vision encoder; dropping the job terminates all of them.
+    #[cfg(windows)]
+    _job: Option<crate::strata::ProcessJob>,
     connection: ModelConnection,
     snapshot: ManagedRuntimeSnapshot,
+}
+
+/// One spawned model process waiting for its first successful health check.
+struct PendingLaunch {
+    child: Child,
+    api_key_file: Option<PathBuf>,
+    #[cfg(windows)]
+    job: Option<crate::strata::ProcessJob>,
+    connection: ModelConnection,
+    snapshot: ManagedRuntimeSnapshot,
+    timeout: Duration,
+    ready_detail: &'static str,
 }
 
 pub struct RuntimeManager {
@@ -201,7 +225,7 @@ impl RuntimeManager {
                     .is_some_and(|child| child.try_wait().ok().flatten().is_some())
                 {
                     current.snapshot.phase = "failed".into();
-                    current.snapshot.detail = "The managed llama.cpp process exited. Its logs remain visible in the runtime feed.".into();
+                    current.snapshot.detail = "The managed model process exited. Its logs remain visible in the runtime feed.".into();
                 } else {
                     current.snapshot.phase = "unavailable".into();
                     current.snapshot.detail =
@@ -275,6 +299,19 @@ impl RuntimeManager {
         settings: &ControlSettings,
         app: Option<&AppHandle>,
     ) -> Result<ModelConnection, RuntimeError> {
+        let launch = match model.engine {
+            ModelEngine::LlamaCpp => self.spawn_llama(model, settings, app).await?,
+            ModelEngine::Strata => self.spawn_strata(model, app).await?,
+        };
+        self.supervise(launch, &model.name, app).await
+    }
+
+    async fn spawn_llama(
+        &self,
+        model: &ModelInfo,
+        settings: &ControlSettings,
+        app: Option<&AppHandle>,
+    ) -> Result<PendingLaunch, RuntimeError> {
         if !Path::new(&model.path).is_file() {
             return Err(RuntimeError::MissingModel(model.path.clone()));
         }
@@ -362,6 +399,7 @@ impl RuntimeManager {
             api_key: Some(api_key),
             model_id: model.id.clone(),
             model_label: model.name.clone(),
+            engine: ModelEngine::LlamaCpp,
         };
         let snapshot = ManagedRuntimeSnapshot {
             phase: "starting".into(),
@@ -375,37 +413,164 @@ impl RuntimeManager {
             detail: "Loading one strict full-GPU llama.cpp runtime.".into(),
             inference_busy: false,
         };
+        Ok(PendingLaunch {
+            child,
+            api_key_file: Some(api_key_file),
+            #[cfg(windows)]
+            job: None,
+            connection,
+            snapshot,
+            timeout: STARTUP_TIMEOUT,
+            ready_detail: "Model ready. Chat and research share this single authenticated runtime.",
+        })
+    }
+
+    /// Start Strata's server for one validated run configuration. The server loads the model
+    /// before it binds its port, so the first healthy `/health` means the model is ready.
+    async fn spawn_strata(
+        &self,
+        model: &ModelInfo,
+        app: Option<&AppHandle>,
+    ) -> Result<PendingLaunch, RuntimeError> {
+        let plan =
+            crate::strata::launch_plan(Path::new(&model.path)).map_err(RuntimeError::Strata)?;
+        self.stop_managed().await?;
+        let port = portpicker::pick_unused_port().ok_or(RuntimeError::NoPort)?;
+        let api_key = hex::encode(sha2::Sha256::digest(
+            format!(
+                "{}:{port}:{}:{}",
+                model.id,
+                chrono::Utc::now(),
+                uuid::Uuid::new_v4()
+            )
+            .as_bytes(),
+        ));
+        let args = plan.server_args(port);
+        let mut command = Command::new(&plan.python);
+        command
+            .args(&args)
+            .current_dir(&plan.root)
+            .env("STRATA_API_KEY", &api_key)
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONIOENCODING", "utf-8")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        // The server joins its job before it runs, so the engine it starts can never escape it.
+        #[cfg(windows)]
+        let (mut child, job) = crate::strata::ProcessJob::spawn(&mut command)
+            .map(|(child, job)| (child, Some(job)))
+            .map_err(|error| {
+                RuntimeError::Startup(format!(
+                    "Kestrel could not start Strata's server inside its own process job, so nothing was left running: {error}"
+                ))
+            })?;
+        #[cfg(not(windows))]
+        let mut child = command.spawn()?;
+        let pid = child.id();
+        if let Some(stdout) = child.stdout.take() {
+            spawn_log_reader(stdout, "stdout", self.logs.clone(), app.cloned());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_log_reader(stderr, "stderr", self.logs.clone(), app.cloned());
+        }
+        let connection = ModelConnection {
+            endpoint: format!("http://127.0.0.1:{port}/v1"),
+            api_key: Some(api_key),
+            model_id: model.id.clone(),
+            model_label: model.name.clone(),
+            engine: ModelEngine::Strata,
+        };
+        let mut launch_args = vec![plan.python.to_string_lossy().into_owned()];
+        launch_args.extend(args);
+        let snapshot = ManagedRuntimeSnapshot {
+            phase: "starting".into(),
+            mode: "managed".into(),
+            model_id: Some(model.id.clone()),
+            model_name: Some(model.name.clone()),
+            endpoint: Some(connection.endpoint.clone()),
+            pid,
+            context_window: plan.context_window,
+            launch_args,
+            detail: "Loading Strata: every expert into system RAM, the busiest onto the GPU. A cold start can take several minutes.".into(),
+            inference_busy: false,
+        };
+        Ok(PendingLaunch {
+            child,
+            api_key_file: None,
+            #[cfg(windows)]
+            job,
+            connection,
+            snapshot,
+            timeout: STRATA_STARTUP_TIMEOUT,
+            ready_detail: "Model ready through Strata. Chat and research share this single authenticated runtime.",
+        })
+    }
+
+    /// Record the launch as the only managed process and wait for it to answer. A process that
+    /// exits during startup fails at once instead of waiting out the whole timeout.
+    async fn supervise(
+        &self,
+        launch: PendingLaunch,
+        model_name: &str,
+        app: Option<&AppHandle>,
+    ) -> Result<ModelConnection, RuntimeError> {
+        let PendingLaunch {
+            child,
+            api_key_file,
+            #[cfg(windows)]
+            job,
+            connection,
+            snapshot,
+            timeout,
+            ready_detail,
+        } = launch;
         {
             let mut process = self.process.lock().await;
             *process = Some(RuntimeProcess {
                 child: Some(child),
-                api_key_file: Some(api_key_file),
+                api_key_file,
+                #[cfg(windows)]
+                _job: job,
                 connection: connection.clone(),
                 snapshot,
             });
         }
-        emit_runtime(
-            app,
-            "starting",
-            &format!("Loading {} into the GPU", model.name),
-        );
+        emit_runtime(app, "starting", &format!("Loading {model_name}"));
         let started = std::time::Instant::now();
-        while started.elapsed() < STARTUP_TIMEOUT {
+        while started.elapsed() < timeout {
             if self.health(&connection).await {
                 let mut process = self.process.lock().await;
                 if let Some(current) = process.as_mut() {
                     current.snapshot.phase = "ready".into();
-                    current.snapshot.detail =
-                        "Model ready. Chat and research share this single authenticated runtime."
-                            .into();
+                    current.snapshot.detail = ready_detail.into();
                 }
-                emit_runtime(app, "ready", &format!("{} is ready", model.name));
+                emit_runtime(app, "ready", &format!("{model_name} is ready"));
                 return Ok(connection);
+            }
+            if let Some(status) = self.exited_during_startup().await {
+                self.stop_managed().await?;
+                return Err(RuntimeError::Startup(format!(
+                    "the model process exited before it was ready ({status}). Its last log lines remain in the runtime feed."
+                )));
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
         self.stop_managed().await?;
-        Err(RuntimeError::Startup("timed out after five minutes".into()))
+        Err(RuntimeError::Startup(format!(
+            "timed out after {} minutes",
+            timeout.as_secs() / 60
+        )))
+    }
+
+    async fn exited_during_startup(&self) -> Option<std::process::ExitStatus> {
+        self.process
+            .lock()
+            .await
+            .as_mut()
+            .and_then(|current| current.child.as_mut())
+            .and_then(|child| child.try_wait().ok().flatten())
     }
 
     pub async fn stop_managed(&self) -> Result<(), RuntimeError> {
@@ -504,7 +669,7 @@ foreach($item in $all){
             .ok_or_else(|| RuntimeError::MissingModel(model_id.to_string()))?;
         let effective = settings.for_model(&model.id);
         let connection = match self
-            .current_for_model(&model.id, effective.context_window)
+            .current_for_model(&model.id, runtime_context(model, &effective))
             .await
         {
             Some(current) => current,
@@ -560,6 +725,15 @@ foreach($item in $all){
             .and_then(Result::ok)
             .is_some_and(|response| response.status().is_success())
     }
+}
+
+/// The context window the runtime process must have for this model. An engine that fixes its
+/// context at install time is reused at that window whatever a feature asked for; feature prompt
+/// budgets are capped separately with `ModelInfo::serving_context`.
+fn runtime_context(model: &ModelInfo, settings: &ControlSettings) -> u32 {
+    model
+        .fixed_context_window
+        .unwrap_or_else(|| settings.context_window.max(1))
 }
 
 fn process_matches(
@@ -682,6 +856,7 @@ mod tests {
             api_key: Some("secret".into()),
             model_id: "x".into(),
             model_label: "x".into(),
+            engine: ModelEngine::LlamaCpp,
         };
         assert_eq!(managed.api_key.as_deref(), Some("secret"));
     }
@@ -718,6 +893,179 @@ mod tests {
         assert!(!candidates
             .iter()
             .any(|candidate| candidate.path == program.to_string_lossy()));
+    }
+
+    #[cfg(windows)]
+    fn strata_engine_count() -> usize {
+        std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq strata.exe", "/NH", "/FO", "CSV"])
+            .output()
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|line| line.to_ascii_lowercase().contains("\"strata.exe\""))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[cfg(windows)]
+    async fn live_reply(
+        client: &Client,
+        connection: &ModelConnection,
+        body: &serde_json::Value,
+    ) -> String {
+        let response = authorized(
+            client.post(format!("{}/chat/completions", connection.endpoint)),
+            connection,
+        )
+        .json(body)
+        .send()
+        .await
+        .unwrap();
+        assert!(
+            response.status().is_success(),
+            "{}",
+            response.text().await.unwrap_or_default()
+        );
+        let value: serde_json::Value = response.json().await.unwrap();
+        value
+            .pointer("/choices/0/message/content")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// Loads a real Strata install through the managed runtime: fixed-context reuse, a plain
+    /// reply, a schema reply through the prompt fallback, and a clean stop of the whole tree.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires an installed Strata model (Kestrel Setup or Strata's START-HERE.bat, optionally KESTREL_LIVE_STRATA_ROOT) and enough free RAM to load it"]
+    async fn live_strata_serves_chat_and_schema_replies_then_stops_its_tree() {
+        use serde_json::json;
+        let configured = std::env::var("KESTREL_LIVE_STRATA_ROOT").unwrap_or_default();
+        let installs = crate::strata::known_installs(&[configured.as_str()]);
+        let model = crate::strata::discover(&installs)
+            .into_iter()
+            .next()
+            .expect("no runnable Strata model is installed");
+        let engines_before = strata_engine_count();
+        let manager = Arc::new(RuntimeManager::new());
+        let models = std::slice::from_ref(&model);
+        let settings = ControlSettings::default();
+        assert_ne!(Some(settings.context_window), model.fixed_context_window);
+
+        let lease = manager
+            .lease_model(&model.id, models, &settings, None)
+            .await
+            .unwrap();
+        let snapshot = manager.snapshot().await;
+        assert_eq!(snapshot.phase, "ready");
+        assert_eq!(Some(snapshot.context_window), model.fixed_context_window);
+        assert!(
+            strata_engine_count() > engines_before,
+            "strata.exe did not start"
+        );
+        let first_pid = snapshot.pid;
+        println!("LIVE_STRATA_MODEL={} PID={first_pid:?}", model.name);
+
+        let client = Client::builder().no_proxy().build().unwrap();
+        let plain = live_reply(
+            &client,
+            &lease.connection,
+            &json!({
+                "model": lease.connection.model_id,
+                "messages": [{"role": "user", "content": "Reply with the single word: ready"}],
+                "max_tokens": 64,
+                "reasoning_effort": "off",
+                "chat_template_kwargs": {"enable_thinking": false},
+                "stream": false
+            }),
+        )
+        .await;
+        println!("LIVE_STRATA_PLAIN={plain:?}");
+        assert!(!plain.trim().is_empty());
+
+        let mut structured = json!({
+            "model": lease.connection.model_id,
+            "messages": [{"role": "user", "content": "Name two primary colours."}],
+            "max_tokens": 512,
+            "reasoning_effort": "off",
+            "chat_template_kwargs": {"enable_thinking": false},
+            "stream": false
+        });
+        crate::structured_output::apply(
+            &mut structured,
+            json!({"type":"json_schema","json_schema":{"name":"colours","strict":true,"schema":{
+                "type":"object","additionalProperties":false,
+                "properties":{"colours":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":2}},
+                "required":["colours"]
+            }}}),
+            lease.connection.engine,
+        );
+        let reply = live_reply(&client, &lease.connection, &structured).await;
+        println!("LIVE_STRATA_SCHEMA={reply:?}");
+        #[derive(serde::Deserialize)]
+        struct Colours {
+            colours: Vec<String>,
+        }
+        let parsed: Colours =
+            crate::structured_output::parse(&reply).expect("the reply did not follow the schema");
+        assert_eq!(parsed.colours.len(), 2);
+        drop(lease);
+
+        // A feature asking for another window must reuse the running model, not reload it.
+        let wider = ControlSettings {
+            context_window: 131_072,
+            ..settings
+        };
+        drop(
+            manager
+                .lease_model(&model.id, models, &wider, None)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(manager.snapshot().await.pid, first_pid);
+
+        manager.stop_managed().await.unwrap();
+        let mut stopped = false;
+        for _ in 0..60 {
+            if strata_engine_count() <= engines_before {
+                stopped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert!(stopped, "strata.exe outlived the managed runtime");
+    }
+
+    #[test]
+    fn fixed_context_engines_are_reused_at_their_installed_window() {
+        let mut model = ModelInfo {
+            id: "strata".into(),
+            name: "Strata".into(),
+            path: "C:\\Strata\\strata-iq3_s.json".into(),
+            source: "Strata".into(),
+            bytes: 1,
+            architecture: None,
+            context_length: Some(65_536),
+            chat_template: true,
+            quantization: None,
+            mmproj_path: None,
+            supports_vision: false,
+            supports_audio: false,
+            recommendation: String::new(),
+            engine: ModelEngine::Strata,
+            fixed_context_window: Some(65_536),
+        };
+        let settings = ControlSettings {
+            context_window: 98_304,
+            ..ControlSettings::default()
+        };
+        assert_eq!(runtime_context(&model, &settings), 65_536);
+        model.fixed_context_window = None;
+        model.engine = ModelEngine::LlamaCpp;
+        assert_eq!(runtime_context(&model, &settings), 98_304);
     }
 
     #[test]

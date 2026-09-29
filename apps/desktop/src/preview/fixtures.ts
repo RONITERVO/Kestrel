@@ -113,6 +113,7 @@ export const demoSnapshot: AppSnapshot = {
     comfyRoot: "C:\\Kestrel Preview\\ComfyUI",
     ffmpegPath: "",
     ffprobePath: "",
+    strataRoot: "C:\\Kestrel Preview\\Strata",
     contextWindow: 98_304,
     maxOutputTokens: 32_768,
     researchLanes: 6,
@@ -128,6 +129,11 @@ export const demoSnapshot: AppSnapshot = {
     availableBytes: 356_000_000_000,
     gpuName: "Detected NVIDIA GPU (preview)",
     gpuMemoryBytes: 12_227 * 1024 * 1024,
+    systemMemoryBytes: 63 * 1024 ** 3,
+    strataChoices: [
+      { size: "IQ3_S", downloadBytes: 89_726_198_444, memoryBytes: 64 * 1024 ** 3, fits: true, recommended: true },
+      { size: "IQ2_XS", downloadBytes: 74_134_628_812, memoryBytes: 64 * 1024 ** 3, fits: true, recommended: false },
+    ],
     components: [
       { id: "assistant", label: "Included local model", status: "ready", detail: "Ready for private local work through the shared runtime.", path: "C:\\Kestrel Preview\\Bonsai", downloadBytes: 8447588320, optional: false },
       { id: "wikipedia", label: "Offline Wikipedia", status: "ready", detail: "Ready for private research.", path: "C:\\Kestrel Preview\\OfflineWikipedia\\archives\\wikipedia_en.zim", downloadBytes: 12550000000, optional: false },
@@ -137,6 +143,7 @@ export const demoSnapshot: AppSnapshot = {
       { id: "image", label: "Ideogram 4 Image Studio", status: "missing", detail: "Optional non-commercial image production through local ComfyUI.", path: "C:\\Kestrel Preview\\ComfyUI", downloadBytes: 17622549040, optional: true },
       { id: "speech", label: "Whisper dictation + local voice", status: "missing", detail: "Downloads verified Whisper large-v3-turbo dictation and private Chatterbox narration through local ComfyUI.", path: "C:\\Kestrel Preview\\ComfyUI", downloadBytes: 4810176394, optional: true },
       { id: "muscriptor", label: "MuScriptor audio to MIDI", status: "missing", detail: "Optional gated non-commercial transcription with an isolated local GPU runner.", path: "C:\\Kestrel Preview\\MuScriptor\\runtime\\uvx.exe", downloadBytes: 3500000000, optional: true },
+      { id: "strata", label: "Qwen3.8-Flash-Next 125B via Strata", status: "missing", detail: "Optional larger assistant, tested on an NVIDIA RTX 5070 (12 GB VRAM) in a 64 GB PC: it uses 54-57 GB of RAM and nearly all the VRAM, and answers at about 40 tokens per second. Setup offers it only on a PC at least that capable. Works alongside the included model.", path: "C:\\Kestrel Preview\\Strata", downloadBytes: 89_726_198_444, optional: true },
     ],
     modelAssets: [
       { id: "assistant:ternary-bonsai-27b-q2_0.gguf", component: "assistant", label: "Bonsai 27B model", fileName: "Ternary-Bonsai-27B-Q2_0.gguf", bytes: 7_165_121_600, recognized: true, installedPath: "C:\\Kestrel Preview\\Bonsai\\models\\Ternary-Bonsai-27B-Q2_0.gguf" },
@@ -177,6 +184,7 @@ export const demoSnapshot: AppSnapshot = {
       supportsVision: true,
       supportsAudio: false,
       recommendation: "Included local GGUF; uses the same one-slot, full-GPU policy as every model",
+      engine: "llamaCpp",
     }],
     engineCandidates: [{
       path: "C:\\Kestrel Preview\\Bonsai\\runtime\\llama-server.exe",
