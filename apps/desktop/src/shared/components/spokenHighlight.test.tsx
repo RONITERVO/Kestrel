@@ -1,9 +1,11 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildSpeechSeekTargets,
   getActiveWordIndex,
   isPassageActiveForText,
   mapSpeechTimingsToTextWords,
+  resolveActiveBlockAndWord,
   speechPlaybackEnd,
   speechWordStart,
   SpokenText,
@@ -141,6 +143,63 @@ describe("spokenHighlight word-level alignment engine", () => {
     // P2 and P3 must have NO marks at all
     expect(c2.querySelector("mark")).not.toBeInTheDocument();
     expect(c3.querySelector("mark")).not.toBeInTheDocument();
+  });
+
+  it("keeps a math passage on its own paragraph when a table repeats its numbers", () => {
+    const candidates = [
+      { id: "table", text: "H1: Cinder is primary threat | 0.55 | 0.82 | ?" },
+      { id: "intro", text: "She used Bayes' theorem." },
+      { id: "h1", text: "For H1: 0.82 × 0.55 = 0.451" },
+      { id: "updated", text: "H1: Cinder is primary threat | 0.55 | 0.82 | 0.451" },
+    ];
+    const text = "For H1: 0 point 82 times 0 point 55 equals 0 point 451.";
+    const heard = ["For", "H1", "0.82", "times", "0.55", "equals", "0.451"];
+    const timings = heard.map((value, index) => ({ value, start: index * 0.5, end: index * 0.5 + 0.5 }));
+    const at = (seconds: number) => resolveActiveBlockAndWord(candidates, {
+      active: true, passageId: "answer-36", text, seconds, duration: 3.5, timings,
+    }, null, 5);
+
+    for (const seconds of [0.1, 1.1, 2.1, 2.6, 3.4]) {
+      expect(at(seconds)?.activeId).toBe("h1");
+    }
+    // "equals" is only spoken: the highlight stays on the last shown word instead of searching.
+    expect(at(2.6)?.activeWordIndex).toBe(at(2.1)?.activeWordIndex);
+    // Audio the voice adds after the text stays on the passage's last word.
+    expect(at(30)).toEqual(at(3.4));
+  });
+
+  it("holds the reading position through a passage the document does not show", () => {
+    const candidates = [
+      { id: "earlier", text: "The story goes on and on." },
+      { id: "code", text: "x = 1" },
+      { id: "later", text: "More text follows." },
+    ];
+    const resolved = resolveActiveBlockAndWord(candidates, {
+      active: true,
+      passageId: "answer-4",
+      text: "Code block on screen.",
+      seconds: 0.6,
+      duration: 1.2,
+      timings: ["Code", "block", "on", "screen"].map((value, index) => ({ value, start: index * 0.3, end: index * 0.3 + 0.3 })),
+    }, null, 8);
+    expect(resolved?.activeId).toBe("later");
+    expect(resolved?.activeWordIndex).toBe(0);
+  });
+
+  it("seeks within the passage that was spoken, not a table with the same numbers", () => {
+    const candidates = [
+      { id: "table", text: "Hypothesis | 0.30 | 0.14" },
+      { id: "h2", text: "For H2: 0.14 × 0.30 = 0.042" },
+    ];
+    const text = "For H2: 0 point 14 times 0 point 30 equals 0 point 042.";
+    const heard = ["For", "H2", "0", "point", "14", "times", "0", "point", "30", "equals", "0", "point", "042"];
+    const targets = buildSpeechSeekTargets(candidates, [{
+      passageId: "answer-37",
+      text,
+      timings: heard.map((value, index) => ({ value, start: index, end: index + 1 })),
+    }]);
+    expect(targets.has("table")).toBe(false);
+    expect(targets.get("h2")?.get(3)).toEqual({ passageId: "answer-37", seconds: 4 });
   });
 
   it("isolates passages with explicit passageId in research reports", () => {

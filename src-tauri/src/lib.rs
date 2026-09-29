@@ -21,6 +21,7 @@ mod runtime;
 mod services;
 mod setup;
 mod speech_preferences;
+mod speech_text;
 mod store;
 mod strata;
 mod structured_output;

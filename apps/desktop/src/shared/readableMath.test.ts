@@ -48,7 +48,35 @@ describe("readableMath", () => {
   it("keeps LaTeX commands out of speech", () => {
     const spoken = cleanProseForSpeech("The count is \\(\\left\\lfloor \\frac{1000}{3} \\right\\rfloor = 333\\).");
     expect(spoken).not.toMatch(/frac|lfloor|\\/);
-    expect(spoken).toContain("333");
+    expect(spoken).toBe("The count is the floor of 1000 over 3 equals 333.");
+  });
+
+  it("speaks what the math means instead of its symbols", () => {
+    expect(latexToText("x^2 + y^3 = z^{n+1}", "speech")).toBe("x squared plus y cubed equals z to the power of n plus 1");
+    expect(latexToText("\\frac{a}{b}", "speech")).toBe("a over b");
+    expect(latexToText("\\frac{a+b}{2}", "speech")).toBe("(a plus b) over 2");
+    expect(latexToText("\\frac{\\pi}{2}", "speech")).toBe("pi over 2");
+    expect(latexToText("\\sqrt{x+1}", "speech")).toBe("the square root of (x plus 1)");
+    expect(latexToText("x_1 \\le 3 \\times 4", "speech")).toBe("x sub 1 less than or equal to 3 times 4");
+    expect(latexToText("\\sum_{i=1}^{n} i", "speech")).toBe("the sum from i equals 1 to n of i");
+    expect(latexToText("\\int_0^1 x\\,dx", "speech")).toBe("the integral from 0 to 1 of x dx");
+    expect(latexToText("\\lim_{x \\to 0} f(x)", "speech")).toBe("the limit as x approaches 0 of f(x)");
+    expect(latexToText("\\alpha + \\Omega \\ne \\varepsilon", "speech")).toBe("alpha plus omega not equal to epsilon");
+    expect(latexToText("30^\\circ", "speech")).toBe("30 degrees");
+    expect(latexToText("30^\\circ")).toBe("30°");
+  });
+
+  it("keeps powers and fractions through speech cleanup", () => {
+    expect(cleanProseForSpeech("Here \\(x^2\\) grows.")).toBe("Here x squared grows.");
+    expect(cleanProseForSpeech("The ratio is \\(\\frac{a}{b}\\).")).toBe("The ratio is a over b.");
+    expect(cleanProseForSpeech("Area: $$\\pi r^2$$")).toBe("Area: pi r squared.");
+  });
+
+  it("speaks math written directly in Unicode or with a caret", () => {
+    expect(cleanProseForSpeech("So x² + y² = z².")).toBe("So x squared plus y squared equals z squared.");
+    expect(cleanProseForSpeech("About 10⁶ cells at 37°C.")).toBe("About 10 to the power of 6 cells at 37 degrees Celsius.");
+    expect(cleanProseForSpeech("Use x^3 and 2^10.")).toBe("Use x cubed and 2 to the power of 10.");
+    expect(cleanProseForSpeech("It is 3×4 ± 1.")).toBe("It is 3 times 4 plus or minus 1.");
   });
 
   it("converts math around a code block but not inside it", () => {

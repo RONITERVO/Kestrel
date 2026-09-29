@@ -1747,29 +1747,13 @@ fn relative_cache_path(cache_root: &Path, target: &Path) -> Result<String, Speec
     Ok(value)
 }
 
-fn expand_decimal_points(raw: &str) -> String {
-    let characters = raw.chars().collect::<Vec<_>>();
-    let mut expanded = String::with_capacity(raw.len());
-    for (index, character) in characters.iter().enumerate() {
-        if *character == '.'
-            && index > 0
-            && index + 1 < characters.len()
-            && characters[index - 1].is_ascii_digit()
-            && characters[index + 1].is_ascii_digit()
-        {
-            expanded.push_str(" point ");
-        } else {
-            expanded.push(*character);
-        }
-    }
-    expanded
-}
-
+/// The exact text Chatterbox speaks and Whisper aligns against: code blocks become a short cue,
+/// numbers and units become words, and symbols a voice would stumble on are removed.
 pub fn clean_speech_text(raw: &str) -> String {
     if raw.trim().is_empty() {
         return String::new();
     }
-    let mut text = expand_decimal_points(raw)
+    let mut text = raw
         .replace("e.g.", "for example")
         .replace("E.g.", "For example")
         .replace("i.e.", "that is")
@@ -1792,6 +1776,7 @@ pub fn clean_speech_text(raw: &str) -> String {
             text.replace_range(start..start + 3, " ");
         }
     }
+    let text = crate::speech_text::speak_numbers(&text);
 
     let mut cleaned = String::with_capacity(text.len());
     let mut prev_char = ' ';
@@ -1864,8 +1849,7 @@ fn chatterbox_graph(
         .strip_prefix("chatterbox:")
         .unwrap_or_default();
     let speech_text = spoken_text(&request.text);
-    let word_count = speech_text.split_whitespace().count() as u32;
-    let max_new_tokens = (word_count.saturating_mul(18).saturating_add(96)).clamp(128, 1_600);
+    let max_new_tokens = speech_token_budget(&speech_text, &voice.performance);
     let seed = deterministic_seed(request, voice);
     let (flow_cfg_scale, exaggeration, temperature, cfg_weight) =
         performance_parameters(&voice.performance);
@@ -1901,6 +1885,22 @@ fn chatterbox_graph(
         graph["1"]["inputs"]["audio_prompt"] = json!(["0", 0]);
     }
     graph
+}
+
+/// Chatterbox speech tokens (25 per second) one passage may generate. Numbers are already words,
+/// so the word count is what is actually said: natural reading takes about 10 tokens a word,
+/// slow passages up to 14. The limit leaves room for that plus three seconds, and stops a
+/// looping generation before it runs on for a minute.
+fn speech_token_budget(speech_text: &str, performance: &str) -> u32 {
+    let per_word = match performance {
+        "expressive" | "dramatic" => 17,
+        _ => 15,
+    };
+    let words = speech_text.split_whitespace().count() as u32;
+    words
+        .saturating_mul(per_word)
+        .saturating_add(75)
+        .clamp(128, 1_600)
 }
 
 fn performance_parameters(performance: &str) -> (f64, f64, f64, f64) {
@@ -2324,11 +2324,14 @@ fn deterministic_seed(request: &SpeechSynthesisRequest, voice: &VoiceConditionin
         voice.profile_id,
         voice.fingerprint(),
         voice.performance,
-        request.text.trim()
+        spoken_text(&request.text)
     ));
     u64::from_le_bytes(digest[..8].try_into().expect("eight-byte digest prefix")).max(1)
 }
 
+/// Cached narration is keyed by what the voice actually says, so a change to the speech cleanup
+/// re-renders exactly the passages whose spoken words changed and never replays audio made from
+/// older wording. Passages with the same spoken words, as in an edited reply, share their audio.
 fn cache_key(request: &SpeechSynthesisRequest, voice: &VoiceConditioning) -> String {
     let digest = Sha256::digest(format!(
         "{TTS_ADAPTER_REVISION}\0{}\0{}\0{}\0{}\0{}",
@@ -2336,7 +2339,7 @@ fn cache_key(request: &SpeechSynthesisRequest, voice: &VoiceConditioning) -> Str
         voice.profile_id,
         voice.fingerprint(),
         voice.performance,
-        request.text.trim()
+        spoken_text(&request.text)
     ));
     hex::encode(digest)
 }
@@ -3096,6 +3099,16 @@ mod tests {
             cache_key(&request, &voice),
             cache_key(&self::request("Different text."), &voice)
         );
+        // The key follows the spoken words: digits and their spelled-out form are one clip, and
+        // a number read differently is a new one.
+        assert_eq!(
+            cache_key(&self::request("It is 0.5 m."), &voice),
+            cache_key(&self::request("It is 0 point 5 m."), &voice)
+        );
+        assert_ne!(
+            cache_key(&self::request("It is 0.5 m."), &voice),
+            cache_key(&self::request("It is 0.6 m."), &voice)
+        );
     }
 
     #[test]
@@ -3400,18 +3413,42 @@ mod tests {
         assert!(cleaned.contains("foo bar baz"));
 
         let dashboard = clean_speech_text("O₂ ≥ 20%; CO₂ ≤ 0.45%; Δ O₂ → stable ↑ while reserve ↓");
-        assert!(dashboard.contains("oxygen at least 20%"));
-        assert!(dashboard.contains("carbon dioxide at most 0 point 45%"));
+        assert!(dashboard.contains("oxygen at least twenty percent"));
+        assert!(dashboard.contains("carbon dioxide at most zero point four five percent"));
         assert!(dashboard.contains("change in oxygen then stable rising"));
         assert!(dashboard.ends_with("reserve falling"));
+        // The desktop's captions arrive with digits and a spelled "point"; the voice gets words.
         assert_eq!(
-            expand_decimal_points("19.8 and v1.2.3"),
-            "19 point 8 and v1 point 2 point 3"
+            clean_speech_text("P of H2 given D equals 0 point 042 over 0 point 5875, about 23,500 kg at 5 km per s."),
+            "P of H two given D equals zero point zero four two over zero point five eight seven five, about twenty-three thousand five hundred kilograms at five kilometers per second."
+        );
+        let code = clean_speech_text(
+            "Values ```text
+0.55 | 0.82
+``` follow.",
+        );
+        assert!(
+            code.contains("Code block on screen.") && !code.contains("zero"),
+            "{code}"
         );
 
         let unterminated = clean_speech_text("Intro text\n```json\n{\"still_open\": true}");
         assert!(unterminated.contains("Intro text"));
         assert!(!unterminated.contains("```"));
+    }
+
+    #[test]
+    fn chatterbox_length_follows_the_words_actually_spoken() {
+        let text = clean_speech_text("It was 0.5875 at 23,500 kg.");
+        assert_eq!(
+            text,
+            "It was zero point five eight seven five at twenty-three thousand five hundred kilograms."
+        );
+        let words = text.split_whitespace().count() as u32;
+        assert_eq!(speech_token_budget(&text, "natural"), words * 15 + 75);
+        assert_eq!(speech_token_budget(&text, "dramatic"), words * 17 + 75);
+        assert_eq!(speech_token_budget("Hi.", "natural"), 128);
+        assert_eq!(speech_token_budget(&"word ".repeat(500), "natural"), 1_600);
     }
 
     #[tokio::test]

@@ -1,4 +1,34 @@
-import { readableMath } from "../readableMath";
+import { readableMath, speakConditionals, spokenPower } from "../readableMath";
+
+const SUPERSCRIPT_CHARACTERS: Record<string, string> = {
+  "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+  "⁺": "+", "⁻": "-", "ⁿ": "n", "ⁱ": "i",
+};
+
+function fromSuperscript(value: string): string {
+  return [...value].map((character) => SUPERSCRIPT_CHARACTERS[character] ?? character).join("");
+}
+
+const ROMAN_VALUES: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100 };
+
+/** A Roman numeral as a number, or null when the letters are not a well-formed numeral. */
+function romanNumeral(value: string): number | null {
+  let total = 0;
+  for (let index = 0; index < value.length; index++) {
+    const current = ROMAN_VALUES[value[index]];
+    const next = ROMAN_VALUES[value[index + 1]] ?? 0;
+    if (!current) return null;
+    total += current < next ? -current : current;
+  }
+  return total > 0 && total < 400 ? total : null;
+}
+
+// The desktop's native speech cleanup reads every digit as a word ("0.5875" is six words), so a
+// digit counts five times toward a passage's length. Math-heavy passages stay short enough for
+// the voice to read without losing its place.
+function spokenLength(value: string): number {
+  return value.length + 4 * (value.match(/\d/g)?.length ?? 0);
+}
 
 export interface SpeechPassage {
   id: string;
@@ -106,8 +136,9 @@ function convertTablesAndCharts(text: string): string {
 export function cleanProseForSpeech(raw: string, stripCodeBlocks = true): string {
   if (!raw) return "";
 
-  // Match what chat shows: LaTeX math becomes plain text before anything is spoken.
-  let text = readableMath(raw);
+  // LaTeX math becomes the words it stands for ("x squared", "a over b") before anything is
+  // spoken; the symbol cleanup below would otherwise drop exponents and read "a/b" as "a or b".
+  let text = readableMath(raw, "speech");
 
   // Replace compact scientific and dashboard notation with stable spoken phrases before table
   // conversion or generic symbol stripping. These forms otherwise make local TTS models spell or
@@ -123,8 +154,31 @@ export function cleanProseForSpeech(raw: string, stripCodeBlocks = true): string
     .replace(/≤/g, " at most ")
     .replace(/↑/g, " rising ")
     .replace(/↓/g, " falling ")
-    .replace(/→/g, " then ")
-    .replace(/(\d+(?:[.,]\d+)?)\s*\/\s*(\d+(?:[.,]\d+)?)/g, "$1 out of $2")
+    .replace(/→/g, " then ");
+
+  // "P(A|B)" keeps its meaning before the bar is stripped, and a unit ratio after a number
+  // ("5 km/s") is read "per" rather than "or"; native cleanup then names the units.
+  text = speakConditionals(text)
+    .replace(/(\d\s*[A-Za-zµ]{1,4})\/([A-Za-z]{1,4})\b/g, "$1 per $2");
+
+  // Math written directly in Unicode or with a caret (x², 10⁶, x^2, 3×4, 30°) keeps its meaning;
+  // the symbols themselves are stripped further down.
+  text = text
+    .replace(/([\p{L}\p{N})\]])([⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻ⁿⁱ]+)/gu, (_, base: string, power: string) => `${base} ${spokenPower(fromSuperscript(power))}`)
+    .replace(/([\p{L}\p{N})\]])\^\{?(-?\d+)\}?/gu, (_, base: string, power: string) => `${base} ${spokenPower(power)}`)
+    .replace(/[₀-₉]/g, (digit) => String(digit.charCodeAt(0) - 0x2080))
+    .replace(/\s*×\s*/g, " times ")
+    .replace(/\s*÷\s*/g, " divided by ")
+    .replace(/\s*±\s*/g, " plus or minus ")
+    .replace(/\s*≠\s*/g, " not equal to ")
+    .replace(/\s*≈\s*/g, " approximately ")
+    .replace(/√\s*/g, " the square root of ")
+    .replace(/∞/g, " infinity ")
+    .replace(/(\d)\s*°\s*C\b/g, "$1 degrees Celsius")
+    .replace(/(\d)\s*°\s*F\b/g, "$1 degrees Fahrenheit")
+    .replace(/(\d)\s*°/g, "$1 degrees")
+    .replace(/(\d+(?:[.,]\d+)?)\s*\/\s*(\d+(?:[.,]\d+)?)/g, (_, top: string, bottom: string) =>
+      /[.,]/.test(top + bottom) ? `${top} over ${bottom}` : `${top} out of ${bottom}`)
     .replace(/\b(\d+)\.(\d+)\b/g, "$1 point $2");
 
   // MediaWiki and similar excerpts can contain inline stylesheet rules that are not prose.
@@ -167,8 +221,13 @@ export function cleanProseForSpeech(raw: string, stripCodeBlocks = true): string
   text = text.replace(/!\[[^\]]*\]\([^)]+\)/g, " ");
   // Strip raw URLs to clean domain
   text = text.replace(/https?:\/\/(?:www\.)?([^\s/?#]+)(?:[^\s)]*)?/gi, "$1");
-  // Headers: # Heading -> Heading.
-  text = text.replace(/^[ \t]*#{1,6}[ \t]+([^\n]+)/gm, "$1. ");
+  // Headers: # Heading -> Heading. Numbered part headings ("IV. The Problem") are read as
+  // numbers, never as the word "Ivy".
+  text = text.replace(/^[ \t]*#{1,6}[ \t]+([^\n]+)/gm, (_, heading: string) => {
+    const part = heading.match(/^([IVXLC]+)[.:][ \t]+(.+)$/);
+    const number = part ? romanNumeral(part[1]) : null;
+    return part && number ? `${number}. ${part[2]}. ` : `${heading}. `;
+  });
   // Blockquotes: > quote -> quote
   text = text.replace(/^[ \t]*>[ \t]*/gm, " ");
   // List bullets: *, -, + at start of line
@@ -283,7 +342,7 @@ export function splitForSpeech(
 ): string[] {
   const value = cleanProseForSpeech(text, stripCodeBlocks);
   if (!value) return [];
-  if (value.length <= maxChars) return [value];
+  if (spokenLength(value) <= maxChars) return [value];
 
   const sentences = splitSpeechSentences(value);
   const chunks: string[] = [];
@@ -293,25 +352,67 @@ export function splitForSpeech(
     pending = "";
   };
 
-  for (const sentence of sentences) {
-    if (sentence.length > maxChars) {
-      flush();
-      for (const word of sentence.split(" ")) {
-        if (pending && pending.length + word.length + 1 > maxChars) flush();
-        pending = pending ? `${pending} ${word}` : word;
-      }
-      flush();
-    } else if (!pending) {
-      pending = sentence;
-    } else if (pending.length + sentence.length + 1 <= maxChars) {
-      pending = `${pending} ${sentence}`;
+  const add = (piece: string) => {
+    if (!pending) {
+      pending = piece;
+    } else if (spokenLength(pending) + spokenLength(piece) + 1 <= maxChars) {
+      pending = `${pending} ${piece}`;
     } else {
       flush();
-      pending = sentence;
+      pending = piece;
     }
+  };
+
+  for (const sentence of sentences) {
+    if (spokenLength(sentence) <= maxChars) {
+      add(sentence);
+      continue;
+    }
+    // An overlong sentence, usually a run of equations, breaks at its clauses first and then
+    // between words, never inside a number: "0 point 60" reaches the voice in one passage.
+    flush();
+    for (const clause of clauses(sentence, maxChars)) {
+      if (spokenLength(clause) <= maxChars) {
+        add(clause);
+      } else {
+        speechUnits(clause).forEach(add);
+      }
+    }
+    flush();
   }
   flush();
   return chunks;
+}
+
+/** A sentence's clauses. A lead-in ending with a colon ("Thirty shots:") stays with what it
+ * introduces, so no passage ends on a dangling lead-in, which the voice tends to fill with a
+ * repeat of the passage's first line. */
+function clauses(sentence: string, maxChars: number): string[] {
+  const parts: string[] = [];
+  for (const clause of sentence.split(/(?<=[:;,])\s+/)) {
+    const previous = parts[parts.length - 1];
+    if (previous?.endsWith(":") && spokenLength(previous) + spokenLength(clause) + 1 <= maxChars) {
+      parts[parts.length - 1] = `${previous} ${clause}`;
+    } else {
+      parts.push(clause);
+    }
+  }
+  return parts;
+}
+
+/** The words of a clause, with each spelled decimal ("0 point 60") kept as one unit. */
+function speechUnits(clause: string): string[] {
+  const words = clause.split(" ");
+  const units: string[] = [];
+  for (let index = 0; index < words.length; index++) {
+    if (/\d$/.test(words[index]) && words[index + 1] === "point" && /^\d/.test(words[index + 2] ?? "")) {
+      units.push(`${words[index]} point ${words[index + 2]}`);
+      index += 2;
+    } else {
+      units.push(words[index]);
+    }
+  }
+  return units;
 }
 
 export function buildSpeechPassages(
