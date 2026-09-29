@@ -35,7 +35,46 @@ mod batch;
 
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_CONTEXT_BYTES: usize = 768 * 1024;
+const MAX_SUMMARY_CONTEXT_BYTES: usize = 512 * 1024;
 const MAX_CHAT_OUTPUT_TOKENS: u32 = 32_768;
+const MAX_SUMMARY_OUTPUT_TOKENS: u32 = 4_096;
+/// Tokens kept beside the reply for the chat template and, on engines that read it from the
+/// prompt, the scene schema.
+const STUDIO_TEMPLATE_TOKENS: u32 = 2_048;
+
+/// How much conversation one Studio request may send, and the limit to name when it is too much.
+struct PromptLimit {
+    bytes: usize,
+    boundary: String,
+}
+
+impl PromptLimit {
+    /// The smaller of Kestrel's fixed Studio ceiling and what the model's serving context holds
+    /// beside the reply, so a fixed-context engine is never sent more than it can read.
+    fn for_model(
+        model: &ModelInfo,
+        requested_context: u32,
+        reserved_tokens: u32,
+        ceiling: usize,
+    ) -> Self {
+        let context = model.serving_context(requested_context);
+        let fits = crate::models::prompt_char_budget(context, reserved_tokens).unwrap_or(0);
+        if fits < ceiling {
+            Self {
+                bytes: fits,
+                boundary: format!(
+                    "what {}'s {context}-token context holds beside its reply",
+                    model.name
+                ),
+            }
+        } else {
+            Self {
+                bytes: ceiling,
+                boundary: format!("its {} KiB inference context boundary", ceiling / 1024),
+            }
+        }
+    }
+}
 
 const STORY_SYSTEM: &str = r#"You are Kestrel's private story collaborator: a developmental editor and creative screenwriter. Work like a trusted human story editor.
 
@@ -107,10 +146,19 @@ impl MovieStudioChatJob {
         }
         effective.model_overrides.clear();
         let thinking_level = effective.thinking_level;
+        let max_tokens = effective
+            .max_output_tokens
+            .clamp(1_024, MAX_CHAT_OUTPUT_TOKENS);
+        let limit = PromptLimit::for_model(
+            model,
+            effective.context_window,
+            max_tokens.saturating_add(STUDIO_TEMPLATE_TOKENS),
+            MAX_CONTEXT_BYTES,
+        );
         let messages = if let Some(batch) = batch {
-            batch::build_batch_messages(&prepared, batch)?
+            batch::build_batch_messages(&prepared, batch, &limit)?
         } else {
-            build_messages(&project.prompt, &prepared, request.kind)?
+            build_messages(&project.prompt, &prepared, request.kind, &limit)?
         };
         emit(
             app.as_ref(),
@@ -138,7 +186,7 @@ impl MovieStudioChatJob {
             "temperature": if request.kind == MovieStudioConversationKind::Story { 0.85 } else { 0.45 },
             "top_p": if request.kind == MovieStudioConversationKind::Story { 0.95 } else { 0.9 },
             "top_k": if request.kind == MovieStudioConversationKind::Story { 40 } else { 20 },
-            "max_tokens": effective.max_output_tokens.clamp(1_024, MAX_CHAT_OUTPUT_TOKENS),
+            "max_tokens": max_tokens,
             "stream": true,
             "stream_options": {"include_usage": true}
         });
@@ -459,11 +507,11 @@ pub async fn summarize_conversation(
     settings: &ControlSettings,
     request: &SummarizeMovieStudioConversationRequest,
 ) -> Result<MovieStudioConversation, String> {
-    if !models.iter().any(|model| model.id == request.model_id) {
+    let Some(model) = models.iter().find(|model| model.id == request.model_id) else {
         return Err(
             "The selected Studio collaborator is no longer in the local model catalog.".into(),
         );
-    }
+    };
     let project = studio
         .get(&request.project_id)
         .map_err(|error| error.to_string())?;
@@ -487,7 +535,18 @@ pub async fn summarize_conversation(
         .lease_model(&request.model_id, models, &effective, Some(app))
         .await
         .map_err(|error| error.to_string())?;
-    let transcript = bounded_summary_transcript(&conversation);
+    let max_tokens = effective
+        .max_output_tokens
+        .clamp(512, MAX_SUMMARY_OUTPUT_TOKENS);
+    // The summary is the way out of an overlong conversation, so it fits the model's context by
+    // keeping the newest turns instead of failing as a collaboration turn would.
+    let limit = PromptLimit::for_model(
+        model,
+        effective.context_window,
+        max_tokens.saturating_add(STUDIO_TEMPLATE_TOKENS),
+        MAX_SUMMARY_CONTEXT_BYTES,
+    );
+    let transcript = bounded_summary_transcript(&conversation, limit.bytes);
     let mut body = json!({
         "model": lease.connection.model_id,
         "messages": [
@@ -497,7 +556,7 @@ pub async fn summarize_conversation(
         "temperature": 0.2,
         "top_p": 0.9,
         "top_k": 20,
-        "max_tokens": effective.max_output_tokens.clamp(512, 4_096),
+        "max_tokens": max_tokens,
         "stream": false
     });
     if effective.thinking_level.is_off() || project.settings.thinking_budget == 0 {
@@ -559,13 +618,14 @@ pub async fn summarize_conversation(
         .map_err(|error| error.to_string())
 }
 
-fn bounded_summary_transcript(conversation: &MovieStudioConversation) -> String {
-    const MAX_SUMMARY_CONTEXT_BYTES: usize = 512 * 1024;
+/// The existing summary and as many of the newest turns as fit in `max_bytes`.
+fn bounded_summary_transcript(conversation: &MovieStudioConversation, max_bytes: usize) -> String {
+    let summary = utf8_prefix(conversation.summary.trim(), max_bytes / 2);
     let mut selected = Vec::new();
-    let mut bytes = conversation.summary.len();
+    let mut bytes = summary.len();
     for message in conversation.messages.iter().rev() {
         let next = message.markdown.len().saturating_add(96);
-        if bytes.saturating_add(next) > MAX_SUMMARY_CONTEXT_BYTES && !selected.is_empty() {
+        if bytes.saturating_add(next) > max_bytes && !selected.is_empty() {
             break;
         }
         selected.push(message);
@@ -573,9 +633,9 @@ fn bounded_summary_transcript(conversation: &MovieStudioConversation) -> String 
     }
     selected.reverse();
     let mut transcript = String::new();
-    if !conversation.summary.trim().is_empty() {
+    if !summary.is_empty() {
         transcript.push_str("Existing summary:\n");
-        transcript.push_str(conversation.summary.trim());
+        transcript.push_str(summary);
         transcript.push_str("\n\nRecent turns:\n");
     }
     for message in selected {
@@ -587,10 +647,10 @@ fn bounded_summary_transcript(conversation: &MovieStudioConversation) -> String 
         transcript.push_str(":\n");
         transcript.push_str(utf8_prefix(
             &message.markdown,
-            MAX_SUMMARY_CONTEXT_BYTES.saturating_sub(transcript.len()),
+            max_bytes.saturating_sub(transcript.len()),
         ));
         transcript.push_str("\n\n");
-        if transcript.len() >= MAX_SUMMARY_CONTEXT_BYTES {
+        if transcript.len() >= max_bytes {
             break;
         }
     }
@@ -673,6 +733,7 @@ fn build_messages(
     original_prompt: &str,
     prepared: &PreparedStudioTurn,
     kind: MovieStudioConversationKind,
+    limit: &PromptLimit,
 ) -> Result<Vec<Value>, String> {
     let system = match kind {
         MovieStudioConversationKind::Story => STORY_SYSTEM,
@@ -711,11 +772,11 @@ fn build_messages(
         messages.push(json!({"role":role,"content":message.markdown}));
     }
     let bytes = serde_json::to_vec(&messages).map_err(|error| error.to_string())?;
-    if bytes.len() > MAX_CONTEXT_BYTES {
-        return Err(
-            "This Studio conversation exceeds its 768 KiB inference context boundary. Summarize or clear the chat; story revisions and scene cards will remain intact."
-                .into(),
-        );
+    if bytes.len() > limit.bytes {
+        return Err(format!(
+            "This Studio conversation exceeds {}. Summarize or clear the chat; story revisions and scene cards will remain intact.",
+            limit.boundary
+        ));
     }
     Ok(messages)
 }
@@ -1215,10 +1276,15 @@ mod tests {
             scene_revision: 0,
             scenes: Vec::new(),
         };
+        let limit = PromptLimit {
+            bytes: MAX_CONTEXT_BYTES,
+            boundary: String::new(),
+        };
         let messages = build_messages(
             "A story seed",
             &prepared,
             MovieStudioConversationKind::Story,
+            &limit,
         )
         .unwrap();
         let replay = messages.last().unwrap();
@@ -1227,5 +1293,105 @@ mod tests {
             .iter()
             .skip(1)
             .all(|message| message["role"] != "system"));
+    }
+
+    fn strata_model() -> ModelInfo {
+        ModelInfo {
+            id: "strata".into(),
+            name: "Qwen3.8-Flash-Next IQ3_S (Strata)".into(),
+            path: "strata-iq3_s.json".into(),
+            source: "Strata".into(),
+            bytes: 1,
+            architecture: None,
+            context_length: Some(65_536),
+            chat_template: true,
+            quantization: None,
+            mmproj_path: None,
+            supports_vision: false,
+            supports_audio: false,
+            recommendation: String::new(),
+            engine: crate::model::ModelEngine::Strata,
+            fixed_context_window: Some(65_536),
+        }
+    }
+
+    fn long_conversation(turns: usize, turn_bytes: usize) -> MovieStudioConversation {
+        MovieStudioConversation {
+            id: "conversation".into(),
+            kind: MovieStudioConversationKind::Story,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+            story_revision_id: String::new(),
+            title: "Story".into(),
+            summary: String::new(),
+            archived: false,
+            messages: (0..turns)
+                .map(|index| MovieStudioMessage {
+                    id: format!("message-{index}"),
+                    created_at: "now".into(),
+                    role: if index % 2 == 0 {
+                        MovieStudioMessageRole::Producer
+                    } else {
+                        MovieStudioMessageRole::Collaborator
+                    },
+                    markdown: format!("turn {index} {}", "x".repeat(turn_bytes)),
+                    story_revision_id: None,
+                    selected_scene_ids: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_fixed_context_model_caps_studio_turns_and_summaries_still_fit() {
+        let model = strata_model();
+        let turn = PromptLimit::for_model(
+            &model,
+            98_304,
+            MAX_CHAT_OUTPUT_TOKENS + STUDIO_TEMPLATE_TOKENS,
+            MAX_CONTEXT_BYTES,
+        );
+        assert_eq!(turn.bytes, (65_536 - 32_768 - 2_048) * 4);
+        assert!(turn.boundary.contains("65536-token"), "{}", turn.boundary);
+
+        // Far under the old 768 KiB ceiling, yet more than a 64K window can read.
+        let prepared = PreparedStudioTurn {
+            conversation: long_conversation(60, 5_000),
+            story_revision_id: String::new(),
+            story_markdown: String::new(),
+            scene_revision: 0,
+            scenes: Vec::new(),
+        };
+        let error = build_messages(
+            "A story seed",
+            &prepared,
+            MovieStudioConversationKind::Story,
+            &turn,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("65536-token") && error.contains("Summarize"),
+            "{error}"
+        );
+
+        // The remedy the error names must work on the same model.
+        let summary = PromptLimit::for_model(
+            &model,
+            98_304,
+            MAX_SUMMARY_OUTPUT_TOKENS + STUDIO_TEMPLATE_TOKENS,
+            MAX_SUMMARY_CONTEXT_BYTES,
+        );
+        let transcript = bounded_summary_transcript(&prepared.conversation, summary.bytes);
+        assert!(transcript.len() <= summary.bytes);
+        assert!(transcript.contains("turn 59 "));
+        assert!(!transcript.contains("turn 0 "));
+
+        let bonsai = ModelInfo {
+            fixed_context_window: None,
+            ..strata_model()
+        };
+        let ceiling = PromptLimit::for_model(&bonsai, 1_048_576, 0, MAX_CONTEXT_BYTES);
+        assert_eq!(ceiling.bytes, MAX_CONTEXT_BYTES);
+        assert!(ceiling.boundary.contains("768 KiB"));
     }
 }

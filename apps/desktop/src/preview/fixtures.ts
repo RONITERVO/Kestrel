@@ -132,7 +132,7 @@ export const demoSnapshot: AppSnapshot = {
     systemMemoryBytes: 63 * 1024 ** 3,
     strataChoices: [
       { size: "IQ3_S", downloadBytes: 89_726_198_444, memoryBytes: 64 * 1024 ** 3, fits: true, recommended: true },
-      { size: "IQ2_XS", downloadBytes: 74_134_628_812, memoryBytes: 48 * 1024 ** 3, fits: true, recommended: false },
+      { size: "IQ2_XS", downloadBytes: 74_134_628_812, memoryBytes: 64 * 1024 ** 3, fits: true, recommended: false },
     ],
     components: [
       { id: "assistant", label: "Included local model", status: "ready", detail: "Ready for private local work through the shared runtime.", path: "C:\\Kestrel Preview\\Bonsai", downloadBytes: 8447588320, optional: false },
@@ -143,7 +143,7 @@ export const demoSnapshot: AppSnapshot = {
       { id: "image", label: "Ideogram 4 Image Studio", status: "missing", detail: "Optional non-commercial image production through local ComfyUI.", path: "C:\\Kestrel Preview\\ComfyUI", downloadBytes: 17622549040, optional: true },
       { id: "speech", label: "Whisper dictation + local voice", status: "missing", detail: "Downloads verified Whisper large-v3-turbo dictation and private Chatterbox narration through local ComfyUI.", path: "C:\\Kestrel Preview\\ComfyUI", downloadBytes: 4810176394, optional: true },
       { id: "muscriptor", label: "MuScriptor audio to MIDI", status: "missing", detail: "Optional gated non-commercial transcription with an isolated local GPU runner.", path: "C:\\Kestrel Preview\\MuScriptor\\runtime\\uvx.exe", downloadBytes: 3500000000, optional: true },
-      { id: "strata", label: "Qwen3.8-Flash-Next 125B via Strata", status: "missing", detail: "Optional larger assistant for NVIDIA RTX 30, 40, or 50 PCs with 12 GB VRAM. IQ3_S matches the full model and needs 64 GB RAM; IQ2_XS fits 48 GB. Works alongside the included model.", path: "C:\\Kestrel Preview\\Strata", downloadBytes: 89_726_198_444, optional: true },
+      { id: "strata", label: "Qwen3.8-Flash-Next 125B via Strata", status: "missing", detail: "Optional larger assistant, tested on an NVIDIA RTX 5070 (12 GB VRAM) in a 64 GB PC: it uses 54-57 GB of RAM and nearly all the VRAM, and answers at about 40 tokens per second. Setup offers it only on a PC at least that capable. Works alongside the included model.", path: "C:\\Kestrel Preview\\Strata", downloadBytes: 89_726_198_444, optional: true },
     ],
     modelAssets: [
       { id: "assistant:ternary-bonsai-27b-q2_0.gguf", component: "assistant", label: "Bonsai 27B model", fileName: "Ternary-Bonsai-27B-Q2_0.gguf", bytes: 7_165_121_600, recognized: true, installedPath: "C:\\Kestrel Preview\\Bonsai\\models\\Ternary-Bonsai-27B-Q2_0.gguf" },

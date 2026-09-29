@@ -64,15 +64,17 @@ const STRATA_SETUP_MARKER: &str = ".kestrel-strata-revision";
 const GIB: u64 = 1024 * 1024 * 1024;
 
 /// One Qwen3.8-Flash-Next size. Strata keeps every expert in system RAM whatever the GPU, so
-/// RAM decides what fits. The limits are Strata's own, less 2 GiB of reporting tolerance.
+/// RAM decides what fits. Kestrel tested Strata on a 64 GB PC, where it uses 54-57 GB, and does
+/// not offer any size on less, even where Strata's own setup would try.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StrataSize {
     name: &'static str,
     shard_one_bytes: u64,
     shard_one_sha256: &'static str,
-    /// The PC class Strata sizes this for (installed RAM).
+    /// The PC class Kestrel supports this size on (installed RAM).
     pc_memory_gib: u64,
-    /// Least RAM Windows may report for that class; below it Setup refuses the size.
+    /// Least RAM Windows may report for that class (the tested 64 GB PC reports 63.1 GiB);
+    /// below it Setup refuses the size.
     min_memory_gib: u64,
 }
 
@@ -88,8 +90,8 @@ const STRATA_SIZES: [StrataSize; 2] = [
         name: "IQ2_XS",
         shard_one_bytes: 39_225_954_592,
         shard_one_sha256: "92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7",
-        pc_memory_gib: 48,
-        min_memory_gib: 46,
+        pc_memory_gib: 64,
+        min_memory_gib: 60,
     },
 ];
 
@@ -145,6 +147,73 @@ fn strata_data_dir(strata_root: &Path) -> PathBuf {
         .join("Strata-data")
 }
 
+/// The one Strata folder Setup reports on, resumes, and installs into: the saved Strata folder,
+/// or `<install root>\Strata` when none is saved.
+fn strata_install_dir(research: &ResearchSettings) -> PathBuf {
+    let saved = PathBuf::from(research.strata_root.trim());
+    if saved.is_absolute() {
+        saved
+    } else {
+        Path::new(&research.install_root).join("Strata")
+    }
+}
+
+/// Whether Setup has started a Strata install here: its marker, or model shards downloaded or
+/// downloading beside it.
+fn strata_partial(strata_root: &Path) -> bool {
+    let data = strata_data_dir(strata_root);
+    strata_root.join(STRATA_SETUP_MARKER).is_file()
+        || STRATA_SIZES.iter().any(|size| {
+            size.shards().iter().any(|shard| {
+                let path = data.join(&shard.relative);
+                path.is_file() || path.with_extension("gguf.part").is_file()
+            })
+        })
+}
+
+fn folder_is_empty_or_missing(folder: &Path) -> bool {
+    match fs::read_dir(folder) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Whether two saved folders name the same place, as Windows compares paths.
+fn same_folder(left: &Path, right: &Path) -> bool {
+    let normalize = |path: &Path| {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    };
+    normalize(left) == normalize(right)
+}
+
+/// Why this PC gets no Strata offer, or `None` when it matches the tested PC. The graphics card
+/// and processor come first; RAM is refused only when no size fits.
+fn strata_blocker(gpu: Option<&crate::strata::Gpu>, system_memory_bytes: u64) -> Option<String> {
+    crate::strata::unsupported_reason(gpu, crate::strata::cpu_has_avx2()).or_else(|| {
+        let least = STRATA_SIZES
+            .iter()
+            .min_by_key(|size| size.min_memory_gib)
+            .expect("Strata sizes are pinned");
+        (system_memory_bytes < least.min_memory_gib * GIB).then(|| {
+            let reported = if system_memory_bytes == 0 {
+                "Windows did not report this PC's RAM".to_string()
+            } else {
+                format!(
+                    "This PC reports {:.1} GB of RAM",
+                    system_memory_bytes as f64 / GIB as f64
+                )
+            };
+            format!(
+                "{reported}. Kestrel tested Strata on a {} GB PC, where it uses 54-57 GB, and does not offer it on less.",
+                least.pc_memory_gib
+            )
+        })
+    })
+}
+
 const SPEECH_PYTHON_PACKAGES: [&str; 5] = [
     "openai-whisper==20250625",
     "s3tokenizer==0.3.0",
@@ -185,6 +254,7 @@ pub fn snapshot(
     research: &ResearchSettings,
     control: &ControlSettings,
     gpu: Option<&crate::models::GpuSnapshot>,
+    strata_gpu: Option<&crate::strata::Gpu>,
 ) -> SetupSnapshot {
     let bonsai_root = Path::new(&research.bonsai_root);
     let engine = Path::new(&control.engine_path);
@@ -270,23 +340,19 @@ pub fn snapshot(
         || muscriptor_model.is_file()
         || muscriptor_marker.is_file();
 
-    let strata_installs = crate::strata::known_installs(&[research.strata_root.as_str()]);
+    let strata_dir = strata_install_dir(research);
+    let strata_root = strata_dir.as_path();
+    let strata_installs = crate::strata::known_installs(&[strata_root.to_string_lossy().as_ref()]);
     let strata_ready = crate::strata::ready_install(&strata_installs);
-    let strata_root = Path::new(&research.strata_root);
     let system_memory_bytes = crate::strata::system_memory_bytes();
-    let strata_choices = strata_choices(strata_root, system_memory_bytes);
+    let strata_blocker = strata_blocker(strata_gpu, system_memory_bytes);
+    let strata_choices = strata_choices(strata_root, system_memory_bytes, strata_blocker.is_none());
     let strata_bytes = strata_choices
         .iter()
         .find(|choice| choice.recommended)
         .or_else(|| strata_choices.first())
         .map_or(0, |choice| choice.download_bytes);
-    let strata_partial = strata_root.join(STRATA_SETUP_MARKER).is_file()
-        || STRATA_SIZES.iter().any(|size| {
-            size.shards().iter().any(|shard| {
-                let path = strata_data_dir(strata_root).join(&shard.relative);
-                path.is_file() || path.with_extension("gguf.part").is_file()
-            })
-        });
+    let strata_partial = strata_partial(strata_root);
 
     let ffmpeg = resolve_program(&research.ffmpeg_path, "ffmpeg.exe");
     let ffprobe = resolve_program(&research.ffprobe_path, "ffprobe.exe");
@@ -453,7 +519,7 @@ pub fn snapshot(
             if strata_ready.is_some() {
                 "Ready: a 125B mixture-of-experts assistant for chat, research, and computer tasks. Its experts live in system RAM, so loading takes a minute or more and uses most of this PC's memory."
             } else {
-                "Optional larger assistant for NVIDIA RTX 30, 40, or 50 PCs with 12 GB VRAM. IQ3_S matches the full model and needs 64 GB RAM; IQ2_XS fits 48 GB. Works alongside the included model."
+                "Optional larger assistant, tested on an NVIDIA RTX 5070 (12 GB VRAM) in a 64 GB PC: it uses 54-57 GB of RAM and nearly all the VRAM, and answers at about 40 tokens per second. Setup offers it only on a PC at least that capable. Works alongside the included model."
             },
             strata_ready
                 .as_deref()
@@ -471,21 +537,27 @@ pub fn snapshot(
         gpu_memory_bytes: gpu.map(|value| value.total_mib * 1024 * 1024).unwrap_or(0),
         system_memory_bytes,
         strata_choices,
+        strata_blocker,
         components,
         model_assets,
     }
 }
 
-/// Every size Setup offers, with its remaining download and whether this PC has the RAM for it.
-/// The best size that fits is recommended; with unknown RAM the best size is.
-fn strata_choices(strata_root: &Path, system_memory_bytes: u64) -> Vec<SetupStrataChoice> {
+/// Every size Setup offers, with its remaining download and whether this PC can run it: a
+/// supported graphics card and processor, and the tested RAM for that size. The best size that
+/// fits is recommended.
+fn strata_choices(
+    strata_root: &Path,
+    system_memory_bytes: u64,
+    hardware_supported: bool,
+) -> Vec<SetupStrataChoice> {
     let data = strata_data_dir(strata_root);
     let support = strata_support_bytes(strata_root);
     let mut recommended = false;
     STRATA_SIZES
         .into_iter()
         .map(|size| {
-            let fits = system_memory_bytes == 0 || system_memory_bytes >= size.min_memory_gib * GIB;
+            let fits = hardware_supported && system_memory_bytes >= size.min_memory_gib * GIB;
             let missing = size
                 .shards()
                 .iter()
@@ -575,9 +647,26 @@ pub fn apply_locations(
         }
     }
     // An older window may not send the Strata folder; keep the saved one then.
-    let strata_root = locations.strata_root.trim().to_string();
+    let mut strata_root = locations.strata_root.trim().to_string();
     if !strata_root.is_empty() && !Path::new(&strata_root).is_absolute() {
         return Err(SetupError::InvalidPath(strata_root));
+    }
+    if strata_root.is_empty() {
+        strata_root = research.strata_root.clone();
+    }
+    // The Strata folder starts as `<install root>\Strata`. While it is still that default and
+    // nothing has been installed or downloaded there, it moves with the install root, so moving
+    // large files to another drive moves Strata too. A folder the producer chose, or one that
+    // already holds Strata files, stays where it is.
+    let previous_default = Path::new(&research.install_root).join("Strata");
+    if same_folder(Path::new(&strata_root), &previous_default)
+        && folder_is_empty_or_missing(&previous_default)
+        && !strata_partial(&previous_default)
+    {
+        strata_root = Path::new(&locations.install_root)
+            .join("Strata")
+            .to_string_lossy()
+            .into_owned();
     }
     research.install_root = locations.install_root;
     research.bonsai_root = locations.bonsai_root;
@@ -590,9 +679,7 @@ pub fn apply_locations(
         .to_string();
     research.wikipedia_snapshot = archive_snapshot(&research.wikipedia_book);
     research.comfy_root = locations.comfy_root;
-    if !strata_root.is_empty() {
-        research.strata_root = strata_root;
-    }
+    research.strata_root = strata_root;
     research.ffmpeg_path = locations.ffmpeg_path;
     research.ffprobe_path = locations.ffprobe_path;
     control.engine_path = locations.engine_path;
@@ -657,7 +744,7 @@ pub async fn install_component(
             )
             .await
         }
-        "strata" => install_strata(app, settings, &root, request, cancel).await,
+        "strata" => install_strata(app, settings, request, cancel).await,
         other => Err(SetupError::Download {
             name: other.into(),
             details: "unknown setup component".into(),
@@ -1398,38 +1485,43 @@ fn uv_runner_asset(name: &str) -> Asset {
     )
 }
 
-/// Install Strata and one Qwen3.8-Flash-Next size into `<install root>\Strata`.
+/// Install Strata and one Qwen3.8-Flash-Next size into the saved Strata folder.
 ///
-/// Kestrel downloads and verifies the pinned source, engine, and both model shards itself, gives
-/// Strata an isolated Python 3.12 from the pinned uv runner, then runs Strata's own setup
-/// non-interactively to prepare its model pack and draft layer. Every step is resumable: finished
-/// files are verified and kept, and Strata's setup skips what it already prepared.
+/// Kestrel first confirms this PC is at least as capable as the one it tested Strata on, so no
+/// download starts that Strata could not use. It then downloads and verifies the pinned source,
+/// engine, and both model shards itself, gives Strata an isolated Python 3.12 from the pinned uv
+/// runner, and runs Strata's own setup non-interactively to prepare its model pack and draft
+/// layer. Every step is resumable: finished files are verified and kept, and Strata's setup skips
+/// what it already prepared.
 async fn install_strata(
     app: &AppHandle,
     settings: &mut ResearchSettings,
-    root: &Path,
     request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     let size = StrataSize::parse(&request.strata_size)?;
-    if crate::services::gpu_snapshot().await.is_none() {
+    let gpu = crate::strata::probe_gpu().await;
+    if let Some(reason) =
+        crate::strata::unsupported_reason(gpu.as_ref(), crate::strata::cpu_has_avx2())
+    {
         return Err(SetupError::Dependency {
             name: "Qwen3.8-Flash-Next".into(),
-            details: "no NVIDIA GPU was detected. Strata needs an RTX 30, 40, or 50 series card with 12 GB of VRAM or more.".into(),
+            details: reason,
         });
     }
     let memory = crate::strata::system_memory_bytes();
-    if memory > 0 && memory < size.min_memory_gib * GIB {
+    if memory < size.min_memory_gib * GIB {
         return Err(SetupError::Dependency {
             name: format!("Qwen3.8-Flash-Next {}", size.name),
             details: format!(
-                "Strata keeps every expert of this size in system RAM and needs a {} GB PC, but this PC reports {:.1} GB. Choose a smaller size instead.",
+                "Kestrel tested this size on a {} GB PC, where Strata uses 54-57 GB of RAM, but this PC reports {:.1} GB.",
                 size.pc_memory_gib,
                 memory as f64 / GIB as f64
             ),
         });
     }
-    let strata = root.join("Strata");
+    let strata = strata_install_dir(settings);
+    ensure_kestrel_strata_folder(&strata)?;
     let data = strata_data_dir(&strata);
     let downloads = data.join("downloads");
     let prebuilt = data.join("prebuilt");
@@ -1525,6 +1617,29 @@ async fn install_strata(
     Ok(())
 }
 
+/// Setup installs Strata only into a folder it owns: missing, empty, or marked by an earlier
+/// Kestrel install. A Strata that its own setup installed is used as it is, never overwritten.
+fn ensure_kestrel_strata_folder(strata: &Path) -> Result<(), SetupError> {
+    if strata.join(STRATA_SETUP_MARKER).is_file() || folder_is_empty_or_missing(strata) {
+        return Ok(());
+    }
+    let (contents, remedy) = if strata.join("setup.py").is_file() {
+        (
+            "a Strata that its own setup installed",
+            ", or run that folder's START-HERE.bat to add this size; Kestrel lists its models once they are ready",
+        )
+    } else {
+        ("other files", "")
+    };
+    Err(SetupError::Dependency {
+        name: "Strata".into(),
+        details: format!(
+            "{} already holds {contents}, and Kestrel never overwrites files it did not install. Choose an empty Strata folder in Setup's locations{remedy}.",
+            strata.display()
+        ),
+    })
+}
+
 /// Replace Strata's source files from the verified archive while keeping what its setup created
 /// beside them (`.venv`, `engine`, run configurations, logs).
 fn install_strata_source(archive: &Path, strata: &Path, name: &str) -> Result<(), SetupError> {
@@ -1541,6 +1656,9 @@ fn install_strata_source(archive: &Path, strata: &Path, name: &str) -> Result<()
             details: "the verified archive did not contain Strata's setup.py and server".into(),
         });
     }
+    // Mark the folder as Kestrel's before the first file lands, so an interrupted copy resumes
+    // instead of looking like someone else's install. Only the finished copy records the commit.
+    fs::write(strata.join(STRATA_SETUP_MARKER), "unpacking\n")?;
     copy_tree(&unpacked, strata)?;
     fs::remove_dir_all(&staging)?;
     fs::write(
@@ -1692,22 +1810,22 @@ async fn run_strata_setup(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    // Setup joins its job before it runs, so pip and the draft-layer fetch cannot escape Pause.
     #[cfg(windows)]
-    command.creation_flags(0x08000000);
-    let mut child = command.spawn()?;
-    #[cfg(windows)]
-    let _job =
-        crate::strata::ProcessJob::contain(&child).map_err(|error| SetupError::Dependency {
+    let (mut child, _job) =
+        crate::strata::ProcessJob::spawn(&mut command).map_err(|error| SetupError::Dependency {
             name: "Strata setup".into(),
-            details: format!("Kestrel could not take ownership of Strata's setup process: {error}"),
+            details: format!(
+                "Kestrel could not start Strata's setup inside its own process job, so nothing was left running: {error}"
+            ),
         })?;
+    #[cfg(not(windows))]
+    let mut child = command.spawn()?;
     let mut stdout = child.stdout.take().expect("piped Strata stdout");
-    let mut stderr = child.stderr.take().expect("piped Strata stderr");
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        let _ = (&mut stderr).take(256 * 1024).read_to_end(&mut bytes).await;
-        String::from_utf8_lossy(&bytes).into_owned()
-    });
+    let stderr = child.stderr.take().expect("piped Strata stderr");
+    // Strata explains its own failures on stdout; stderr adds pip output and tracebacks, whose
+    // last lines are the useful ones.
+    let stderr_task = tokio::spawn(read_tail(stderr, 2 * 1024));
     let mut recent = std::collections::VecDeque::with_capacity(24);
     let mut pending = Vec::new();
     let mut buffer = [0u8; 8192];
@@ -1768,6 +1886,28 @@ async fn run_strata_setup(
         });
     }
     Ok(())
+}
+
+/// Read a child's output until it closes, keeping only the last `limit` bytes. Reading to the end
+/// keeps the pipe open for the whole run, so the child never writes into a closed pipe.
+async fn read_tail<R: tokio::io::AsyncRead + Unpin>(mut reader: R, limit: usize) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut tail = Vec::new();
+    let mut buffer = [0u8; 8192];
+    while let Ok(count) = reader.read(&mut buffer).await {
+        if count == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buffer[..count]);
+        // Trim in batches so a long run does not shift the buffer on every read.
+        if tail.len() > limit.saturating_mul(2) {
+            tail.drain(..tail.len() - limit);
+        }
+    }
+    if tail.len() > limit {
+        tail.drain(..tail.len() - limit);
+    }
+    String::from_utf8_lossy(&tail).into_owned()
 }
 
 async fn run_muscriptor_probe(
@@ -2713,7 +2853,7 @@ fn configured_model_destination(
 ) -> PathBuf {
     match asset.component {
         "assistant" => Path::new(&research.bonsai_root).join(&asset.relative),
-        "strata" => strata_data_dir(Path::new(&research.strata_root)).join(&asset.relative),
+        "strata" => strata_data_dir(&strata_install_dir(research)).join(&asset.relative),
         _ => Path::new(&research.comfy_root).join(&asset.relative),
     }
 }
@@ -3468,7 +3608,7 @@ mod tests {
             strata_root: root.path().join("Strata").to_string_lossy().into_owned(),
             ..ResearchSettings::default()
         };
-        let value = snapshot(&research, &ControlSettings::default(), None);
+        let value = snapshot(&research, &ControlSettings::default(), None, None);
         let strata = value
             .components
             .iter()
@@ -3486,28 +3626,27 @@ mod tests {
     }
 
     #[test]
-    fn strata_choices_follow_system_memory() {
+    fn strata_choices_need_the_tested_pc() {
         let root = tempfile::tempdir().unwrap();
         let strata = root.path().join("Strata");
-        let large = strata_choices(&strata, 63 * GIB);
+        // The tested 64 GB PC reports 63.1 GiB.
+        let tested = strata_choices(&strata, 63 * GIB, true);
         assert_eq!(
-            large
+            tested
                 .iter()
                 .map(|choice| choice.size.as_str())
                 .collect::<Vec<_>>(),
             ["IQ3_S", "IQ2_XS"]
         );
-        assert!(large[0].fits && large[0].recommended);
-        assert!(large[1].fits && !large[1].recommended);
-        let medium = strata_choices(&strata, 48 * GIB);
-        assert!(!medium[0].fits && !medium[0].recommended);
-        assert!(medium[1].fits && medium[1].recommended);
-        let small = strata_choices(&strata, 32 * GIB);
-        assert!(small
-            .iter()
-            .all(|choice| !choice.fits && !choice.recommended));
-        let unknown = strata_choices(&strata, 0);
-        assert!(unknown[0].recommended);
+        assert!(tested[0].fits && tested[0].recommended);
+        assert!(tested[1].fits && !tested[1].recommended);
+        assert!(tested.iter().all(|choice| choice.memory_bytes == 64 * GIB));
+        for (memory, hardware) in [(48 * GIB, true), (0, true), (63 * GIB, false)] {
+            assert!(strata_choices(&strata, memory, hardware)
+                .iter()
+                .all(|choice| !choice.fits && !choice.recommended));
+        }
+        let large = tested;
         assert_eq!(
             large[1].download_bytes,
             STRATA_SIZES[1].shard_one_bytes
@@ -3516,6 +3655,131 @@ mod tests {
                 + STRATA_ENGINE_BYTES
                 + STRATA_PREPARED_BYTES
         );
+    }
+
+    #[test]
+    fn strata_blocker_explains_the_tested_minimum() {
+        let tested = crate::strata::Gpu {
+            index: 0,
+            name: "NVIDIA GeForce RTX 5070".into(),
+            vram_mib: 12_227,
+            compute_capability: (12, 0),
+            driver: "610.74".into(),
+        };
+        let no_gpu = strata_blocker(None, 63 * GIB).unwrap();
+        assert!(no_gpu.contains("No NVIDIA"), "{no_gpu}");
+        if crate::strata::cpu_has_avx2() {
+            assert_eq!(strata_blocker(Some(&tested), 63 * GIB), None);
+            let small = strata_blocker(Some(&tested), 48 * GIB).unwrap();
+            assert!(
+                small.contains("48.0 GB") && small.contains("64 GB PC"),
+                "{small}"
+            );
+            let unknown = strata_blocker(Some(&tested), 0).unwrap();
+            assert!(unknown.contains("did not report"), "{unknown}");
+        }
+    }
+
+    #[test]
+    fn strata_installs_only_into_a_folder_kestrel_owns() {
+        let root = tempfile::tempdir().unwrap();
+        let strata = root.path().join("Strata");
+        assert!(ensure_kestrel_strata_folder(&strata).is_ok());
+        fs::create_dir_all(&strata).unwrap();
+        assert!(ensure_kestrel_strata_folder(&strata).is_ok());
+
+        fs::write(strata.join("setup.py"), b"their setup").unwrap();
+        let error = ensure_kestrel_strata_folder(&strata)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("its own setup") && error.contains("START-HERE"),
+            "{error}"
+        );
+        fs::remove_file(strata.join("setup.py")).unwrap();
+        fs::write(strata.join("notes.txt"), b"unrelated").unwrap();
+        let error = ensure_kestrel_strata_folder(&strata)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("other files"), "{error}");
+
+        fs::write(
+            strata.join(STRATA_SETUP_MARKER),
+            "unpacking
+",
+        )
+        .unwrap();
+        assert!(ensure_kestrel_strata_folder(&strata).is_ok());
+    }
+
+    #[test]
+    fn default_strata_folder_moves_with_the_install_root_until_it_holds_files() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        let locations = |research: &ResearchSettings, install_root: &Path| SetupLocations {
+            install_root: install_root.to_string_lossy().into_owned(),
+            bonsai_root: research.bonsai_root.clone(),
+            engine_path: old
+                .path()
+                .join("llama-server.exe")
+                .to_string_lossy()
+                .into_owned(),
+            wikipedia_zim_path: research.wikipedia_zim_path.clone(),
+            kiwix_server_path: research.kiwix_server_path.clone(),
+            comfy_root: research.comfy_root.clone(),
+            ffmpeg_path: String::new(),
+            ffprobe_path: String::new(),
+            strata_root: research.strata_root.clone(),
+        };
+        let start = || ResearchSettings {
+            install_root: old.path().to_string_lossy().into_owned(),
+            strata_root: old.path().join("Strata").to_string_lossy().into_owned(),
+            ..ResearchSettings::default()
+        };
+
+        let mut research = start();
+        let request = locations(&research, new.path());
+        apply_locations(&mut research, &mut ControlSettings::default(), request).unwrap();
+        assert_eq!(
+            PathBuf::from(&research.strata_root),
+            new.path().join("Strata")
+        );
+        assert_eq!(strata_install_dir(&research), new.path().join("Strata"));
+
+        // A partial download beside the old folder keeps Strata where its files are.
+        let mut research = start();
+        let shard = &STRATA_SIZES[0].shards()[0];
+        let partial = strata_data_dir(&old.path().join("Strata"))
+            .join(&shard.relative)
+            .with_extension("gguf.part");
+        fs::create_dir_all(partial.parent().unwrap()).unwrap();
+        fs::write(&partial, b"partial").unwrap();
+        let request = locations(&research, new.path());
+        apply_locations(&mut research, &mut ControlSettings::default(), request).unwrap();
+        assert_eq!(
+            PathBuf::from(&research.strata_root),
+            old.path().join("Strata")
+        );
+
+        // A folder the producer chose never follows the install root.
+        let chosen = new.path().join("Models").join("Strata");
+        let mut research = ResearchSettings {
+            strata_root: chosen.to_string_lossy().into_owned(),
+            ..start()
+        };
+        let request = locations(&research, new.path());
+        apply_locations(&mut research, &mut ControlSettings::default(), request).unwrap();
+        assert_eq!(PathBuf::from(&research.strata_root), chosen);
+    }
+
+    #[tokio::test]
+    async fn read_tail_drains_everything_and_keeps_the_end() {
+        let mut output = vec![b'x'; 300 * 1024];
+        output.extend_from_slice(b"Traceback: the real error");
+        let tail = read_tail(output.as_slice(), 64).await;
+        assert!(tail.ends_with("Traceback: the real error"));
+        assert_eq!(tail.len(), 64);
+        assert_eq!(read_tail(&b"short"[..], 64).await, "short");
     }
 
     #[test]
@@ -3702,7 +3966,7 @@ mod tests {
                 .into_owned(),
             ..ControlSettings::default()
         };
-        let value = snapshot(&research, &control, None);
+        let value = snapshot(&research, &control, None, None);
         assert!(
             value
                 .components
@@ -3753,7 +4017,7 @@ mod tests {
             "kestrel-whisper-old\nchatterbox-node=old\nchatterbox-model=old\n",
         )
         .unwrap();
-        let stale = snapshot(&research, &control, None);
+        let stale = snapshot(&research, &control, None, None);
         assert_eq!(
             stale
                 .components
@@ -3848,7 +4112,7 @@ mod tests {
             install_root: root.path().to_string_lossy().into_owned(),
             ..ResearchSettings::default()
         };
-        let value = snapshot(&research, &ControlSettings::default(), None);
+        let value = snapshot(&research, &ControlSettings::default(), None, None);
         assert_eq!(
             value
                 .components
@@ -3859,7 +4123,7 @@ mod tests {
             "ready"
         );
         fs::write(&marker, "stale").unwrap();
-        let stale = snapshot(&research, &ControlSettings::default(), None);
+        let stale = snapshot(&research, &ControlSettings::default(), None, None);
         assert_eq!(
             stale
                 .components

@@ -13,12 +13,13 @@ size: string,
  */
 downloadBytes: number,
 /**
- * Installed RAM this size is made for (a 64 GB or 48 GB PC), because Strata keeps every
- * expert in RAM. A PC that reports slightly less, as Windows often does, still fits.
+ * Installed RAM Kestrel supports this size on (the tested 64 GB PC), because Strata keeps
+ * every expert in RAM. A PC that reports slightly less, as Windows often does, still fits.
  */
 memoryBytes: number,
 /**
- * False when this PC reports clearly less RAM than the size needs; Setup refuses it then.
+ * False when this PC is less capable than the tested one (graphics card, processor, or
+ * RAM for this size); Setup refuses the size then.
  */
 fits: boolean,
 /**

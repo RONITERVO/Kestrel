@@ -457,19 +457,17 @@ impl RuntimeManager {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        // The server joins its job before it runs, so the engine it starts can never escape it.
         #[cfg(windows)]
-        command.creation_flags(0x08000000);
+        let (mut child, job) = crate::strata::ProcessJob::spawn(&mut command)
+            .map(|(child, job)| (child, Some(job)))
+            .map_err(|error| {
+                RuntimeError::Startup(format!(
+                    "Kestrel could not start Strata's server inside its own process job, so nothing was left running: {error}"
+                ))
+            })?;
+        #[cfg(not(windows))]
         let mut child = command.spawn()?;
-        #[cfg(windows)]
-        let job = match crate::strata::ProcessJob::contain(&child) {
-            Ok(job) => Some(job),
-            Err(error) => {
-                let _ = child.kill().await;
-                return Err(RuntimeError::Startup(format!(
-                    "Kestrel could not take ownership of Strata's process tree, so it was stopped: {error}"
-                )));
-            }
-        };
         let pid = child.id();
         if let Some(stdout) = child.stdout.take() {
             spawn_log_reader(stdout, "stdout", self.logs.clone(), app.cloned());

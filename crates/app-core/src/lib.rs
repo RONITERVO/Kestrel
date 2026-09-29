@@ -102,6 +102,18 @@ impl ModelInfo {
     }
 }
 
+/// Characters Kestrel counts per token when it sizes a prompt.
+pub const PROMPT_CHARS_PER_TOKEN: usize = 4;
+
+/// Prompt characters that fit in `context_window` tokens once `reserved_tokens` are kept for the
+/// reply and the chat template; `None` when the reservation alone fills the window. Every local
+/// model request sizes its prompt with this, from the model's serving context.
+pub fn prompt_char_budget(context_window: u32, reserved_tokens: u32) -> Option<usize> {
+    context_window
+        .checked_sub(reserved_tokens)
+        .map(|tokens| tokens as usize * PROMPT_CHARS_PER_TOKEN)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -145,6 +157,11 @@ pub struct SetupSnapshot {
     /// Qwen3.8-Flash-Next sizes Setup can install through Strata, with what each still needs.
     #[serde(default)]
     pub strata_choices: Vec<SetupStrataChoice>,
+    /// Why Setup will not offer or install Strata on this PC, shown as written; `None` when the
+    /// PC is at least as capable as the one Kestrel tested Strata on.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub strata_blocker: Option<String>,
     pub components: Vec<SetupComponent>,
     pub model_assets: Vec<SetupModelAsset>,
 }
@@ -158,10 +175,11 @@ pub struct SetupStrataChoice {
     pub size: String,
     /// Bytes still to download for this size, including Strata itself when it is missing.
     pub download_bytes: u64,
-    /// Installed RAM this size is made for (a 64 GB or 48 GB PC), because Strata keeps every
-    /// expert in RAM. A PC that reports slightly less, as Windows often does, still fits.
+    /// Installed RAM Kestrel supports this size on (the tested 64 GB PC), because Strata keeps
+    /// every expert in RAM. A PC that reports slightly less, as Windows often does, still fits.
     pub memory_bytes: u64,
-    /// False when this PC reports clearly less RAM than the size needs; Setup refuses it then.
+    /// False when this PC is less capable than the tested one (graphics card, processor, or
+    /// RAM for this size); Setup refuses the size then.
     pub fits: bool,
     /// The best size that fits this PC.
     pub recommended: bool,
@@ -1499,6 +1517,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_budget_keeps_room_for_the_reply() {
+        assert_eq!(prompt_char_budget(65_536, 32_768 + 2_048), Some(30_720 * 4));
+        assert_eq!(prompt_char_budget(4_096, 4_096), Some(0));
+        assert_eq!(prompt_char_budget(4_096, 8_192), None);
+    }
 
     #[test]
     fn computer_task_access_rejects_unknown_values() {

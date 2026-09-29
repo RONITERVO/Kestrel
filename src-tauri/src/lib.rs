@@ -1958,7 +1958,13 @@ async fn get_setup_snapshot(state: State<'_, AppState>) -> Result<setup::SetupSn
         .load()
         .map_err(|error| error.to_string())?;
     let gpu = services::gpu_snapshot().await;
-    Ok(setup::snapshot(&research, &control, gpu.as_ref()))
+    let strata_gpu = strata::detected_gpu().await;
+    Ok(setup::snapshot(
+        &research,
+        &control,
+        gpu.as_ref(),
+        strata_gpu.as_ref(),
+    ))
 }
 
 #[tauri::command]
@@ -3294,7 +3300,13 @@ async fn snapshot(state: &AppState) -> Result<AppSnapshot, String> {
         &control.settings,
         &control.models,
     );
-    let setup = setup::snapshot(&settings, &control.settings, control.gpu.as_ref());
+    let strata_gpu = strata::detected_gpu().await;
+    let setup = setup::snapshot(
+        &settings,
+        &control.settings,
+        control.gpu.as_ref(),
+        strata_gpu.as_ref(),
+    );
     Ok(AppSnapshot {
         status,
         reports,

@@ -97,6 +97,7 @@ impl MovieStudioChatJob {
 pub(super) fn build_batch_messages(
     prepared: &PreparedStudioTurn,
     batch: &MovieSceneDraftBatch,
+    limit: &PromptLimit,
 ) -> Result<Vec<Value>, String> {
     if prepared.scene_revision != batch.expected_scene_revision
         || prepared.story_revision_id != batch.story_revision_id
@@ -130,9 +131,9 @@ pub(super) fn build_batch_messages(
     if serde_json::to_vec(&messages)
         .map_err(|error| error.to_string())?
         .len()
-        > MAX_CONTEXT_BYTES
+        > limit.bytes
     {
-        return Err("The accepted story and selected context are too large for one scene request. Select fewer context cards before starting a new batch.".into());
+        return Err(format!("The accepted story and selected context exceed {} for one scene request. Select fewer context cards before starting a new batch.", limit.boundary));
     }
     Ok(messages)
 }

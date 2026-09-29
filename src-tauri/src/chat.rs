@@ -55,11 +55,11 @@ impl ChatStreamJob {
                 .max(1)
                 .min(settings.max_output_tokens.max(1))
         };
-        let prompt_chars = max_output_tokens
-            .checked_add(1_024)
-            .and_then(|reserved| settings.context_window.checked_sub(reserved))
-            .unwrap_or(1_024)
-            .saturating_mul(4) as usize;
+        let prompt_chars = crate::models::prompt_char_budget(
+            settings.context_window,
+            max_output_tokens.saturating_add(1_024),
+        )
+        .unwrap_or(4_096);
         let system_prompt = prompt_catalog::text(PromptId::ChatSystem);
         let history_budget = prompt_chars.max(4_096).saturating_sub(system_prompt.len());
         let (history, omitted, attachment_budget) =

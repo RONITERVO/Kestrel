@@ -12,4 +12,9 @@ systemMemoryBytes: number,
 /**
  * Qwen3.8-Flash-Next sizes Setup can install through Strata, with what each still needs.
  */
-strataChoices: Array<SetupStrataChoice>, components: Array<SetupComponent>, modelAssets: Array<SetupModelAsset>, };
+strataChoices: Array<SetupStrataChoice>,
+/**
+ * Why Setup will not offer or install Strata on this PC, shown as written; `None` when the
+ * PC is at least as capable as the one Kestrel tested Strata on.
+ */
+strataBlocker?: string | null, components: Array<SetupComponent>, modelAssets: Array<SetupModelAsset>, };

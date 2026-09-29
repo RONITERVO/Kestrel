@@ -39,30 +39,30 @@ pub fn all_proven_profiles() -> Vec<ProvenHardwareProfile> {
             id: "qwen-flash-next-strata-iq3s".into(),
             model_pattern: "flash-next".into(),
             quantization_pattern: Some("iq3_s".into()),
-            display_name: "Qwen3.8-Flash-Next 125B (IQ3_S) via Strata, 12GB+ GPU and 64GB RAM"
+            display_name: "Qwen3.8-Flash-Next 125B (IQ3_S) via Strata, 12GB+ RTX 50 GPU and 64GB RAM"
                 .into(),
-            min_vram_mib: 10_000,
+            min_vram_mib: 12_000,
             max_vram_mib: None,
             recommended_context_window: 65_536,
             recommended_max_output_tokens: 32_768,
             recommended_thinking_level: ThinkingLevel::High,
             recommended_threads: 16,
             description: "Strata keeps all ~50 GB of experts in system RAM and caches the busiest on the GPU, so this size needs a 64 GB PC with little else running, whatever the VRAM. Setup installs it with a fixed 64K context.".into(),
-            proven_speed_notes: "Strata's published RTX 5070 12GB + 64GB figures: ~52 tok/s short replies, ~48 tok/s at 32K, ~1,070 tok/s prompt reading".into(),
+            proven_speed_notes: "Tested in Kestrel on an RTX 5070 12GB with 64GB RAM: 54-57 GB of RAM, nearly all the VRAM, about 40 tok/s".into(),
         },
         ProvenHardwareProfile {
             id: "qwen-flash-next-strata-iq2xs".into(),
             model_pattern: "flash-next".into(),
             quantization_pattern: Some("iq2_xs".into()),
-            display_name: "Qwen3.8-Flash-Next 125B (IQ2_XS) via Strata, 12GB+ GPU and 48GB RAM"
+            display_name: "Qwen3.8-Flash-Next 125B (IQ2_XS) via Strata, 12GB+ RTX 50 GPU and 64GB RAM"
                 .into(),
-            min_vram_mib: 10_000,
+            min_vram_mib: 12_000,
             max_vram_mib: None,
             recommended_context_window: 65_536,
             recommended_max_output_tokens: 32_768,
             recommended_thinking_level: ThinkingLevel::High,
             recommended_threads: 16,
-            description: "About 36 GB of experts stay in system RAM, so 48 GB RAM is enough. Strata's recommended size; Setup installs it with a fixed 64K context.".into(),
+            description: "About 36 GB of experts stay in system RAM. Strata's recommended size; Kestrel supports it on the same tested 64 GB PC as IQ3_S and installs it with a fixed 64K context.".into(),
             proven_speed_notes: "Strata's published RTX 5070 12GB + 64GB figures: ~74 tok/s short replies, ~1,240 tok/s prompt reading".into(),
         },
 
