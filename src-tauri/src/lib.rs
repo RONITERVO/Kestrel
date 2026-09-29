@@ -15,6 +15,7 @@ mod local_speech;
 mod model;
 mod model_download;
 mod models;
+mod narration;
 mod profile;
 mod prompt_catalog;
 mod runtime;
@@ -175,6 +176,14 @@ fn save_vad_settings(
     state: State<'_, AppState>,
 ) -> Result<kestrel_app_core::SpeechPreferences, String> {
     state.speech_preferences.save_vad(settings)
+}
+
+#[tauri::command]
+fn save_narration_speech_preferences(
+    settings: kestrel_app_core::NarrationPreferences,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::SpeechPreferences, String> {
+    state.speech_preferences.save_narration(settings)
 }
 
 #[tauri::command]
@@ -416,21 +425,24 @@ async fn synthesize_local_speech(
         .voice_library
         .resolve(&request.voice_profile_id)
         .map_err(|error| error.to_string())?;
-    if let Some(clip) = state
-        .speech
-        .cached_clip(&settings.comfy_root, &request, &voice)
-        .map_err(|error| error.to_string())?
-    {
+    let check_model = narration_check_model(&state, &request, &settings.comfy_root);
+    // A cached passage plays at once, unless the mistake check is on and has not heard it yet.
+    let ready = || -> Result<Option<SpeechClip>, String> {
+        let clip = state
+            .speech
+            .cached_clip(&settings.comfy_root, &request, &voice)
+            .map_err(|error| error.to_string())?;
+        Ok(clip.filter(|_| {
+            check_model.is_none() || !state.speech.needs_narration_check(&request, &voice)
+        }))
+    };
+    if let Some(clip) = ready()? {
         return Ok(clip);
     }
     let cancel = register_speech_job(&state, &request.job_id)?;
     let result: Result<SpeechClip, String> = async {
         let _turn = wait_for_speech_turn(&state, &cancel).await?;
-        if let Some(clip) = state
-            .speech
-            .cached_clip(&settings.comfy_root, &request, &voice)
-            .map_err(|error| error.to_string())?
-        {
+        if let Some(clip) = ready()? {
             return Ok(clip);
         }
         let _guard = claim_workspace(&state)?;
@@ -445,15 +457,92 @@ async fn synthesize_local_speech(
             .ensure_comfy(&settings.comfy_root, &cancel)
             .await
             .map_err(|error| error.to_string())?;
-        state
-            .speech
-            .synthesize(&settings.comfy_root, &request, &voice, &cancel, Some(&app))
-            .await
-            .map_err(|error| error.to_string())
+        match &check_model {
+            Some(alignment_model) => state
+                .speech
+                .synthesize_checked(
+                    &settings.comfy_root,
+                    &request,
+                    alignment_model,
+                    &voice,
+                    &cancel,
+                    Some(&app),
+                )
+                .await
+                .map_err(|error| error.to_string()),
+            None => state
+                .speech
+                .synthesize(&settings.comfy_root, &request, &voice, &cancel, Some(&app))
+                .await
+                .map_err(|error| error.to_string()),
+        }
     }
     .await;
     finish_speech_job(&state, &request.job_id);
     result
+}
+
+/// The Whisper model that checks this passage for voice mistakes, when the producer turned the
+/// check on or an export chose it. Without an installed Whisper model there is no check.
+fn narration_check_model(
+    state: &AppState,
+    request: &SpeechSynthesisRequest,
+    comfy_root: &str,
+) -> Option<String> {
+    // A request's own choice (an export's checkbox) wins over the saved preference.
+    request
+        .check_mistakes
+        .unwrap_or_else(|| state.speech_preferences.check_narration())
+        .then(|| local_speech::discover_whisper_models(std::path::Path::new(comfy_root)))
+        .and_then(|models| models.into_iter().next())
+        .map(|model| model.id)
+}
+
+/// Longest narration an export may join: a long book at a few hundred words a passage.
+const MAX_EXPORT_PASSAGES: usize = 4_000;
+
+/// Join a reply's generated passages into one audio file saved where the producer chooses.
+/// Returns the saved path, or nothing when the producer closes the save dialog.
+#[tauri::command]
+async fn export_narration(
+    request: kestrel_app_core::NarrationExportRequest,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    if request.passages.is_empty() || request.passages.len() > MAX_EXPORT_PASSAGES {
+        return Err(format!(
+            "A narration export needs 1 to {MAX_EXPORT_PASSAGES} passages."
+        ));
+    }
+    let clips = request
+        .passages
+        .iter()
+        .map(|passage| {
+            state
+                .speech
+                .export_clip(&passage.relative_path, &passage.text)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let Some(file) = rfd::AsyncFileDialog::new()
+        .set_title("Save narration")
+        .add_filter("Audiobook audio", &["m4a"])
+        .set_file_name(narration::export_file_name(&request.title))
+        .save_file()
+        .await
+    else {
+        return Ok(None);
+    };
+    let mut destination = file.path().to_path_buf();
+    if !destination
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("m4a"))
+    {
+        destination.set_extension("m4a");
+    }
+    let cancel = register_speech_job(&state, &request.job_id)?;
+    let result = narration::write_export(&clips, &destination, &cancel).await;
+    finish_speech_job(&state, &request.job_id);
+    result.map(|()| Some(destination.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
@@ -469,10 +558,13 @@ fn get_cached_local_speech_clip(
         .voice_library
         .resolve(&request.voice_profile_id)
         .map_err(|error| error.to_string())?;
-    state
+    let check = narration_check_model(&state, &request, &settings.comfy_root).is_some();
+    let clip = state
         .speech
         .cached_clip(&settings.comfy_root, &request, &voice)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    // With the mistake check on, an unchecked passage is generated through the check first.
+    Ok(clip.filter(|_| !check || !state.speech.needs_narration_check(&request, &voice)))
 }
 
 #[tauri::command]
@@ -2774,6 +2866,31 @@ fn delete_chat_session(id: String, state: State<'_, AppState>) -> Result<(), Str
     state.workspace.delete_chat(&id)
 }
 
+/// Save the producer's edited copy of a model reply for listening and narration export. The
+/// model keeps reading its original reply.
+#[tauri::command]
+fn save_chat_reply_edit(
+    session_id: String,
+    message_id: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<ChatSession, String> {
+    state
+        .workspace
+        .set_reply_edit(&session_id, &message_id, Some(content))
+}
+
+#[tauri::command]
+fn discard_chat_reply_edit(
+    session_id: String,
+    message_id: String,
+    state: State<'_, AppState>,
+) -> Result<ChatSession, String> {
+    state
+        .workspace
+        .set_reply_edit(&session_id, &message_id, None)
+}
+
 #[tauri::command]
 async fn pick_context_files(state: State<'_, AppState>) -> Result<ContextAttachmentImport, String> {
     let paths = rfd::AsyncFileDialog::new()
@@ -3671,6 +3788,8 @@ pub fn run() {
             get_speech_preferences,
             save_vad_settings,
             save_research_speech_preferences,
+            save_narration_speech_preferences,
+            export_narration,
             bootstrap,
             get_report,
             get_local_speech_snapshot,
@@ -3785,6 +3904,8 @@ pub fn run() {
             list_chat_sessions,
             get_chat_session,
             delete_chat_session,
+            save_chat_reply_edit,
+            discard_chat_reply_edit,
             pick_context_files,
             open_context_attachment,
             pick_local_model_folder,

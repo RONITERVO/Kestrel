@@ -115,6 +115,27 @@ impl SpeechPreferencesStore {
         Ok(preferences)
     }
 
+    pub fn save_narration(
+        &self,
+        narration: kestrel_app_core::NarrationPreferences,
+    ) -> Result<SpeechPreferences, String> {
+        let _guard = self.gate.lock().map_err(|e| e.to_string())?;
+        let mut preferences = self.load()?.unwrap_or_default();
+        preferences.narration = narration;
+        self.write(&preferences)?;
+        Ok(preferences)
+    }
+
+    /// Whether replies are checked for voice mistakes before they play. Unreadable preferences
+    /// leave the check off, the faster default.
+    pub fn check_narration(&self) -> bool {
+        self.gate
+            .lock()
+            .ok()
+            .and_then(|_guard| self.load().ok().flatten())
+            .is_some_and(|preferences| preferences.narration.check_mistakes)
+    }
+
     pub fn save_research(
         &self,
         research: ResearchSpeechPreferences,
@@ -180,5 +201,31 @@ mod tests {
         fs::write(store.path.with_extension("json.backup"), b"broken").unwrap();
         assert!(store.get(None).unwrap_err().contains("recovery copy"));
         assert_eq!(fs::read(&store.path).unwrap(), b"broken");
+    }
+
+    #[test]
+    fn the_narration_check_is_off_until_chosen_and_keeps_other_preferences() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SpeechPreferencesStore::new(root.path());
+        assert!(!store.check_narration());
+        // A file saved before the narration preference existed still loads, with the check off.
+        fs::write(
+            &store.path,
+            br#"{"vad":{"enabled":false},"research":{"rate":1.2}}"#,
+        )
+        .unwrap();
+        let loaded = store.get(None).unwrap();
+        assert!(!loaded.narration.check_mistakes);
+        assert!(!store.check_narration());
+
+        let saved = store
+            .save_narration(kestrel_app_core::NarrationPreferences {
+                check_mistakes: true,
+            })
+            .unwrap();
+        assert!(saved.narration.check_mistakes);
+        assert!(!saved.vad.enabled);
+        assert_eq!(saved.research.rate, 1.2);
+        assert!(store.check_narration());
     }
 }

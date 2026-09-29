@@ -116,6 +116,19 @@ describe("Voice Library", () => {
     expect(onSnapshot).toHaveBeenCalledWith(expect.objectContaining({ defaultProfileId: "voice-narrator" }));
   });
 
+  it("offers the opt-in mistake check only when Whisper can listen", () => {
+    const onNarrationChange = vi.fn();
+    const { rerender } = render(<VoiceLibraryDialog snapshot={snapshot} onSnapshot={vi.fn()} onClose={() => undefined} narration={{ checkMistakes: false }} onNarrationChange={onNarrationChange} mistakeCheckAvailable />);
+    const check = screen.getByRole("checkbox", { name: /Check each passage for voice mistakes/ });
+    expect(check).not.toBeChecked();
+    fireEvent.click(check);
+    expect(onNarrationChange).toHaveBeenCalledWith({ checkMistakes: true });
+
+    rerender(<VoiceLibraryDialog snapshot={snapshot} onSnapshot={vi.fn()} onClose={() => undefined} narration={{ checkMistakes: true }} onNarrationChange={onNarrationChange} mistakeCheckAvailable={false} />);
+    expect(screen.getByRole("checkbox", { name: /Check each passage for voice mistakes/ })).toBeDisabled();
+    expect(screen.getByText(/Needs Whisper dictation/)).toBeInTheDocument();
+  });
+
   it("requires confirmation before deleting only a custom voice", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const onSnapshot = vi.fn();

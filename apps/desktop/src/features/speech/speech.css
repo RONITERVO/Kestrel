@@ -1,7 +1,7 @@
 /* Speech controls shared by every chapter: listen, dictate, voice settings and the Voice Library. */
 
 .inline-speech { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font-family: var(--font-ui); }
-.inline-speech-button, .inline-speech-stop, .inline-voice-button, .speech-dictation > button {
+.inline-speech-button, .inline-speech-stop, .inline-voice-button, .inline-speech-export > button, .speech-dictation > button {
   min-height: 28px;
   padding: 0 9px;
   display: inline-flex;
@@ -15,14 +15,17 @@
   font-size: var(--text-sm);
   white-space: nowrap;
 }
-.inline-speech-button svg, .inline-speech-stop svg, .inline-voice-button svg, .speech-dictation svg { width: 14px; height: 14px; }
-.inline-speech-button:hover:not(:disabled), .inline-voice-button:hover:not(:disabled), .speech-dictation > button:hover:not(:disabled) { border-color: var(--act-ink); color: var(--act-ink); background: var(--act-wash); }
+.inline-speech-button svg, .inline-speech-stop svg, .inline-voice-button svg, .inline-speech-export > button svg, .speech-dictation svg { width: 14px; height: 14px; }
+.inline-speech-button:hover:not(:disabled), .inline-voice-button:hover:not(:disabled), .inline-speech-export > button:hover:not(:disabled), .speech-dictation > button:hover:not(:disabled) { border-color: var(--act-ink); color: var(--act-ink); background: var(--act-wash); }
 .inline-speech.playing .inline-speech-button { border-color: var(--wait); color: var(--wait-ink); background: var(--wait-wash); }
 .inline-speech-stop { width: 28px; padding: 0; }
 .inline-voice-button span { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
 .inline-voice-select { min-height: 28px; max-width: 150px; padding: 1px 20px 1px 7px; font-size: var(--text-sm); }
 .speech-inline-seek { min-width: 120px; flex: 1 1 120px; }
 .speech-inline-error { width: 100%; color: var(--stop-ink); }
+.inline-speech-export { width: 100%; padding: 6px 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper-raised); }
+.inline-speech-export label { display: flex; align-items: center; gap: 6px; }
+.inline-speech-export-status { flex: 1 1 200px; color: var(--ink-2); overflow-wrap: anywhere; }
 
 .speech-live-caption { display: flex; flex-wrap: wrap; gap: 2px 4px; font-family: var(--font-read); }
 .speech-live-caption button { padding: 0 2px; border: 0; border-radius: 3px; color: var(--ink-2); background: transparent; font: inherit; }
@@ -75,6 +78,10 @@
 .voice-library-dialog > header > button { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper-raised); }
 .voice-library-body { min-height: 0; flex: 1 1 auto; padding: 12px 18px 12px; }
 .voice-library-body .flow-columns > * + * { margin-top: 12px; }
+.voice-narration-setting { margin-bottom: 10px; padding: 8px 12px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); break-inside: avoid-column; }
+.voice-narration-setting label { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: start; }
+.voice-narration-setting span { display: grid; gap: 2px; }
+.voice-narration-setting small { color: var(--ink-2); }
 .voice-profile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
 .voice-profile-card { padding: 10px 12px; display: grid; gap: 7px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); box-shadow: var(--lift); break-inside: avoid-column; }
 .voice-profile-card.selected { border-color: var(--act-ink); box-shadow: 0 0 0 2px var(--act-wash), var(--lift); }

@@ -38,6 +38,31 @@ pub struct SpeechSynthesisRequest {
     pub model_id: String,
     #[serde(default = "default_voice_profile_id")]
     pub voice_profile_id: String,
+    /// Whether to check this passage for voice mistakes before it is returned. Unset follows the
+    /// saved narration preference; a narration export sets it from its own checkbox.
+    #[serde(default)]
+    #[ts(optional)]
+    pub check_mistakes: Option<bool>,
+}
+
+/// One passage of a narration export: the words it speaks and its generated clip.
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrationExportPassage {
+    pub text: String,
+    pub relative_path: String,
+}
+
+/// Joins generated passages, in order, into one audio file saved where the producer chooses.
+/// Anything the voice said after a passage's last word is left out.
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrationExportRequest {
+    pub job_id: String,
+    pub title: String,
+    pub passages: Vec<NarrationExportPassage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

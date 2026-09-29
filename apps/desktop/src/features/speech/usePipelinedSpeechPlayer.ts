@@ -28,7 +28,7 @@ export function clearPlayback(stop: () => void) {
   if (activePlaybackStop === stop) activePlaybackStop = null;
 }
 
-function speechJobId(prefix = "speech"): string {
+export function speechJobId(prefix = "speech"): string {
   const random = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;

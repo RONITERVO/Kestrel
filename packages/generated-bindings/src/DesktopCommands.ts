@@ -48,6 +48,8 @@ import type { MusicMidiSaveResult } from "./MusicMidiSaveResult.js";
 import type { MusicProject } from "./MusicProject.js";
 import type { MusicProjectEdit } from "./MusicProjectEdit.js";
 import type { MusicSummary } from "./MusicSummary.js";
+import type { NarrationExportRequest } from "./NarrationExportRequest.js";
+import type { NarrationPreferences } from "./NarrationPreferences.js";
 import type { ProfileTransfer } from "./ProfileTransfer.js";
 import type { PromptDraftRequest } from "./PromptDraftRequest.js";
 import type { ProvenHardwareProfile } from "./ProvenHardwareProfile.js";
@@ -108,8 +110,10 @@ export type DesktopCommands = {
   create_voice_profile: { args: { request: CreateVoiceProfileRequest }; result: VoiceLibrarySnapshot };
   delete_chat_session: { args: { id: string }; result: void };
   delete_voice_profile: { args: { profileId: string }; result: VoiceLibrarySnapshot };
+  discard_chat_reply_edit: { args: { sessionId: string; messageId: string }; result: ChatSession };
   draft_lyrics_from_audio_range: { args: { request: DraftLyricsFromAudioRangeRequest }; result: DraftLyricsFromAudioRangeResult };
   export_music_midi: { args: { request: MusicMidiRequest }; result: string | null };
+  export_narration: { args: { request: NarrationExportRequest }; result: string | null };
   export_prompt_pack_text: { args: { text: string }; result: ProfileTransfer };
   export_setup_profile: { args: Record<string, never>; result: ProfileTransfer };
   export_setup_profile_text: { args: { text: string }; result: ProfileTransfer };
@@ -181,6 +185,7 @@ export type DesktopCommands = {
   run_codex_repair: { args: { request: DeveloperRepairRequest }; result: DeveloperRepairReport };
   run_native_diagnostics: { args: Record<string, never>; result: string };
   run_research: { args: { request: RunResearchRequest }; result: ResearchReport };
+  save_chat_reply_edit: { args: { sessionId: string; messageId: string; content: string }; result: ChatSession };
   save_control_settings: { args: { settings: ControlSettings }; result: ControlSnapshot };
   save_image_project: { args: { project: ImageProjectEdit }; result: ImageProject };
   save_movie_edits: { args: { id: string; edit: MovieEdit }; result: MovieProject };
@@ -189,6 +194,7 @@ export type DesktopCommands = {
   save_music_lyrics_document: { args: { request: SaveMusicLyricsDocumentRequest }; result: MusicLyricsSaveResult };
   save_music_midi_document: { args: { request: SaveMusicMidiDocumentRequest }; result: MusicMidiSaveResult };
   save_music_project: { args: { project: MusicProjectEdit }; result: MusicProject };
+  save_narration_speech_preferences: { args: { settings: NarrationPreferences }; result: SpeechPreferences };
   save_prompt_pack_text: { args: { text: string }; result: string };
   save_research_settings: { args: { settings: ResearchSettings }; result: ResearchSettings };
   save_research_speech_preferences: { args: { settings: ResearchSpeechPreferences }; result: SpeechPreferences };

@@ -16,8 +16,10 @@ import {
   MessageSquarePlus,
   MonitorCog,
   Paperclip,
+  PencilLine,
   Play,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
   ShieldCheck,
@@ -43,6 +45,7 @@ import { SpeechDictationButton, SpeechPlaybackButton } from "../speech/LocalSpee
 import {
   cancelChatStream,
   deleteChatSession,
+  discardChatReplyEdit,
   getChatSession,
   getComputerTask,
   getControlSnapshot,
@@ -56,6 +59,7 @@ import {
   pickContextFiles,
   pickLocalModelFolder,
   resumeComputerTask,
+  saveChatReplyEdit,
   saveControlSettings,
   scanLocalModels,
   startChatStream,
@@ -1333,8 +1337,10 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
                     key={message.id}
                     message={message}
                     sessionId={session.id}
+                    sessionTitle={session.title}
                     model={selected?.name}
                     onError={onError}
+                    onSessionChange={setSession}
                   />
                 ))
               ) : (
@@ -1757,20 +1763,65 @@ function ComputerTasks({
 function Message({
   message,
   sessionId,
+  sessionTitle,
   model,
   onError,
+  onSessionChange,
 }: {
   message: ChatMessage;
   sessionId: string;
+  sessionTitle: string;
   model?: string;
   onError: (message: string) => void;
+  onSessionChange: (session: ChatSession) => void;
 }) {
   const [speechProgress, setSpeechProgress] = useState<SpeechProgressState | null>(null);
   const [view, setView] = useState<ReplyView>("answer");
+  // The text being edited, while the producer edits this reply.
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const cardRef = useRef<HTMLElement>(null);
   const pages = useRef<FlowPagesController | null>(null);
   const speaking = Boolean(speechProgress?.active);
+  const reply = message.role === "assistant";
+  const edited = message.edited?.content;
   const reasoning = view === "reasoning" && message.reasoning;
+  const showingEdit = view === "edited" && Boolean(edited);
+  // Listening and export follow the version on screen; the reasoning view reads the answer.
+  const shown = showingEdit ? edited! : message.content;
+
+  // A reverted edit leaves nothing to show in its view.
+  useEffect(() => {
+    if (view === "edited" && !edited) setView("answer");
+  }, [edited, view]);
+
+  const saveEdit = async () => {
+    if (draft === null) return;
+    setSaving(true);
+    try {
+      const next = await saveChatReplyEdit(sessionId, message.id, draft);
+      onSessionChange(next);
+      setDraft(null);
+      setView(next.messages.find((candidate) => candidate.id === message.id)?.edited ? "edited" : "answer");
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const revertEdit = async () => {
+    setSaving(true);
+    try {
+      onSessionChange(await discardChatReplyEdit(sessionId, message.id));
+      setDraft(null);
+      setView("answer");
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // Reading aloud turns this message to the page that holds the spoken word.
   useEffect(() => {
@@ -1794,10 +1845,21 @@ function Message({
               : "interrupted · partial saved"}
           </i>
         )}
-        {message.reasoning && <ReplyViewToggle view={view} onView={setView} />}
+        {(message.reasoning || edited) && (
+          <ReplyViewToggle view={view} onView={setView} reasoning={Boolean(message.reasoning)} edited={Boolean(edited)} />
+        )}
+        {reply && draft === null && (
+          <button
+            title="Edit this reply for listening and export"
+            aria-label="Edit reply"
+            onClick={() => setDraft(edited ?? message.content)}
+          >
+            <PencilLine />
+          </button>
+        )}
         <button
           title="Copy message"
-          onClick={() => void navigator.clipboard.writeText(message.content)}
+          onClick={() => void navigator.clipboard.writeText(shown)}
         >
           <Clipboard />
         </button>
@@ -1805,19 +1867,46 @@ function Message({
       {(message.attachments?.length ?? 0) > 0 && (
         <AttachmentShelf attachments={message.attachments!} onError={onError} />
       )}
-      <CardPages label={message.role === "user" ? "Your message" : "Reply"} resetKey={view} controller={pages}>
-        {reasoning
-          ? <TextParagraphs className="saved-reasoning" text={reasoning} />
-          : <MarkdownContent value={message.content} speechProgress={speechProgress} />}
-      </CardPages>
-      {message.content.trim() && (message.role !== "user" || Boolean(message.recording)) && (
+      {draft !== null ? (
+        <div className="reply-edit">
+          <small>Your edited copy is for listening and export. The model keeps reading its original answer.</small>
+          <textarea
+            aria-label="Edited reply"
+            value={draft}
+            disabled={saving}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+          />
+          <div className="reply-edit-actions">
+            <button className="primary-button" disabled={saving || !draft.trim()} onClick={() => void saveEdit()}>
+              <Check /> Save edit
+            </button>
+            <button className="quiet-button" disabled={saving} onClick={() => setDraft(null)}>
+              <X /> Cancel
+            </button>
+            {edited && (
+              <button className="quiet-button" disabled={saving} onClick={() => void revertEdit()}>
+                <RotateCcw /> Revert to original
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <CardPages label={message.role === "user" ? "Your message" : "Reply"} resetKey={view} controller={pages}>
+          {reasoning
+            ? <TextParagraphs className="saved-reasoning" text={reasoning} />
+            : <MarkdownContent value={shown} speechProgress={speechProgress} />}
+        </CardPages>
+      )}
+      {draft === null && shown.trim() && (message.role !== "user" || Boolean(message.recording)) && (
         <SpeechPlaybackButton
+          key={showingEdit ? "edited" : "original"}
           sourceKind="chat"
           sourceId={sessionId}
-          passageId={message.id}
-          text={message.content}
-          recording={message.recording}
+          passageId={showingEdit ? `${message.id}-edited` : message.id}
+          text={shown}
+          recording={showingEdit ? undefined : message.recording}
           label="Listen"
+          exportTitle={reply ? (showingEdit ? `${sessionTitle} (edited)` : sessionTitle) : undefined}
           onSpeechProgress={setSpeechProgress}
         />
       )}

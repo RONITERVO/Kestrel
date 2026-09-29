@@ -135,6 +135,11 @@
 .thinking-choice { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: var(--text-sm); }
 .thinking-choice select { min-height: 28px; padding: 1px 22px 1px 7px; font-size: var(--text-sm); }
 .composer-row { display: grid; grid-template-columns: 36px auto minmax(0, 1fr) 42px; gap: 8px; align-items: end; }
+/* The producer's edit of a reply: a free-text editor, so it may scroll inside itself. */
+.reply-edit { display: grid; gap: 6px; }
+.reply-edit small { color: var(--ink-2); }
+.reply-edit textarea { min-height: 14em; max-height: 48vh; resize: vertical; font-family: var(--font-read); line-height: 1.5; }
+.reply-edit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .control-composer textarea { min-height: 56px; max-height: 22vh; padding: 6px 4px; border: 0; background: transparent; box-shadow: none; resize: none; }
 .control-composer textarea:focus { box-shadow: none; }
 .composer-row > button { width: 40px; height: 40px; display: grid; place-items: center; padding: 0; border: 1.5px solid var(--act-ink); border-radius: var(--radius-sketch); color: var(--on-pigment); background: var(--act); box-shadow: var(--lift); }

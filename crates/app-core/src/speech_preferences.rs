@@ -85,12 +85,24 @@ impl ResearchSpeechPreferences {
     }
 }
 
+/// How replies are narrated. The mistake check is off by default because it adds a Whisper pass
+/// before each new passage first plays.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(default, rename_all = "camelCase")]
+#[ts(export)]
+pub struct NarrationPreferences {
+    /// Listen to each new passage with Whisper before it plays and regenerate it once when the
+    /// voice ran on, repeated itself, or kept talking after the text.
+    pub check_mistakes: bool,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(default, rename_all = "camelCase")]
 #[ts(export)]
 pub struct SpeechPreferences {
     pub vad: VadSettings,
     pub research: ResearchSpeechPreferences,
+    pub narration: NarrationPreferences,
 }
 
 /// Read-only import from older WebView preferences. Native storage wins once present.

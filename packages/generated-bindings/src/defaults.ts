@@ -16,6 +16,9 @@ export const movieProducerDefaults: MovieProducerProjectSettings = {
   "width": 768
 };
 export const speechPreferencesDefaults: SpeechPreferences = {
+  "narration": {
+    "checkMistakes": false
+  },
   "research": {
     "modelId": "",
     "rate": 1,

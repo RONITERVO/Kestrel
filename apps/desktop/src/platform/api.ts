@@ -1,7 +1,7 @@
 import { invoke, listen, type UnlistenFn } from "./transport";
 import type { MovieEditorGenerateRequest, MovieEditorJob, MovieEditorRangeRequest, MovieEditorState } from "../contracts/index";
 import { readLegacySpeechPreferences } from "./legacySpeechPreferences";
-import type { DesktopCommands, ResearchSpeechPreferences, VadSettings } from "../contracts/index";
+import type { DesktopCommands, NarrationExportRequest, NarrationPreferences, ResearchSpeechPreferences, VadSettings } from "../contracts/index";
 import type {
   AppSnapshot,
   ChatSession,
@@ -108,6 +108,13 @@ export function saveVadSettings(settings: VadSettings) {
 }
 export function saveResearchSpeechPreferences(settings: ResearchSpeechPreferences) {
   return invoke("save_research_speech_preferences", { settings });
+}
+export function saveNarrationSpeechPreferences(settings: NarrationPreferences) {
+  return invoke("save_narration_speech_preferences", { settings });
+}
+/** Joins generated passages into one audio file; resolves to the saved path, or null when the save dialog is closed. */
+export function exportNarration(request: NarrationExportRequest): Promise<string | null> {
+  return invoke("export_narration", { request });
 }
 
 const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -673,6 +680,15 @@ export async function getChatSession(id: string): Promise<ChatSession> {
 
 export async function deleteChatSession(id: string): Promise<void> {
   await invoke("delete_chat_session", { id });
+}
+
+/** Saves the producer's edited copy of a model reply; the model keeps reading the original. */
+export async function saveChatReplyEdit(sessionId: string, messageId: string, content: string): Promise<ChatSession> {
+  return invoke("save_chat_reply_edit", { sessionId, messageId, content });
+}
+
+export async function discardChatReplyEdit(sessionId: string, messageId: string): Promise<ChatSession> {
+  return invoke("discard_chat_reply_edit", { sessionId, messageId });
 }
 
 export async function pickContextFiles(): Promise<ContextAttachmentImport> {

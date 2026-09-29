@@ -617,7 +617,22 @@ pub struct ChatMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub recording: Option<SpeechRecordingAttachment>,
+    /// The producer's corrected copy of an assistant reply, for listening and narration export.
+    /// The model never sees it: chat history always sends the original `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub edited: Option<EditedReply>,
     pub created_at: String,
+}
+
+/// A producer's edit of an assistant reply. It lives beside the original, which stays the
+/// conversation's truth for the model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct EditedReply {
+    pub content: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1671,8 +1686,9 @@ pub use prompt_draft::{
 
 pub mod speech;
 pub use speech::{
-    SpeechAlignmentRequest, SpeechClip, SpeechModel, SpeechProgress, SpeechSnapshot,
-    SpeechSynthesisRequest, SpeechTiming, SpeechTranscription, SpeechTranscriptionRequest,
+    NarrationExportPassage, NarrationExportRequest, SpeechAlignmentRequest, SpeechClip,
+    SpeechModel, SpeechProgress, SpeechSnapshot, SpeechSynthesisRequest, SpeechTiming,
+    SpeechTranscription, SpeechTranscriptionRequest,
 };
 
 pub mod voices;

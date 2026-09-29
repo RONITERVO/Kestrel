@@ -1,5 +1,5 @@
 import { speechPreferencesDefaults } from "../../contracts/index";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { advanceLiveTranscriptionCheckpoint, completeRecordingBlob, LIVE_TRANSCRIPTION_CHECKPOINTS_SECONDS, LocalSpeechProvider, mergeProvisionalTranscript, SpeechDictationButton, SpeechLiveCaption, SpeechPlaybackButton, splitSpeechText, VadSettingsModal, type SpeechProgressState } from "./LocalSpeechControls";
 import { DEFAULT_VAD_SETTINGS } from "./voiceActivityDetection";
@@ -13,6 +13,7 @@ const speechApi = vi.hoisted(() => ({
   transcribe: vi.fn(),
   cancel: vi.fn(),
   release: vi.fn(),
+  exportNarration: vi.fn(),
 }));
 
 vi.mock("../../platform/api", async (importOriginal) => ({
@@ -28,6 +29,7 @@ vi.mock("../../platform/api", async (importOriginal) => ({
   transcribeLocalSpeech: speechApi.transcribe,
   cancelLocalSpeech: speechApi.cancel,
   releaseLocalSpeechMemory: speechApi.release,
+  exportNarration: speechApi.exportNarration,
   localSpeechMediaUrl: (path: string) => `http://kestrel-speech.localhost/${path}`,
 }));
 
@@ -271,6 +273,26 @@ Here is the performance overview:
     })));
     await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
     expect(container.querySelector("audio")?.src).toContain("kestrel-speech.localhost");
+  });
+
+  it("exports a reply's narration as one file, checking passages only when asked", async () => {
+    speechApi.exportNarration.mockReset().mockResolvedValue("C:\Audiobook\Story.m4a");
+    render(<LocalSpeechProvider><SpeechPlaybackButton sourceKind="chat" sourceId="chat-1" passageId="answer" text="First sentence." exportTitle="Story" /></LocalSpeechProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Export" }));
+    const panel = screen.getByRole("group", { name: "Export narration" });
+    const check = within(panel).getByRole("checkbox", { name: /Check for voice mistakes/ });
+    await waitFor(() => expect(check).toBeEnabled());
+    expect(check).not.toBeChecked();
+    fireEvent.click(check);
+    fireEvent.click(within(panel).getByRole("button", { name: "Save audio file" }));
+
+    await waitFor(() => expect(speechApi.exportNarration).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Story",
+      passages: [{ text: "First sentence.", relativePath: expect.stringContaining("answer") }],
+    })));
+    expect(speechApi.synthesize).toHaveBeenCalledWith(expect.objectContaining({ checkMistakes: true, text: "First sentence." }));
+    expect(await within(panel).findByText("Saved to C:\Audiobook\Story.m4a")).toBeInTheDocument();
   });
 
   it("lets a producer cast an individual response without changing the app-wide default", async () => {

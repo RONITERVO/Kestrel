@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getSpeechPreferences, saveResearchSpeechPreferences, saveVadSettings } from "../../platform/api";
-import { speechPreferencesDefaults, type ResearchSpeechPreferences, type SpeechPreferences, type VadSettings } from "../../contracts/index";
+import { getSpeechPreferences, saveNarrationSpeechPreferences, saveResearchSpeechPreferences, saveVadSettings } from "../../platform/api";
+import { speechPreferencesDefaults, type NarrationPreferences, type ResearchSpeechPreferences, type SpeechPreferences, type VadSettings } from "../../contracts/index";
 
 /** Editable view of native preferences. Native replies become the accepted saved state. */
 export function useSpeechPreferences() {
@@ -50,6 +50,12 @@ export function useSpeechPreferences() {
     save({ ...draft.current, research }, () => saveResearchSpeechPreferences(research));
   }, [save]);
 
+  const updateNarrationPreferences = useCallback((patch: Partial<NarrationPreferences>) => {
+    const narration = { ...draft.current.narration, ...patch };
+    save({ ...draft.current, narration }, () => saveNarrationSpeechPreferences(narration));
+  }, [save]);
+
   return { vadSettings: preferences.vad, researchSpeechPreferences: preferences.research,
-    updateVadSettings, resetVadSettings, updateResearchSpeechPreferences, preferenceError };
+    narrationPreferences: preferences.narration,
+    updateVadSettings, resetVadSettings, updateResearchSpeechPreferences, updateNarrationPreferences, preferenceError };
 }

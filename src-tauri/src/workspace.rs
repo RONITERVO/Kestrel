@@ -6,13 +6,16 @@
 use crate::attachments::ContextAttachment;
 use crate::models::{
     ChatMessage, ChatSession, ChatSessionSummary, ComputerTaskAccess, ComputerTaskEvent,
-    ComputerTaskRun, ComputerTaskSummary, SpeechRecordingAttachment,
+    ComputerTaskRun, ComputerTaskSummary, EditedReply, SpeechRecordingAttachment,
 };
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+
+/// Largest edited copy of a reply; replies themselves are bounded by the model's output.
+const MAX_EDITED_REPLY_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct WorkspaceStore {
@@ -141,6 +144,7 @@ impl WorkspaceStore {
             status: draft.status,
             attachments: draft.attachments,
             recording: draft.recording,
+            edited: None,
             created_at: now.clone(),
         });
         session.updated_at = now;
@@ -156,6 +160,57 @@ impl WorkspaceStore {
             .map_err(|_| "conversation store lock is unavailable".to_string())?;
         atomic_json(&self.chat_path(&session.id)?, session)?;
         self.write_chat_summary(session)
+    }
+
+    /// Save or discard the producer's edit of a model reply, kept beside the reply for listening
+    /// and narration export. The reply itself never changes and remains what the model reads.
+    pub fn set_reply_edit(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        content: Option<String>,
+    ) -> Result<ChatSession, String> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| "conversation store lock is unavailable".to_string())?;
+        let path = self.chat_path(session_id)?;
+        let mut session: ChatSession = read_recoverable(&path)?;
+        let message = session
+            .messages
+            .iter_mut()
+            .find(|message| message.id == message_id)
+            .ok_or_else(|| "That reply is no longer in this conversation.".to_string())?;
+        if message.role != "assistant" {
+            return Err(
+                "Only the model's replies can be edited; your own messages stay as you sent them."
+                    .into(),
+            );
+        }
+        message.edited = match content {
+            None => None,
+            Some(content) => {
+                if content.trim().is_empty() {
+                    return Err(
+                        "An edited reply needs some text. Choose Revert to return to the original."
+                            .into(),
+                    );
+                }
+                if content.len() > MAX_EDITED_REPLY_BYTES {
+                    return Err(format!(
+                        "An edited reply may hold at most {} MiB of text.",
+                        MAX_EDITED_REPLY_BYTES / 1024 / 1024
+                    ));
+                }
+                // Saving the original text unchanged is the same as having no edit.
+                (content.trim() != message.content.trim()).then(|| EditedReply {
+                    content,
+                    updated_at: chrono::Utc::now().to_rfc3339(),
+                })
+            }
+        };
+        atomic_json(&path, &session)?;
+        Ok(session)
     }
 
     pub fn delete_chat(&self, id: &str) -> Result<(), String> {
@@ -602,6 +657,61 @@ mod tests {
                 .as_deref(),
             Some("interrupted")
         );
+    }
+
+    #[test]
+    fn a_reply_edit_sits_beside_the_original_and_survives_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::new(directory.path()).unwrap();
+        let session = store.create_chat("model", "tell a story").unwrap();
+        let session = store
+            .add_chat_message(&session.id, "user", "tell a story".into(), None)
+            .unwrap();
+        let session = store
+            .add_chat_message(&session.id, "assistant", "It was 0.60 dark.".into(), None)
+            .unwrap();
+        let (question, reply) = (
+            session.messages[0].id.clone(),
+            session.messages[1].id.clone(),
+        );
+
+        let edited = store
+            .set_reply_edit(&session.id, &reply, Some("It was quite dark.".into()))
+            .unwrap();
+        assert_eq!(edited.messages[1].content, "It was 0.60 dark.");
+        assert_eq!(
+            edited.messages[1].edited.as_ref().unwrap().content,
+            "It was quite dark."
+        );
+        drop(store);
+        let store = WorkspaceStore::new(directory.path()).unwrap();
+        let reopened = store.get_chat(&session.id).unwrap();
+        assert_eq!(reopened.messages[1].content, "It was 0.60 dark.");
+        assert!(reopened.messages[1].edited.is_some());
+
+        // The producer's own messages, empty edits, and unknown replies are refused.
+        assert!(store
+            .set_reply_edit(&session.id, &question, Some("changed".into()))
+            .unwrap_err()
+            .contains("Only the model's replies"));
+        assert!(store
+            .set_reply_edit(&session.id, &reply, Some("  ".into()))
+            .is_err());
+        assert!(store
+            .set_reply_edit(&session.id, "missing", Some("text".into()))
+            .is_err());
+
+        // Saving the original text, or reverting, leaves no edit.
+        let same = store
+            .set_reply_edit(&session.id, &reply, Some("It was 0.60 dark.".into()))
+            .unwrap();
+        assert!(same.messages[1].edited.is_none());
+        store
+            .set_reply_edit(&session.id, &reply, Some("Edited again.".into()))
+            .unwrap();
+        let reverted = store.set_reply_edit(&session.id, &reply, None).unwrap();
+        assert!(reverted.messages[1].edited.is_none());
+        assert_eq!(reverted.messages[1].content, "It was 0.60 dark.");
     }
 
     #[test]

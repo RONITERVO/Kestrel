@@ -125,7 +125,7 @@ impl ComfyWorkload {
     }
 }
 
-fn media_program(name: &str) -> PathBuf {
+pub(crate) fn media_program(name: &str) -> PathBuf {
     let key = if name == "ffprobe" {
         "KESTREL_FFPROBE_PATH"
     } else {
