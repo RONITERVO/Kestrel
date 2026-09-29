@@ -51,6 +51,7 @@ import {
   type VadSettings,
 } from "./voiceActivityDetection";
 import { useNarrationExport } from "./useNarrationExport";
+import { describeExportedFiles } from "../../shared/format";
 import "./speech.css";
 
 export { claimPlayback, clearPlayback };
@@ -335,6 +336,7 @@ export function SpeechPlaybackButton({
   const narrationExport = useNarrationExport({ sourceKind, sourceId, passages, title: exportTitle ?? label });
   const [exportOpen, setExportOpen] = useState(false);
   const [checkExport, setCheckExport] = useState(narrationPreferences.checkMistakes);
+  const [timedExport, setTimedExport] = useState(true);
   const exporting = narrationExport.state.stage === "preparing" || narrationExport.state.stage === "saving";
 
   // The voice this reply is read in: the one chosen for it, else the app-wide default.
@@ -348,7 +350,11 @@ export function SpeechPlaybackButton({
     return { voice, profile };
   };
 
-  const startExport = () => void narrationExport.start(readyVoice, checkExport);
+  const startExport = () => void narrationExport.start(readyVoice, {
+    checkMistakes: checkExport,
+    wordTimings: timedExport,
+    alignmentModel,
+  });
 
   const toggle = () => {
     if (player.status === "playing" || (player.status === "paused" && player.audioRef.current?.src)) {
@@ -431,13 +437,22 @@ export function SpeechPlaybackButton({
             />
             <span>Check for voice mistakes and redo them (slower)</span>
           </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={timedExport}
+              disabled={exporting}
+              onChange={(event) => setTimedExport(event.currentTarget.checked)}
+            />
+            <span>Also save word timings and a page that plays it word by word</span>
+          </label>
           <span className="inline-speech-export-status" role="status">
             {narrationExport.state.stage === "preparing"
               ? `Preparing passage ${narrationExport.state.done + 1} of ${narrationExport.state.total}…`
               : narrationExport.state.stage === "saving"
                 ? "Choose where to save; Kestrel then joins the passages…"
                 : narrationExport.state.stage === "saved"
-                  ? `Saved to ${narrationExport.state.path}`
+                  ? describeExportedFiles(narrationExport.state.files)
                   : narrationExport.state.stage === "error"
                     ? narrationExport.state.message
                     : `${passages.length} passage${passages.length === 1 ? "" : "s"}, saved as one M4A audio file.`}

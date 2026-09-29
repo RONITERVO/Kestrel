@@ -4,6 +4,9 @@
 //! anything the voice said after a passage's last word.
 
 use crate::models::SpeechTiming;
+use crate::speech_text::spoken_words;
+use crate::timed_text::{align_words, sentence_lines, PlayerTheme, TimedText, TimedWord};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// Seconds kept after a passage's last word so its final syllable is not clipped.
@@ -33,21 +36,14 @@ impl NarrationCheck {
     }
 }
 
-fn words_of(text: &str) -> Vec<String> {
-    text.split(|character: char| !character.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_lowercase)
-        .collect()
-}
-
 /// Compare the spoken text with Whisper's word timings. Whisper often writes numbers as digits,
 /// so heard words are spelled out the same way as the text before comparing.
 pub fn check_narration(spoken: &str, heard: &[SpeechTiming]) -> NarrationCheck {
-    let expected = words_of(spoken);
+    let expected = spoken_words(spoken);
     let mut heard_words = Vec::new();
     let mut heard_timing = Vec::new();
     for (index, timing) in heard.iter().enumerate() {
-        for word in words_of(&crate::speech_text::speak_numbers(&timing.value)) {
+        for word in spoken_words(&timing.value) {
             heard_words.push(word);
             heard_timing.push(index);
         }
@@ -103,12 +99,17 @@ pub fn check_narration(spoken: &str, heard: &[SpeechTiming]) -> NarrationCheck {
     }
 }
 
-/// One passage clip in an export and where to stop reading it.
-#[derive(Debug, Clone, PartialEq)]
+/// One passage clip in an export: its audio, where to stop reading it, and the words it speaks
+/// with Whisper's timings when someone listened to it.
+#[derive(Debug, Clone)]
 pub struct ExportClip {
     pub path: PathBuf,
     /// Stop here to leave out speech the voice added after the text.
     pub outpoint: Option<f64>,
+    /// The passage's words as shown.
+    pub text: String,
+    /// What Whisper heard, in seconds from the clip's start; empty when nobody listened.
+    pub heard: Vec<SpeechTiming>,
 }
 
 /// Where an exported clip should stop: just after its last word, when the voice kept talking.
@@ -120,25 +121,7 @@ pub fn export_outpoint(spoken: &str, heard: &[SpeechTiming]) -> Option<f64> {
         .map(|end| end + TAIL_PADDING_SECONDS)
 }
 
-/// FFmpeg concat script for the clips, in order. Paths are written with forward slashes inside
-/// single quotes, the only character FFmpeg needs escaped there.
-pub fn concat_script(clips: &[ExportClip]) -> String {
-    let mut script = String::from("ffconcat version 1.0\n");
-    for clip in clips {
-        let path = clip
-            .path
-            .to_string_lossy()
-            .replace('\\', "/")
-            .replace('\'', r"'\''");
-        script.push_str(&format!("file '{path}'\n"));
-        if let Some(outpoint) = clip.outpoint {
-            script.push_str(&format!("outpoint {outpoint:.3}\n"));
-        }
-    }
-    script
-}
-
-/// A file name for the export from the reply's title: letters, digits, spaces, and dashes only.
+/// A file name for the export from its title: letters, digits, spaces, and dashes only.
 pub fn export_file_name(title: &str) -> String {
     let cleaned = title
         .chars()
@@ -162,106 +145,109 @@ pub fn export_file_name(title: &str) -> String {
     )
 }
 
-/// FFmpeg arguments that join the clips into one AAC audio file for audiobook players.
-pub fn export_arguments(script: &Path, output: &Path) -> Vec<std::ffi::OsString> {
-    let mut arguments = [
+/// Narration is joined as mono samples at this rate before it is encoded.
+const SAMPLE_RATE: u32 = 48_000;
+/// Longest FFmpeg may take for one step of an export, even a book-length one.
+const FFMPEG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const STOPPED: &str = "Export stopped. Nothing was saved.";
+
+fn arguments(values: &[&str]) -> Vec<OsString> {
+    values.iter().map(OsString::from).collect()
+}
+
+/// FFmpeg arguments that decode one passage to raw mono samples, cut sample-exactly where the
+/// passage's words end.
+pub fn decode_arguments(clip: &Path, outpoint: Option<f64>) -> Vec<OsString> {
+    let mut values = arguments(&["-hide_banner", "-loglevel", "error", "-nostdin", "-i"]);
+    values.push(clip.as_os_str().to_owned());
+    if let Some(end) = outpoint {
+        values.push("-af".into());
+        values.push(format!("atrim=end={end:.3}").into());
+    }
+    values.extend(arguments(&[
+        "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1",
+    ]));
+    values
+}
+
+/// FFmpeg arguments that encode the joined raw samples as AAC in an M4A file.
+pub fn encode_arguments(samples: &Path, output: &Path) -> Vec<OsString> {
+    let mut values = arguments(&[
         "-hide_banner",
         "-loglevel",
         "error",
         "-nostdin",
         "-y",
         "-f",
-        "concat",
-        "-safe",
-        "0",
+        "s16le",
+        "-ar",
+        "48000",
+        "-ac",
+        "1",
         "-i",
-    ]
-    .map(std::ffi::OsString::from)
-    .to_vec();
-    arguments.push(script.as_os_str().to_owned());
-    arguments.extend(
-        [
-            "-vn",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-f",
-            "ipod",
-            "-movflags",
-            "+faststart",
-        ]
-        .map(std::ffi::OsString::from),
-    );
-    arguments.push(output.as_os_str().to_owned());
-    arguments
+    ]);
+    values.push(samples.as_os_str().to_owned());
+    values.extend(arguments(&[
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-f",
+        "ipod",
+        "-movflags",
+        "+faststart",
+    ]));
+    values.push(output.as_os_str().to_owned());
+    values
 }
 
-/// Longest FFmpeg may take to join one narration, even a book-length one.
-const EXPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// FFmpeg arguments that turn a song master into AAC in an M4A file.
+pub fn transcode_arguments(source: &Path, output: &Path) -> Vec<OsString> {
+    let mut values = arguments(&["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"]);
+    values.push(source.as_os_str().to_owned());
+    values.extend(arguments(&[
+        "-vn",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-f",
+        "ipod",
+        "-movflags",
+        "+faststart",
+    ]));
+    values.push(output.as_os_str().to_owned());
+    values
+}
 
-/// Join the clips into `destination`. FFmpeg writes beside it first and the finished file then
-/// replaces the destination, so a stopped or failed export never leaves half a file there.
-pub async fn write_export(
-    clips: &[ExportClip],
-    destination: &Path,
+/// Run FFmpeg with fixed arguments and return what it wrote to standard output.
+async fn run_ffmpeg(
+    values: Vec<OsString>,
+    step: &str,
     cancel: &tokio_util::sync::CancellationToken,
-) -> Result<(), String> {
-    let script = destination.with_extension("m4a.ffconcat");
-    let partial = destination.with_extension("m4a.part");
-    std::fs::write(&script, concat_script(clips)).map_err(|error| {
-        format!(
-            "Could not prepare the narration export beside {}: {error}",
-            destination.display()
-        )
-    })?;
-    let cleanup = || {
-        let _ = std::fs::remove_file(&script);
-        let _ = std::fs::remove_file(&partial);
-    };
+) -> Result<Vec<u8>, String> {
     let mut command = tokio::process::Command::new(crate::studio::media_program("ffmpeg"));
     command
-        .args(export_arguments(&script, &partial))
+        .args(values)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
-    let child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            cleanup();
-            return Err(format!(
-                "FFmpeg is needed to export narration and could not start ({error}). Install Movie finishing tools in Setup, or choose ffmpeg.exe there."
-            ));
-        }
-    };
+    let child = command.spawn().map_err(|error| {
+        format!(
+            "FFmpeg is needed to export audio and could not start ({error}). Install Movie finishing tools in Setup, or choose ffmpeg.exe there."
+        )
+    })?;
     let output = tokio::select! {
-        output = tokio::time::timeout(EXPORT_TIMEOUT, child.wait_with_output()) => output,
-        _ = cancel.cancelled() => {
-            cleanup();
-            return Err("Narration export stopped. Nothing was saved.".into());
-        }
+        output = tokio::time::timeout(FFMPEG_TIMEOUT, child.wait_with_output()) => output,
+        _ = cancel.cancelled() => return Err(STOPPED.into()),
     };
-    let output = match output {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => {
-            cleanup();
-            return Err(format!(
-                "FFmpeg stopped while joining the narration: {error}"
-            ));
-        }
-        Err(_) => {
-            cleanup();
-            return Err(
-                "FFmpeg took more than 30 minutes to join the narration and was stopped.".into(),
-            );
-        }
-    };
-    let _ = std::fs::remove_file(&script);
+    let output = output
+        .map_err(|_| format!("FFmpeg took more than 30 minutes to {step} and was stopped."))?
+        .map_err(|error| format!("FFmpeg stopped while trying to {step}: {error}"))?;
     if !output.status.success() {
-        cleanup();
         let errors = String::from_utf8_lossy(&output.stderr);
         let tail = errors
             .trim()
@@ -272,15 +258,126 @@ pub async fn write_export(
             .into_iter()
             .rev()
             .collect::<String>();
-        return Err(format!("FFmpeg could not join the narration: {tail}"));
+        return Err(format!("FFmpeg could not {step}: {tail}"));
     }
-    std::fs::rename(&partial, destination).map_err(|error| {
-        cleanup();
-        format!(
-            "The narration was joined but could not be saved as {}: {error}",
-            destination.display()
+    Ok(output.stdout)
+}
+
+/// Join narration passages into `destination` as AAC. Each passage is decoded to raw samples and
+/// cut exactly where its words end, so the joined timeline is known to the sample: the result
+/// gives each passage's start and length in seconds. The file is written beside the destination
+/// first and then replaces it, so a stopped or failed export never leaves half a file there.
+pub async fn write_narration_audio(
+    clips: &[ExportClip],
+    destination: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Vec<(f64, f64)>, String> {
+    use std::io::Write as _;
+    let samples_path = destination.with_extension("m4a.pcm");
+    let partial = destination.with_extension("m4a.part");
+    let result = async {
+        let mut samples_file = std::fs::File::create(&samples_path).map_err(|error| {
+            format!(
+                "Could not prepare the narration export beside {}: {error}",
+                destination.display()
+            )
+        })?;
+        let mut spans = Vec::with_capacity(clips.len());
+        let mut total = 0u64;
+        for clip in clips {
+            if cancel.is_cancelled() {
+                return Err(STOPPED.to_string());
+            }
+            let pcm = run_ffmpeg(
+                decode_arguments(&clip.path, clip.outpoint),
+                "decode a narration passage",
+                cancel,
+            )
+            .await?;
+            let samples = (pcm.len() / 2) as u64;
+            samples_file
+                .write_all(&pcm[..samples as usize * 2])
+                .map_err(|error| format!("Could not write the joined narration: {error}"))?;
+            spans.push((
+                total as f64 / f64::from(SAMPLE_RATE),
+                samples as f64 / f64::from(SAMPLE_RATE),
+            ));
+            total += samples;
+        }
+        samples_file
+            .flush()
+            .map_err(|error| format!("Could not write the joined narration: {error}"))?;
+        drop(samples_file);
+        run_ffmpeg(
+            encode_arguments(&samples_path, &partial),
+            "encode the narration",
+            cancel,
         )
-    })
+        .await?;
+        std::fs::rename(&partial, destination).map_err(|error| {
+            format!(
+                "The narration was joined but could not be saved as {}: {error}",
+                destination.display()
+            )
+        })?;
+        Ok(spans)
+    }
+    .await;
+    let _ = std::fs::remove_file(&samples_path);
+    let _ = std::fs::remove_file(&partial);
+    result
+}
+
+/// Every passage's words on the joined file's timeline, as readable lines.
+pub fn narration_timed_text(title: &str, clips: &[ExportClip], spans: &[(f64, f64)]) -> TimedText {
+    let mut lines = Vec::new();
+    let mut estimated = false;
+    for (clip, (start, length)) in clips.iter().zip(spans) {
+        let (words, guessed) = align_words(&clip.text, &clip.heard, *length);
+        estimated |= guessed;
+        let placed = words
+            .into_iter()
+            .map(|word| TimedWord {
+                start: start + word.start.clamp(0.0, *length),
+                end: start + word.end.clamp(0.0, *length),
+                text: word.text,
+            })
+            .collect();
+        lines.extend(sentence_lines(placed));
+    }
+    TimedText {
+        title: title.to_string(),
+        language: String::new(),
+        theme: PlayerTheme::Paper,
+        estimated,
+        lines,
+    }
+}
+
+/// Turn a song master into AAC at `destination`, written beside it first.
+pub async fn write_song_audio(
+    source: &Path,
+    destination: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(), String> {
+    let partial = destination.with_extension("m4a.part");
+    let result = async {
+        run_ffmpeg(
+            transcode_arguments(source, &partial),
+            "convert the song",
+            cancel,
+        )
+        .await?;
+        std::fs::rename(&partial, destination).map_err(|error| {
+            format!(
+                "The song was converted but could not be saved as {}: {error}",
+                destination.display()
+            )
+        })
+    }
+    .await;
+    let _ = std::fs::remove_file(&partial);
+    result
 }
 
 #[cfg(test)]
@@ -363,30 +460,53 @@ mod tests {
     }
 
     #[test]
-    fn exports_are_joined_in_order_with_safe_paths_and_names() {
-        let script = concat_script(&[
-            ExportClip {
-                path: PathBuf::from(r"C:\Kestrel Research\speech-cache\a.opus"),
-                outpoint: None,
-            },
-            ExportClip {
-                path: PathBuf::from(r"C:\it's\b.opus"),
-                outpoint: Some(12.3456),
-            },
-        ]);
-        assert_eq!(
-            script,
-            "ffconcat version 1.0\nfile 'C:/Kestrel Research/speech-cache/a.opus'\nfile 'C:/it'\\''s/b.opus'\noutpoint 12.346\n"
-        );
+    fn exports_use_fixed_arguments_safe_names_and_one_timeline() {
         assert_eq!(
             export_file_name("The Cartographer: of *Falling* Stars?"),
             "The Cartographer of Falling Stars.m4a"
         );
         assert_eq!(export_file_name("???"), "Kestrel narration.m4a");
-        let arguments = export_arguments(Path::new("list.ffconcat"), Path::new("out.m4a.part"));
-        assert!(arguments
+
+        let decode = decode_arguments(Path::new(r"C:\it's\b.opus"), Some(12.3456));
+        assert!(decode
             .windows(2)
-            .any(|pair| pair[0] == "-f" && pair[1] == "concat"));
-        assert_eq!(arguments.last().unwrap(), "out.m4a.part");
+            .any(|pair| pair[0] == "-af" && pair[1] == "atrim=end=12.346"));
+        assert_eq!(decode.last().unwrap(), "pipe:1");
+        assert!(!decode_arguments(Path::new("a.opus"), None)
+            .iter()
+            .any(|value| value == "-af"));
+        let encode = encode_arguments(Path::new("joined.pcm"), Path::new("out.m4a.part"));
+        assert!(encode
+            .windows(2)
+            .any(|pair| pair[0] == "-f" && pair[1] == "s16le"));
+        assert_eq!(encode.last().unwrap(), "out.m4a.part");
+        let song = transcode_arguments(Path::new("take.flac"), Path::new("song.m4a.part"));
+        assert!(song
+            .windows(2)
+            .any(|pair| pair[0] == "-b:a" && pair[1] == "192k"));
+
+        // The second passage's words start where the first passage's audio ends.
+        let clip = |text: &str, heard: &[(&str, f64, f64)]| ExportClip {
+            path: PathBuf::from("clip.opus"),
+            outpoint: None,
+            text: text.into(),
+            heard: heard
+                .iter()
+                .map(|(value, start, end)| SpeechTiming {
+                    value: (*value).into(),
+                    start: *start,
+                    end: *end,
+                })
+                .collect(),
+        };
+        let clips = [
+            clip("First line.", &[("First", 0.1, 0.4), ("line.", 0.4, 0.9)]),
+            clip("Second one.", &[("Second", 0.2, 0.6), ("one.", 0.6, 1.0)]),
+        ];
+        let text = narration_timed_text("Story", &clips, &[(0.0, 1.5), (1.5, 1.2)]);
+        assert!(!text.estimated);
+        assert_eq!(text.lines.len(), 2);
+        assert!((text.lines[1].words[0].start - 1.7).abs() < 1e-9);
+        assert!((text.lines[1].end - 2.5).abs() < 1e-9);
     }
 }

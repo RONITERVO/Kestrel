@@ -641,11 +641,18 @@ impl LocalSpeech {
                 "A passage's audio is missing from the speech cache. Listen to the reply once more, then export again.".into(),
             ));
         }
-        let outpoint = read_receipt_recoverable(&sidecar_path(&path))
+        let heard = read_receipt_recoverable(&sidecar_path(&path))
             .as_ref()
             .and_then(receipt_timings)
-            .and_then(|(_, words)| export_outpoint(&spoken_text(text), &words));
-        Ok(ExportClip { path, outpoint })
+            .map(|(_, words)| words)
+            .unwrap_or_default();
+        let outpoint = export_outpoint(&spoken_text(text), &heard);
+        Ok(ExportClip {
+            path,
+            outpoint,
+            text: text.to_string(),
+            heard,
+        })
     }
 
     pub async fn transcribe(

@@ -1,5 +1,5 @@
 import {
-  Bot, Captions, ChevronLeft, CircleStop, Clock3, FileText, Languages, ListMusic, LoaderCircle, Pause, Play,
+  Bot, Captions, ChevronLeft, CircleStop, Clock3, Download, FileText, Languages, ListMusic, LoaderCircle, Pause, Play,
   Palette, Plus, Save, Sparkles, Trash2, Wand2, WandSparkles, X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -28,8 +28,9 @@ import {
   wordProgress,
 } from "./MusicLyricsTiming";
 import { createMusicLyricVisualizer, MUSIC_LYRIC_THEMES, type MusicLyricRenderer } from "./MusicLyricVisualizers";
+import { describeExportedFiles } from "../../../shared/format";
 import type {
-  ModelInfo, MusicLyricSegment, MusicLyricsDocument, MusicLyricWord, MusicProject, MusicTake, SpeechModel,
+  ExportedFiles, ModelInfo, MusicLyricSegment, MusicLyricsDocument, MusicLyricWord, MusicProject, MusicTake, SpeechModel,
 } from "../../../contracts/index";
 
 export { musicLyricDisplaySegmentAt, musicLyricSegmentAt, wordProgress } from "./MusicLyricsTiming";
@@ -69,6 +70,7 @@ export function MusicLyricsProducer({
   onDraftAudioPrompt,
   onTranslateLyrics,
   onCancelSync,
+  onExport,
   onClose,
 }: {
   project: MusicProject;
@@ -91,6 +93,8 @@ export function MusicLyricsProducer({
   onDraftAudioPrompt?: (startSeconds: number, endSeconds: number) => Promise<{ transcription: string; modelId: string; modelName: string }>;
   onTranslateLyrics?: (targetLanguage: string, lines: string[]) => Promise<{ translations: string[]; modelId: string; modelName: string }>;
   onCancelSync: () => void;
+  /** Saves the take as M4A with its saved lyrics timed word by word and a player page. */
+  onExport?: () => Promise<ExportedFiles | undefined>;
   onClose: () => void;
 }) {
   const producerRef = useRef<HTMLElement>(null);
@@ -108,6 +112,7 @@ export function MusicLyricsProducer({
   const [language, setLanguage] = useState(document.language || "auto");
   const [speechDetail, setSpeechDetail] = useState("Checking local Whisper…");
   const [savedRevision, setSavedRevision] = useState(document.revision);
+  const [exportNotice, setExportNotice] = useState("");
   const [savedTheme, setSavedTheme] = useState(document.theme);
   const [repairStart, setRepairStart] = useState(0);
   const [repairEnd, setRepairEnd] = useState(Math.min(take.durationSeconds, 10));
@@ -448,6 +453,15 @@ export function MusicLyricsProducer({
     handleTogglePlay();
   };
 
+  // Exports use the saved lyric revision, so unsaved edits are saved first.
+  const exportSong = async () => {
+    if (!onExport) return;
+    if (dirty && !(await saveCurrentDocument())) return;
+    setExportNotice("Choose where to save…");
+    const exported = await onExport();
+    setExportNotice(exported ? describeExportedFiles(exported.files) : "");
+  };
+
   const saveCurrentDocument = async (): Promise<boolean> => {
     const saved = await onSave(documentRef.current);
     if (!saved) return false;
@@ -480,6 +494,8 @@ export function MusicLyricsProducer({
             </select>
           </label>
           {document.theme !== savedTheme && <button className="music-lyrics-save-look" disabled={busy} onClick={() => void saveCurrentDocument()}><Save /> Save look</button>}
+          {onExport && <button title="Save the song with its lyrics timed word by word and a page that plays it like this visualizer" disabled={busy} onClick={() => void exportSong()}><Download /> Export</button>}
+          {exportNotice && <small className="music-lyrics-export-notice" role="status">{exportNotice}</small>}
               <span><Captions /> Revision {document.revision}{dirty ? " · unsaved" : ""} · {document.source === "producer-timing-draft" ? "timing draft" : "local sync"}</span>
         </div>
       </header>

@@ -276,7 +276,9 @@ Here is the performance overview:
   });
 
   it("exports a reply's narration as one file, checking passages only when asked", async () => {
-    speechApi.exportNarration.mockReset().mockResolvedValue("C:\Audiobook\Story.m4a");
+    speechApi.exportNarration.mockReset().mockResolvedValue({
+      files: ["C:\\Audiobook\\Story.m4a", "C:\\Audiobook\\Story.lrc", "C:\\Audiobook\\Story.vtt", "C:\\Audiobook\\Story.json", "C:\\Audiobook\\Story.html"],
+    });
     render(<LocalSpeechProvider><SpeechPlaybackButton sourceKind="chat" sourceId="chat-1" passageId="answer" text="First sentence." exportTitle="Story" /></LocalSpeechProvider>);
 
     fireEvent.click(await screen.findByRole("button", { name: "Export" }));
@@ -287,12 +289,16 @@ Here is the performance overview:
     fireEvent.click(check);
     fireEvent.click(within(panel).getByRole("button", { name: "Save audio file" }));
 
+    expect(within(panel).getByRole("checkbox", { name: /word timings/ })).toBeChecked();
     await waitFor(() => expect(speechApi.exportNarration).toHaveBeenCalledWith(expect.objectContaining({
       title: "Story",
+      wordTimings: true,
       passages: [{ text: "First sentence.", relativePath: expect.stringContaining("answer") }],
     })));
+    // The passage already carries Whisper's words, so it is not aligned again.
+    expect(speechApi.align).not.toHaveBeenCalledWith(expect.objectContaining({ jobId: expect.stringContaining("export-align") }));
     expect(speechApi.synthesize).toHaveBeenCalledWith(expect.objectContaining({ checkMistakes: true, text: "First sentence." }));
-    expect(await within(panel).findByText("Saved to C:\Audiobook\Story.m4a")).toBeInTheDocument();
+    expect(await within(panel).findByText("Saved Story.m4a with its word timings (LRC, WebVTT, JSON) and a word-by-word player page in C:\\Audiobook.")).toBeInTheDocument();
   });
 
   it("lets a producer cast an individual response without changing the app-wide default", async () => {

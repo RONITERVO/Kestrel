@@ -303,6 +303,7 @@
 .music-lyrics-header small { color: var(--on-pigment); font-size: var(--text-xs); font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
 .music-lyrics-header strong { overflow: hidden; font: 700 clamp(16px,2vw,22px) var(--font-read); text-overflow: ellipsis; white-space: nowrap; }
 .music-lyrics-header-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.music-lyrics-export-notice { max-width: 34ch; color: var(--note-ink); font: var(--text-xs) var(--font-ui); overflow-wrap: anywhere; }
 .music-lyrics-header-actions > span { display: inline-flex; align-items: center; gap: 6px; color: var(--note-ink); font:700 var(--text-xs) var(--font-ui); white-space: nowrap; }
 .music-lyrics-header-actions > span svg { width: 14px; }
 .music-lyrics-theme-picker { min-height: 34px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; border: var(--stroke-soft); border-radius: var(--radius-sketch); color: var(--ink); background: var(--paper-raised); box-shadow: var(--lift); }

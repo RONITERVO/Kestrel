@@ -207,6 +207,18 @@ pub struct MusicLyricsRequest {
     pub take_id: String,
 }
 
+/// Save a take's audio with its saved lyrics: the song as M4A and, when asked, its lyrics timed
+/// word by word (LRC, WebVTT, JSON) with a page that plays it like the lyric visualizer.
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricsExportRequest {
+    pub project_id: String,
+    pub take_id: String,
+    #[serde(default)]
+    pub word_timings: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]

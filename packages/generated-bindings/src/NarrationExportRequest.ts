@@ -5,4 +5,9 @@ import type { NarrationExportPassage } from "./NarrationExportPassage.js";
  * Joins generated passages, in order, into one audio file saved where the producer chooses.
  * Anything the voice said after a passage's last word is left out.
  */
-export type NarrationExportRequest = { jobId: string, title: string, passages: Array<NarrationExportPassage>, };
+export type NarrationExportRequest = { jobId: string, title: string, passages: Array<NarrationExportPassage>,
+/**
+ * Also save the words with their times (LRC, WebVTT, JSON) and a page that plays the audio
+ * word by word, beside the audio file.
+ */
+wordTimings: boolean, };

@@ -88,6 +88,17 @@ const UNITS: &[(&str, &str, &str)] = &[
     ("ly", "light-year", "light-years"),
 ];
 
+/// The lowercase words a text is spoken as, numbers spelled out: "23,500 kg." ->
+/// ["twenty", "three", "thousand", "five", "hundred", "kilograms"]. Written text and what Whisper
+/// heard compare word for word this way, whether either side used digits.
+pub fn spoken_words(text: &str) -> Vec<String> {
+    speak_numbers(text)
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 /// Every number in `text` as words: "23,500" -> "twenty-three thousand five hundred",
 /// "0.5875" and "0 point 5875" -> "zero point five eight seven five", "5 km/s" -> "five
 /// kilometers per second", "40%" -> "forty percent", "21st" -> "twenty-first".

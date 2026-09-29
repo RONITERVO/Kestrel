@@ -27,6 +27,7 @@ mod store;
 mod strata;
 mod structured_output;
 mod studio;
+mod timed_text;
 mod voice_library;
 mod workspace;
 
@@ -501,13 +502,41 @@ fn narration_check_model(
 /// Longest narration an export may join: a long book at a few hundred words a passage.
 const MAX_EXPORT_PASSAGES: usize = 4_000;
 
-/// Join a reply's generated passages into one audio file saved where the producer chooses.
-/// Returns the saved path, or nothing when the producer closes the save dialog.
+/// Ask where to save an exported M4A, suggesting a name from its title. Nothing when the
+/// producer closes the dialog.
+async fn choose_export_file(title: &str) -> Option<std::path::PathBuf> {
+    let file = rfd::AsyncFileDialog::new()
+        .set_title("Save audio")
+        .add_filter("Audio (M4A)", &["m4a"])
+        .set_file_name(narration::export_file_name(title))
+        .save_file()
+        .await?;
+    let mut destination = file.path().to_path_buf();
+    if !destination
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("m4a"))
+    {
+        destination.set_extension("m4a");
+    }
+    Some(destination)
+}
+
+fn exported_files(files: Vec<std::path::PathBuf>) -> kestrel_app_core::ExportedFiles {
+    kestrel_app_core::ExportedFiles {
+        files: files
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+    }
+}
+
+/// Join a reply's generated passages into one audio file saved where the producer chooses, with
+/// the words timed beside it when asked. Nothing when the producer closes the save dialog.
 #[tauri::command]
 async fn export_narration(
     request: kestrel_app_core::NarrationExportRequest,
     state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<kestrel_app_core::ExportedFiles>, String> {
     if request.passages.is_empty() || request.passages.len() > MAX_EXPORT_PASSAGES {
         return Err(format!(
             "A narration export needs 1 to {MAX_EXPORT_PASSAGES} passages."
@@ -523,26 +552,54 @@ async fn export_narration(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
-    let Some(file) = rfd::AsyncFileDialog::new()
-        .set_title("Save narration")
-        .add_filter("Audiobook audio", &["m4a"])
-        .set_file_name(narration::export_file_name(&request.title))
-        .save_file()
-        .await
-    else {
+    let Some(destination) = choose_export_file(&request.title).await else {
         return Ok(None);
     };
-    let mut destination = file.path().to_path_buf();
-    if !destination
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("m4a"))
-    {
-        destination.set_extension("m4a");
-    }
     let cancel = register_speech_job(&state, &request.job_id)?;
-    let result = narration::write_export(&clips, &destination, &cancel).await;
+    let result = async {
+        let spans = narration::write_narration_audio(&clips, &destination, &cancel).await?;
+        let mut files = vec![destination.clone()];
+        if request.word_timings {
+            let text = narration::narration_timed_text(&request.title, &clips, &spans);
+            files.extend(timed_text::write_companions(&text, &destination)?);
+        }
+        Ok::<_, String>(files)
+    }
+    .await;
     finish_speech_job(&state, &request.job_id);
-    result.map(|()| Some(destination.to_string_lossy().into_owned()))
+    result.map(|files| Some(exported_files(files)))
+}
+
+/// Save a take as M4A with its saved lyrics, timed word by word beside it when asked. Only a
+/// lyric revision that still matches its take is exported. Nothing when the dialog is closed.
+#[tauri::command]
+async fn export_music_lyrics(
+    request: kestrel_app_core::MusicLyricsExportRequest,
+    state: State<'_, AppState>,
+) -> Result<Option<kestrel_app_core::ExportedFiles>, String> {
+    let lyrics = MusicLyricsRequest {
+        project_id: request.project_id.clone(),
+        take_id: request.take_id.clone(),
+    };
+    let loaded = state
+        .music
+        .load_lyrics_document(lyrics.clone())
+        .map_err(|error| error.to_string())?;
+    let source = state
+        .music
+        .lyrics_audio_source(&lyrics)
+        .map_err(|error| error.to_string())?;
+    let Some(destination) = choose_export_file(&loaded.project.title).await else {
+        return Ok(None);
+    };
+    let cancel = CancellationToken::new();
+    narration::write_song_audio(&source.path, &destination, &cancel).await?;
+    let mut files = vec![destination.clone()];
+    if request.word_timings {
+        let text = timed_text::song_timed_text(&loaded.project.title, &loaded.document);
+        files.extend(timed_text::write_companions(&text, &destination)?);
+    }
+    Ok(Some(exported_files(files)))
 }
 
 #[tauri::command]
@@ -3790,6 +3847,7 @@ pub fn run() {
             save_research_speech_preferences,
             save_narration_speech_preferences,
             export_narration,
+            export_music_lyrics,
             bootstrap,
             get_report,
             get_local_speech_snapshot,

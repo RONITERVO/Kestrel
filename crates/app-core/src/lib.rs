@@ -1668,10 +1668,11 @@ pub mod music;
 pub use music::{
     CreateMusicProjectRequest, DraftLyricsFromAudioRangeRequest, DraftLyricsFromAudioRangeResult,
     MusicGenerationEvent, MusicLyricSegment, MusicLyricWord, MusicLyricsDocument,
-    MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult,
-    MusicMidiSettings, MusicProject, MusicSection, MusicSettings, MusicSummary, MusicTake,
-    RepairMusicLyricsRangeRequest, SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest,
-    TranscribeMusicLyricsRequest, TranslateMusicLyricsRequest, TranslateMusicLyricsResult,
+    MusicLyricsExportRequest, MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest,
+    MusicMidiSaveResult, MusicMidiSettings, MusicProject, MusicSection, MusicSettings,
+    MusicSummary, MusicTake, RepairMusicLyricsRangeRequest, SaveMusicLyricsDocumentRequest,
+    SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest, TranslateMusicLyricsRequest,
+    TranslateMusicLyricsResult,
 };
 
 pub mod music_midi;
@@ -1686,8 +1687,8 @@ pub use prompt_draft::{
 
 pub mod speech;
 pub use speech::{
-    NarrationExportPassage, NarrationExportRequest, SpeechAlignmentRequest, SpeechClip,
-    SpeechModel, SpeechProgress, SpeechSnapshot, SpeechSynthesisRequest, SpeechTiming,
+    ExportedFiles, NarrationExportPassage, NarrationExportRequest, SpeechAlignmentRequest,
+    SpeechClip, SpeechModel, SpeechProgress, SpeechSnapshot, SpeechSynthesisRequest, SpeechTiming,
     SpeechTranscription, SpeechTranscriptionRequest,
 };
 

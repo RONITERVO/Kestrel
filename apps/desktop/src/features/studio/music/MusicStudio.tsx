@@ -7,7 +7,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelLocalSpeech, cancelStudioPromptDraft, cancelMusicGeneration, createMusicLyricsDraft, createMusicProject, draftLyricsFromAudioRange, getMusicLyricsDocument, getMusicProject,
-  exportMusicMidi, getMusicMidiDocument, listMusicProjects, musicMediaUrl, onStudioPromptDraft, onMusicGeneration,
+  exportMusicLyrics, exportMusicMidi, getMusicMidiDocument, listMusicProjects, musicMediaUrl, onStudioPromptDraft, onMusicGeneration,
   onLocalSpeechProgress, onMusicProjectUpdated, pickSetupFile, repairMusicLyricsRange, revealMusicProject, saveMusicLyricsDocument, saveMusicProject,
   revealMusicMidi, saveMusicMidiDocument, startStudioPromptDraft, startMusicGeneration,
   transcribeMusicLyrics, transcribeMusicMidi, translateMusicLyrics,
@@ -21,7 +21,7 @@ import { buildExternalCollaborationRequest, parseExternalTextResult } from "../.
 import { MusicMidiEditor } from "./MusicMidiEditor";
 import { MusicLyricsProducer } from "./MusicLyricsProducer";
 import type {
-  ControlSettings, ModelInfo, MusicGenerationEvent, MusicLyricsDocument, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
+  ControlSettings, ExportedFiles, ModelInfo, MusicGenerationEvent, MusicLyricsDocument, MusicMidiDocument, MusicProject, MusicSection, MusicSummary, MusicTake,
   PromptDraftMode, PromptDraftReceipt, PromptDraftTarget, ThinkingLevel,
 } from "../../../contracts/index";
 import { effectiveThinkingLevelForModel } from "../../control/modelPolicy";
@@ -417,6 +417,16 @@ export function MusicStudio({
     }
   };
 
+  const exportLyrics = async (): Promise<ExportedFiles | undefined> => {
+    if (!project || !lyricsTake) return undefined;
+    try {
+      return await exportMusicLyrics(project.id, lyricsTake.id, true);
+    } catch (error) {
+      onError(String(error));
+      return undefined;
+    }
+  };
+
   const revealMidi = async () => {
     if (!project || !midiTargetTake) return;
     try {
@@ -781,6 +791,7 @@ export function MusicStudio({
         onDraftAudioPrompt={draftAudioLyrics}
         onTranslateLyrics={translateLyrics}
         onCancelSync={() => { if (lyricsJobId.current) void cancelLocalSpeech(lyricsJobId.current); }}
+        onExport={exportLyrics}
         onClose={() => { setLyricsOpen(false); setLyricsDocument(undefined); }}
       />}
       {newOpen && <NewSongDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}

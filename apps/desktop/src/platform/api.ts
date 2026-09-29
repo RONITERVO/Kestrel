@@ -1,7 +1,7 @@
 import { invoke, listen, type UnlistenFn } from "./transport";
 import type { MovieEditorGenerateRequest, MovieEditorJob, MovieEditorRangeRequest, MovieEditorState } from "../contracts/index";
 import { readLegacySpeechPreferences } from "./legacySpeechPreferences";
-import type { DesktopCommands, NarrationExportRequest, NarrationPreferences, ResearchSpeechPreferences, VadSettings } from "../contracts/index";
+import type { DesktopCommands, ExportedFiles, NarrationExportRequest, NarrationPreferences, ResearchSpeechPreferences, VadSettings } from "../contracts/index";
 import type {
   AppSnapshot,
   ChatSession,
@@ -112,8 +112,8 @@ export function saveResearchSpeechPreferences(settings: ResearchSpeechPreference
 export function saveNarrationSpeechPreferences(settings: NarrationPreferences) {
   return invoke("save_narration_speech_preferences", { settings });
 }
-/** Joins generated passages into one audio file; resolves to the saved path, or null when the save dialog is closed. */
-export function exportNarration(request: NarrationExportRequest): Promise<string | null> {
+/** Joins generated passages into one audio file (and its word timings when asked); null when the save dialog is closed. */
+export function exportNarration(request: NarrationExportRequest): Promise<ExportedFiles | null> {
   return invoke("export_narration", { request });
 }
 
@@ -475,6 +475,11 @@ export async function saveMusicMidiDocument(projectId: string, takeId: string, d
 
 export async function exportMusicMidi(projectId: string, takeId: string): Promise<string | undefined> {
   return (await invoke("export_music_midi", { request: { projectId, takeId } })) ?? undefined;
+}
+
+/** Saves a take as M4A with its saved lyrics timed word by word beside it when asked. */
+export async function exportMusicLyrics(projectId: string, takeId: string, wordTimings: boolean): Promise<ExportedFiles | undefined> {
+  return (await invoke("export_music_lyrics", { request: { projectId, takeId, wordTimings } })) ?? undefined;
 }
 
 export async function revealMusicMidi(projectId: string, takeId: string): Promise<void> {

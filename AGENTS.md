@@ -24,7 +24,8 @@ Read this before editing. The UI maintainer may not know Rust; keep backend beha
 - `strata.rs`: read-only Strata install discovery, validated loopback launch plans, and the job object that owns Strata's process tree. Strata-only GGUF architectures never reach llama.cpp.
 - `structured_output.rs`: JSON-schema replies across engines; llama.cpp gets `response_format`, Strata gets the schema in the prompt, and native parsers stay the only authority. Schemas whose key order is part of the format (Ideogram 4 compositions) travel as literal JSON text, because `serde_json` sorts keys and llama.cpp builds its grammar in the order it receives.
 - `speech_text.rs`: numbers, units, and percentages as spoken words; the only place digits become words before Chatterbox and Whisper.
-- `narration.rs`: the optional narration mistake check (Whisper's words against the spoken words) and narration export joined by FFmpeg with fixed arguments.
+- `narration.rs`: the optional narration mistake check (Whisper's words against the spoken words) and audio exports (narration joined sample-exactly, songs as M4A) through FFmpeg with fixed arguments.
+- `timed_text.rs`: word-timed lines saved beside exported audio as enhanced LRC, WebVTT, JSON, and a self-contained word-by-word player page (`templates/word-player.html`).
 - `attachments.rs`: content-addressed local files, bounded extraction, and capability-gated media blocks.
 - `chat.rs`: cancellable SSE chat stream; never add tools here.
 - `agent.rs`: bounded Computer Tasks loop, typed tools, path policy, recovery copies, visible events.

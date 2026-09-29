@@ -32,6 +32,7 @@ export type { DraftLyricsFromAudioRangeRequest } from "./DraftLyricsFromAudioRan
 export type { DraftLyricsFromAudioRangeResult } from "./DraftLyricsFromAudioRangeResult.js";
 export type { EditedReply } from "./EditedReply.js";
 export type { EngineCandidate } from "./EngineCandidate.js";
+export type { ExportedFiles } from "./ExportedFiles.js";
 export type { ExternalCollaborationFormat } from "./ExternalCollaborationFormat.js";
 export type { ExternalCollaborationResponse } from "./ExternalCollaborationResponse.js";
 export type { ExternalCollaborationTarget } from "./ExternalCollaborationTarget.js";
@@ -103,6 +104,7 @@ export type { MusicGenerationEvent } from "./MusicGenerationEvent.js";
 export type { MusicLyricSegment } from "./MusicLyricSegment.js";
 export type { MusicLyricWord } from "./MusicLyricWord.js";
 export type { MusicLyricsDocument } from "./MusicLyricsDocument.js";
+export type { MusicLyricsExportRequest } from "./MusicLyricsExportRequest.js";
 export type { MusicLyricsRequest } from "./MusicLyricsRequest.js";
 export type { MusicLyricsSaveResult } from "./MusicLyricsSaveResult.js";
 export type { MusicMidiDocument } from "./MusicMidiDocument.js";

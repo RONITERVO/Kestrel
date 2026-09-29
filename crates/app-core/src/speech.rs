@@ -63,6 +63,18 @@ pub struct NarrationExportRequest {
     pub job_id: String,
     pub title: String,
     pub passages: Vec<NarrationExportPassage>,
+    /// Also save the words with their times (LRC, WebVTT, JSON) and a page that plays the audio
+    /// word by word, beside the audio file.
+    #[serde(default)]
+    pub word_timings: bool,
+}
+
+/// Files an export saved: the audio first, then any timed-text companions beside it.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedFiles {
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
