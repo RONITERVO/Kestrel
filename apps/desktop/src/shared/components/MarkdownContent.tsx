@@ -10,6 +10,7 @@ import {
   type WordOffsetTracker,
 } from "./spokenHighlight";
 import { cleanProseForSpeech } from "../speech/text";
+import { readableMath } from "../readableMath";
 import "./markdown.css";
 
 export interface MarkdownContentProps {
@@ -130,7 +131,8 @@ function indentOf(line: string): number {
 
 export function parseMarkdownBlocks(markdown: string): MarkdownBlock[] {
   if (!markdown) return [];
-  const lines = markdown.split(/\r?\n/);
+  // LaTeX from local models is shown as readable text; speech uses the same conversion.
+  const lines = readableMath(markdown).split(/\r?\n/);
   const blocks: MarkdownBlock[] = [];
   let i = 0;
 

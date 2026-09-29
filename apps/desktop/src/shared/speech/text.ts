@@ -1,3 +1,5 @@
+import { readableMath } from "../readableMath";
+
 export interface SpeechPassage {
   id: string;
   label: string;
@@ -104,7 +106,8 @@ function convertTablesAndCharts(text: string): string {
 export function cleanProseForSpeech(raw: string, stripCodeBlocks = true): string {
   if (!raw) return "";
 
-  let text = raw;
+  // Match what chat shows: LaTeX math becomes plain text before anything is spoken.
+  let text = readableMath(raw);
 
   // Replace compact scientific and dashboard notation with stable spoken phrases before table
   // conversion or generic symbol stripping. These forms otherwise make local TTS models spell or
