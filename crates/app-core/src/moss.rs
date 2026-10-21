@@ -28,8 +28,9 @@ pub struct MossItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub text: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub palette: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub palette: Option<Vec<String>>,
     pub bbox: [i32; 4],
 }
 
@@ -89,7 +90,7 @@ pub fn prompt(project: &ImageProject) -> Result<(serde_json::Value, String), ser
                 },
                 caption: element.description.trim().into(),
                 text: (element.kind == "text").then(|| element.text.clone()),
-                palette: element.color_palette.clone(),
+                palette: (!element.color_palette.is_empty()).then(|| element.color_palette.clone()),
                 bbox: centered_pixel_box(
                     element.bbox,
                     project.settings.width,
