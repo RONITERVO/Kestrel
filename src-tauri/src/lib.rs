@@ -1977,13 +1977,17 @@ async fn start_image_generation(
     state: State<'_, AppState>,
 ) -> Result<ImageProject, String> {
     ensure_workspace_idle(&state)?;
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Another local AI or media job is already active.".to_string())?;
     let (project, take_ids) = state
         .images
-        .begin_generation(&id, Some(&app))
+        .begin_generation(&id, &settings.comfy_root, Some(&app))
         .map_err(|error| {
             state.work_active.store(false, Ordering::Release);
             error.to_string()

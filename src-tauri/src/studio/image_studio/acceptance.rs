@@ -2,6 +2,91 @@
 use super::*;
 use serde::Deserialize;
 
+#[tokio::test]
+#[ignore = "explicit local check: requires a different ComfyUI installation running on port 8188"]
+async fn live_image_rejects_a_different_comfy_installation() {
+    let selected = PathBuf::from(std::env::var("KESTREL_LIVE_COMFY_ROOT").unwrap());
+    let http = Client::builder().no_proxy().build().unwrap();
+    let error = verify_running_comfy_root(&http, &selected)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("Stop the existing ComfyUI server"),
+        "{error}"
+    );
+    eprintln!("Expected installation mismatch: {error}");
+}
+
+#[tokio::test]
+#[ignore = "explicit GPU acceptance: copies an existing project into the evidence folder; never edits the source"]
+async fn live_existing_image_project_uses_selected_setup_runtime() {
+    let source = PathBuf::from(std::env::var("KESTREL_IMAGE_EXISTING_PROJECT").unwrap());
+    let source_bytes = fs::read(&source).unwrap();
+    let mut copy: ImageProject = serde_json::from_slice(&source_bytes).unwrap();
+    let original_takes = serde_json::to_value(&copy.takes).unwrap();
+    let completed: Vec<_> = copy
+        .takes
+        .iter()
+        .filter(|take| take.status == "complete")
+        .map(|take| (take.path.clone(), hash_file(Path::new(&take.path)).unwrap()))
+        .collect();
+    assert!(
+        !completed.is_empty(),
+        "use an existing project with a preserved image"
+    );
+    let output = PathBuf::from(std::env::var("KESTREL_IMAGE_ACCEPTANCE_ROOT").unwrap())
+        .join("runtime-migration");
+    let selected = std::env::var("KESTREL_LIVE_COMFY_ROOT").unwrap();
+    assert_ne!(
+        copy.settings.comfy_root, selected,
+        "source must retain the old installation"
+    );
+    let studio = ImageStudio::new(&output).unwrap();
+    copy.id = studio
+        .create(CreateImageProjectRequest {
+            title: copy.title.clone(),
+            idea: copy.idea.clone(),
+            comfy_root: copy.settings.comfy_root.clone(),
+        })
+        .unwrap()
+        .id;
+    studio.persist(&copy).unwrap();
+    let (started, ids) = studio.begin_generation(&copy.id, &selected, None).unwrap();
+    assert_eq!(started.settings.comfy_root, selected);
+    let renderer = MovieStudio::new(&output).unwrap();
+    let timer = Instant::now();
+    let result = studio
+        .render(&copy.id, &ids, &renderer, &CancellationToken::new(), None)
+        .await;
+    renderer.release_comfy_memory().await;
+    let rendered = result.unwrap();
+    assert_eq!(
+        serde_json::to_value(&rendered.takes[..copy.takes.len()]).unwrap(),
+        original_takes
+    );
+    for (path, digest) in &completed {
+        assert_eq!(&hash_file(Path::new(path)).unwrap(), digest);
+    }
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        source_bytes,
+        "source project must remain untouched"
+    );
+    assert!(rendered.takes[copy.takes.len()..]
+        .iter()
+        .all(|take| take.status == "complete" && take.model_profile.starts_with("MOSS-Image")));
+    write_json_recoverable(
+        &output.join("existing-project.json"),
+        &json!({
+            "status":"passed", "sourceProjectUnchanged":true, "oldTakesUnchanged":copy.takes.len(),
+            "oldComfyRoot":copy.settings.comfy_root, "selectedComfyRoot":selected,
+            "elapsedSeconds":timer.elapsed().as_secs_f64(), "project":rendered
+        }),
+    )
+    .unwrap();
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Case {
@@ -170,7 +255,9 @@ async fn live_image_producer_acceptance() {
             project.settings.batch_size
         );
         let started = Instant::now();
-        let (_, ids) = studio.begin_generation(&project.id, None).unwrap();
+        let (_, ids) = studio
+            .begin_generation(&project.id, &project.settings.comfy_root, None)
+            .unwrap();
         let result = studio
             .render(
                 &project.id,
@@ -238,8 +325,10 @@ async fn live_image_cancel_and_restart_preserve_completed_takes() {
     assert!(!preserved.is_empty());
     // A new seed prevents a cached graph from completing before cancellation can be exercised.
     project.settings.seed = 93117;
-    studio.save_editable(project).unwrap();
-    let (_, ids) = studio.begin_generation(id, None).unwrap();
+    let project = studio.save_editable(project).unwrap();
+    let (_, ids) = studio
+        .begin_generation(id, &project.settings.comfy_root, None)
+        .unwrap();
     let cancel = CancellationToken::new();
     let started = Instant::now();
     let observe = async {
@@ -282,7 +371,9 @@ async fn live_image_cancel_and_restart_preserve_completed_takes() {
         .filter(|take| ids.contains(&take.id))
         .all(|take| take.status == "cancelled"));
     assert_eq!(cancelled.status, "ready");
-    let (_, interrupted_ids) = studio.begin_generation(id, None).unwrap();
+    let (_, interrupted_ids) = studio
+        .begin_generation(id, &project.settings.comfy_root, None)
+        .unwrap();
     studio.recover_interrupted().unwrap();
     let recovered = studio.get(id).unwrap();
     assert_eq!(recovered.phase, "interrupted");

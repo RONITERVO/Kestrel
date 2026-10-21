@@ -199,9 +199,18 @@ impl ImageStudio {
     pub fn begin_generation(
         &self,
         id: &str,
+        configured_comfy_root: &str,
         app: Option<&AppHandle>,
     ) -> Result<(ImageProject, Vec<String>), StudioError> {
         let mut project = self.get(id)?;
+        // Setup owns the installation used for new renders, including older image projects.
+        // Freeze its current location with this batch; completed takes retain their receipts.
+        if !Path::new(configured_comfy_root.trim()).is_absolute() {
+            return Err(StudioError::Invalid(
+                "choose an absolute ComfyUI folder in Setup before generating images".into(),
+            ));
+        }
+        project.settings.comfy_root = configured_comfy_root.trim().into();
         validate_render_ready(&project)?;
         let batch_size = project.settings.batch_size as usize;
         if project.takes.len().saturating_add(batch_size) > MAX_IMAGE_TAKES {
@@ -337,6 +346,7 @@ impl ImageStudio {
                 Some(cancel),
             )
             .await?;
+        verify_running_comfy_root(&self.http, &comfy_root).await?;
         self.backend.verify(&self.http, &comfy_root).await?;
         let prefix = format!("kestrel_image/{project_id}/take_{:03}", take_index + 1);
         let graph = self.backend.graph(
@@ -813,6 +823,35 @@ fn moss_graph(settings: &ImageSettings, seed: u64, prompt: &str, prefix: &str) -
         "14":{"class_type":"VAEDecode","inputs":{"samples":["13",0],"vae":["4",0]}},
         "15":{"class_type":"SaveImage","inputs":{"images":["14",0],"filename_prefix":prefix}}
     })
+}
+
+async fn verify_running_comfy_root(http: &Client, selected_root: &Path) -> Result<(), StudioError> {
+    let info: Value = http
+        .get(format!("{COMFY_BASE}/system_stats"))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    validate_running_comfy_root(&info, selected_root)
+}
+
+fn validate_running_comfy_root(info: &Value, selected_root: &Path) -> Result<(), StudioError> {
+    let selected_main = selected_root.join("main.py").canonicalize()?;
+    let running_main = info.pointer("/system/argv/0").and_then(Value::as_str);
+    let verified_main = running_main
+        .map(Path::new)
+        .filter(|path| path.is_absolute())
+        .and_then(|path| path.canonicalize().ok());
+    if verified_main.as_ref() != Some(&selected_main) {
+        return Err(StudioError::Render(format!(
+            "ComfyUI on port 8188 is running {} instead of the installation selected in Setup ({}). Stop the existing ComfyUI server, then choose Create image again so Kestrel can start the selected installation.",
+            running_main.unwrap_or("from an unverified folder"),
+            selected_root.display(),
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1336,7 +1375,9 @@ mod tests {
         let mut studio = ImageStudio::new(root.path()).unwrap();
         studio.backend = ImageBackend::Ideogram;
         let project = project(&studio);
-        let (_, ids) = studio.begin_generation(&project.id, None).unwrap();
+        let (_, ids) = studio
+            .begin_generation(&project.id, &project.settings.comfy_root, None)
+            .unwrap();
         studio.fail_generation(&project.id, &ids, "baseline receipt".into(), true, None);
         let baseline = studio.get(&project.id).unwrap();
         let receipt = serde_json::to_value(&baseline.takes[0]).unwrap();
@@ -1357,9 +1398,53 @@ mod tests {
         assert!(studio.save_editable(migrated.clone()).is_err());
         migrated.settings.negative_prompt.clear();
         studio.save_editable(migrated).unwrap();
-        let (next, _) = studio.begin_generation(&project.id, None).unwrap();
+        let selected_installation = root.path().join("new-comfy");
+        let selected_root = selected_installation.to_str().unwrap();
+        let (next, _) = studio
+            .begin_generation(&project.id, selected_root, None)
+            .unwrap();
+        assert_eq!(next.settings.comfy_root, selected_root);
+        assert_eq!(
+            studio.get(&project.id).unwrap().settings.comfy_root,
+            selected_root
+        );
         assert_eq!(serde_json::to_value(&next.takes[0]).unwrap(), receipt);
         assert!(next.takes[1].model_profile.starts_with("MOSS-Image"));
+    }
+
+    #[test]
+    fn generation_rejects_an_invalid_setup_location_without_changing_the_project() {
+        let root = TempDir::new().unwrap();
+        let studio = ImageStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let before = serde_json::to_value(&project).unwrap();
+        assert!(studio
+            .begin_generation(&project.id, "relative/comfy", None)
+            .is_err());
+        assert_eq!(
+            serde_json::to_value(studio.get(&project.id).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn running_comfy_must_match_the_selected_installation() {
+        let selected = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        for root in [&selected, &other] {
+            fs::write(root.path().join("main.py"), "# fixture").unwrap();
+        }
+        let correct = json!({"system":{"argv":[selected.path().join("main.py"),"--port","8188"]}});
+        validate_running_comfy_root(&correct, selected.path()).unwrap();
+        let wrong = json!({"system":{"argv":[other.path().join("main.py"),"--port","8188"]}});
+        let error = validate_running_comfy_root(&wrong, selected.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Stop the existing ComfyUI server"));
+        assert!(error.contains(selected.path().to_str().unwrap()));
+        for unverified in [json!({}), json!({"system":{"argv":["main.py"]}})] {
+            assert!(validate_running_comfy_root(&unverified, selected.path()).is_err());
+        }
     }
 
     fn project(studio: &ImageStudio) -> ImageProject {
@@ -1493,7 +1578,9 @@ mod tests {
         let mut project = project(&studio);
         project.settings.batch_size = 4;
         let project = studio.save_editable(project).unwrap();
-        let (_, take_ids) = studio.begin_generation(&project.id, None).unwrap();
+        let (_, take_ids) = studio
+            .begin_generation(&project.id, &project.settings.comfy_root, None)
+            .unwrap();
         let stored = studio.get(&project.id).unwrap();
         assert_eq!(take_ids.len(), 4);
         assert_eq!(take_ids.iter().collect::<HashSet<_>>().len(), 4);
@@ -1554,7 +1641,9 @@ mod tests {
         let root = TempDir::new().unwrap();
         let studio = ImageStudio::new(root.path()).unwrap();
         let project = project(&studio);
-        let (_, take_ids) = studio.begin_generation(&project.id, None).unwrap();
+        let (_, take_ids) = studio
+            .begin_generation(&project.id, &project.settings.comfy_root, None)
+            .unwrap();
         studio.fail_generation(&project.id, &take_ids, "test".into(), true, None);
         let mut edited = studio.get(&project.id).unwrap();
         edited.takes[0].path = r"C:\forged.png".into();
@@ -1648,7 +1737,9 @@ mod tests {
             color_palette: vec!["#173B68".into()],
         }];
         let project = studio.save_editable(project).unwrap();
-        let (_, take_ids) = studio.begin_generation(&project.id, None).unwrap();
+        let (_, take_ids) = studio
+            .begin_generation(&project.id, &project.settings.comfy_root, None)
+            .unwrap();
         let rendered = studio
             .render(
                 &project.id,

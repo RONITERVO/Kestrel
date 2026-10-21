@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ImageProject, PromptDraftEvent } from "../../../contracts/index";
+import type { ImageGenerationEvent, ImageProject, PromptDraftEvent } from "../../../contracts/index";
 import { sampleImage } from "../../../preview/studioFixtures";
 import { demoSnapshot } from "../../../preview/fixtures";
 import { ImageStudio, imageCompositionPreview } from "./ImageStudio";
@@ -9,13 +9,14 @@ const api = vi.hoisted(() => ({
   save: vi.fn(), start: vi.fn(), draft: vi.fn(), cancel: vi.fn(), cancelDraft: vi.fn(),
   get: vi.fn(), list: vi.fn(),
   onDraft: undefined as ((event: PromptDraftEvent) => void) | undefined,
+  onGeneration: undefined as ((event: ImageGenerationEvent) => void) | undefined,
 }));
 vi.mock("../../../platform/api", async (original) => ({
   ...await original<typeof import("../../../platform/api")>(),
   saveImageProject: api.save, startImageGeneration: api.start, startStudioPromptDraft: api.draft,
   cancelImageGeneration: api.cancel, cancelStudioPromptDraft: api.cancelDraft,
   getImageProject: api.get, listImageProjects: api.list,
-  onImageGeneration: async () => () => {}, onImageProjectUpdated: async () => () => {},
+  onImageGeneration: async (callback: (event: ImageGenerationEvent) => void) => { api.onGeneration = callback; return () => {}; }, onImageProjectUpdated: async () => () => {},
   onStudioPromptDraft: async (callback: (event: PromptDraftEvent) => void) => { api.onDraft = callback; return () => {}; },
 }));
 
@@ -142,11 +143,15 @@ describe("MOSS producer flow", () => {
       licenseNotice: "Original non-commercial model terms remain applicable.",
     }];
     stored.activeTakeId = "legacy-take";
+    stored.error = "The selected ComfyUI installation could not start.";
+    stored.phase = "failed";
     stored.licenseNotice = "New renders use MOSS-Image Base under Apache 2.0.";
     const deliver = vi.fn().mockResolvedValue(undefined);
     const done = vi.fn();
     render(<ImageStudio advancedEnabled={false} onError={vi.fn()} handoff={{ production: "Test movie", purpose: "poster", direction: "Use the preserved poster", deliver }} onHandoffDone={done} />);
     await screen.findByLabelText("Image project title");
+    expect(screen.getByRole("alert")).toHaveTextContent(stored.error);
+    expect(screen.getByAltText("Take 1")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Takes" }));
     expect(screen.getByText("Ideogram 4 original profile")).toBeTruthy();
     expect(screen.getByText("Original non-commercial model terms remain applicable.")).toBeTruthy();
@@ -155,5 +160,18 @@ describe("MOSS producer flow", () => {
     expect(deliver).toHaveBeenCalledWith(stored.id, "legacy-take");
     expect(api.start).not.toHaveBeenCalled();
     expect(api.save).not.toHaveBeenCalled();
+  });
+
+  it("keeps an asynchronous render failure visible after the progress strip stops", async () => {
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "Create image" }));
+    await screen.findByRole("button", { name: "Stop" });
+    stored.status = "ready";
+    stored.phase = "failed";
+    stored.error = "ComfyUI on port 8188 is running a different installation. Stop that server and retry.";
+    act(() => api.onGeneration?.({ projectId: stored.id, takeId: "failed-take", kind: "error", phase: "failed", detail: stored.error, at: new Date().toISOString() }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(stored.error);
+    expect(screen.getByRole("button", { name: "Create image" })).toBeEnabled();
+    expect(screen.queryByText("Preparing")).toBeNull();
   });
 });

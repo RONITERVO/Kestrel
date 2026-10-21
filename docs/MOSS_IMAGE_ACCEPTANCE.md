@@ -166,11 +166,11 @@ UTF-8, guarded by explicit assertions, and rerun before scoring.
 
 ## Verification
 
-- `cargo test --all-targets --manifest-path src-tauri/Cargo.toml`: 257 passed, 22 ignored.
+- `cargo test --all-targets --manifest-path src-tauri/Cargo.toml`: 259 passed, 24 ignored.
 - `cargo test --manifest-path crates/app-core/Cargo.toml`: 209 passed, including the box adapter.
 - `cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings`: passed.
 - `npm run check`: architecture, generated bindings and TypeScript checks passed.
-- `npm test -- --run`: 220 passed in 35 files, including six image desk flow tests.
+- `npm test -- --run`: 221 passed in 35 files, including seven image desk flow tests.
 - `npm run build` and `git diff --check`: passed.
 - Explicit live authored renders, real collaborator flows, and cancellation/recovery: passed
   their operational checks; visual outcomes are recorded separately above.
@@ -182,6 +182,37 @@ They use mocked IPC and jsdom layout; native renders and local-model streaming w
 separately through the actual Rust paths. Setup assets were downloaded and hash-verified; the
 interactive Setup installer, native file dialogs, actual WebView layout and physical pointer
 interaction remain part of the manual check.
+
+### Existing-project runtime regression
+
+The first native UI check exposed a case the original fresh-project matrix missed: an existing
+Ideogram project retained its old ComfyUI folder after Setup selected a new installation. The
+renderer also attached to any server answering on port 8188. When the old server lacked MOSS
+nodes, the failed take was saved correctly, but the progress strip disappeared and the old
+successful take kept the project status `ready`, hiding the error from the canvas.
+
+New image generations now read the current Setup folder in the native command and freeze it with
+the new batch. Older take receipts remain unchanged. Before submitting a graph, Image Studio
+checks the running server's reported absolute `main.py` path against the selected installation.
+A mismatched or unverifiable server produces an explicit stop-and-retry instruction; Kestrel does
+not terminate an unrelated server. Persistent failures are visible on the canvas after generation
+ends and after reopening the project, with individual errors available under Takes. Shared render
+errors use the media-service label instead of incorrectly naming H3 for image failures.
+
+Regression coverage includes legacy folder replacement without changing old receipts, invalid
+folder rejection without saving changes, matching/mismatched/unverifiable runtime identity, and
+failure display while earlier takes remain usable. The opt-in tests
+`live_existing_image_project_uses_selected_setup_runtime` and
+`live_image_rejects_a_different_comfy_installation` exercise the actual local service boundary.
+The former reads `KESTREL_IMAGE_EXISTING_PROJECT`, copies the project into the acceptance folder,
+and verifies that the source manifest and completed PNG hashes remain unchanged.
+
+Both live checks passed. The copied existing project generated and preserved a new 1536×1024
+MOSS image in 53.1 seconds, with all five earlier take records and the original completed image
+unchanged. Visual inspection confirmed a new coherent castle/forest/snow composition. The source
+project manifest was byte-identical after the test. The receipt is retained locally at
+`.artifacts/moss-acceptance/results/runtime-migration/existing-project.json`. The corrected native
+release executable was also built successfully; the producer still needs to retry in that build.
 
 ## Reproduction
 

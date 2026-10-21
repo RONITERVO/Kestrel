@@ -323,7 +323,7 @@ pub enum StudioError {
     NotFound(String),
     #[error("movie request is invalid: {0}")]
     Invalid(String),
-    #[error("MiniMax H3 render failed: {0}")]
+    #[error("local media render failed: {0}")]
     Render(String),
     #[error("studio operation was stopped")]
     Cancelled,

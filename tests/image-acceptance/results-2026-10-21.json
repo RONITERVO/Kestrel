@@ -1358,5 +1358,19 @@
     "parser": "ImageStudio.parseImageProposal",
     "bothPromptPacksParsed": true,
     "bothRevisionsSwappedObjectSides": true
+  },
+  "existingProjectRuntimeMigration": {
+    "status": "passed",
+    "elapsedSeconds": 53.0964657,
+    "sourceProjectUnchanged": true,
+    "oldTakesUnchanged": 5,
+    "newTake": {
+      "width": 1536,
+      "height": 1024,
+      "sha256": "e4b454a555a573e88303b1f5087da32b82b52e92348ed68be964b692bbb56b77",
+      "modelProfile": "MOSS-Image Base INT8 ConvRot + Qwen3.5 9B INT8 ConvRot + Flux 2 VAE; ComfyUI v0.42.1; model revision ee64003102c8470ee32501cf883419235db81884"
+    },
+    "mismatchedRunningInstallationRejected": true,
+    "visualNotes": "New coherent castle, snowy foreground, trees, mountains and cloudy sky; output preserved at full resolution."
   }
 }
