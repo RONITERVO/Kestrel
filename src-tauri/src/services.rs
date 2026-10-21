@@ -131,7 +131,16 @@ pub async fn start_comfy(comfy_root: &str, workload: ComfyWorkload) -> Result<()
         .await
         .is_ok_and(|response| response.status().is_success())
     {
-        return Ok(());
+        return crate::studio::verify_comfy_installation(
+            &client,
+            workload.base_url(),
+            Path::new(comfy_root),
+        )
+        .await
+        .map_err(|error| ServiceError::StartFailed {
+            name: "ComfyUI".into(),
+            details: error.to_string(),
+        });
     }
     let root = Path::new(comfy_root);
     let script = workload
@@ -168,7 +177,16 @@ pub async fn start_comfy(comfy_root: &str, workload: ComfyWorkload) -> Result<()
             .await
             .is_ok_and(|response| response.status().is_success())
         {
-            return Ok(());
+            return crate::studio::verify_comfy_installation(
+                &client,
+                workload.base_url(),
+                Path::new(comfy_root),
+            )
+            .await
+            .map_err(|error| ServiceError::StartFailed {
+                name: "ComfyUI".into(),
+                details: error.to_string(),
+            });
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }

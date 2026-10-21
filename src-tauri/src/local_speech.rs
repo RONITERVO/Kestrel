@@ -269,11 +269,23 @@ impl LocalSpeech {
         cancel: &CancellationToken,
     ) -> Result<(), SpeechError> {
         if self.comfy_ready().await {
-            return Ok(());
+            return crate::studio::verify_comfy_installation(
+                &self.http,
+                COMFY_BASE,
+                Path::new(comfy_root),
+            )
+            .await
+            .map_err(|error| SpeechError::Unavailable(error.to_string()));
         }
         let _startup = self.startup.lock().await;
         if self.comfy_ready().await {
-            return Ok(());
+            return crate::studio::verify_comfy_installation(
+                &self.http,
+                COMFY_BASE,
+                Path::new(comfy_root),
+            )
+            .await
+            .map_err(|error| SpeechError::Unavailable(error.to_string()));
         }
         let root = PathBuf::from(comfy_root);
         let main = root.join("main.py");
@@ -325,7 +337,13 @@ impl LocalSpeech {
                 _ = cancel.cancelled() => return Err(SpeechError::Cancelled),
             }
             if self.comfy_ready().await {
-                return Ok(());
+                return crate::studio::verify_comfy_installation(
+                    &self.http,
+                    COMFY_BASE,
+                    Path::new(comfy_root),
+                )
+                .await
+                .map_err(|error| SpeechError::Unavailable(error.to_string()));
             }
         }
         Err(SpeechError::Unavailable(format!(

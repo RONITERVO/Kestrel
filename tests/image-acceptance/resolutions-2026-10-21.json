@@ -1,0 +1,249 @@
+{
+  "date": "2026-10-21",
+  "hardware": "RTX 5070 12 GB / 64 GB RAM",
+  "runtime": "ComfyUI v0.42.1, native MOSS Base INT8 ConvRot and Qwen3.5 9B INT8 ConvRot, full Flux 2 VAE",
+  "source": {
+    "source": "https://raw.githubusercontent.com/OpenMOSS/MOSS-Image/main/comfyui/moss-image/example_workflows/moss-image-api.json",
+    "sourceSha256": "0b293d18872836bde5dfa9d71acd5bec613f5a805bb44e066f928ee6bb2c5995",
+    "adaptations": [
+      "Installed Comfy-Org INT8 component loaders replace the HF-directory loader, identically for both arms.",
+      "Native MOSS model defaults to shift 5 with timestep multiplier 1; do not copy the plugin ModelSamplingSD3 node.",
+      "The official arm retains KSampler; the Kestrel arm uses its equivalent split sampler nodes.",
+      "The official positive prompt, empty negative prompt, seed 42, 50 steps, CFG 3, Euler, sgm_uniform and layer-22 unconditional skip are preserved."
+    ],
+    "comparison": "Verbatim official prose versus the same scene completed in Kestrel producer fields, with a minimal photographic treatment and explicit placement boxes. No local LLM rewriting. This compares complete prompt strategies, not a serialization-only ablation."
+  },
+  "takes": [
+    {
+      "name": "Official prose · 1024 square",
+      "width": 1024,
+      "height": 1024,
+      "elapsedSeconds": 38.00879150000037,
+      "sha256": "816f50dfa52a467616484de0bd22d1a3e7e2adcac11da0c07ac425f04b8ff259",
+      "review": "All three lines appear correct. Close crop; fruit bowl partly cut off. No focus instruction in the prompt.",
+      "imageRelativeToEvidence": "official-plain/official.png",
+      "boxesNormalizedYxyx": []
+    },
+    {
+      "name": "Kestrel composition · 1024 square",
+      "width": 1024,
+      "height": 1024,
+      "elapsedSeconds": 32.5676217,
+      "sha256": "cfd640978f850abf3633999eea21a55814f2de060edfd537e2096977d274ecfe",
+      "review": "Three lines appear correct; deliberate object placement and a fully visible fruit bowl. Unrequested white border. The note is sharper than the adjoining refrigerator surface; neither prompt requests selective focus.",
+      "imageRelativeToEvidence": "kestrel-layout/moss/images/c7cd2b3a-4695-40a7-a8c2-ca4b944c0496/takes/take-001-18e2f195-6c42-467a-bad6-6b8a7ecabee9.png",
+      "boxesNormalizedYxyx": [
+        [
+          50,
+          50,
+          980,
+          550
+        ],
+        [
+          530,
+          550,
+          980,
+          990
+        ],
+        [
+          420,
+          680,
+          610,
+          920
+        ],
+        [
+          280,
+          200,
+          460,
+          480
+        ]
+      ]
+    },
+    {
+      "name": "Native 2K · 2048×1152",
+      "width": 2048,
+      "height": 1152,
+      "elapsedSeconds": 76.8007355,
+      "sha256": "fcf7b6cf8fb09b1c8a2ea5017ff5cbea29f7907998660ad003d037f845442514",
+      "review": "Correct EXPLORE and one mountain; clean edges. All measured blue ink inside its placement boxes.",
+      "imageRelativeToEvidence": "native-resolutions/moss/images/d717afa3-532d-4905-9141-4753fe456418/takes/take-001-8ab15e34-0dc7-4603-af3e-623a69a24390.png",
+      "boxesNormalizedYxyx": [
+        [
+          60,
+          100,
+          230,
+          900
+        ],
+        [
+          300,
+          170,
+          900,
+          830
+        ]
+      ]
+    },
+    {
+      "name": "Native QHD · 2560×1440",
+      "width": 2560,
+      "height": 1440,
+      "elapsedSeconds": 138.9892431,
+      "sha256": "7a1b195ddfa62735ee0c44fb85b9ded3933fb07e1eba6dc46cbc31d27c21285d",
+      "review": "Correct EXPLORE and one mountain. Title extends horizontally outside its box; 89.4% ink containment. Different snowcap and thinner letters.",
+      "imageRelativeToEvidence": "native-resolutions/moss/images/80ea0efa-dff0-4b8e-b65d-32a62277842d/takes/take-001-1f97b234-59cf-4782-be27-8410d191e5d0.png",
+      "boxesNormalizedYxyx": [
+        [
+          60,
+          100,
+          230,
+          900
+        ],
+        [
+          300,
+          170,
+          900,
+          830
+        ]
+      ]
+    },
+    {
+      "name": "QHD kitchen · 2560×1440",
+      "width": 2560,
+      "height": 1440,
+      "elapsedSeconds": 143.11746,
+      "sha256": "042d3c3d2e417a9ba7bf88897b7345437125c93d8d8315b5ae1613c90e40edb1",
+      "review": "Readable note and intended left/right composition. Soft photographic detail and an unrequested dark frame. More pixels do not guarantee a better image.",
+      "imageRelativeToEvidence": "qhd-photo/moss/images/8bd4d29c-de33-4460-9c9b-8885a4b2d673/takes/take-001-49a16d54-b139-4575-b0fd-46cef1628235.png",
+      "boxesNormalizedYxyx": [
+        [
+          50,
+          50,
+          980,
+          550
+        ],
+        [
+          530,
+          550,
+          980,
+          990
+        ],
+        [
+          420,
+          680,
+          610,
+          920
+        ],
+        [
+          280,
+          200,
+          460,
+          480
+        ]
+      ]
+    }
+  ],
+  "resolutionMeasurements": [
+    {
+      "case": "native-2k",
+      "width": 2048,
+      "height": 1152,
+      "elapsedSeconds": 76.8007355,
+      "sha256": "fcf7b6cf8fb09b1c8a2ea5017ff5cbea29f7907998660ad003d037f845442514",
+      "nativeDimensionsVerified": true,
+      "measurements": [
+        {
+          "element": "text",
+          "requestedBoxYxyx": [
+            69,
+            204,
+            265,
+            1844
+          ],
+          "measuredBluePixelBoundsYxyx": [
+            73,
+            216,
+            261,
+            1836
+          ],
+          "bluePixelContainment": 1.0,
+          "centerErrorPercentDiagonal": 0.085,
+          "limitation": "Color threshold measures blue ink only; the cream snowcap is not part of this mask."
+        },
+        {
+          "element": "obj",
+          "requestedBoxYxyx": [
+            345,
+            348,
+            1037,
+            1700
+          ],
+          "measuredBluePixelBoundsYxyx": [
+            427,
+            351,
+            1031,
+            1698
+          ],
+          "bluePixelContainment": 1.0,
+          "centerErrorPercentDiagonal": 1.617,
+          "limitation": "Color threshold measures blue ink only; the cream snowcap is not part of this mask."
+        }
+      ]
+    },
+    {
+      "case": "native-qhd",
+      "width": 2560,
+      "height": 1440,
+      "elapsedSeconds": 138.9892431,
+      "sha256": "7a1b195ddfa62735ee0c44fb85b9ded3933fb07e1eba6dc46cbc31d27c21285d",
+      "nativeDimensionsVerified": true,
+      "measurements": [
+        {
+          "element": "text",
+          "requestedBoxYxyx": [
+            86,
+            256,
+            332,
+            2304
+          ],
+          "measuredBluePixelBoundsYxyx": [
+            95,
+            197,
+            319,
+            2341
+          ],
+          "bluePixelContainment": 0.893762,
+          "centerErrorPercentDiagonal": 0.381,
+          "limitation": "Color threshold measures blue ink only; the cream snowcap is not part of this mask."
+        },
+        {
+          "element": "obj",
+          "requestedBoxYxyx": [
+            432,
+            435,
+            1296,
+            2125
+          ],
+          "measuredBluePixelBoundsYxyx": [
+            437,
+            436,
+            1294,
+            2130
+          ],
+          "bluePixelContainment": 0.999978,
+          "centerErrorPercentDiagonal": 0.114,
+          "limitation": "Color threshold measures blue ink only; the cream snowcap is not part of this mask."
+        }
+      ]
+    }
+  ],
+  "limits": "One take per strategy/scenario. Above 1–2 MP remains experimental. No claim of strict bounding-box adherence or physically consistent focus.",
+  "verification": {
+    "nativePassed": 263,
+    "ordinarySuiteLiveTestsIgnored": 27,
+    "corePassed": 209,
+    "uiPassed": 224,
+    "clippy": "passed",
+    "architectureBindingsTypes": "passed",
+    "uiBuild": "passed",
+    "releaseBuild": "passed"
+  }
+}

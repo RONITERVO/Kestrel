@@ -118,6 +118,13 @@ pub fn preview(
     portable_research.wikipedia_zim_path = portable_path(&portable_research.wikipedia_zim_path);
     portable_research.kiwix_server_path = portable_path(&portable_research.kiwix_server_path);
     portable_research.comfy_root = portable_path(&portable_research.comfy_root);
+    portable_research.muscriptor_executable_path =
+        portable_path(&portable_research.muscriptor_executable_path);
+    portable_research.muscriptor_model_path =
+        portable_path(&portable_research.muscriptor_model_path);
+    for path in portable_research.existing_model_paths.values_mut() {
+        *path = portable_path(path);
+    }
     portable_research.strata_root = portable_path(&portable_research.strata_root);
     portable_research.ffmpeg_path = portable_path(&portable_research.ffmpeg_path);
     portable_research.ffprobe_path = portable_path(&portable_research.ffprobe_path);
@@ -242,7 +249,30 @@ fn apply_profile(
     let imported_strata = localize_path(&profile.research.strata_root);
     let imported_ffmpeg = localize_path(&profile.research.ffmpeg_path);
     let imported_ffprobe = localize_path(&profile.research.ffprobe_path);
+    let imported_muscriptor_executable =
+        localize_path(&profile.research.muscriptor_executable_path);
+    let imported_muscriptor_model = localize_path(&profile.research.muscriptor_model_path);
     let mut research = profile.research;
+    research.muscriptor_executable_path =
+        existing_named_file(&imported_muscriptor_executable, "muscriptor.exe")
+            .or_else(|| existing_named_file(&imported_muscriptor_executable, "uvx.exe"))
+            .unwrap_or_else(|| current_research.muscriptor_executable_path.clone());
+    research.muscriptor_model_path = if valid_file(&imported_muscriptor_model, |path| {
+        path.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("safetensors"))
+    }) {
+        imported_muscriptor_model
+    } else {
+        current_research.muscriptor_model_path.clone()
+    };
+    research.existing_model_paths = research
+        .existing_model_paths
+        .into_iter()
+        .filter_map(|(id, path)| {
+            let path = localize_path(&path);
+            Path::new(&path).is_file().then_some((id, path))
+        })
+        .collect();
     research.bonsai_root = if valid_bonsai_root(&imported_bonsai) {
         imported_bonsai
     } else {
@@ -640,6 +670,10 @@ mod tests {
         let comfy = desired_root.join("ComfyUI");
         let ffmpeg = desired_root.join("Media").join("ffmpeg.exe");
         let ffprobe = desired_root.join("Media").join("ffprobe.exe");
+        let midi_runner = desired_root.join("Media").join("muscriptor.exe");
+        let midi_model = desired_root
+            .join("Media")
+            .join("external-large.safetensors");
         for folder in [
             &runtime,
             &models,
@@ -656,6 +690,8 @@ mod tests {
             comfy.join("main.py"),
             ffmpeg.clone(),
             ffprobe.clone(),
+            midi_runner.clone(),
+            midi_model.clone(),
         ] {
             fs::write(file, b"fixture").unwrap();
         }
@@ -671,6 +707,12 @@ mod tests {
             comfy_root: comfy.to_string_lossy().into_owned(),
             ffmpeg_path: ffmpeg.to_string_lossy().into_owned(),
             ffprobe_path: ffprobe.to_string_lossy().into_owned(),
+            muscriptor_executable_path: midi_runner.to_string_lossy().into_owned(),
+            muscriptor_model_path: midi_model.to_string_lossy().into_owned(),
+            existing_model_paths: std::collections::BTreeMap::from([(
+                "muscriptor:model.safetensors".into(),
+                midi_model.to_string_lossy().into_owned(),
+            )]),
             ..ResearchSettings::default()
         };
         let desired_control = ControlSettings {
@@ -724,6 +766,18 @@ mod tests {
         );
         assert_eq!(imported.research.comfy_root, desired_research.comfy_root);
         assert_eq!(imported.research.ffmpeg_path, desired_research.ffmpeg_path);
+        assert_eq!(
+            imported.research.muscriptor_executable_path,
+            desired_research.muscriptor_executable_path
+        );
+        assert_eq!(
+            imported.research.muscriptor_model_path,
+            desired_research.muscriptor_model_path
+        );
+        assert_eq!(
+            imported.research.existing_model_paths,
+            desired_research.existing_model_paths
+        );
         assert_eq!(
             imported.control.selected_model_id.as_deref(),
             Some("portable-model")

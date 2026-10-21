@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-21",
+  "workflow": "Real Kestrel create/save/begin/render/copy/dimension-check/hash path using the installed MOSS-Image Base INT8 runtime; no separate LLM rewriting.",
+  "hardware": "NVIDIA RTX 5070 12 GB, Windows, 64 GB RAM",
+  "source": "https://github.com/OpenMOSS/MOSS-Image/blob/main/comfyui/moss-image/example_workflows/moss-image-api.json",
+  "cases": [
+    {
+      "case": "official-fridge",
+      "prompt": "A wide view of a refrigerator beside a kitchen counter with a fruit bowl. A small sticky note on the refrigerator door is handwritten in Chinese:\n\"记得买牛奶和鸡蛋！\n牛奶两盒，鸡蛋一打。\n顺便带一袋面包。\"",
+      "promptMode": "plain",
+      "negativePrompt": "",
+      "width": 1024,
+      "height": 1024,
+      "seed": 42,
+      "steps": 50,
+      "elapsedSeconds": 58.7141509,
+      "sha256": "d77197c3f71313cdd02b3d41b4a1291045b61eab8e8fe38cec2d3c56b1ac5e88",
+      "decodedRgbSha256": "ee3230a15f1b0f2f7b7a05cebc4c3cf359b179ec4f01146dcbf2b745876fc8e3",
+      "verbatimPositiveVerified": true,
+      "inactiveCompositionPreserved": true,
+      "inactiveBoxCount": 4,
+      "qualityVerdict": "pass with observed limitations",
+      "matchesPriorOfficialDecodedPixels": true,
+      "visualReview": "Readable Chinese note on refrigerator door, fruit bowl at the left edge. Close crop rather than a wide view; preserves the previous official take limitations."
+    },
+    {
+      "case": "vague-cat",
+      "prompt": "a cat",
+      "promptMode": "plain",
+      "negativePrompt": "",
+      "width": 1024,
+      "height": 1024,
+      "seed": 42,
+      "steps": 50,
+      "elapsedSeconds": 32.602114,
+      "sha256": "163dabf0be8ee491424dc165ad7cddf24c548a5b439d05e86b1bd078bff7b0e2",
+      "decodedRgbSha256": "3fc4cab793dd8fadba8a6c04bd493e27e6704aae5c8641e72a12c02c4e2f9eeb",
+      "verbatimPositiveVerified": true,
+      "inactiveCompositionPreserved": true,
+      "inactiveBoxCount": 0,
+      "qualityVerdict": "pass",
+      "visualReview": "Visually reviewed for recognizable cat, coherent facial features and absence of accidental layout or typography from the inactive composition."
+    }
+  ]
+}

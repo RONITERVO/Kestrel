@@ -1091,7 +1091,7 @@ async fn start_studio_prompt_draft(
         let result = match managed.control_settings.load() {
             Ok(settings) => {
                 PromptDraftJob {
-                    app: app_for_task.clone(),
+                    events: app_for_task.clone().into(),
                     runtime: managed.runtime.clone(),
                     models,
                     settings,
@@ -1391,11 +1391,14 @@ fn spawn_movie_render(app: AppHandle, id: String, cancel: CancellationToken) {
         let _guard = WorkGuard(&managed.work_active);
         release_all_comfy_memory(&managed).await;
         let _ = managed.runtime.stop_managed().await;
-        let result = managed
-            .studio
-            .render(&id, &cancel, Some(&app))
-            .await
-            .map_err(|error| error.to_string());
+        let result = match managed.research_settings.load() {
+            Ok(settings) => managed
+                .studio
+                .render(&id, &settings.comfy_root, &cancel, Some(&app))
+                .await
+                .map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
         release_all_comfy_memory(&managed).await;
         if let Err(error) = result {
             if cancel.is_cancelled() {
@@ -1463,9 +1466,8 @@ fn create_music_project(
             .research_settings
             .load()
             .map_err(|error| error.to_string())?;
-        let (executable, model, marker) =
-            setup::managed_muscriptor_paths(std::path::Path::new(&settings.install_root));
-        if executable.is_file() && model.is_file() && marker.is_file() {
+        let (executable, model, _) = setup::configured_muscriptor_paths(&settings);
+        if setup::muscriptor_is_ready(&settings) {
             request.muscriptor_executable_path = executable.to_string_lossy().into_owned();
             request.muscriptor_model_path = model.to_string_lossy().into_owned();
         }
@@ -1783,13 +1785,17 @@ async fn start_music_generation(
     state: State<'_, AppState>,
 ) -> Result<MusicProject, String> {
     ensure_workspace_idle(&state)?;
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Another local AI or media job is already active.".to_string())?;
     let (project, take_id) = state
         .music
-        .begin_generation(&id, Some(&app))
+        .begin_generation(&id, &settings.comfy_root, Some(&app))
         .map_err(|error| {
             state.work_active.store(false, Ordering::Release);
             error.to_string()
@@ -1854,6 +1860,11 @@ async fn transcribe_music_midi(
     state: State<'_, AppState>,
 ) -> Result<MusicProject, String> {
     let _guard = claim_workspace(&state)?;
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let (executable, model, _) = setup::configured_muscriptor_paths(&settings);
     release_all_comfy_memory(&state).await;
     state
         .runtime
@@ -1862,7 +1873,7 @@ async fn transcribe_music_midi(
         .map_err(|error| error.to_string())?;
     state
         .music
-        .transcribe_midi(request)
+        .transcribe_midi(request, (&executable, &model))
         .await
         .map_err(|error| error.to_string())
 }
@@ -1977,13 +1988,17 @@ async fn start_image_generation(
     state: State<'_, AppState>,
 ) -> Result<ImageProject, String> {
     ensure_workspace_idle(&state)?;
+    let settings = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Another local AI or media job is already active.".to_string())?;
     let (project, take_ids) = state
         .images
-        .begin_generation(&id, Some(&app))
+        .begin_generation(&id, &settings.comfy_root, Some(&app))
         .map_err(|error| {
             state.work_active.store(false, Ordering::Release);
             error.to_string()
@@ -2262,7 +2277,7 @@ async fn install_setup_component(
         }
         *active = Some(cancel.clone());
     }
-    let result = setup::install_component(&app, &mut research, &request, cancel).await;
+    let result = setup::install_component(Some(&app), &mut research, &request, cancel).await;
     if let Ok(mut active) = state.setup_job.lock() {
         *active = None;
     }

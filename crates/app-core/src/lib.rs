@@ -199,6 +199,12 @@ pub struct SetupLocations {
     pub ffprobe_path: String,
     #[serde(default)]
     pub strata_root: String,
+    #[serde(default)]
+    pub muscriptor_executable_path: String,
+    #[serde(default)]
+    pub muscriptor_model_path: String,
+    #[serde(default)]
+    pub existing_model_paths: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
@@ -820,6 +826,10 @@ pub struct ResearchSettings {
     /// Strata folder Setup installed or the producer chose. Other Strata folders that Strata
     /// itself records for this Windows user are discovered too; this one is where Setup installs.
     pub strata_root: String,
+    pub muscriptor_executable_path: String,
+    pub muscriptor_model_path: String,
+    /// Producer-selected sources for verified Setup reuse, including libraries on other drives.
+    pub existing_model_paths: BTreeMap<String, String>,
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub research_lanes: u32,
@@ -867,6 +877,9 @@ impl Default for ResearchSettings {
             ffmpeg_path: String::new(),
             ffprobe_path: String::new(),
             strata_root: strata_root.to_string_lossy().into_owned(),
+            muscriptor_executable_path: String::new(),
+            muscriptor_model_path: String::new(),
+            existing_model_paths: BTreeMap::new(),
             context_window: 98_304,
             max_output_tokens: 32_768,
             research_lanes: 6,
@@ -1716,6 +1729,7 @@ pub struct ContextAttachmentImport {
 }
 
 pub mod ideogram;
+pub mod moss;
 
 pub use image::ImageProjectEdit;
 

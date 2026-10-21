@@ -23,12 +23,10 @@ pub use kestrel_app_core::{
 const BONSAI_REVISION: &str = "abbae723028d71be674e71e1a71201a6f43fab22";
 const BONSAI_RELEASE: &str = "prism-b9596-9fcaed7";
 const H3_REVISION: &str = "0bd506d2e895983a9663037febda27aa3948cf48";
-const COMFY_VERSION: &str = "v0.33.1";
+const COMFY_VERSION: &str = "v0.42.1";
 const MUSIC_REVISION: &str = "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6";
-const IDEOGRAM_REVISION: &str = "9d0e686d42c1b1e575f0de15104d68e9157f59a0";
-const QWEN3_VL_REVISION: &str = "d3f437bd7bd2df08e77c8fe5c51ca4239f753aa3";
+const MOSS_REVISION: &str = "ee64003102c8470ee32501cf883419235db81884";
 const FLUX2_REVISION: &str = "06029c966dd5b73929c909f046cbd29303b98879";
-const IDEOGRAM_LICENSE_REVISION: &str = "990fe1c4e950bb9e9dc90e01c0ad98ba434f83c2";
 const KJ_PREVIEW_REVISION: &str = "3f20054214fec9f9234fd3841ae6f1e4287948f6";
 const KJ_PREVIEW_NODE_BYTES: u64 = 37_233;
 const KJ_TINY_VAE_BYTES: u64 = 8_999;
@@ -214,12 +212,13 @@ fn strata_blocker(gpu: Option<&crate::strata::Gpu>, system_memory_bytes: u64) ->
     })
 }
 
-const SPEECH_PYTHON_PACKAGES: [&str; 5] = [
+const SPEECH_PYTHON_PACKAGES: [&str; 6] = [
     "openai-whisper==20250625",
     "s3tokenizer==0.3.0",
     "conformer==0.3.2",
     "librosa==0.11.0",
     "soundfile==0.14.0",
+    "diffusers==0.38.0",
 ];
 
 #[derive(Debug, Error)]
@@ -298,15 +297,15 @@ pub fn snapshot(
         || music_assets()
             .iter()
             .any(|asset| comfy.join("models").join(asset.relative).is_file());
-    let image_files = ideogram_assets()
+    let image_files = image_assets()
         .iter()
         .all(|asset| file_has_size(&comfy.join(asset.relative), asset.download.bytes));
-    let image_nodes = comfy.join("comfy_extras/nodes_ideogram4.py").is_file()
+    let image_nodes = comfy.join("comfy_extras/nodes_moss_image.py").is_file()
         && comfy.join("comfy_extras/nodes_custom_sampler.py").is_file();
     let image_ready =
         comfy.join("main.py").is_file() && generic_launcher && image_nodes && image_files;
     let image_partial = image_nodes
-        || ideogram_assets()
+        || image_assets()
             .iter()
             .any(|asset| comfy.join(asset.relative).is_file());
     let speech_files = speech_assets()
@@ -330,12 +329,8 @@ pub fn snapshot(
             .iter()
             .any(|asset| comfy.join(asset.relative).is_file());
     let (muscriptor_executable, muscriptor_model, muscriptor_marker) =
-        managed_muscriptor_paths(Path::new(&research.install_root));
-    let muscriptor_ready = muscriptor_executable.is_file()
-        && fs::metadata(&muscriptor_model)
-            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == MUSCRIPTOR_MODEL_BYTES)
-        && read_bounded_text(&muscriptor_marker, 256)
-            .is_some_and(|value| value.trim() == MUSCRIPTOR_SETUP_REVISION);
+        configured_muscriptor_paths(research);
+    let muscriptor_ready = muscriptor_is_ready(research);
     let muscriptor_partial = muscriptor_executable.is_file()
         || muscriptor_model.is_file()
         || muscriptor_marker.is_file();
@@ -368,7 +363,7 @@ pub fn snapshot(
     let missing_comfy_bytes = if comfy.join("main.py").is_file() {
         0
     } else {
-        2_133_107_036
+        2_018_444_114
     };
 
     let components = vec![
@@ -451,30 +446,17 @@ pub fn snapshot(
         ),
         component(
             "image",
-            "Ideogram 4 Image Studio",
+            "MOSS-Image Base Image Studio",
             (image_ready, image_partial),
             if image_ready {
-                "Ready for private non-commercial image design with structured layout and typography control."
+                "Ready for private image design with structured layout and typography control."
             } else if comfy.join("main.py").is_file() && !image_nodes {
-                "ComfyUI must be updated to 0.33.1 or newer before Kestrel can install the native Ideogram 4 workflow."
+                "ComfyUI must be updated to 0.42.1 or newer before Kestrel can install the native MOSS-Image Base workflow."
             } else {
-                "Optional: about 16.4 GiB for the 12 GB NVIDIA profile. Ideogram's license permits non-commercial work only."
+                "About 14.4 GiB for the INT8 profile. MOSS-Image Base uses Apache 2.0; layout control is experimental."
             },
             &research.comfy_root,
-            (
-                missing_model_bytes("image")
-                    + missing_comfy_bytes
-                    + if file_has_size(
-                        &comfy
-                            .join("models/diffusion_models/IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt"),
-                        13_646,
-                    ) {
-                        0
-                    } else {
-                        13_646
-                    },
-                true,
-            ),
+            (missing_model_bytes("image") + missing_comfy_bytes, true),
         ),
         component(
             "speech",
@@ -634,6 +616,17 @@ pub fn apply_locations(
     control: &mut ControlSettings,
     locations: SetupLocations,
 ) -> Result<(), SetupError> {
+    validate_model_paths(&locations.existing_model_paths)?;
+    for value in [
+        &locations.ffmpeg_path,
+        &locations.ffprobe_path,
+        &locations.muscriptor_executable_path,
+        &locations.muscriptor_model_path,
+    ] {
+        if !value.trim().is_empty() && !Path::new(value.trim()).is_absolute() {
+            return Err(SetupError::InvalidPath(value.clone()));
+        }
+    }
     for value in [
         &locations.install_root,
         &locations.bonsai_root,
@@ -682,16 +675,24 @@ pub fn apply_locations(
     research.strata_root = strata_root;
     research.ffmpeg_path = locations.ffmpeg_path;
     research.ffprobe_path = locations.ffprobe_path;
+    research.muscriptor_executable_path = locations.muscriptor_executable_path.trim().into();
+    research.muscriptor_model_path = locations.muscriptor_model_path.trim().into();
+    research.existing_model_paths = locations.existing_model_paths;
     control.engine_path = locations.engine_path;
     Ok(())
 }
 
 pub async fn install_component(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     settings: &mut ResearchSettings,
     request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
+    let mut request = request.clone();
+    let mut sources = settings.existing_model_paths.clone();
+    sources.extend(request.existing_model_paths);
+    request.existing_model_paths = sources;
+    let request = &request;
     validate_existing_model_paths(request)?;
     let root = PathBuf::from(request.install_root.trim());
     if !root.is_absolute() {
@@ -707,17 +708,7 @@ pub async fn install_component(
         "media" => install_media(app, settings, &root, cancel).await,
         "studio" => install_studio(app, settings, &root, request, cancel).await,
         "music" => install_music(app, settings, &root, request, cancel).await,
-        "image" => {
-            install_image(
-                app,
-                settings,
-                &root,
-                request,
-                request.accept_ideogram_non_commercial_license,
-                cancel,
-            )
-            .await
-        }
+        "image" => install_image(app, settings, &root, request, cancel).await,
         "speech" => {
             install_speech(
                 app,
@@ -753,7 +744,11 @@ pub async fn install_component(
 }
 
 fn validate_existing_model_paths(request: &SetupInstallRequest) -> Result<(), SetupError> {
-    if request.existing_model_paths.len() > 32 {
+    validate_model_paths(&request.existing_model_paths)
+}
+
+fn validate_model_paths(paths: &BTreeMap<String, String>) -> Result<(), SetupError> {
+    if paths.len() > 32 {
         return Err(SetupError::Dependency {
             name: "existing model selection".into(),
             details: "at most 32 supported model files can be selected for one setup run".into(),
@@ -764,7 +759,7 @@ fn validate_existing_model_paths(request: &SetupInstallRequest) -> Result<(), Se
         .map(|asset| asset.id())
         .collect::<Vec<_>>();
     ids.push("muscriptor:model.safetensors".into());
-    for (id, path) in &request.existing_model_paths {
+    for (id, path) in paths {
         if !ids.contains(id) {
             return Err(SetupError::Dependency {
                 name: "existing model selection".into(),
@@ -777,12 +772,15 @@ fn validate_existing_model_paths(request: &SetupInstallRequest) -> Result<(), Se
                 details: format!("the selected path for {id} is too long"),
             });
         }
+        if !path.trim().is_empty() && !Path::new(path.trim()).is_absolute() {
+            return Err(SetupError::InvalidPath(path.clone()));
+        }
     }
     Ok(())
 }
 
 async fn install_assistant(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     settings: &mut ResearchSettings,
     root: &Path,
     request: &SetupInstallRequest,
@@ -847,7 +845,7 @@ async fn install_assistant(
 }
 
 async fn install_wikipedia(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     settings: &mut ResearchSettings,
     root: &Path,
     edition: &str,
@@ -912,7 +910,7 @@ async fn install_wikipedia(
 }
 
 async fn install_media(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     settings: &mut ResearchSettings,
     root: &Path,
     cancel: CancellationToken,
@@ -1001,7 +999,7 @@ async fn install_media(
 }
 
 async fn install_studio(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     settings: &mut ResearchSettings,
     root: &Path,
     request: &SetupInstallRequest,
@@ -1013,8 +1011,13 @@ async fn install_studio(
             details: "no NVIDIA GPU was detected. H3 is optional and is not practical on this computer; the rest of Kestrel can still be installed.".into(),
         });
     }
-    let comfy =
-        install_comfy_portable(app, root, "studio", ComfyRequirement::Base, &cancel).await?;
+    // Movie setup must use the same producer-selected installation as image, music and speech.
+    // Reverting to <install root>/ComfyUI here strands all models in the selected installation.
+    let comfy = if let Some(configured) = existing_comfy_root(settings) {
+        configured
+    } else {
+        install_comfy_portable(app, root, "studio", ComfyRequirement::Base, &cancel).await?
+    };
     for asset in reusable_model_assets()
         .into_iter()
         .filter(|asset| asset.component == "studio")
@@ -1044,7 +1047,7 @@ async fn install_studio(
 enum ComfyRequirement {
     Base,
     Music,
-    Ideogram,
+    Moss,
 }
 
 impl ComfyRequirement {
@@ -1052,8 +1055,8 @@ impl ComfyRequirement {
         match self {
             Self::Base => true,
             Self::Music => comfy.join("comfy_extras/nodes_minimax_music.py").is_file(),
-            Self::Ideogram => {
-                comfy.join("comfy_extras/nodes_ideogram4.py").is_file()
+            Self::Moss => {
+                comfy.join("comfy_extras/nodes_moss_image.py").is_file()
                     && comfy.join("comfy_extras/nodes_custom_sampler.py").is_file()
             }
         }
@@ -1063,13 +1066,13 @@ impl ComfyRequirement {
         match self {
             Self::Base => "the installed ComfyUI is incomplete",
             Self::Music => "the installed ComfyUI does not contain native MiniMax Music 3 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.0+, then resume",
-            Self::Ideogram => "the installed ComfyUI does not contain native Ideogram 4 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.1+, then resume",
+            Self::Moss => "the installed ComfyUI does not contain native MOSS-Image Base nodes; remove the stale Kestrel-owned portable folder or update it to 0.42.1+, then resume",
         }
     }
 }
 
 async fn install_comfy_portable(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     root: &Path,
     component: &str,
     requirement: ComfyRequirement,
@@ -1078,9 +1081,9 @@ async fn install_comfy_portable(
     let portable = Asset::new(
         "ComfyUI portable",
         &format!("https://github.com/Comfy-Org/ComfyUI/releases/download/{COMFY_VERSION}/ComfyUI_windows_portable_nvidia.7z"),
-        "ComfyUI_windows_portable_nvidia-v0.33.1.7z",
-        2_133_107_036,
-        "4a221588979b96b8244e0e50b2edca03af732acae1deba69d60aa3b4d60b9dba",
+        "ComfyUI_windows_portable_nvidia-v0.42.1.7z",
+        2_018_444_114,
+        "496afd18790ec685d99ebba2edf200d7371a29fbdd3a992bb0f4f52f244a6874",
     );
     let portable_root = root.join("ComfyUI_windows_portable");
     let comfy = portable_root.join("ComfyUI");
@@ -1116,7 +1119,7 @@ async fn install_comfy_portable(
 }
 
 async fn install_music(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     settings: &mut ResearchSettings,
     root: &Path,
     request: &SetupInstallRequest,
@@ -1176,36 +1179,28 @@ async fn install_music(
 }
 
 async fn install_image(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     settings: &mut ResearchSettings,
     root: &Path,
     request: &SetupInstallRequest,
-    accepted_license: bool,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
-    if !accepted_license {
-        return Err(SetupError::Dependency {
-            name: "Ideogram 4 Image Studio".into(),
-            details: "Ideogram 4 is available only under Ideogram's Non-Commercial Model Agreement. Read and explicitly accept that agreement in Setup before downloading the model.".into(),
-        });
-    }
     if crate::services::gpu_snapshot().await.is_none() {
         return Err(SetupError::Download {
-            name: "Ideogram 4 Image Studio".into(),
+            name: "MOSS-Image Base Image Studio".into(),
             details: "no NVIDIA GPU was detected. Keep using the rest of Kestrel, or configure a supported local ComfyUI computer before installing image generation.".into(),
         });
     }
     let configured = PathBuf::from(settings.comfy_root.trim());
     let comfy = if configured.join("main.py").is_file() {
-        if !ComfyRequirement::Ideogram.available_in(&configured) {
+        if !ComfyRequirement::Moss.available_in(&configured) {
             if is_kestrel_managed_comfy_root(&configured, root) {
-                install_comfy_portable(app, root, "image", ComfyRequirement::Ideogram, &cancel)
-                    .await?
+                install_comfy_portable(app, root, "image", ComfyRequirement::Moss, &cancel).await?
             } else {
                 return Err(SetupError::Download {
-                    name: "Ideogram 4 Image Studio".into(),
+                    name: "MOSS-Image Base Image Studio".into(),
                     details: format!(
-                        "{} is older than ComfyUI 0.33.1. Update this producer-managed installation first; Kestrel will not overwrite it.",
+                        "{} is older than ComfyUI 0.42.1. Update this producer-managed installation first; Kestrel will not overwrite it.",
                         configured.display()
                     ),
                 });
@@ -1214,7 +1209,7 @@ async fn install_image(
             configured
         }
     } else {
-        install_comfy_portable(app, root, "image", ComfyRequirement::Ideogram, &cancel).await?
+        install_comfy_portable(app, root, "image", ComfyRequirement::Moss, &cancel).await?
     };
     for asset in reusable_model_assets()
         .into_iter()
@@ -1226,7 +1221,7 @@ async fn install_image(
         }
         install_or_reuse_model(app, request, &asset, &destination, &cancel).await?;
     }
-    for asset in ideogram_assets()
+    for asset in image_assets()
         .into_iter()
         .filter(|asset| !asset.relative.ends_with(".safetensors"))
     {
@@ -1242,7 +1237,7 @@ async fn install_image(
         app,
         "image",
         "complete",
-        "Ideogram 4 is installed and verified for offline non-commercial image production.",
+        "MOSS-Image Base is installed and verified for offline image production.",
         1,
         1,
         0,
@@ -1251,7 +1246,7 @@ async fn install_image(
 }
 
 async fn install_speech(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     settings: &mut ResearchSettings,
     root: &Path,
     request: &SetupInstallRequest,
@@ -1346,8 +1341,50 @@ pub(crate) fn managed_muscriptor_paths(root: &Path) -> (PathBuf, PathBuf, PathBu
     )
 }
 
+fn existing_comfy_root(settings: &ResearchSettings) -> Option<PathBuf> {
+    let root = PathBuf::from(settings.comfy_root.trim());
+    (root.is_absolute() && root.join("main.py").is_file()).then_some(root)
+}
+
+pub(crate) fn configured_muscriptor_paths(
+    settings: &ResearchSettings,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let (executable, model, marker) = managed_muscriptor_paths(Path::new(&settings.install_root));
+    (
+        if settings.muscriptor_executable_path.trim().is_empty() {
+            executable
+        } else {
+            PathBuf::from(&settings.muscriptor_executable_path)
+        },
+        if settings.muscriptor_model_path.trim().is_empty() {
+            model
+        } else {
+            PathBuf::from(&settings.muscriptor_model_path)
+        },
+        marker,
+    )
+}
+
+pub(crate) fn muscriptor_is_ready(settings: &ResearchSettings) -> bool {
+    let (executable, model, marker) = configured_muscriptor_paths(settings);
+    if !executable.is_absolute()
+        || !executable.is_file()
+        || validate_muscriptor_checkpoint(&model).is_err()
+    {
+        return false;
+    }
+    // A directly selected installed console entry point does not need Kestrel's installer receipt.
+    // The managed uvx runner does: its offline package cache must have been prepared by Setup.
+    executable
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("muscriptor.exe"))
+        || (executable == managed_muscriptor_paths(Path::new(&settings.install_root)).0
+            && read_bounded_text(&marker, 256)
+                .is_some_and(|value| value.trim() == MUSCRIPTOR_SETUP_REVISION))
+}
+
 async fn install_muscriptor(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     root: &Path,
     checkpoint_path: &str,
     accepted_license: bool,
@@ -1494,7 +1531,7 @@ fn uv_runner_asset(name: &str) -> Asset {
 /// layer. Every step is resumable: finished files are verified and kept, and Strata's setup skips
 /// what it already prepared.
 async fn install_strata(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     settings: &mut ResearchSettings,
     request: &SetupInstallRequest,
     cancel: CancellationToken,
@@ -1691,7 +1728,7 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), SetupError> {
 /// A private Python 3.12 environment inside the Strata folder, created by the pinned uv runner
 /// from its checksum-verified Python builds. Nothing is installed for the Windows user.
 async fn ensure_strata_python(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     data: &Path,
     strata: &Path,
     cancel: &CancellationToken,
@@ -1757,7 +1794,7 @@ async fn ensure_strata_python(
 /// process tree (pip, the draft-layer fetch) is owned by one job and stops on Pause.
 #[allow(clippy::too_many_arguments)]
 async fn run_strata_setup(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     python: &Path,
     strata: &Path,
     data: &Path,
@@ -2111,7 +2148,7 @@ fn install_kestrel_whisper_node(comfy: &Path) -> Result<(), SetupError> {
 }
 
 async fn ensure_speech_python(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     comfy: &Path,
     kestrel_managed: bool,
     cancel: &CancellationToken,
@@ -2195,7 +2232,7 @@ async fn speech_python_ready(python: &Path) -> bool {
     let mut command = tokio::process::Command::new(python);
     command.args([
         "-c",
-        "import whisper,s3tokenizer,conformer,librosa,soundfile; print('kestrel-speech-ready')",
+        "import whisper,s3tokenizer,conformer,librosa,soundfile; from diffusers.models.activations import get_activation; from diffusers.models.attention_processor import Attention; print('kestrel-speech-ready')",
     ]);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
@@ -2249,7 +2286,8 @@ fn mark_kestrel_managed_comfy_root(comfy: &Path) -> Result<(), SetupError> {
 
 fn speech_marker_contents() -> String {
     format!(
-        "{KESTREL_WHISPER_ADAPTER_REVISION}\nchatterbox-node={CHATTERBOX_NODE_REVISION}\nchatterbox-model={CHATTERBOX_MODEL_REVISION}\n"
+        "{KESTREL_WHISPER_ADAPTER_REVISION}\nchatterbox-node={CHATTERBOX_NODE_REVISION}\nchatterbox-model={CHATTERBOX_MODEL_REVISION}\npython-packages={}\n",
+        SPEECH_PYTHON_PACKAGES.join(",")
     )
 }
 
@@ -2410,71 +2448,42 @@ fn music_assets() -> Vec<MusicAsset> {
     ]
 }
 
-struct IdeogramAsset {
+struct ImageAsset {
     relative: &'static str,
     download: Asset,
 }
 
-fn ideogram_assets() -> Vec<IdeogramAsset> {
+fn image_assets() -> Vec<ImageAsset> {
     vec![
-        IdeogramAsset {
-            relative: "models/diffusion_models/ideogram4_nvfp4_mixed.safetensors",
+        ImageAsset {
+            relative: "models/diffusion_models/moss_image_base_int8_convrot.safetensors",
             download: Asset::new(
-                "Ideogram 4 conditional NVFP4 model",
-                &format!(
-                    "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/{IDEOGRAM_REVISION}/diffusion_models/ideogram4_nvfp4_mixed.safetensors"
-                ),
-                "ideogram4_nvfp4_mixed.safetensors",
-                5_490_550_037,
-                "e7923b4b0a1129ae5afcc09e63046185688c8b09eb9a1a748cccdbde5d381609",
+                "MOSS-Image Base INT8 ConvRot model",
+                &format!("https://huggingface.co/Comfy-Org/MOSS-Image/resolve/{MOSS_REVISION}/diffusion_models/moss_image_base_int8_convrot.safetensors"),
+                "moss_image_base_int8_convrot.safetensors",
+                5_413_698_958,
+                "f601c1e1161915fb3fea003da0c1782e374dd960fbb3978bc0e4e3fa1f2d8e6f",
             ),
         },
-        IdeogramAsset {
-            relative: "models/diffusion_models/ideogram4_unconditional_nvfp4_mixed.safetensors",
+        ImageAsset {
+            relative: "models/text_encoders/qwen3.5_9b_int8_convrot.safetensors",
             download: Asset::new(
-                "Ideogram 4 unconditional NVFP4 model",
-                &format!(
-                    "https://huggingface.co/Comfy-Org/Ideogram-4/resolve/{IDEOGRAM_REVISION}/diffusion_models/ideogram4_unconditional_nvfp4_mixed.safetensors"
-                ),
-                "ideogram4_unconditional_nvfp4_mixed.safetensors",
-                5_490_550_037,
-                "639e37bd1dd7ee35e23c7cfccf93a518ddc7f4587818956ec42b31e659fd6ac0",
+                "MOSS-Image Qwen3.5 9B INT8 ConvRot text encoder",
+                &format!("https://huggingface.co/Comfy-Org/MOSS-Image/resolve/{MOSS_REVISION}/text_encoders/qwen3.5_9b_int8_convrot.safetensors"),
+                "qwen3.5_9b_int8_convrot.safetensors",
+                9_748_121_532,
+                "32e3787472f708fa5f83624acbf5ef23f7fc89c439e05065ea57cfe5a97f025a",
             ),
         },
-        IdeogramAsset {
-            relative: "models/text_encoders/qwen3vl_8b_nvfp4.safetensors",
-            download: Asset::new(
-                "Ideogram 4 Qwen3-VL text encoder",
-                &format!(
-                    "https://huggingface.co/Comfy-Org/Qwen3-VL/resolve/{QWEN3_VL_REVISION}/text_encoders/qwen3vl_8b_nvfp4.safetensors"
-                ),
-                "qwen3vl_8b_nvfp4.safetensors",
-                6_305_221_764,
-                "e462e9e0c3b9313ae17f82040d7c77beb92d7aef3e40692d7803228dab7c3b98",
-            ),
-        },
-        IdeogramAsset {
+        // Reuse Kestrel's pinned full-quality Flux 2 decoder, also supported by MOSS.
+        ImageAsset {
             relative: "models/vae/flux2-vae.safetensors",
             download: Asset::new(
-                "Ideogram 4 Flux 2 decoder",
-                &format!(
-                    "https://huggingface.co/Comfy-Org/flux2-dev/resolve/{FLUX2_REVISION}/split_files/vae/flux2-vae.safetensors"
-                ),
+                "MOSS-Image Flux 2 decoder",
+                &format!("https://huggingface.co/Comfy-Org/flux2-dev/resolve/{FLUX2_REVISION}/split_files/vae/flux2-vae.safetensors"),
                 "flux2-vae.safetensors",
                 336_213_556,
                 "d64f3a68e1cc4f9f4e29b6e0da38a0204fe9a49f2d4053f0ec1fa1ca02f9c4b5",
-            ),
-        },
-        IdeogramAsset {
-            relative: "models/diffusion_models/IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt",
-            download: Asset::new(
-                "Ideogram 4 Non-Commercial Model Agreement",
-                &format!(
-                    "https://raw.githubusercontent.com/ideogram-oss/ideogram4/{IDEOGRAM_LICENSE_REVISION}/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL"
-                ),
-                "IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt",
-                13_646,
-                "8e631193e8cab3632f93fc4e72689f6e41fb6e2e1b9fab5ab8cb17b5909bc8b2",
             ),
         },
     ]
@@ -2651,7 +2660,7 @@ fn h3_live_preview_ready(comfy: &Path) -> bool {
 }
 
 async fn ensure_h3_preview_node(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     comfy: &Path,
     cancel: &CancellationToken,
 ) -> Result<(), SetupError> {
@@ -2829,7 +2838,7 @@ fn reusable_model_assets() -> Vec<ReusableModelAsset> {
         download: asset.download_asset(),
     }));
     assets.extend(
-        ideogram_assets()
+        image_assets()
             .into_iter()
             .filter(|asset| asset.relative.ends_with(".safetensors"))
             .map(|asset| ReusableModelAsset {
@@ -2874,7 +2883,7 @@ fn setup_model_assets(research: &ResearchSettings) -> Vec<SetupModelAsset> {
             }
         })
         .collect::<Vec<_>>();
-    let (_, muscriptor_model, _) = managed_muscriptor_paths(Path::new(&research.install_root));
+    let (_, muscriptor_model, _) = configured_muscriptor_paths(research);
     assets.push(SetupModelAsset {
         id: "muscriptor:model.safetensors".into(),
         component: "muscriptor".into(),
@@ -2947,7 +2956,7 @@ pub fn scan_existing_model_folder(root: &Path) -> Result<BTreeMap<String, String
 }
 
 async fn install_or_reuse_model(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     request: &SetupInstallRequest,
     asset: &ReusableModelAsset,
     destination: &Path,
@@ -2986,7 +2995,7 @@ async fn install_or_reuse_model(
 }
 
 async fn download(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     component: &str,
     asset: &Asset,
     destination: &Path,
@@ -3142,7 +3151,7 @@ async fn verified(path: &Path, asset: &Asset) -> Result<bool, SetupError> {
 }
 
 async fn import_verified_asset(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     component: &str,
     source: &Path,
     destination: &Path,
@@ -3396,7 +3405,13 @@ $env:CUDA_VISIBLE_DEVICES='0'
 $env:HF_HOME=(Join-Path $root '.cache\huggingface')
 $env:HF_HUB_OFFLINE='1'
 $env:TRANSFORMERS_OFFLINE='1'
-& $python -c 'import sageattention' 2>$null
+$sageProbe = @'
+try:
+    import sageattention
+except Exception:
+    raise SystemExit(1)
+'@
+& $python -c $sageProbe
 if($LASTEXITCODE -eq 0){ $arguments += '--use-sage-attention' }
 & $python @arguments
 exit $LASTEXITCODE
@@ -3549,7 +3564,7 @@ fn internet_client() -> Result<Client, SetupError> {
 }
 
 fn emit(
-    app: &AppHandle,
+    app: Option<&AppHandle>,
     component: &str,
     stage: &str,
     detail: &str,
@@ -3557,6 +3572,10 @@ fn emit(
     total_bytes: u64,
     bytes_per_second: u64,
 ) {
+    let Some(app) = app else {
+        eprintln!("[{component}] {stage}: {detail}");
+        return;
+    };
     let _ = crate::ipc_events::emit::<kestrel_app_core::events::SetupProgress>(
         app,
         &SetupProgress {
@@ -3571,8 +3590,87 @@ fn emit(
 }
 
 #[cfg(test)]
+mod acceptance;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reuse_from_unrelated_folders_verifies_bytes_and_preserves_sources() {
+        let library = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let source = library.path().join("tuottajan malli.safetensors");
+        let destination = runtime
+            .path()
+            .join("ComfyUI/models/diffusion_models/installed.safetensors");
+        fs::write(&source, b"verified model content").unwrap();
+        let asset = Asset::new(
+            "test model",
+            "https://example.invalid/unused",
+            "installed.safetensors",
+            22,
+            &sha256_file(&source).unwrap(),
+        );
+        import_verified_asset(None, "image", &source, &destination, &asset)
+            .await
+            .unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), fs::read(&source).unwrap());
+        let corrupt = library.path().join("wrong.safetensors");
+        fs::write(&corrupt, b"incorrect model bytes!").unwrap();
+        assert!(
+            import_verified_asset(None, "image", &corrupt, &destination, &asset)
+                .await
+                .is_err()
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"verified model content");
+        assert_eq!(fs::read(&source).unwrap(), b"verified model content");
+    }
+
+    #[test]
+    fn configured_paths_survive_restart_and_support_external_muscriptor() {
+        let root = tempfile::tempdir().unwrap();
+        let model = root
+            .path()
+            .join("weights in another folder/checkpoint.safetensors");
+        let executable = root.path().join("tools/muscriptor.exe");
+        fs::create_dir_all(model.parent().unwrap()).unwrap();
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"console entry point").unwrap();
+        crate::test_support::sparse_file(&model, MUSCRIPTOR_MODEL_BYTES);
+        let header = br#"{"tensor":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let mut file = fs::OpenOptions::new().write(true).open(&model).unwrap();
+        file.write_all(&(header.len() as u64).to_le_bytes())
+            .unwrap();
+        file.write_all(header).unwrap();
+        let mut research = ResearchSettings::default();
+        let mut control = ControlSettings::default();
+        let paths = BTreeMap::from([(
+            "speech:large-v3-turbo.pt".into(),
+            root.path()
+                .join("elsewhere/large-v3-turbo.pt")
+                .to_string_lossy()
+                .into_owned(),
+        )]);
+        let locations: SetupLocations = serde_json::from_value(serde_json::json!({
+            "installRoot": research.install_root, "bonsaiRoot": research.bonsai_root,
+            "enginePath": executable, "wikipediaZimPath": research.wikipedia_zim_path,
+            "kiwixServerPath": research.kiwix_server_path, "comfyRoot": research.comfy_root,
+            "ffmpegPath": "", "ffprobePath": "",
+            "muscriptorExecutablePath": executable, "muscriptorModelPath": model,
+            "existingModelPaths": paths,
+        }))
+        .unwrap();
+        apply_locations(&mut research, &mut control, locations).unwrap();
+        let store = crate::config::SettingsStore::new(root.path());
+        store.save(&research).unwrap();
+        let restored = store.load().unwrap();
+        assert_eq!(restored.existing_model_paths, paths);
+        assert!(muscriptor_is_ready(&restored));
+        assert_eq!(configured_muscriptor_paths(&restored).1, model);
+        fs::write(&model, b"incomplete").unwrap();
+        assert!(!muscriptor_is_ready(&restored));
+    }
 
     #[test]
     fn strata_sizes_are_pinned_and_share_the_second_shard() {
@@ -3730,6 +3828,9 @@ mod tests {
             ffmpeg_path: String::new(),
             ffprobe_path: String::new(),
             strata_root: research.strata_root.clone(),
+            muscriptor_executable_path: research.muscriptor_executable_path.clone(),
+            muscriptor_model_path: research.muscriptor_model_path.clone(),
+            existing_model_paths: research.existing_model_paths.clone(),
         };
         let start = || ResearchSettings {
             install_root: old.path().to_string_lossy().into_owned(),
@@ -3838,6 +3939,9 @@ mod tests {
                 wikipedia_zim_path: "relative".into(),
                 kiwix_server_path: "relative".into(),
                 comfy_root: "relative".into(),
+                muscriptor_executable_path: String::new(),
+                muscriptor_model_path: String::new(),
+                existing_model_paths: BTreeMap::new(),
                 ffmpeg_path: String::new(),
                 ffprobe_path: String::new(),
                 strata_root: String::new(),
@@ -3916,13 +4020,13 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             crate::test_support::sparse_file(path, asset.download.bytes);
         }
-        for asset in ideogram_assets() {
+        for asset in image_assets() {
             let path = comfy.join(asset.relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             crate::test_support::sparse_file(path, asset.download.bytes);
         }
         for path in [
-            comfy.join("comfy_extras/nodes_ideogram4.py"),
+            comfy.join("comfy_extras/nodes_moss_image.py"),
             comfy.join("comfy_extras/nodes_custom_sampler.py"),
         ] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -4107,6 +4211,12 @@ mod tests {
         fs::create_dir_all(model.parent().unwrap()).unwrap();
         fs::write(&executable, b"runner").unwrap();
         crate::test_support::sparse_file(&model, MUSCRIPTOR_MODEL_BYTES);
+        let header = br#"{"tensor":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let mut file = fs::OpenOptions::new().write(true).open(&model).unwrap();
+        file.write_all(&(header.len() as u64).to_le_bytes())
+            .unwrap();
+        file.write_all(header).unwrap();
+
         fs::write(&marker, format!("{MUSCRIPTOR_SETUP_REVISION}\n")).unwrap();
         let research = ResearchSettings {
             install_root: root.path().to_string_lossy().into_owned(),
@@ -4156,24 +4266,21 @@ mod tests {
     }
 
     #[test]
-    fn ideogram_assets_are_pinned_and_match_the_setup_download_budget() {
-        let assets = ideogram_assets();
-        assert_eq!(assets.len(), 5);
+    fn image_assets_are_pinned_and_match_the_setup_download_budget() {
+        let assets = image_assets();
+        assert_eq!(assets.len(), 3);
         assert_eq!(
             assets.iter().map(|asset| asset.download.bytes).sum::<u64>(),
-            17_622_549_040
+            15_498_034_046
         );
         assert!(assets.iter().all(|asset| asset.download.sha256.len() == 64));
-        assert!(assets.iter().any(|asset| {
-            asset
-                .relative
-                .ends_with("IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt")
-                && asset.download.url.contains(IDEOGRAM_LICENSE_REVISION)
-        }));
-        assert!(assets.iter().any(|asset| {
-            asset.relative.ends_with("qwen3vl_8b_nvfp4.safetensors")
-                && asset.download.url.contains(QWEN3_VL_REVISION)
-        }));
+        assert!(assets
+            .iter()
+            .filter(|asset| !asset.relative.contains("/vae/"))
+            .all(|asset| asset.download.url.contains(MOSS_REVISION)));
+        assert!(assets
+            .iter()
+            .all(|asset| !asset.download.url.contains("Ideogram")));
     }
 
     #[test]
