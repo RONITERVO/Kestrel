@@ -39,6 +39,22 @@ async function open(onError = vi.fn()) {
 }
 
 describe("MOSS producer flow", () => {
+  it.each([["2048x1152", 2048, 1152], ["2560x1440", 2560, 1440]] as const)("saves native %s before rendering without changing layout boxes", async (size, width, height) => {
+    const boxes = structuredClone(stored.elements.map((element) => element.bbox));
+    await open();
+    fireEvent.change(screen.getByLabelText("Canvas", { exact: true }), { target: { value: size } });
+    expect(screen.getByText(/Native high resolution · experimental/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    expect(screen.getByLabelText("Width")).toHaveValue(width);
+    expect(screen.getByLabelText("Height")).toHaveValue(height);
+    expect(screen.getByText(/Standard matches the official 50-step workflow/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create image" }));
+    await waitFor(() => expect(api.start).toHaveBeenCalledOnce());
+    expect(stored.settings).toMatchObject({ width, height });
+    expect(stored.elements.map((element) => element.bbox)).toEqual(boxes);
+    expect(api.save.mock.invocationCallOrder[0]).toBeLessThan(api.start.mock.invocationCallOrder[0]);
+  });
+
   it("keeps a streamed proposal unapplied until the producer accepts it, then saves before rendering", async () => {
     await open();
     fireEvent.change(screen.getByLabelText("Producer brief"), { target: { value: "Generate a poster with exact title CAFÉ." } });

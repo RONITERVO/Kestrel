@@ -6,6 +6,9 @@ fixes before merging. Those fixes and their live checks are documented in
 [Portable setup acceptance](PORTABLE_SETUP_ACCEPTANCE.md). The measured placement differences below
 remain part of the result; successful image files alone were not treated as quality acceptance.
 
+The subsequent [official-example comparison and native 2K/QHD checks](MOSS_IMAGE_RESOLUTIONS.md)
+cover the new resolution presets separately from the original Ideogram comparison below.
+
 ## Integration
 
 The requested [video](https://www.youtube.com/watch?v=cUeZMUGCxrw) describes MOSS-Image.

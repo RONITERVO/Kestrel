@@ -1117,14 +1117,17 @@ fn validate_editable(project: &ImageProject) -> Result<(), StudioError> {
         validate_palette(&element.color_palette, 5, "element color palette")?;
     }
     let settings = &project.settings;
-    if !(256..=2048).contains(&settings.width)
-        || !(256..=2048).contains(&settings.height)
+    // The guide permits extrapolation up to roughly 4 MP. Keep the previous
+    // 2048-square area budget while allowing native 2560x1440 QHD and its portrait.
+    if !(256..=2560).contains(&settings.width)
+        || !(256..=2560).contains(&settings.height)
+        || u64::from(settings.width) * u64::from(settings.height) > 2048 * 2048
         || !settings.width.is_multiple_of(16)
         || !settings.height.is_multiple_of(16)
         || settings.width.max(settings.height) > settings.width.min(settings.height) * 6
     {
         return Err(StudioError::Invalid(
-            "Image dimensions must be 256 to 2048 pixels, multiples of 16, with an aspect ratio no wider than 6:1".into(),
+            "Image dimensions must be 256 to 2560 pixels, multiples of 16, at most 4,194,304 pixels total, with an aspect ratio no wider than 6:1. Use 2048×1152 for 2K or 2560×1440 for QHD; native 4K is outside the supported range.".into(),
         ));
     }
     if !matches!(settings.preset.as_str(), "quality" | "standard" | "turbo") {
@@ -1292,6 +1295,48 @@ mod tests {
     use super::*;
     use kestrel_app_core::ImageElement;
     use tempfile::TempDir;
+
+    #[test]
+    fn native_2k_and_qhd_preserve_dimensions_and_boxes_without_upscaling() {
+        let root = TempDir::new().unwrap();
+        let studio = ImageStudio::new(root.path()).unwrap();
+        let mut project = project(&studio);
+        let boxes = project.elements[0].bbox;
+        for (width, height) in [(2048, 1152), (2560, 1440), (1440, 2560), (2048, 2048)] {
+            project.settings.width = width;
+            project.settings.height = height;
+            project = studio.save_editable(project).unwrap();
+            project = studio.get(&project.id).unwrap();
+            assert_eq!(
+                (project.settings.width, project.settings.height),
+                (width, height)
+            );
+            assert_eq!(project.elements[0].bbox, boxes);
+            let (prompt, text) = structured_prompt(&project).unwrap();
+            assert_eq!(
+                prompt["items"][0]["bbox"],
+                json!(kestrel_app_core::moss::centered_pixel_box(
+                    boxes, width, height
+                ))
+            );
+            let graph = moss_graph(&project.settings, 42, &text, "native-resolution");
+            assert_eq!(graph["12"]["inputs"]["width"], width);
+            assert_eq!(graph["12"]["inputs"]["height"], height);
+            assert!(!graph.to_string().contains("Upscale"));
+        }
+        for (width, height) in [
+            (2560, 2560),
+            (3840, 2160),
+            (2048, 1080),
+            (2561, 1440),
+            (256, 2560),
+            (u32::MAX, u32::MAX),
+        ] {
+            project.settings.width = width;
+            project.settings.height = height;
+            assert!(validate_editable(&project).is_err(), "{width}x{height}");
+        }
+    }
 
     #[test]
     fn moss_preserves_text_palette_layer_order_and_converts_boxes() {

@@ -801,5 +801,137 @@
       "Natural faces, hands and limbs; no blended identities or duplicate bodies.",
       "Park and bench present, coherent photo lighting, no lettering or watermark."
     ]
+  },
+  {
+    "name": "native-2k",
+    "brief": "An elegant geometric travel poster: a dark blue mountain occupies the lower center and the exact title EXPLORE occupies the top.",
+    "edits": {
+      "highLevelDescription": "An elegant geometric travel poster: a dark blue mountain occupies the lower center and the exact title EXPLORE occupies the top.",
+      "background": "Matte cream paper with ample negative space.",
+      "elements": [
+        {
+          "id": "81c64441-1d8d-5b23-a65a-bc96581ce938",
+          "kind": "text",
+          "bbox": [
+            60,
+            100,
+            230,
+            900
+          ],
+          "description": "Large dark blue uppercase sans-serif title.",
+          "text": "EXPLORE",
+          "colorPalette": [
+            "#173B68"
+          ]
+        },
+        {
+          "id": "da62084f-8650-52f5-b99a-f8194f66086c",
+          "kind": "obj",
+          "bbox": [
+            300,
+            170,
+            900,
+            830
+          ],
+          "description": "A single stylized dark blue mountain with a snow cap.",
+          "text": "",
+          "colorPalette": [
+            "#173B68"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 2048,
+        "height": 1152,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#F4E9D3",
+          "#173B68"
+        ]
+      }
+    },
+    "review": [
+      "EXPLORE spelled exactly, no additional letters.",
+      "Title within top box, mountain in its own box.",
+      "Cream and dark blue palette, clean typography.",
+      "Native latent and decoded PNG dimensions must match exactly; no resizing or upscaler nodes.",
+      "Above the recommended 1–2 MP range: review repetition, missing details and layout scaling, not only successful decoding."
+    ]
+  },
+  {
+    "name": "native-qhd",
+    "brief": "An elegant geometric travel poster: a dark blue mountain occupies the lower center and the exact title EXPLORE occupies the top.",
+    "edits": {
+      "highLevelDescription": "An elegant geometric travel poster: a dark blue mountain occupies the lower center and the exact title EXPLORE occupies the top.",
+      "background": "Matte cream paper with ample negative space.",
+      "elements": [
+        {
+          "id": "81c64441-1d8d-5b23-a65a-bc96581ce938",
+          "kind": "text",
+          "bbox": [
+            60,
+            100,
+            230,
+            900
+          ],
+          "description": "Large dark blue uppercase sans-serif title.",
+          "text": "EXPLORE",
+          "colorPalette": [
+            "#173B68"
+          ]
+        },
+        {
+          "id": "da62084f-8650-52f5-b99a-f8194f66086c",
+          "kind": "obj",
+          "bbox": [
+            300,
+            170,
+            900,
+            830
+          ],
+          "description": "A single stylized dark blue mountain with a snow cap.",
+          "text": "",
+          "colorPalette": [
+            "#173B68"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 2560,
+        "height": 1440,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#F4E9D3",
+          "#173B68"
+        ]
+      }
+    },
+    "review": [
+      "EXPLORE spelled exactly, no additional letters.",
+      "Title within top box, mountain in its own box.",
+      "Cream and dark blue palette, clean typography.",
+      "Native latent and decoded PNG dimensions must match exactly; no resizing or upscaler nodes.",
+      "Above the recommended 1–2 MP range: review repetition, missing details and layout scaling, not only successful decoding."
+    ]
   }
 ]
