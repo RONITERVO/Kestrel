@@ -5,8 +5,8 @@
 //! graph receipts, hashes, and earlier takes are immutable backend truth.
 
 pub use kestrel_app_core::image::{
-    CreateImageProjectRequest, ImageGenerationEvent, ImageProject, ImageSettings, ImageStyle,
-    ImageSummary, ImageTake,
+    CreateImageProjectRequest, ImageGenerationEvent, ImageProject, ImagePromptMode, ImageSettings,
+    ImageStyle, ImageSummary, ImageTake,
 };
 
 use super::{
@@ -28,7 +28,7 @@ use tauri::AppHandle;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-const IMAGE_SCHEMA_VERSION: u32 = 4;
+const IMAGE_SCHEMA_VERSION: u32 = 5;
 const MAX_IMAGE_TEXT_BYTES: usize = 64 * 1024;
 const MAX_IMAGE_ELEMENTS: usize = 64;
 const MAX_IMAGE_TAKES: usize = 256;
@@ -138,6 +138,7 @@ impl ImageStudio {
             background: "A fully described environment extending naturally to every edge of the frame.".into(),
             elements: Vec::new(),
             settings: ImageSettings {
+                plain_prompt: request.idea.clone(),
                 comfy_root: request.comfy_root,
                 ..ImageSettings::default()
             },
@@ -1026,6 +1027,14 @@ fn find_image_outputs(
 
 fn validate_render_ready(project: &ImageProject) -> Result<(), StudioError> {
     validate_editable(project)?;
+    if project.settings.prompt_mode == ImagePromptMode::Plain {
+        return validate_bounded_text(
+            "plain image prompt",
+            &project.settings.plain_prompt,
+            MAX_IMAGE_TEXT_BYTES,
+            false,
+        );
+    }
     if project.high_level_description.trim().chars().count() < 10 {
         return Err(StudioError::Invalid(
             "write or develop a complete high-level image description before generating a take"
@@ -1055,6 +1064,12 @@ fn validate_render_ready(project: &ImageProject) -> Result<(), StudioError> {
 }
 
 fn validate_editable(project: &ImageProject) -> Result<(), StudioError> {
+    validate_bounded_text(
+        "plain image prompt",
+        &project.settings.plain_prompt,
+        MAX_IMAGE_TEXT_BYTES,
+        true,
+    )?;
     validate_bounded_text(
         "negative prompt",
         &project.settings.negative_prompt,
@@ -1297,6 +1312,71 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn plain_prompt_is_verbatim_and_switching_modes_preserves_composition_and_receipts() {
+        let root = TempDir::new().unwrap();
+        let studio = ImageStudio::new(root.path()).unwrap();
+        let mut project = project(&studio);
+        let original = structured_prompt(&project).unwrap();
+        let original_style = project.style.clone();
+        let original_elements = project.elements.clone();
+        project.settings.prompt_mode = ImagePromptMode::Plain;
+        project.settings.plain_prompt = "  cat\n茶  ".into();
+        project.settings.negative_prompt = "".into();
+        let saved = studio.save_editable(project).unwrap();
+        let reloaded = studio.get(&saved.id).unwrap();
+        assert_eq!(reloaded.settings.prompt_mode, ImagePromptMode::Plain);
+        let (mut rendered, ids) = studio
+            .begin_generation(&saved.id, &saved.settings.comfy_root, None)
+            .unwrap();
+        let take = &rendered.takes[0];
+        assert_eq!(take.exact_prompt, json!("  cat\n茶  "));
+        assert_eq!(take.exact_prompt_text, "  cat\n茶  ");
+        // The renderer builds the graph after its runtime checks; queued takes already
+        // freeze the exact positive prompt used by that graph.
+        let graph = moss_graph(
+            &rendered.settings,
+            take.seed,
+            &take.exact_prompt_text,
+            "plain-test",
+        );
+        assert_eq!(graph["5"]["inputs"]["text"], "  cat\n茶  ");
+        assert_eq!(graph["6"]["inputs"]["text"], "");
+        let receipt = serde_json::to_value(take).unwrap();
+        // A plain render does not require the inactive structured style fields.
+        rendered.high_level_description.clear();
+        rendered.background.clear();
+        rendered.style.medium.clear();
+        rendered.style.aesthetics.clear();
+        rendered.style.lighting.clear();
+        rendered.style.photo.clear();
+        rendered.style.art_style.clear();
+        validate_render_ready(&rendered).unwrap();
+        rendered.settings.plain_prompt = "cat".into();
+        validate_render_ready(&rendered).unwrap();
+        rendered.settings.plain_prompt = " \n ".into();
+        assert!(validate_render_ready(&rendered).is_err());
+        rendered.settings.plain_prompt = "x".repeat(MAX_IMAGE_TEXT_BYTES + 1);
+        assert!(validate_editable(&rendered).is_err());
+        assert_eq!(
+            serde_json::to_value(&studio.get(&saved.id).unwrap().takes[0]).unwrap(),
+            receipt
+        );
+        studio.fail_generation(&saved.id, &ids, "test cleanup".into(), true, None);
+        let mut switch_back = studio.get(&saved.id).unwrap();
+        let preserved_receipt = serde_json::to_value(&switch_back.takes[0]).unwrap();
+        switch_back.settings.prompt_mode = ImagePromptMode::Composition;
+        let switched = studio.save_editable(switch_back).unwrap();
+        assert_eq!(switched.style, original_style);
+        assert_eq!(switched.elements, original_elements);
+        assert_eq!(structured_prompt(&switched).unwrap(), original);
+        assert_eq!(switched.settings.plain_prompt, "  cat\n茶  ");
+        assert_eq!(
+            serde_json::to_value(&switched.takes[0]).unwrap(),
+            preserved_receipt
+        );
+    }
+
+    #[test]
     fn native_2k_and_qhd_preserve_dimensions_and_boxes_without_upscaling() {
         let root = TempDir::new().unwrap();
         let studio = ImageStudio::new(root.path()).unwrap();
@@ -1412,10 +1492,20 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("negativePrompt");
+        old["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("promptMode");
+        old["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("plainPrompt");
         write_json_recoverable(&studio.project_dir(&project.id).join("project.json"), &old)
             .unwrap();
         studio.backend = ImageBackend::Moss;
         let mut migrated = studio.get(&project.id).unwrap();
+        assert_eq!(migrated.settings.prompt_mode, ImagePromptMode::Composition);
+        assert!(migrated.settings.plain_prompt.is_empty());
         assert!(!migrated.settings.negative_prompt.is_empty());
         assert_eq!(serde_json::to_value(&migrated.takes[0]).unwrap(), receipt);
         assert!(migrated.license_notice.contains("Apache 2.0"));

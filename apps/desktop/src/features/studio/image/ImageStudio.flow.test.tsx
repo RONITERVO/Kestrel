@@ -39,6 +39,52 @@ async function open(onError = vi.fn()) {
 }
 
 describe("MOSS producer flow", () => {
+  it("renders a short plain prompt verbatim without drafting or changing the saved composition", async () => {
+    const composition = structuredClone({ style: stored.style, background: stored.background, elements: stored.elements });
+    const { container } = await open();
+    fireEvent.change(screen.getByLabelText("Prompt mode"), { target: { value: "plain" } });
+    expect(screen.queryByRole("button", { name: "Develop design" })).not.toBeInTheDocument();
+    expect(container.querySelector(".image-layout-box")).toBeNull();
+    expect(screen.getByTitle("Draw an object box")).toBeDisabled();
+    expect(screen.getByTitle("Draw an exact-text box")).toBeDisabled();
+    fireEvent.keyDown(container.querySelector(".image-studio")!, { key: "Delete" });
+    fireEvent.keyDown(container.querySelector(".image-studio")!, { key: "ArrowRight" });
+    fireEvent.change(screen.getByLabelText("Plain image prompt"), { target: { value: "  cat\n茶  " } });
+    fireEvent.change(screen.getByLabelText("Negative prompt"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create image" }));
+    await waitFor(() => expect(api.start).toHaveBeenCalledOnce());
+    expect(stored.settings).toMatchObject({ promptMode: "plain", plainPrompt: "  cat\n茶  ", negativePrompt: "" });
+    expect({ style: stored.style, background: stored.background, elements: stored.elements }).toEqual(composition);
+    expect(api.draft).not.toHaveBeenCalled();
+    expect(api.save.mock.invocationCallOrder[0]).toBeLessThan(api.start.mock.invocationCallOrder[0]);
+    expect(screen.getByLabelText("Prompt mode")).toBeDisabled();
+    expect(screen.getByLabelText("Plain image prompt")).toBeDisabled();
+    expect(screen.getByLabelText("Negative prompt")).toBeDisabled();
+  });
+
+  it("preserves both prompt modes across save and reload, with plain controls available without Advanced", async () => {
+    const original = structuredClone(stored);
+    const ui = render(<ImageStudio advancedEnabled={false} onError={vi.fn()} />);
+    await screen.findByLabelText("Image project title");
+    fireEvent.change(screen.getByLabelText("Prompt mode"), { target: { value: "plain" } });
+    fireEvent.click(screen.getByRole("button", { name: "Use producer brief" }));
+    expect(screen.getByLabelText("Plain image prompt")).toHaveValue(original.idea);
+    fireEvent.change(screen.getByLabelText("Plain image prompt"), { target: { value: "a cat" } });
+    expect(screen.getByLabelText("Negative prompt")).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.save).toHaveBeenCalledOnce());
+    ui.unmount();
+    await open();
+    expect(screen.getByLabelText("Prompt mode")).toHaveValue("plain");
+    expect(screen.getByLabelText("Plain image prompt")).toHaveValue("a cat");
+    fireEvent.change(screen.getByLabelText("Prompt mode"), { target: { value: "composition" } });
+    expect(screen.getByLabelText("Producer brief")).toHaveValue(original.idea);
+    expect(screen.getByLabelText("Visible wording")).toHaveValue(original.elements[0].text);
+    fireEvent.change(screen.getByLabelText("Prompt mode"), { target: { value: "plain" } });
+    expect(screen.getByLabelText("Plain image prompt")).toHaveValue("a cat");
+    expect(api.start).not.toHaveBeenCalled();
+  });
+
   it.each([["2048x1152", 2048, 1152], ["2560x1440", 2560, 1440]] as const)("saves native %s before rendering without changing layout boxes", async (size, width, height) => {
     const boxes = structuredClone(stored.elements.map((element) => element.bbox));
     await open();

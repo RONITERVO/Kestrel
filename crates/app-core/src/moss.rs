@@ -1,7 +1,7 @@
 //! MOSS-Image native prompt adapter. The editor keeps normalized, top-left-origin boxes.
 //! Pixel-edge conversion matches ComfyUI v0.42.1's MOSSImageLayoutPrompt, including rounding
 //! outwards so a narrow producer box cannot collapse at a smaller output resolution.
-use crate::image::ImageProject;
+use crate::image::{ImageProject, ImagePromptMode};
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -51,6 +51,10 @@ pub fn centered_pixel_box(bbox: [u16; 4], width: u32, height: u32) -> [i32; 4] {
 /// No element boxes means a natural-language caption, as in the upstream native node.
 /// Otherwise the exact layout JSON goes directly into CLIPTextEncode, without re-enhancement.
 pub fn prompt(project: &ImageProject) -> Result<(serde_json::Value, String), serde_json::Error> {
+    if project.settings.prompt_mode == ImagePromptMode::Plain {
+        let text = project.settings.plain_prompt.clone();
+        return Ok((serde_json::Value::String(text.clone()), text));
+    }
     let style = &project.style;
     let mut caption = [
         project.high_level_description.trim(),

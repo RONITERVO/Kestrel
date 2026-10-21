@@ -46,6 +46,7 @@ export type { ImageElement } from "./ImageElement.js";
 export type { ImageGenerationEvent } from "./ImageGenerationEvent.js";
 export type { ImageProject } from "./ImageProject.js";
 export type { ImageProjectEdit } from "./ImageProjectEdit.js";
+export type { ImagePromptMode } from "./ImagePromptMode.js";
 export type { ImageSettings } from "./ImageSettings.js";
 export type { ImageStyle } from "./ImageStyle.js";
 export type { ImageSummary } from "./ImageSummary.js";

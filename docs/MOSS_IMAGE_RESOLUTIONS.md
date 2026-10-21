@@ -90,3 +90,38 @@ compares images with optional requested-box overlays. Compact results are in
 Verification: 263 native tests passed (27 explicitly live tests ignored by the ordinary suite),
 209 core tests, 224 UI tests, Clippy with warnings denied, architecture/bindings/TypeScript,
 UI build and diff checks. The release application was rebuilt for the desktop shortcut.
+
+## Plain prompts through Kestrel
+
+Image → Compose → Prompt mode → **Plain prompt · exact text** now sends precisely the positive
+text the producer enters. It skips automatic style/background additions and ignores the saved
+layout boxes. Both the composition and plain draft remain editable after switching modes and
+reopening a project. An optional **Use producer brief** button copies the brief explicitly;
+**Develop design** is not required. Negative prompt is editable directly in this mode, including
+without Advanced enabled. Clear it to reproduce the official example's empty negative branch.
+
+Two additional real runs used Kestrel's create/save/begin/render/copy/dimension-check/hash path
+with the same installed model, seed 42, 1024×1024 and Standard 50:
+
+| Prompt | Time | Verification and visual result |
+| --- | ---: | --- |
+| Verbatim official refrigerator prompt | 58.7 s, including cold startup | Four inactive boxes and all composition fields remain saved, but only the original prose reaches CLIP. **Decoded RGB pixels match the earlier direct official-workflow take exactly.** The same close crop, readable Chinese note and partially cropped fruit bowl remain. |
+| `a cat` | 32.6 s | Empty style/background/high-level fields, no boxes, no agent rewrite. A coherent close-up cat photograph with dark lighting; the model chose framing and treatment from the minimal description. |
+
+These samples demonstrate the exact-text path, not a guarantee that vague prompts produce every
+intended detail. Exact input, graph nodes, output dimensions, file hashes and preservation of
+inactive composition fields were checked; images were also visually inspected. Timings include
+runtime preparation and are not controlled performance comparisons. PNG file hashes differ from
+the earlier official take because workflow metadata differs, despite identical decoded pixels.
+
+Compact results: `tests/image-acceptance/plain-prompt-2026-10-21.json`. Full proposals, native
+projects, immutable receipts, two images and a comparison gallery are under
+`.artifacts/moss-acceptance/plain-prompt-2026-10-21/`. Reproduce either proposal using
+`KESTREL_IMAGE_PROPOSAL` with the existing ignored `live_image_producer_acceptance` test.
+
+Schema 5 defaults older projects to Composition while retaining prior take receipts. Regression
+checks cover whitespace/Unicode fidelity, short and empty prompts, size bounds, mode persistence,
+hidden-box keyboard protection, negative prompt access and save-before-render. Browser preview
+checks at 1280×720 verified pagination, switching modes and restoration of the existing layout.
+Verification: 264 native tests passed (27 live tests ignored), 210 core tests, 226 UI tests,
+Clippy with warnings denied, architecture/bindings/TypeScript, UI build and diff checks.

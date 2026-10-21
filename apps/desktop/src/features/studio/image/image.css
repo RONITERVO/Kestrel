@@ -228,6 +228,8 @@
 .image-inspector-body .flow-columns > * { break-inside: avoid-column; }
 .image-inspector textarea, .image-inspector input, .image-inspector select { font-weight: 400; }
 .image-inspector textarea { font-family: var(--font-read); font-size: var(--text-sm); }
+.image-inspector .image-plain-prompt textarea { height: 180px; }
+.image-inspector .image-producer-brief textarea { height: 70px; }
 .image-render { border-color: var(--act-ink); color: var(--on-pigment); background: var(--act); }
 .image-render:hover:not(:disabled) { background: var(--act-ink); }
 .image-stop { border-color: var(--stop-ink); color: var(--on-pigment); background: var(--stop); }

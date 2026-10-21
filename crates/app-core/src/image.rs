@@ -35,6 +35,10 @@ pub struct ImageElement {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageSettings {
+    #[serde(default)]
+    pub prompt_mode: ImagePromptMode,
+    #[serde(default)]
+    pub plain_prompt: String,
     pub width: u32,
     pub height: u32,
     pub preset: String,
@@ -46,6 +50,15 @@ pub struct ImageSettings {
     #[serde(default = "default_negative_prompt")]
     pub negative_prompt: String,
     pub comfy_root: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub enum ImagePromptMode {
+    #[default]
+    Composition,
+    Plain,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -184,6 +197,8 @@ impl Default for ImageStyle {
 impl Default for ImageSettings {
     fn default() -> Self {
         Self {
+            prompt_mode: ImagePromptMode::Composition,
+            plain_prompt: String::new(),
             width: 1536,
             height: 1024,
             preset: "standard".into(),

@@ -27,8 +27,12 @@ full-quality Flux 2 VAE by exact bytes and SHA-256. The existing editor and coll
 retain normalized `[top, left, bottom, right]` coordinates. Rust converts lower edges with floor,
 upper edges with ceil, and subtracts half the canvas height/width. This matches the official node
 and preserves nonempty boxes at small sizes. Text, line breaks, item order and element palettes
-survive translation. Global style and background become the scene caption. Without boxes, the
-model receives a natural-language caption, matching the upstream node's free-form path.
+survive translation. In Composition mode, global style and background become the scene caption.
+Without boxes, that mode sends a natural-language caption including those fields. The separate
+Plain prompt mode sends the producer's exact text, including Unicode and line breaks, without
+adding style, background or boxes. Both drafts survive switching modes and saving; existing
+projects default to Composition. Plain prompts may be as short as one non-whitespace character,
+with the same 64 KiB bound as other image text. Negative conditioning remains separate.
 
 Sampling uses native shift 5, Euler / sgm_uniform, CFG 3 and negative-branch layer-22 skipping.
 Standard uses 50 steps, Quality 75, and Draft 30. The legacy stored `turbo` preset maps to Draft;
@@ -36,6 +40,10 @@ this is not a distilled checkpoint. Negative conditioning is independently edita
 alignment backdrop remains review-only. Historical takes keep their original model, terms and
 inference receipts; a new render uses MOSS. Existing custom collaborator prompts remain editable
 and compatible with the unchanged composition schema.
+
+The [plain-prompt follow-up](MOSS_IMAGE_RESOLUTIONS.md#plain-prompts-through-kestrel) verifies the
+official refrigerator prompt through Kestrel itself and a minimal `a cat` prompt, including
+decoded-pixel equivalence with the earlier direct official-workflow take.
 
 ## Comparison protocol
 
