@@ -5,4 +5,8 @@ export type ResearchSettings = { advancedMode: boolean, bonsaiRoot: string, inst
  * Strata folder Setup installed or the producer chose. Other Strata folders that Strata
  * itself records for this Windows user are discovered too; this one is where Setup installs.
  */
-strataRoot: string, contextWindow: number, maxOutputTokens: number, researchLanes: number, resultsPerLane: number, sourceTarget: number, toolTurns: number, thinkingBudget: number, maxSourceChars: number, };
+strataRoot: string, muscriptorExecutablePath: string, muscriptorModelPath: string,
+/**
+ * Producer-selected sources for verified Setup reuse, including libraries on other drives.
+ */
+existingModelPaths: { [key in string]: string }, contextWindow: number, maxOutputTokens: number, researchLanes: number, resultsPerLane: number, sourceTarget: number, toolTurns: number, thinkingBudget: number, maxSourceChars: number, };

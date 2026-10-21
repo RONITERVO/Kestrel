@@ -866,11 +866,19 @@ impl MovieStudio {
     pub async fn render(
         &self,
         id: &str,
+        configured_comfy_root: &str,
         cancel: &CancellationToken,
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
         let mut project = self.get(id)?;
         ensure_producer_render_approval(&project)?;
+        if !Path::new(configured_comfy_root).is_absolute() {
+            return Err(StudioError::Invalid(
+                "Choose an absolute ComfyUI folder in Setup".into(),
+            ));
+        }
+        project.settings.comfy_root = configured_comfy_root.into();
+        self.save(&project)?;
         self.live_previews.clear_movie(id);
         let comfy_root = project.settings.comfy_root.clone();
         self.ensure_comfy(&comfy_root, &mut project, app).await?;
@@ -961,7 +969,7 @@ impl MovieStudio {
         app: Option<&AppHandle>,
     ) -> Result<(), StudioError> {
         if self.comfy_ready().await {
-            return Ok(());
+            return verify_comfy_installation(&self.http, COMFY_BASE, Path::new(root)).await;
         }
         project.phase = "starting-renderer".into();
         project.detail = "Starting the private ComfyUI MiniMax H3 renderer.".into();
@@ -999,7 +1007,7 @@ impl MovieStudio {
     ) -> Result<(), StudioError> {
         let base_url = workload.base_url();
         if self.comfy_ready_at(base_url).await {
-            return Ok(());
+            return verify_comfy_installation(&self.http, base_url, Path::new(root)).await;
         }
         let root = PathBuf::from(root);
         let script = workload
@@ -1039,7 +1047,7 @@ impl MovieStudio {
         }
         for _ in 0..180 {
             if self.comfy_ready_at(base_url).await {
-                return Ok(());
+                return verify_comfy_installation(&self.http, base_url, &root).await;
             }
             if let Some(cancel) = cancel {
                 tokio::select! {
@@ -2379,6 +2387,43 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), StudioEr
 
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
+}
+
+/// Verify a local endpoint before attaching, including a server started by another application.
+pub(crate) async fn verify_comfy_installation(
+    http: &reqwest::Client,
+    base: &str,
+    selected_root: &Path,
+) -> Result<(), StudioError> {
+    let info: Value = http
+        .get(format!("{base}/system_stats"))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    validate_comfy_installation(&info, base, selected_root)
+}
+
+pub(crate) fn validate_comfy_installation(
+    info: &Value,
+    base: &str,
+    selected_root: &Path,
+) -> Result<(), StudioError> {
+    let selected_main = selected_root.join("main.py").canonicalize()?;
+    let running_main = info.pointer("/system/argv/0").and_then(Value::as_str);
+    let verified_main = running_main
+        .map(Path::new)
+        .filter(|path| path.is_absolute())
+        .and_then(|path| path.canonicalize().ok());
+    if verified_main.as_ref() != Some(&selected_main) {
+        return Err(StudioError::Render(format!(
+            "ComfyUI at {base} is running {} instead of the installation selected in Setup ({}). Stop the existing ComfyUI server, then try again so Kestrel can start the selected installation.",
+            running_main.unwrap_or("from an unverified folder"), selected_root.display(),
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

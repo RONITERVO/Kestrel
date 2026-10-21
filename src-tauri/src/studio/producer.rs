@@ -1659,7 +1659,9 @@ fn read_backup<T: DeserializeOwned>(path: &Path) -> Result<T, StudioError> {
 mod tests {
     use super::*;
     use crate::models::{MovieSceneFrameSource, MovieSceneReferenceSelection};
+    use std::path::PathBuf;
     use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
 
     fn seed_image_reference(studio: &MovieStudio, name: &str, contents: &[u8]) -> String {
         let object_root = studio.root.join("_references").join("objects");
@@ -1718,6 +1720,72 @@ mod tests {
         assert_eq!(workspace.project_id, project.id);
         assert!(!path.exists());
         assert!(!path.with_extension("json.backup").exists());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KESTREL_LIVE_COMFY_ROOT and KESTREL_ACCEPTANCE_LIBRARY; creates and renders one producer scene with installed H3 and FFmpeg"]
+    async fn live_portable_producer_scene_renders_and_exports() {
+        let root = PathBuf::from(std::env::var("KESTREL_ACCEPTANCE_LIBRARY").unwrap());
+        assert!(root.is_absolute());
+        assert_ne!(root, crate::store::default_research_root());
+        let comfy = std::env::var("KESTREL_LIVE_COMFY_ROOT").unwrap();
+        let studio = MovieStudio::new(&root).unwrap();
+        let project = studio
+            .create_producer_base(
+                "A red sailboat crosses a calm Finnish lake.".into(),
+                super::super::MovieSettings {
+                    width: 768,
+                    height: 448,
+                    ..Default::default()
+                },
+                Vec::new(),
+                "portable setup acceptance",
+                false,
+            )
+            .unwrap();
+        let workspace = studio.save_story_revision(SaveMovieStoryRevisionRequest {
+            project_id: project.id.clone(), parent_revision_id: None,
+            markdown: "# Lake\n\nA red sailboat moves from left to right across a calm lake. Pine trees line the far shore.".into(),
+            instruction: String::new(),
+        }, None).await.unwrap();
+        let accepted = studio
+            .accept_story_revision(
+                AcceptMovieStoryRevisionRequest {
+                    project_id: project.id.clone(),
+                    revision_id: workspace.story_revisions[0].id.clone(),
+                    conversation_mode: MovieStudioConversationMode::Fresh,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        studio.save_producer_scenes(SaveMovieScenesRequest {
+            project_id: project.id.clone(), expected_revision: 0,
+            scenes: vec![MovieSceneDraft {
+                id: uuid::Uuid::new_v4().to_string(), revision: 1,
+                title: "Red sail".into(), purpose: "Establish the peaceful lake".into(), duration_seconds: 5.0,
+                h3_prompt: "[0s-5s] Static wide shot of a red sailboat moving slowly from left to right across a calm Finnish lake. Pine trees on the distant shore, soft daylight, natural water reflections. Gentle lapping water and wind. No dialogue, no music.".into(),
+                continuity_in: "The boat enters on the left.".into(), continuity_out: "The boat reaches the middle of the frame.".into(),
+                transition: "hard cut".into(), first_frame: None, last_frame: None, references: Vec::new(),
+                story_revision_id: accepted.story_revisions[0].id.clone(), created_at: String::new(), updated_at: String::new(),
+            }],
+        }, None).await.unwrap();
+        studio
+            .approve_producer_scenes(&project.id, None)
+            .await
+            .unwrap();
+        let result = studio
+            .render(&project.id, &comfy, &CancellationToken::new(), None)
+            .await;
+        studio.release_comfy_memory().await;
+        let rendered = result.unwrap();
+        assert_eq!(rendered.settings.comfy_root, comfy);
+        assert_eq!(rendered.clips.len(), 1);
+        assert_eq!(rendered.clips[0].status, "complete");
+        assert!(Path::new(&rendered.clips[0].path).is_file());
+        let exported = studio.render_edit(&project.id).await.unwrap();
+        assert!(Path::new(&exported.final_path).is_file());
+        println!("Portable producer export: {}", exported.final_path);
     }
 
     #[tokio::test]

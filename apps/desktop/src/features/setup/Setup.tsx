@@ -35,7 +35,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const [advanced, setAdvanced] = useState(false);
   const [muscriptorLicenseOpen, setMuscriptorLicenseOpen] = useState(false);
   const [muscriptorLicenseAccepted, setMuscriptorLicenseAccepted] = useState(false);
-  const [existingModelPaths, setExistingModelPaths] = useState<Record<string, string>>({});
+  const [existingModelPaths, setExistingModelPaths] = useState<Record<string, string>>(() => snapshot.settings.existingModelPaths ?? {});
   const [modelScanRoot, setModelScanRoot] = useState("");
   const [modelScanMessage, setModelScanMessage] = useState("");
   const [scanningModels, setScanningModels] = useState(false);
@@ -88,7 +88,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     if (enginePath && !/(?:^|[\\/])llama-server\.exe$/i.test(enginePath)) {
       throw new Error("The model engine path must end with llama-server.exe. Choose the verified local engine before saving.");
     }
-    const next = await saveSetupLocations({ ...locations, enginePath });
+    const next = await saveSetupLocations({ ...locations, enginePath, existingModelPaths });
     onChanged(next);
     return next;
   };
@@ -229,7 +229,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
       setExistingModelPaths((current) => ({ ...current, ...matches }));
       const count = Object.keys(matches).length;
       setModelScanMessage(count
-        ? `Found ${count} supported model ${count === 1 ? "file" : "files"}. Setup will verify each one before use.`
+        ? `Found ${count} supported model ${count === 1 ? "file" : "files"}. Save these locations, then choose Verify & use existing on each component to connect them to the selected ComfyUI.`
         : "No release-profile model filenames and sizes matched in this folder. You can still choose renamed files individually below.");
     } catch (error) {
       setModelScanMessage("");
@@ -241,7 +241,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
 
   return <div className="setup-console spread">
     <div className="page page-left setup-guide-page">
-      <FlowPages label="Setup guide pages" className="setup-guide" controller={guide}>
+      <FlowPages label="Setup guide pages" className="setup-guide" controller={guide} footer={advanced && <div className="setup-advanced-actions"><span>Kestrel validates what is actually present; saving a path never marks it ready by itself.</span><button className="primary-button" disabled={!!busy} onClick={() => void saveLocations().catch((error) => onError(String(error)))}><Check /> Save & check again</button></div>}>
         <header className="setup-hero">
           <div className="setup-hero-copy">
             <span className="eyebrow">One-time private setup</span>
@@ -278,7 +278,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
         </section>}
         <button className="setup-advanced-toggle" aria-expanded={advanced} onClick={() => setAdvanced((value) => !value)}><Settings2 /> Use existing files or choose every location <ChevronDown className={advanced ? "open" : ""} /></button>
         {advanced && <section className="setup-advanced-panel" ref={advancedRef}>
-          <div className="setup-advanced-heading"><div><span className="eyebrow">Advanced and portable</span><h2>Use files already on this PC</h2><p>Nothing is tied to a drive letter. These saved locations remain editable in the installed app.</p></div><TriangleAlert /></div>
+          <div className="setup-advanced-heading"><div><span className="eyebrow">Advanced and portable</span><h2>Use files already on this PC</h2><p>Choose runtimes anywhere. Scan model folders on any drive, save the selections, then use the component buttons to verify and connect those files. Original files stay in place.</p></div><TriangleAlert /></div>
           <section className="setup-model-reuse" aria-labelledby="setup-model-reuse-title">
             <div className="setup-model-reuse-heading"><div><h3 id="setup-model-reuse-title">Reuse every supported model you already have</h3><p>Choose each AI folder once. Kestrel finds known Bonsai, Qwen3.8-Flash-Next, H3, Music 3, MOSS-Image Base, Chatterbox, Whisper, and MuScriptor files recursively. Scan more than one folder when your library spans drives.</p></div><button className="quiet-button" disabled={!!busy || scanningModels} onClick={() => void findExistingModels()}>{scanningModels ? <LoaderCircle className="spin" /> : <FolderOpen />} Find models in a folder</button></div>
             {(modelScanRoot || modelScanMessage) && <div className="setup-model-scan-status" role="status" aria-live="polite"><strong>{modelScanRoot ? `Last scanned: ${modelScanRoot}` : "Existing model search"}</strong><span>{modelScanMessage}</span></div>}
@@ -302,9 +302,10 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
           <PathField label="kiwix-serve.exe" value={locations.kiwixServerPath} onChange={(value) => setLocations((current) => ({ ...current, kiwixServerPath: value }))} onBrowse={() => void chooseFile("kiwixServerPath", "engine")} />
           <PathField label="Strata folder" value={locations.strataRoot} onChange={(value) => setLocations((current) => ({ ...current, strataRoot: value }))} onBrowse={() => void chooseFolder("strataRoot")} />
           <PathField label="ComfyUI folder" value={locations.comfyRoot} onChange={(value) => setLocations((current) => ({ ...current, comfyRoot: value }))} onBrowse={() => void chooseFolder("comfyRoot")} />
+          <PathField label="MuScriptor executable (optional)" value={locations.muscriptorExecutablePath} onChange={(value) => setLocations((current) => ({ ...current, muscriptorExecutablePath: value }))} onBrowse={() => void chooseFile("muscriptorExecutablePath", "muscriptor")} />
+          <PathField label="MuScriptor checkpoint (optional)" value={locations.muscriptorModelPath} onChange={(value) => setLocations((current) => ({ ...current, muscriptorModelPath: value }))} onBrowse={() => void chooseFile("muscriptorModelPath", "muscriptorModel")} />
           <PathField label="ffmpeg.exe" value={locations.ffmpegPath} onChange={(value) => setLocations((current) => ({ ...current, ffmpegPath: value }))} onBrowse={() => void chooseFile("ffmpegPath", "ffmpeg")} />
           <PathField label="ffprobe.exe" value={locations.ffprobePath} onChange={(value) => setLocations((current) => ({ ...current, ffprobePath: value }))} onBrowse={() => void chooseFile("ffprobePath", "ffprobe")} />
-          <div className="setup-advanced-actions"><span>Kestrel validates what is actually present; saving a path never marks it ready by itself.</span><button className="primary-button" disabled={!!busy} onClick={() => void saveLocations().catch((error) => onError(String(error)))}><Check /> Save & check again</button></div>
         </section>}
       </FlowPages>
     </div>
@@ -381,6 +382,9 @@ function fromSnapshot(snapshot: AppSnapshot): SetupLocations {
     ffmpegPath: snapshot.settings.ffmpegPath,
     ffprobePath: snapshot.settings.ffprobePath,
     strataRoot: snapshot.settings.strataRoot,
+    muscriptorExecutablePath: snapshot.settings.muscriptorExecutablePath ?? "",
+    muscriptorModelPath: snapshot.settings.muscriptorModelPath ?? "",
+    existingModelPaths: snapshot.settings.existingModelPaths ?? {},
   };
 }
 

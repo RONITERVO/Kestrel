@@ -1,8 +1,10 @@
 # MOSS-Image replacement acceptance
 
-Status, 2026-10-21: **Implementation and headless comparison complete. Draft PR; not cleared for merge.**
-The producer must accept the observed placement tradeoff and complete the native UI check below.
-Successful image files alone are not quality acceptance.
+Status, 2026-10-21: **Image comparison complete; producer accepted the image model after native testing.**
+The producer explicitly reported that the image model passes testing and requested portable-folder
+fixes before merging. Those fixes and their live checks are documented in
+[Portable setup acceptance](PORTABLE_SETUP_ACCEPTANCE.md). The measured placement differences below
+remain part of the result; successful image files alone were not treated as quality acceptance.
 
 ## Integration
 
@@ -166,11 +168,11 @@ UTF-8, guarded by explicit assertions, and rerun before scoring.
 
 ## Verification
 
-- `cargo test --all-targets --manifest-path src-tauri/Cargo.toml`: 259 passed, 24 ignored.
+- `cargo test --all-targets --manifest-path src-tauri/Cargo.toml`: 262 passed, 27 ignored.
 - `cargo test --manifest-path crates/app-core/Cargo.toml`: 209 passed, including the box adapter.
 - `cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings`: passed.
 - `npm run check`: architecture, generated bindings and TypeScript checks passed.
-- `npm test -- --run`: 221 passed in 35 files, including seven image desk flow tests.
+- `npm test -- --run`: 222 passed in 35 files, including seven image desk flow tests.
 - `npm run build` and `git diff --check`: passed.
 - Explicit live authored renders, real collaborator flows, and cancellation/recovery: passed
   their operational checks; visual outcomes are recorded separately above.
@@ -180,8 +182,9 @@ boxes, keyboard edits/layer order, batch/preset/negative/seed controls, generati
 historical model terms without Advanced mode, and selected-take handoff without another render.
 They use mocked IPC and jsdom layout; native renders and local-model streaming were exercised
 separately through the actual Rust paths. Setup assets were downloaded and hash-verified; the
-interactive Setup installer, native file dialogs, actual WebView layout and physical pointer
-interaction remain part of the manual check.
+native file dialogs and physical pointer interaction were left to the producer. The follow-up
+portable-folder check additionally exercised the real Setup installer headlessly and checked the
+Setup layout in Chromium at three desktop sizes; see the linked report.
 
 ### Existing-project runtime regression
 
@@ -212,7 +215,9 @@ MOSS image in 53.1 seconds, with all five earlier take records and the original 
 unchanged. Visual inspection confirmed a new coherent castle/forest/snow composition. The source
 project manifest was byte-identical after the test. The receipt is retained locally at
 `.artifacts/moss-acceptance/results/runtime-migration/existing-project.json`. The corrected native
-release executable was also built successfully; the producer still needs to retry in that build.
+release executable was also built successfully. The producer subsequently accepted the image model.
+A further render after moving to the permanent runtime passed in 54.7 seconds, again preserving the
+original project and every earlier take.
 
 ## Reproduction
 
@@ -243,29 +248,17 @@ python scripts/image-acceptance-review.py 'D:/path/to/acceptance/results'
 full project receipts and starts with `qualityVerdict: pending`. A render failure retains the
 failed project and error. Resume must not turn missing, changed or failed evidence into a pass.
 
-## Merge gate
+## Producer acceptance and follow-up
 
-Do not give an unconditional green to merge from this report. The observed box-placement change
-is a producer decision, and native UI verification is still required. No source or graph repair
-has been identified that would justify claiming exact placement parity.
+The producer accepted the image model on 2026-10-21 after trying the native application. This accepts
+approximate layout control with the documented visual tradeoffs; it does not establish exact
+placement parity with Ideogram. The requested folder and storage follow-up is recorded in
+[Portable setup acceptance](PORTABLE_SETUP_ACCEPTANCE.md).
 
-Run this branch with `npm run tauri dev`. For the prepared local environment, select the existing
-folder `.artifacts/moss-acceptance/ComfyUI_windows_portable/ComfyUI` in Setup. This avoids another
-model download. Do not overwrite the separate shared ComfyUI installation. The app uses the normal
-Kestrel library; use a new throwaway image project for this check.
+The permanent local ComfyUI folder is now `D:/AI/ComfyUI_windows_portable/ComfyUI`. The temporary
+comparison runtime and retired Ideogram weights were removed at the producer's explicit cleanup
+request. Comparison PNGs, receipts, review data, and the runtime's input/output/workflow folders
+remain archived. Repeating the baseline now requires reinstalling its pinned weights in a separate
+comparison environment. Historical Ideogram projects and their completed images remain usable.
 
-1. Confirm Setup recognizes MOSS and the folder; inspect the production-suite/model-reuse UI.
-2. Create a poster brief, Develop design, inspect the proposal, Apply, then Create. Confirm the
-   progress, full-resolution viewer, contact sheet and preserved take agree.
-3. Draw, drag and resize object/text boxes, cycle overlaps and change layer order. Render a
-   square and portrait design with deliberate vertical offsets; decide whether the observed
-   placement is acceptable for your use.
-4. In Advanced, try Draft, a negative prompt, fixed seed and multiple variations. Stop one render,
-   then reopen the project; completed takes must remain selectable and unchanged.
-5. Open an existing Ideogram project. Confirm its old take/model terms are visible and unchanged;
-   a new render should identify MOSS. Check backdrop opacity and the placement note at normal scale.
-6. Download a take, reveal its folder, and hand a selected take to Movie Studio. Verify native
-   dialogs/navigation and that the chosen image is used without regenerating it.
-
-After those checks, either explicitly accept approximate layout control and the documented visual
-tradeoffs, or keep the PR draft and specify the placement requirements that remain unmet.
+The desktop shortcut rebuilds and launches this branch. The producer will perform the merge.

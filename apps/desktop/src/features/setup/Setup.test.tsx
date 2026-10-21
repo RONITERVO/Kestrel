@@ -240,3 +240,21 @@ describe("SetupConsole", () => {
     expect(merged?.control.settings.selectedModelId).toBe("downloaded-model");
   });
 });
+
+
+it("restores model sources from separate folders and saves MuScriptor locations", async () => {
+  const existingModelPaths = { "speech:large-v3-turbo.pt": "F:/Voice library/large-v3-turbo.pt" };
+  const saved = { ...demoSnapshot, settings: { ...demoSnapshot.settings, existingModelPaths,
+    muscriptorExecutablePath: "C:/Tools/MuScriptor/muscriptor.exe",
+    muscriptorModelPath: "G:/Weights/model.safetensors",
+  } };
+  render(<SetupConsole snapshot={saved} onChanged={vi.fn()} onError={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: /Use existing files/ }));
+  expect(screen.getAllByDisplayValue(existingModelPaths["speech:large-v3-turbo.pt"]).length).toBeGreaterThan(0);
+  fireEvent.change(screen.getByDisplayValue(saved.settings.muscriptorModelPath), { target: { value: "H:/My models/midi.safetensors" } });
+  fireEvent.click(screen.getByRole("button", { name: /Save & check again/ }));
+  await waitFor(() => expect(setupApi.save).toHaveBeenCalledWith(expect.objectContaining({
+    existingModelPaths, muscriptorExecutablePath: saved.settings.muscriptorExecutablePath,
+    muscriptorModelPath: "H:/My models/midi.safetensors",
+  })));
+});

@@ -346,7 +346,6 @@ impl ImageStudio {
                 Some(cancel),
             )
             .await?;
-        verify_running_comfy_root(&self.http, &comfy_root).await?;
         self.backend.verify(&self.http, &comfy_root).await?;
         let prefix = format!("kestrel_image/{project_id}/take_{:03}", take_index + 1);
         let graph = self.backend.graph(
@@ -825,33 +824,14 @@ fn moss_graph(settings: &ImageSettings, seed: u64, prompt: &str, prefix: &str) -
     })
 }
 
+#[cfg(test)]
 async fn verify_running_comfy_root(http: &Client, selected_root: &Path) -> Result<(), StudioError> {
-    let info: Value = http
-        .get(format!("{COMFY_BASE}/system_stats"))
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    validate_running_comfy_root(&info, selected_root)
+    super::verify_comfy_installation(http, COMFY_BASE, selected_root).await
 }
 
+#[cfg(test)]
 fn validate_running_comfy_root(info: &Value, selected_root: &Path) -> Result<(), StudioError> {
-    let selected_main = selected_root.join("main.py").canonicalize()?;
-    let running_main = info.pointer("/system/argv/0").and_then(Value::as_str);
-    let verified_main = running_main
-        .map(Path::new)
-        .filter(|path| path.is_absolute())
-        .and_then(|path| path.canonicalize().ok());
-    if verified_main.as_ref() != Some(&selected_main) {
-        return Err(StudioError::Render(format!(
-            "ComfyUI on port 8188 is running {} instead of the installation selected in Setup ({}). Stop the existing ComfyUI server, then choose Create image again so Kestrel can start the selected installation.",
-            running_main.unwrap_or("from an unverified folder"),
-            selected_root.display(),
-        )));
-    }
-    Ok(())
+    super::validate_comfy_installation(info, COMFY_BASE, selected_root)
 }
 
 #[derive(Clone, Copy, Default)]

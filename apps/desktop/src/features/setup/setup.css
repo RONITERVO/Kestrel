@@ -48,20 +48,23 @@
 .setup-advanced-toggle svg { width: 17px; height: 17px; }
 .setup-advanced-toggle svg.open { transform: rotate(180deg); }
 .setup-advanced-toggle:hover { background: var(--paper-raised); }
-.setup-advanced-panel { display: grid; gap: 10px; }
+.setup-advanced-panel { display: block; }
+.setup-advanced-panel > * { margin-bottom: 10px; }
 .setup-advanced-heading { display: grid; grid-template-columns: minmax(0, 1fr) 20px; gap: 8px; }
 .setup-advanced-heading h2 { font-size: var(--text-xl); }
 .setup-advanced-heading p { color: var(--ink-2); font-family: var(--font-read); font-size: var(--text-sm); }
 .setup-advanced-heading > svg { color: var(--wait-ink); }
-.setup-model-reuse { display: grid; gap: 8px; padding: 10px 12px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); }
+.setup-model-reuse { display: block; padding: 10px 12px; border: var(--stroke-soft); border-radius: var(--radius-card); background: var(--paper-raised); }
 .setup-model-reuse-heading { display: grid; gap: 8px; }
 .setup-model-reuse-heading h3 { font-family: var(--font-ui); font-size: var(--text-md); font-weight: 400; }
 .setup-model-reuse-heading p, .setup-model-reuse-note { color: var(--ink-3); font-family: var(--font-read); font-size: var(--text-xs); line-height: 1.45; }
 .setup-model-reuse-heading button { justify-self: start; }
 .setup-model-scan-status { display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border: 1px solid var(--note); border-radius: var(--radius-sketch); background: var(--note-wash); font-size: var(--text-sm); }
 .setup-model-scan-status strong { font-weight: 400; }
-.setup-model-assets { display: grid; gap: 5px; }
-.setup-model-asset { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) auto; gap: 6px; align-items: center; padding: 5px 0; border-bottom: 1px dashed var(--rule); }
+.setup-model-assets { display: block; }
+.setup-model-reuse > * { margin-bottom: 8px; }
+.setup-model-reuse-note { display: block; break-inside: avoid; }
+.setup-model-asset { break-inside: avoid; margin-bottom: 5px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) auto; gap: 6px; align-items: center; padding: 5px 0; border-bottom: 1px dashed var(--rule); }
 .setup-model-asset > span:first-child { min-width: 0; display: flex; flex-direction: column; }
 .setup-model-asset strong { overflow: hidden; font-weight: 400; font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
 .setup-model-asset small { color: var(--ink-3); }

@@ -395,9 +395,16 @@ impl MusicStudio {
     pub fn begin_generation(
         &self,
         id: &str,
+        configured_comfy_root: &str,
         app: Option<&AppHandle>,
     ) -> Result<(MusicProject, String), StudioError> {
         let mut project = self.get(id)?;
+        if !Path::new(configured_comfy_root).is_absolute() {
+            return Err(StudioError::Invalid(
+                "Choose an absolute ComfyUI folder in Setup".into(),
+            ));
+        }
+        project.settings.comfy_root = configured_comfy_root.into();
         validate_render_ready(&project)?;
         if project.takes.len() >= MAX_TAKES {
             return Err(StudioError::Invalid(
@@ -1308,9 +1315,11 @@ impl MusicStudio {
     pub async fn transcribe_midi(
         &self,
         request: MusicMidiRequest,
+        defaults: (&Path, &Path),
     ) -> Result<MusicProject, StudioError> {
         let mut project = self.get(&request.project_id)?;
-        if repair_muscriptor_settings(&mut project.midi) {
+        let used_defaults = apply_muscriptor_defaults(&mut project.midi, defaults);
+        if repair_muscriptor_settings(&mut project.midi) || used_defaults {
             project.updated_at = Utc::now().to_rfc3339();
             self.persist(&project)?;
         }
@@ -2609,6 +2618,19 @@ fn valid_section_tag(tag: &str) -> bool {
     )
 }
 
+fn apply_muscriptor_defaults(settings: &mut MusicMidiSettings, defaults: (&Path, &Path)) -> bool {
+    let mut changed = false;
+    if settings.executable_path.trim().is_empty() && defaults.0.is_file() {
+        settings.executable_path = defaults.0.to_string_lossy().into_owned();
+        changed = true;
+    }
+    if settings.model_path.trim().is_empty() && is_muscriptor_checkpoint(defaults.1) {
+        settings.model_path = defaults.1.to_string_lossy().into_owned();
+        changed = true;
+    }
+    changed
+}
+
 fn validate_muscriptor_settings(settings: &MusicMidiSettings) -> Result<(), StudioError> {
     let executable = Path::new(settings.executable_path.trim());
     let model = Path::new(settings.model_path.trim());
@@ -3012,7 +3034,9 @@ mod tests {
     }
 
     fn completed_take(studio: &MusicStudio, project: &MusicProject) -> (MusicProject, String) {
-        let (_, take_id) = studio.begin_generation(&project.id, None).unwrap();
+        let (_, take_id) = studio
+            .begin_generation(&project.id, &project.settings.comfy_root, None)
+            .unwrap();
         let mut stored = studio.get(&project.id).unwrap();
         let master = studio
             .project_dir(&project.id)
@@ -3713,11 +3737,29 @@ mod tests {
     }
 
     #[test]
+    fn new_music_take_uses_setup_runtime_without_changing_completed_take() {
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let project = project(&studio);
+        let (project, _) = completed_take(&studio, &project);
+        let old_take = serde_json::to_value(&project.takes[0]).unwrap();
+        let selected = root.path().join("selected runtime");
+        let (updated, _) = studio
+            .begin_generation(&project.id, &selected.to_string_lossy(), None)
+            .unwrap();
+        assert_eq!(updated.settings.comfy_root, selected.to_string_lossy());
+        assert_eq!(serde_json::to_value(&updated.takes[0]).unwrap(), old_take);
+        assert_eq!(updated.takes.len(), 2);
+    }
+
+    #[test]
     fn saves_only_editable_state_and_preserves_take_truth() {
         let root = TempDir::new().unwrap();
         let studio = MusicStudio::new(root.path()).unwrap();
         let project = project(&studio);
-        let (mut rendering, take_id) = studio.begin_generation(&project.id, None).unwrap();
+        let (mut rendering, take_id) = studio
+            .begin_generation(&project.id, &project.settings.comfy_root, None)
+            .unwrap();
         rendering.status = "draft".into();
         rendering.takes[0].path = "C:\\forged.wav".into();
         assert!(studio.save_editable(rendering).is_err());
@@ -3735,7 +3777,9 @@ mod tests {
         let root = TempDir::new().unwrap();
         let studio = MusicStudio::new(root.path()).unwrap();
         let project = project(&studio);
-        let (_, take_id) = studio.begin_generation(&project.id, None).unwrap();
+        let (_, take_id) = studio
+            .begin_generation(&project.id, &project.settings.comfy_root, None)
+            .unwrap();
         let mut stored = studio.get(&project.id).unwrap();
         let take = stored
             .takes
@@ -3888,6 +3932,51 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires KESTREL_LIVE_MIDI_SOURCE, KESTREL_LIVE_MIDI_EXE and KESTREL_LIVE_MIDI_MODEL; runs installed GPU transcription"]
+    async fn live_external_muscriptor_defaults_preserve_source_and_editable_midi() {
+        let source = PathBuf::from(std::env::var("KESTREL_LIVE_MIDI_SOURCE").unwrap());
+        let exe = PathBuf::from(std::env::var("KESTREL_LIVE_MIDI_EXE").unwrap());
+        let model = PathBuf::from(std::env::var("KESTREL_LIVE_MIDI_MODEL").unwrap());
+        let root = TempDir::new().unwrap();
+        let studio = MusicStudio::new(root.path()).unwrap();
+        let (mut project, take_id) = completed_take(&studio, &project(&studio));
+        let master = studio.project_dir(&project.id).join("takes/source.wav");
+        fs::copy(&source, &master).unwrap();
+        let (bytes, sha256) = hash_file(&master).unwrap();
+        project.takes[0].path = master.to_string_lossy().into_owned();
+        project.takes[0].bytes = bytes;
+        project.takes[0].sha256 = sha256.clone();
+        project.midi.executable_path.clear();
+        project.midi.model_path.clear();
+        studio.persist(&project).unwrap();
+        let result = studio
+            .transcribe_midi(
+                MusicMidiRequest {
+                    project_id: project.id,
+                    take_id,
+                },
+                (&exe, &model),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.phase, "midi-ready");
+        assert_eq!(hash_file(&master).unwrap().1, sha256);
+        assert_eq!(result.midi.executable_path, exe.to_string_lossy());
+        let take = &result.takes[0];
+        for path in [
+            &take.midi_path,
+            &take.midi_source_path,
+            &take.midi_document_path,
+            &take.midi_receipt_path,
+        ] {
+            assert!(Path::new(path).is_file(), "{path}");
+        }
+        assert!(fs::read(&take.midi_source_path)
+            .unwrap()
+            .starts_with(b"MThd"));
+    }
+
+    #[tokio::test]
     #[ignore = "requires KESTREL_LIVE_COMFY_ROOT, native MiniMax Music 3 nodes and weights, and several minutes"]
     async fn live_minimax_music_graph_preserves_a_lossless_local_take() {
         let comfy_root = std::env::var("KESTREL_LIVE_COMFY_ROOT")
@@ -3916,7 +4005,9 @@ mod tests {
             direction: "piano states the motif, pulse enters, both resolve cleanly".into(),
         }];
         let project = studio.save_editable(project).unwrap();
-        let (_, take_id) = studio.begin_generation(&project.id, None).unwrap();
+        let (_, take_id) = studio
+            .begin_generation(&project.id, &project.settings.comfy_root, None)
+            .unwrap();
         let rendered = studio
             .render(
                 &project.id,

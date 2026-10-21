@@ -246,7 +246,14 @@ mod tests {
             std::env::var("KESTREL_LIVE_COMFY_ROOT").expect("choose installed ComfyUI");
         studio.save(&project).unwrap();
         studio.approve_producer_scenes(&id, None).await.unwrap();
-        let result = studio.render(&id, &CancellationToken::new(), None).await;
+        let result = studio
+            .render(
+                &id,
+                &project.settings.comfy_root,
+                &CancellationToken::new(),
+                None,
+            )
+            .await;
         studio.release_comfy_memory().await;
         let rendered = result.unwrap();
         assert!(rendered
