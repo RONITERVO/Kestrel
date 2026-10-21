@@ -4,11 +4,11 @@ const date = "2026-09-07T10:00:00Z";
 const draft = { status: "draft", phase: "draft", detail: "Sample project for UI development", error: "", createdAt: date, updatedAt: date };
 
 export const sampleImage = {
-  ...draft, schemaVersion: 3, id: "preview-image", title: "Night / Form", idea: "A poster for a night exhibition.",
+  ...draft, schemaVersion: 4, id: "preview-image", title: "Night / Form", idea: "A poster for a night exhibition.",
   highLevelDescription: "A restrained yellow and black exhibition poster with generous margins.",
   style: { mode: "art", aesthetics: "Swiss editorial grid", lighting: "Flat graphic light", photo: "", artStyle: "Geometric illustration", medium: "Risograph print", colorPalette: ["#111111", "#F2C14E"] },
   background: "Matte black paper", elements: [{ id: "preview-title", kind: "text", bbox: [80, 100, 320, 900], text: "NIGHT / FORM", description: "Large upright bold sans-serif title", colorPalette: ["#F2C14E"] }],
-  settings: { width: 1024, height: 1024, preset: "standard", seed: 42, batchSize: 1, comfyRoot: "" },
+  settings: { width: 1024, height: 1024, preset: "standard", seed: 42, batchSize: 1, negativePrompt: "worst quality, bad anatomy, watermark, jpeg artifact", comfyRoot: "" },
   takes: [], activeTakeId: "", licenseNotice: "Sample composition; no generated media.",
 } satisfies ImageProject;
 

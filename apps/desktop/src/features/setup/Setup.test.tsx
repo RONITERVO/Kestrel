@@ -33,7 +33,7 @@ describe("SetupConsole", () => {
     expect(screen.getByRole("heading", { name: "Kestrel essentials are ready." })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Included local model" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax H3 Movie Studio" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Ideogram 4 Image Studio" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "MOSS-Image Base Image Studio" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax Music 3 Production" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Whisper dictation + local voice" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Install Whisper + voice" })).toBeInTheDocument();
@@ -68,7 +68,7 @@ describe("SetupConsole", () => {
         ...demoSnapshot.setup,
         installRoot,
         components: demoSnapshot.setup.components.map((item) =>
-          ["media", "studio", "music", "speech"].includes(item.id)
+          ["media", "studio", "image", "music", "speech"].includes(item.id)
             ? { ...item, status: "missing" }
             : item,
         ),
@@ -94,14 +94,14 @@ describe("SetupConsole", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /Set up production suite/ }));
 
-    await waitFor(() => expect(setupApi.install).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(setupApi.install).toHaveBeenCalledTimes(5));
     expect(setupApi.install.mock.calls.map(([request]) => request.component)).toEqual([
-      "media", "studio", "music", "speech",
+      "media", "studio", "image", "music", "speech",
     ]);
     expect(setupApi.install.mock.calls.every(([request]) => request.installRoot === installRoot)).toBe(true);
   });
 
-  it("requires explicit Ideogram non-commercial acceptance and uses the saved location", async () => {
+  it("installs MOSS from the saved location without the obsolete Ideogram agreement", async () => {
     const installRoot = "E:\\Image Models";
     const saved = {
       ...demoSnapshot,
@@ -110,23 +110,18 @@ describe("SetupConsole", () => {
     };
     setupApi.save.mockResolvedValue(saved);
     render(<SetupConsole snapshot={demoSnapshot} onChanged={vi.fn()} onError={vi.fn()} />);
-    const card = screen.getByRole("heading", { name: "Ideogram 4 Image Studio" }).closest("article");
+    const card = screen.getByRole("heading", { name: "MOSS-Image Base Image Studio" }).closest("article");
     const installButton = card?.querySelector("button");
     expect(installButton).not.toBeNull();
 
     fireEvent.click(installButton!);
-    expect(screen.getByRole("dialog", { name: /Ideogram 4 is non-commercial/i })).toBeInTheDocument();
-    expect(setupApi.install).not.toHaveBeenCalled();
-    const acceptButton = screen.getByRole("button", { name: /accept and install/i });
-    expect(acceptButton).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: /have read and accept/i }));
-    fireEvent.click(acceptButton);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
     await waitFor(() => expect(setupApi.install).toHaveBeenCalledOnce());
     expect(setupApi.install).toHaveBeenCalledWith(expect.objectContaining({
       component: "image",
       installRoot,
-      acceptIdeogramNonCommercialLicense: true,
+      acceptIdeogramNonCommercialLicense: false,
     }));
   });
 

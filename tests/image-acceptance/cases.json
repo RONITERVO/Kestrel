@@ -1,0 +1,805 @@
+[
+  {
+    "name": "boxes-square",
+    "brief": "A simple diagram containing exactly one red circle on the left and exactly one blue square on the right. White background. No text, borders or other objects.",
+    "edits": {
+      "highLevelDescription": "A simple diagram containing exactly one red circle on the left and exactly one blue square on the right. White background. No text, borders or other objects.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [
+        {
+          "id": "685a82eb-f3f6-53ae-bb36-cb5b21039445",
+          "kind": "obj",
+          "bbox": [
+            150,
+            50,
+            650,
+            400
+          ],
+          "description": "One solid red circle, entirely inside its box, no letters.",
+          "text": "",
+          "colorPalette": [
+            "#DD2222"
+          ]
+        },
+        {
+          "id": "d9f8a232-4c0f-5ff5-8d2a-434f4bd056b3",
+          "kind": "obj",
+          "bbox": [
+            350,
+            600,
+            850,
+            950
+          ],
+          "description": "One solid blue square, entirely inside its box, no letters.",
+          "text": "",
+          "colorPalette": [
+            "#2244DD"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 1024,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#FFFFFF",
+          "#DD2222",
+          "#2244DD"
+        ]
+      }
+    },
+    "review": [
+      "Exactly two shapes; red left, blue right, no attribute swaps.",
+      "Measure each colored region against its requested pixel box; report containment and center error, not just image validity.",
+      "No boxes drawn as unwanted borders, no extra text."
+    ]
+  },
+  {
+    "name": "boxes-landscape",
+    "brief": "A simple diagram containing exactly one red circle on the left and exactly one blue square on the right. White background. No text, borders or other objects.",
+    "edits": {
+      "highLevelDescription": "A simple diagram containing exactly one red circle on the left and exactly one blue square on the right. White background. No text, borders or other objects.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [
+        {
+          "id": "685a82eb-f3f6-53ae-bb36-cb5b21039445",
+          "kind": "obj",
+          "bbox": [
+            150,
+            50,
+            650,
+            400
+          ],
+          "description": "One solid red circle, entirely inside its box, no letters.",
+          "text": "",
+          "colorPalette": [
+            "#DD2222"
+          ]
+        },
+        {
+          "id": "d9f8a232-4c0f-5ff5-8d2a-434f4bd056b3",
+          "kind": "obj",
+          "bbox": [
+            350,
+            600,
+            850,
+            950
+          ],
+          "description": "One solid blue square, entirely inside its box, no letters.",
+          "text": "",
+          "colorPalette": [
+            "#2244DD"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 1536,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#FFFFFF",
+          "#DD2222",
+          "#2244DD"
+        ]
+      }
+    },
+    "review": [
+      "Exactly two shapes; red left, blue right, no attribute swaps.",
+      "Measure each colored region against its requested pixel box; report containment and center error, not just image validity.",
+      "No boxes drawn as unwanted borders, no extra text."
+    ]
+  },
+  {
+    "name": "boxes-portrait",
+    "brief": "A simple diagram containing exactly one red circle on the left and exactly one blue square on the right. White background. No text, borders or other objects.",
+    "edits": {
+      "highLevelDescription": "A simple diagram containing exactly one red circle on the left and exactly one blue square on the right. White background. No text, borders or other objects.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [
+        {
+          "id": "685a82eb-f3f6-53ae-bb36-cb5b21039445",
+          "kind": "obj",
+          "bbox": [
+            150,
+            50,
+            650,
+            400
+          ],
+          "description": "One solid red circle, entirely inside its box, no letters.",
+          "text": "",
+          "colorPalette": [
+            "#DD2222"
+          ]
+        },
+        {
+          "id": "d9f8a232-4c0f-5ff5-8d2a-434f4bd056b3",
+          "kind": "obj",
+          "bbox": [
+            350,
+            600,
+            850,
+            950
+          ],
+          "description": "One solid blue square, entirely inside its box, no letters.",
+          "text": "",
+          "colorPalette": [
+            "#2244DD"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 1024,
+        "height": 1536,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#FFFFFF",
+          "#DD2222",
+          "#2244DD"
+        ]
+      }
+    },
+    "review": [
+      "Exactly two shapes; red left, blue right, no attribute swaps.",
+      "Measure each colored region against its requested pixel box; report containment and center error, not just image validity.",
+      "No boxes drawn as unwanted borders, no extra text."
+    ]
+  },
+  {
+    "name": "poster-exact-text",
+    "brief": "An elegant geometric travel poster: a dark blue mountain occupies the lower center and the exact title EXPLORE occupies the top.",
+    "edits": {
+      "highLevelDescription": "An elegant geometric travel poster: a dark blue mountain occupies the lower center and the exact title EXPLORE occupies the top.",
+      "background": "Matte cream paper with ample negative space.",
+      "elements": [
+        {
+          "id": "81c64441-1d8d-5b23-a65a-bc96581ce938",
+          "kind": "text",
+          "bbox": [
+            60,
+            100,
+            230,
+            900
+          ],
+          "description": "Large dark blue uppercase sans-serif title.",
+          "text": "EXPLORE",
+          "colorPalette": [
+            "#173B68"
+          ]
+        },
+        {
+          "id": "da62084f-8650-52f5-b99a-f8194f66086c",
+          "kind": "obj",
+          "bbox": [
+            300,
+            170,
+            900,
+            830
+          ],
+          "description": "A single stylized dark blue mountain with a snow cap.",
+          "text": "",
+          "colorPalette": [
+            "#173B68"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 1024,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#F4E9D3",
+          "#173B68"
+        ]
+      }
+    },
+    "review": [
+      "EXPLORE spelled exactly, no additional letters.",
+      "Title within top box, mountain in its own box.",
+      "Cream and dark blue palette, clean typography."
+    ]
+  },
+  {
+    "name": "multiline-unicode",
+    "brief": "A clean typographic café menu. The exact two-line headline is CAFÉ followed by HELSINKI. The footer reads 茶 • 2026. Keep generous margins.",
+    "edits": {
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [
+        {
+          "bbox": [
+            100,
+            80,
+            420,
+            920
+          ],
+          "colorPalette": [
+            "#111111"
+          ],
+          "description": "Large black upright sans-serif two-line headline.",
+          "id": "81c64441-1d8d-5b23-a65a-bc96581ce938",
+          "kind": "text",
+          "text": "CAFÉ\nHELSINKI"
+        },
+        {
+          "bbox": [
+            750,
+            80,
+            900,
+            920
+          ],
+          "colorPalette": [
+            "#111111"
+          ],
+          "description": "Black clear compact footer lettering.",
+          "id": "ce6dbdfa-6d9a-548f-9125-9680fafef5eb",
+          "kind": "text",
+          "text": "茶 • 2026"
+        }
+      ],
+      "highLevelDescription": "A clean typographic café menu. The exact two-line headline is CAFÉ followed by HELSINKI. The footer reads 茶 • 2026. Keep generous margins.",
+      "settings": {
+        "batchSize": 1,
+        "height": 1152,
+        "preset": "standard",
+        "seed": 42621,
+        "width": 768
+      },
+      "style": {
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "colorPalette": [
+          "#FFFFFF",
+          "#111111"
+        ],
+        "lighting": "Even flat illumination, no shadows.",
+        "medium": "Graphic illustration",
+        "mode": "art",
+        "photo": ""
+      }
+    },
+    "review": [
+      "Both headline lines correct, accent retained and line break respected.",
+      "Footer characters and punctuation exactly match.",
+      "Text stays inside boxes and is readable at full resolution."
+    ]
+  },
+  {
+    "name": "photography-freeform",
+    "brief": "An editorial close-up photograph of a weathered ceramic blue cup on a walnut table by a rainy window. Soft natural light reveals glaze texture and steam; realistic reflections, shallow depth of field. No text or logos.",
+    "edits": {
+      "highLevelDescription": "An editorial close-up photograph of a weathered ceramic blue cup on a walnut table by a rainy window. Soft natural light reveals glaze texture and steam; realistic reflections, shallow depth of field. No text or logos.",
+      "background": "Rain droplets on a defocused window and a natural interior.",
+      "elements": [],
+      "settings": {
+        "width": 1536,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      }
+    },
+    "review": [
+      "Convincing photographic materials, geometry and reflections.",
+      "Blue ceramic cup, visible steam and rainy window; no unwanted lettering.",
+      "No loss of detail or incoherent cup handles."
+    ]
+  },
+  {
+    "name": "art-overlap-palette",
+    "brief": "A bold flat poster with a large cobalt circle behind a smaller orange triangle; the orange triangle visibly overlaps the lower-right part of the circle. The word FORM sits in front near the bottom.",
+    "edits": {
+      "highLevelDescription": "A bold flat poster with a large cobalt circle behind a smaller orange triangle; the orange triangle visibly overlaps the lower-right part of the circle. The word FORM sits in front near the bottom.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [
+        {
+          "id": "a5ebd784-8e25-57e3-97fe-d55d9974391f",
+          "kind": "obj",
+          "bbox": [
+            150,
+            150,
+            750,
+            750
+          ],
+          "description": "Large solid cobalt circle behind the triangle.",
+          "text": "",
+          "colorPalette": [
+            "#2244DD"
+          ]
+        },
+        {
+          "id": "60502516-583d-55f2-9de4-46c583633e4a",
+          "kind": "obj",
+          "bbox": [
+            450,
+            450,
+            900,
+            900
+          ],
+          "description": "Solid orange triangle overlapping in front of the circle.",
+          "text": "",
+          "colorPalette": [
+            "#E87525"
+          ]
+        },
+        {
+          "id": "81c64441-1d8d-5b23-a65a-bc96581ce938",
+          "kind": "text",
+          "bbox": [
+            800,
+            70,
+            950,
+            470
+          ],
+          "description": "Black uppercase title placed in front of the shapes.",
+          "text": "FORM",
+          "colorPalette": [
+            "#111111"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 1024,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#FFFFFF",
+          "#2244DD",
+          "#E87525",
+          "#111111"
+        ]
+      }
+    },
+    "review": [
+      "Triangle in front of circle; both boxes influence placement.",
+      "FORM exact and readable, layer order preserved as visual intent.",
+      "Cobalt, orange, white and black palette retained."
+    ]
+  },
+  {
+    "name": "extreme-wide",
+    "brief": "A very wide minimal banner with a red circle at the far left, a blue square at the far right and the word LOCAL in the open center. White background.",
+    "edits": {
+      "highLevelDescription": "A very wide minimal banner with a red circle at the far left, a blue square at the far right and the word LOCAL in the open center. White background.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [
+        {
+          "id": "216bbc5b-bc69-5724-86e2-a01299fdcc6c",
+          "kind": "obj",
+          "bbox": [
+            100,
+            20,
+            900,
+            170
+          ],
+          "description": "Red circle at left.",
+          "text": "",
+          "colorPalette": [
+            "#DD2222"
+          ]
+        },
+        {
+          "id": "8536720e-4fcd-5fba-bcce-d96614aef9fb",
+          "kind": "obj",
+          "bbox": [
+            100,
+            830,
+            900,
+            980
+          ],
+          "description": "Blue square at right.",
+          "text": "",
+          "colorPalette": [
+            "#2244DD"
+          ]
+        },
+        {
+          "id": "81c64441-1d8d-5b23-a65a-bc96581ce938",
+          "kind": "text",
+          "bbox": [
+            200,
+            300,
+            800,
+            700
+          ],
+          "description": "Large black uppercase lettering.",
+          "text": "LOCAL",
+          "colorPalette": [
+            "#111111"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 1536,
+        "height": 256,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#FFFFFF",
+          "#DD2222",
+          "#2244DD"
+        ]
+      }
+    },
+    "review": [
+      "No canvas clipping or unwanted panel borders.",
+      "Left and right objects at opposite edges; LOCAL in center.",
+      "Compare quality loss from 6:1 aspect ratio explicitly."
+    ]
+  },
+  {
+    "name": "batch-two",
+    "brief": "A minimalist centered orange ceramic vase on a cream background, studio product photography, no text.",
+    "edits": {
+      "highLevelDescription": "A minimalist centered orange ceramic vase on a cream background, studio product photography, no text.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [],
+      "settings": {
+        "width": 1024,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 2
+      }
+    },
+    "review": [
+      "Both variations preserved separately with matching receipts and hashes.",
+      "Both depict orange vase; visibly different variation pixels.",
+      "No quality degradation in second variation."
+    ]
+  },
+  {
+    "name": "batch-four-draft",
+    "brief": "A cheerful geometric cobalt bird on white paper, no lettering.",
+    "edits": {
+      "highLevelDescription": "A cheerful geometric cobalt bird on white paper, no lettering.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [],
+      "settings": {
+        "width": 512,
+        "height": 512,
+        "preset": "turbo",
+        "seed": 42621,
+        "batchSize": 4
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#FFFFFF",
+          "#DD2222",
+          "#2244DD"
+        ]
+      }
+    },
+    "review": [
+      "All four variations preserved, distinct pixels, no partial batch success.",
+      "All four resemble coherent cobalt birds.",
+      "Assess draft preset quality and latency explicitly."
+    ]
+  },
+  {
+    "name": "quality-large",
+    "brief": "A detailed editorial photograph of a green fern in a handmade white ceramic pot on a pale wooden table. Diffuse window light, realistic leaf veins, coherent branching and soft shadows. No text.",
+    "edits": {
+      "highLevelDescription": "A detailed editorial photograph of a green fern in a handmade white ceramic pot on a pale wooden table. Diffuse window light, realistic leaf veins, coherent branching and soft shadows. No text.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [],
+      "settings": {
+        "width": 2048,
+        "height": 2048,
+        "preset": "quality",
+        "seed": 42621,
+        "batchSize": 1
+      }
+    },
+    "review": [
+      "Full 2048-square PNG, detailed leaf veins without repetitive artifacts.",
+      "Coherent pot geometry and branching.",
+      "Record peak memory, errors and quality-versus-standard tradeoff."
+    ]
+  },
+  {
+    "name": "negative-prompt",
+    "brief": "A clean product photograph of a cobalt ceramic cup on a plain white table.",
+    "edits": {
+      "highLevelDescription": "A clean product photograph of a cobalt ceramic cup on a plain white table.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [],
+      "settings": {
+        "width": 1024,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1,
+        "negativePrompt": "red, orange, text, watermark, worst quality, jpeg artifact"
+      }
+    },
+    "review": [
+      "Cobalt cup; no red/orange, text or watermark.",
+      "Negative prompt is present only in MOSS negative conditioning; baseline limitation recorded."
+    ]
+  },
+  {
+    "name": "minimum-size",
+    "brief": "A simple solid blue circle on a plain white background, centered with generous white margins. No text.",
+    "edits": {
+      "highLevelDescription": "A simple solid blue circle on a plain white background, centered with generous white margins. No text.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [],
+      "settings": {
+        "width": 256,
+        "height": 256,
+        "preset": "turbo",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#FFFFFF",
+          "#DD2222",
+          "#2244DD"
+        ]
+      }
+    },
+    "review": [
+      "Legacy minimum dimensions still execute; document quality below MOSS recommended pixel range.",
+      "Single blue circle and clean white margin."
+    ]
+  },
+  {
+    "name": "fixed-seed-repeat",
+    "brief": "A simple diagram containing exactly one red circle on the left and exactly one blue square on the right. White background. No text, borders or other objects.",
+    "edits": {
+      "highLevelDescription": "A simple diagram containing exactly one red circle on the left and exactly one blue square on the right. White background. No text, borders or other objects.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [
+        {
+          "id": "685a82eb-f3f6-53ae-bb36-cb5b21039445",
+          "kind": "obj",
+          "bbox": [
+            150,
+            50,
+            650,
+            400
+          ],
+          "description": "One solid red circle, entirely inside its box, no letters.",
+          "text": "",
+          "colorPalette": [
+            "#DD2222"
+          ]
+        },
+        {
+          "id": "d9f8a232-4c0f-5ff5-8d2a-434f4bd056b3",
+          "kind": "obj",
+          "bbox": [
+            350,
+            600,
+            850,
+            950
+          ],
+          "description": "One solid blue square, entirely inside its box, no letters.",
+          "text": "",
+          "colorPalette": [
+            "#2244DD"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 1024,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      },
+      "style": {
+        "mode": "art",
+        "aesthetics": "Minimal geometric graphic design with precise shapes and clean edges.",
+        "lighting": "Even flat illumination, no shadows.",
+        "photo": "",
+        "artStyle": "Flat vector illustration, solid colors.",
+        "medium": "Graphic illustration",
+        "colorPalette": [
+          "#FFFFFF",
+          "#DD2222",
+          "#2244DD"
+        ]
+      }
+    },
+    "review": [
+      "Compare decoded pixel hash to boxes-square for repeatability within each model, not across different models."
+    ]
+  },
+  {
+    "name": "random-seed",
+    "brief": "A minimalist centered orange ceramic vase on a cream background, studio product photography, no text.",
+    "edits": {
+      "highLevelDescription": "A minimalist centered orange ceramic vase on a cream background, studio product photography, no text.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [],
+      "settings": {
+        "width": 1024,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 0,
+        "batchSize": 1
+      }
+    },
+    "review": [
+      "Seed is resolved to a nonzero value and preserved in the receipt.",
+      "Render is a coherent vase and differs from the fixed-seed version."
+    ]
+  },
+  {
+    "name": "negative-control",
+    "brief": "A clean product photograph of a cobalt ceramic cup on a plain white table.",
+    "edits": {
+      "highLevelDescription": "A clean product photograph of a cobalt ceramic cup on a plain white table.",
+      "background": "A clean plain white background extending to all canvas edges.",
+      "elements": [],
+      "settings": {
+        "width": 1024,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      }
+    },
+    "review": [
+      "Same scene and fixed seed as negative-prompt with only the normal default negative conditioning.",
+      "Compare rendered pixels with negative-prompt; Ideogram should be unchanged because its original graph has no negative text conditioning. MOSS should consume the changed conditioning; assess artifacts and color suppression visually."
+    ]
+  },
+  {
+    "name": "people-scene",
+    "brief": "A candid editorial photograph of two adults talking beside a wooden park bench in soft overcast daylight. One woman in a cobalt blue jacket stands on the left, one man in an orange sweater stands on the right. They look at each other, with relaxed natural hands. Leafy city park background, realistic skin and fabric. No text or logos.",
+    "edits": {
+      "highLevelDescription": "A candid editorial photograph of two adults talking beside a wooden park bench in soft overcast daylight. One woman in a cobalt blue jacket stands on the left, one man in an orange sweater stands on the right. They look at each other, with relaxed natural hands. Leafy city park background, realistic skin and fabric. No text or logos.",
+      "background": "A leafy city park with a wooden bench in the lower center and soft defocused trees.",
+      "style": {
+        "mode": "photo",
+        "aesthetics": "Candid environmental editorial portrait, realistic skin, natural proportions.",
+        "lighting": "Soft overcast daylight.",
+        "photo": "A clear eye-level photograph with a natural depth of field.",
+        "artStyle": "",
+        "medium": "Photograph",
+        "colorPalette": [
+          "#2244DD",
+          "#E97822",
+          "#426840"
+        ]
+      },
+      "elements": [
+        {
+          "id": "a0a8a4fa-17e8-537c-bdf8-ee3b72f73920",
+          "kind": "obj",
+          "bbox": [
+            100,
+            70,
+            920,
+            440
+          ],
+          "description": "One adult woman in a cobalt blue jacket standing and looking to the right. Natural face and relaxed hands.",
+          "text": "",
+          "colorPalette": [
+            "#2244DD"
+          ]
+        },
+        {
+          "id": "a76a76f9-0a55-5039-b822-904cf22e2814",
+          "kind": "obj",
+          "bbox": [
+            100,
+            570,
+            920,
+            940
+          ],
+          "description": "One adult man in an orange sweater standing and looking to the left. Natural face and relaxed hands.",
+          "text": "",
+          "colorPalette": [
+            "#E97822"
+          ]
+        }
+      ],
+      "settings": {
+        "width": 1024,
+        "height": 1024,
+        "preset": "standard",
+        "seed": 42621,
+        "batchSize": 1
+      }
+    },
+    "review": [
+      "Exactly two adult subjects with correct left/right clothing colors and mutual gaze.",
+      "Natural faces, hands and limbs; no blended identities or duplicate bodies.",
+      "Park and bench present, coherent photo lighting, no lettering or watermark."
+    ]
+  }
+]

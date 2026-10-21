@@ -1716,6 +1716,7 @@ pub struct ContextAttachmentImport {
 }
 
 pub mod ideogram;
+pub mod moss;
 
 pub use image::ImageProjectEdit;
 

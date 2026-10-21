@@ -1,5 +1,13 @@
 # Third-party notices
 
+## MOSS-Image and ComfyUI layout compatibility
+
+MOSS-Image Base is published by OpenMOSS under Apache License 2.0. Model weights are downloaded
+separately and pinned by Setup. See <https://github.com/OpenMOSS/MOSS-Image> and the included
+[Apache License 2.0](LICENSES/Apache-2.0.txt). Kestrel's independent Rust coordinate adapter
+implements the documented centered-pixel layout format and rounding behavior of ComfyUI v0.42.1.
+Historical Ideogram takes retain their original non-commercial model notices.
+
 ## Visual Music Lyrics
 
 The Kestrel Living sketchbook visual lyric theme and its sketchbook visual language are adapted from

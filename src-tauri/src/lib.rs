@@ -1091,7 +1091,7 @@ async fn start_studio_prompt_draft(
         let result = match managed.control_settings.load() {
             Ok(settings) => {
                 PromptDraftJob {
-                    app: app_for_task.clone(),
+                    events: app_for_task.clone().into(),
                     runtime: managed.runtime.clone(),
                     models,
                     settings,

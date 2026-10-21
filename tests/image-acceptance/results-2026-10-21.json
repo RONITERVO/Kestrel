@@ -1,0 +1,1362 @@
+{
+  "date": "2026-10-21",
+  "baseRevision": "c977124",
+  "hardware": "RTX 5070 12 GB; 64 GB RAM; Windows",
+  "runtime": "isolated ComfyUI v0.42.1, offline assets, low VRAM/offload",
+  "scope": "17 authored cases plus 2 real local-agent stages per model; single samples, not statistical rankings",
+  "mergeVerdict": "Draft: native UI check and producer acceptance of approximate box placement remain required.",
+  "records": [
+    {
+      "case": "agent-develop",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "fail",
+      "visualNotes": "Correct vase on left, but two orange spheres instead of one on right and strong unwanted black panel/grid lines. Extra curly quotation marks appear around title/footer; those marks were present in the agent proposal, so this part is an agent planning issue.",
+      "elapsedSeconds": 42.6600893,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "0f2485c10f10b72521d20db5d41cc283f7a7b3b6227c59d66c992bbad52e91fc",
+          "decodedPixelSha256": "93cdd744250bacc087264ddf665d0b89fd43118a79aa616ead16131ef4709988",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11373
+      }
+    },
+    {
+      "case": "agent-revise",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Object swap correct with one sphere left and vase right; title/footer wording correct without the old quotation marks. Unwanted black dividing lines and gray rectangular object panels remain. Vase identity changes on regeneration.",
+      "elapsedSeconds": 40.6471503,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "3c57163ef110e8b18dd659405f07cc6dfb846340413e59ddc908280ead5c429a",
+          "decodedPixelSha256": "a6dfa229c42afe725a7ce1c33ad09f94a063fdaa5b46168305dba6fc42796bcc",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11054
+      }
+    },
+    {
+      "case": "art-overlap-palette",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Cobalt circle behind orange triangle; exact FORM black lettering in foreground. Clear flat edges and correct overlap/palette.",
+      "elapsedSeconds": 36.5949716,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "87e22344607317667d6646067eb177640254dab1451f1a9c15196316ab836909",
+          "decodedPixelSha256": "ee8ffa95782f04b3e9f3aab9aa7b3d4cdd984cb71b63a1305ffaa2b09a589af0",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      }
+    },
+    {
+      "case": "batch-four-draft",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Four distinct geometric birds delivered at correct size. Red/blue colors differ markedly between variations; variation 4 includes an unwanted small logo/text at upper-left and variation 2 has a thin border.",
+      "elapsedSeconds": 16.5468797,
+      "takes": [
+        {
+          "size": [
+            512,
+            512
+          ],
+          "fileSha256": "8d05fd1b688604f614be49fc11d7ff540c81e7a97b154ecdcdc722d9eda554ea",
+          "decodedPixelSha256": "f4b76ad3dd0fb31c8b69d50e55b306588276d142fc882d818573bc90494857a4",
+          "matchesReceipt": true
+        },
+        {
+          "size": [
+            512,
+            512
+          ],
+          "fileSha256": "a4665fa0426ccf79812e2d8c4b15d006b09ade3ecd429239858f3b5e190ad67e",
+          "decodedPixelSha256": "47eca13ff69f8e6aad04b894f0260b2b61964995eddbd7c558339ce21cc8c586",
+          "matchesReceipt": true
+        },
+        {
+          "size": [
+            512,
+            512
+          ],
+          "fileSha256": "048b4de9e08f8f041c2cccd06875f711800e3fae2832c858fbc3f7f10b896cdb",
+          "decodedPixelSha256": "8435d545b77595285f1653abc987f9a67a996f75aa4d710dce0f8f83b5df1ce3",
+          "matchesReceipt": true
+        },
+        {
+          "size": [
+            512,
+            512
+          ],
+          "fileSha256": "924449aed9f69187e5561ba7629e23b45737ce52619bd67ee1c3bd9161c49564",
+          "decodedPixelSha256": "a4cfcfeb4d38f4b500b9132cdd108666f4e028d5af0be0243f0bf5d5bc4f1244",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      },
+      "allBatchVariationsDistinct": true
+    },
+    {
+      "case": "batch-two",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "fail",
+      "visualNotes": "Both vase variations instead show a dark background with Image blocked by safety filter text. Requested ceramic vase absent in both outputs.",
+      "elapsedSeconds": 62.8134787,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "c55cbda61a06637c4ff1a4f8c351868616f85bf6db6df4058c50f7de943780c3",
+          "decodedPixelSha256": "7c48fe8dad5cf864df9afe87053309065628877f0be769556cd07114b0a801cf",
+          "matchesReceipt": true
+        },
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "89ace881d9f61f88aaee2742912d9aa2535f17582a919f0965ed4e6497954b44",
+          "decodedPixelSha256": "b9199bdfd07f66407cddead9bb1450b605e4786b84a2a396db3fea00fa1ddbb4",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      },
+      "allBatchVariationsDistinct": true
+    },
+    {
+      "case": "boxes-landscape",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Accurate placement and clean colors. Unwanted thin black rectangle outlines the circle; blue shape nearly square.",
+      "elapsedSeconds": 62.9492087,
+      "takes": [
+        {
+          "size": [
+            1536,
+            1024
+          ],
+          "fileSha256": "8785ebbf13d193f6703d84cd720eec44cce9f634f8851c70298e4d82eda80f30",
+          "decodedPixelSha256": "4b39a6111b08f259970395aaf13920eef780000d1e4434e77ba48e7bead1b533",
+          "matchesReceipt": true,
+          "boxes": [
+            {
+              "detected": true,
+              "color": "red",
+              "requestedPixelBoxYxyx": [
+                153,
+                76,
+                666,
+                615
+              ],
+              "measuredPixelBoxYxyx": [
+                160,
+                79,
+                670,
+                616
+              ],
+              "boxIoU": 0.971539720806273,
+              "coloredPixelContainment": 0.9985017718982504,
+              "centerErrorDiagonalFraction": 0.003170214520133593,
+              "substantialColorComponents": 1
+            },
+            {
+              "detected": true,
+              "color": "blue",
+              "requestedPixelBoxYxyx": [
+                358,
+                921,
+                871,
+                1460
+              ],
+              "measuredPixelBoxYxyx": [
+                356,
+                925,
+                875,
+                1460
+              ],
+              "boxIoU": 0.9811881294308176,
+              "coloredPixelContainment": 0.9903725060713113,
+              "centerErrorDiagonalFraction": 0.0012112767049727389,
+              "substantialColorComponents": 1
+            }
+          ]
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      }
+    },
+    {
+      "case": "boxes-portrait",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "fail",
+      "visualNotes": "Boxes followed, but circle stretched vertically and blue square becomes tall rectangle. Strong unwanted black rectangle/grid strokes.",
+      "elapsedSeconds": 64.7510129,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1536
+          ],
+          "fileSha256": "a042f2151096cc93fc26b40f718ab457aafd6a384cd6097fecbe169060e09faf",
+          "decodedPixelSha256": "a7528661cd4374568b7db8891be3080f73c7f3630b0d9423c61b827bbe82967b",
+          "matchesReceipt": true,
+          "boxes": [
+            {
+              "detected": true,
+              "color": "red",
+              "requestedPixelBoxYxyx": [
+                230,
+                51,
+                999,
+                410
+              ],
+              "measuredPixelBoxYxyx": [
+                399,
+                53,
+                896,
+                409
+              ],
+              "boxIoU": 0.6408931035856718,
+              "coloredPixelContainment": 1.0,
+              "centerErrorDiagonalFraction": 0.01787813231637172,
+              "substantialColorComponents": 1
+            },
+            {
+              "detected": true,
+              "color": "blue",
+              "requestedPixelBoxYxyx": [
+                537,
+                614,
+                1306,
+                973
+              ],
+              "measuredPixelBoxYxyx": [
+                535,
+                616,
+                1303,
+                972
+              ],
+              "boxIoU": 0.9852339197132772,
+              "coloredPixelContainment": 0.9974030724213606,
+              "centerErrorDiagonalFraction": 0.0013810679320049755,
+              "substantialColorComponents": 1
+            }
+          ]
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      }
+    },
+    {
+      "case": "boxes-square",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Correct left/right colored subjects, but blue square is rectangular and an unwanted black box outlines the red circle.",
+      "elapsedSeconds": 107.0863587,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "71aee06ae9536c182f96165c3168b07aeace08e8a0fdcb15bffc7d27dcaaff95",
+          "decodedPixelSha256": "c73bba75fd8c5dcd34f347608d983d6e67ea5a48a027bb2693766131bffe5f05",
+          "matchesReceipt": true,
+          "boxes": [
+            {
+              "detected": true,
+              "color": "red",
+              "requestedPixelBoxYxyx": [
+                153,
+                51,
+                666,
+                410
+              ],
+              "measuredPixelBoxYxyx": [
+                264,
+                77,
+                559,
+                386
+              ],
+              "boxIoU": 0.49495838016582777,
+              "coloredPixelContainment": 1.0,
+              "centerErrorDiagonalFraction": 0.0015440808887540913,
+              "substantialColorComponents": 1
+            },
+            {
+              "detected": true,
+              "color": "blue",
+              "requestedPixelBoxYxyx": [
+                358,
+                614,
+                871,
+                973
+              ],
+              "measuredPixelBoxYxyx": [
+                357,
+                617,
+                869,
+                971
+              ],
+              "boxIoU": 0.9803437007169916,
+              "coloredPixelContainment": 0.998046875,
+              "centerErrorDiagonalFraction": 0.0010918300671385692,
+              "substantialColorComponents": 1
+            }
+          ]
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      }
+    },
+    {
+      "case": "extreme-wide",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "LOCAL correct centered, red circle at left and blue square at right. Red circle slightly wider than tall; composition clean and unclipped.",
+      "elapsedSeconds": 14.5056812,
+      "takes": [
+        {
+          "size": [
+            1536,
+            256
+          ],
+          "fileSha256": "593be7e2774e27be7b52d5c6c375714ceb6f41d4302692d95ee65aa8fad8b9d0",
+          "decodedPixelSha256": "c18950772403253a7a3376697b775ce5578e144001aa724c6d27cb7e341d273e",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      }
+    },
+    {
+      "case": "fixed-seed-repeat",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Decoded pixels exactly match boxes-square, including its border and rectangle defects. Fixed-seed reproducibility passed.",
+      "elapsedSeconds": 36.6732722,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "94efe6c6ade9b772e6849f629ac04d6c692eb949a8351bf16bdb44d144ebebf3",
+          "decodedPixelSha256": "c73bba75fd8c5dcd34f347608d983d6e67ea5a48a027bb2693766131bffe5f05",
+          "matchesReceipt": true,
+          "boxes": [
+            {
+              "detected": true,
+              "color": "red",
+              "requestedPixelBoxYxyx": [
+                153,
+                51,
+                666,
+                410
+              ],
+              "measuredPixelBoxYxyx": [
+                264,
+                77,
+                559,
+                386
+              ],
+              "boxIoU": 0.49495838016582777,
+              "coloredPixelContainment": 1.0,
+              "centerErrorDiagonalFraction": 0.0015440808887540913,
+              "substantialColorComponents": 1
+            },
+            {
+              "detected": true,
+              "color": "blue",
+              "requestedPixelBoxYxyx": [
+                358,
+                614,
+                871,
+                973
+              ],
+              "measuredPixelBoxYxyx": [
+                357,
+                617,
+                869,
+                971
+              ],
+              "boxIoU": 0.9803437007169916,
+              "coloredPixelContainment": 0.998046875,
+              "centerErrorDiagonalFraction": 0.0010918300671385692,
+              "substantialColorComponents": 1
+            }
+          ]
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 10943
+      },
+      "pixelsMatchInitial": true
+    },
+    {
+      "case": "minimum-size",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Blue circle and white margin present, but unwanted red fragments and cut-off lettering appear along the upper and left edges.",
+      "elapsedSeconds": 8.5215846,
+      "takes": [
+        {
+          "size": [
+            256,
+            256
+          ],
+          "fileSha256": "98e892d577fc9a9cbab331e80b7ea09b2862da2fd881223b598bc2309e55efa3",
+          "decodedPixelSha256": "779c05bd89626844d16622600307eae892f6b45124bea3578c361dbfc01a4ddd",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11138
+      }
+    },
+    {
+      "case": "multiline-unicode",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "CAFÉ accent and explicit line break retained; HELSINKI and 茶 • 2026 readable and correct; positions and generous margins match.",
+      "elapsedSeconds": 28.5889448,
+      "takes": [
+        {
+          "size": [
+            768,
+            1152
+          ],
+          "fileSha256": "63583ebcd50333a40f38c73c0d8aa8692d9dda918d40b7da9313baddbba76b95",
+          "decodedPixelSha256": "1d3013010609eac219c75a0cfed1cf6bb0419c8eecd9bf88f00b0859f12acd57",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      }
+    },
+    {
+      "case": "negative-control",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "fail",
+      "visualNotes": "Same gray safety-message image as negative-prompt; cup absent. Pixel equality is measured separately.",
+      "elapsedSeconds": 34.6555735,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "5ed8ad76f657fbad5c6fc23e0ccb387c42d3ac64104d5fad8d40b38291e33166",
+          "decodedPixelSha256": "c32be7ec5128619758f0a5d15659aa3df08a973ddf3412eaae7952a9df6ff183",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11035
+      }
+    },
+    {
+      "case": "negative-prompt",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "fail",
+      "visualNotes": "Instead of the requested cobalt cup, image contains a gray field and the sentence Image blocked by safety filter. Baseline has no negative-text input, so this is a subject-fidelity failure, not a negative-conditioning score.",
+      "elapsedSeconds": 34.5336504,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "f8d3ba28e42b406dbe9f0385d65407d90bb53cf95337a22c7833e09d83a9cea3",
+          "decodedPixelSha256": "c32be7ec5128619758f0a5d15659aa3df08a973ddf3412eaae7952a9df6ff183",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 10955
+      },
+      "pixelsMatchNegativeControl": true
+    },
+    {
+      "case": "people-scene",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Two adults with correct left/right clothing colors and mutual gaze, natural visible faces and hands, park bench present. Lower bodies are cropped by the frame.",
+      "elapsedSeconds": 38.7313038,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "9327f696841ae1dbb83857d67f9d5246d72fb9835c90d472c83eb7be4fe37b3b",
+          "decodedPixelSha256": "535eec95709f080d9e1bdb82b04e774a9dde953afcc144583cdd4abc3b2fd36a",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11281
+      }
+    },
+    {
+      "case": "photography-freeform",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "fail",
+      "visualNotes": "Convincing cup texture, steam, rainy window and lighting, but unwanted white text across center reads Image blocked by safety filtel. Prompt explicitly requested no text or logos.",
+      "elapsedSeconds": 62.8065684,
+      "takes": [
+        {
+          "size": [
+            1536,
+            1024
+          ],
+          "fileSha256": "31fc8055e33171af7ce19380e7462cc190c5a67074e0a41923bb4b7c6fd0bc36",
+          "decodedPixelSha256": "506d90d2bcb68bc0708362cbd78e9c5b66c7654387ded1e705eac50b7d99ca83",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      }
+    },
+    {
+      "case": "poster-exact-text",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "EXPLORE spelled correctly, title at top and mountain below; convincing cream paper texture and dark blue palette.",
+      "elapsedSeconds": 36.6398889,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "359bf72618274389de700e2701b59a9af6163241fd6bdb614caeca4d0bdefb4c",
+          "decodedPixelSha256": "3d3b75ca42b34a057bce7e6e0b93d8bf39810f1312be5e6ff7f3baeca8b618a5",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": null
+      }
+    },
+    {
+      "case": "quality-large",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Full-resolution 2048-square image with convincing fern leaf veins, ceramic glaze and diffuse lighting. Pot and near frond are cropped by the frame; pot includes a terracotta base.",
+      "elapsedSeconds": 774.3390129,
+      "takes": [
+        {
+          "size": [
+            2048,
+            2048
+          ],
+          "fileSha256": "8d822b1eff0477b029772ba1a4ebf7582f5fd0ab1e6f946f89d40b071f721d0f",
+          "decodedPixelSha256": "f28020b4fdd78f2642b69f0ad09d4f8ecb17107a38b20d1bd48397c8b3229f0f",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": false,
+        "peakUsedMiBObserved": 9088
+      }
+    },
+    {
+      "case": "random-seed",
+      "backend": "ideogram",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "fail",
+      "visualNotes": "A random nonzero seed was recorded, but the requested vase is absent; image displays a dark field and Image blocked by safety filter text.",
+      "elapsedSeconds": 34.633232,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "02967adbe36cfb98d2cb55a25a1311d51fb01bd507fcfec8cbc942ff4539ad6e",
+          "decodedPixelSha256": "8d6ec91366428095c4f3f6b51b2ed404493bab4c6a71e2a2976da6d0c4b0b095",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11156
+      }
+    },
+    {
+      "case": "agent-develop",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Title NIGHT / FORM and footer HELSINKI 2026 are legible, with stylized mixed-height title glyphs. One cobalt vase on the left and one orange sphere on the right, clean cream background, no panel lines or extra quotation marks. Objects have shaded volume rather than purely flat geometric illustration.",
+      "elapsedSeconds": 34.6445583,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "40e7a9415df90a0c1b13f2a89855bfe14670649b429fe9773276af56f378c004",
+          "decodedPixelSha256": "1b83762ba3912001630cb54b12f1c9bbe585a8d3ffe8949463263e5e39617dff",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11266
+      }
+    },
+    {
+      "case": "agent-revise",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Requested swap is correct: one orange sphere left, one blue vase right. Title and footer wording retained, generous cream margins, no unwanted lines. Vase shape changes on regeneration, so this is concept revision rather than identity-preserving image editing.",
+      "elapsedSeconds": 34.6561614,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "09d5d92747a77ce9495c116704e0a1c5f4fbc980924b0cdefbb4914dade3470d",
+          "decodedPixelSha256": "9cc6d50bc6ce3fcd166c7e6fcd654c6559f8ecde75f0a8bcacd4c420b8daa70c",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11371
+      }
+    },
+    {
+      "case": "art-overlap-palette",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Correct circle/triangle overlap and foreground FORM lettering. Clean flat geometry; orange is somewhat darker than Ideogram.",
+      "elapsedSeconds": 34.5553549,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "41e16c9d36a08a4f420e7cfca60e8fd19ff8248c13f8c7f360f876556375feee",
+          "decodedPixelSha256": "aadfe7f936cc014d47a70c1fc5fe40a9457002e7d7378eeab435afdee30d2edf",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11367
+      }
+    },
+    {
+      "case": "batch-four-draft",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Four distinct coherent blue/red geometric birds, all free of lettering. One includes the requested white paper as a visible bordered sheet; another is highly abstract. Draft output is clean at 512 square.",
+      "elapsedSeconds": 20.5845039,
+      "takes": [
+        {
+          "size": [
+            512,
+            512
+          ],
+          "fileSha256": "89e4122e76519d9b90c0f04c54cd78e8992264f76e44d15c2ab90cbe9115b54e",
+          "decodedPixelSha256": "d188763ac5a03681ad4b67c02e5b5a43c45de919c37ffc5cc79952365c692061",
+          "matchesReceipt": true
+        },
+        {
+          "size": [
+            512,
+            512
+          ],
+          "fileSha256": "cae47ee81d0be3005d7e9ef26562424d46974b3c4ec64b1612833722fed2c1e8",
+          "decodedPixelSha256": "c272403d6e2da05740be19c441ff9439983a108e545b61f36bc5acd22163d556",
+          "matchesReceipt": true
+        },
+        {
+          "size": [
+            512,
+            512
+          ],
+          "fileSha256": "064dcfe2ee0f5207fb17dcc01a1129072cde9d16b2213abce4a680f50f2f8bf9",
+          "decodedPixelSha256": "2f17bda3714861cad7464bd5b6cdf948d49046cbd6c040f45ade0a6f6a737fda",
+          "matchesReceipt": true
+        },
+        {
+          "size": [
+            512,
+            512
+          ],
+          "fileSha256": "d86ad68d1c8d16259040308225b4e3cd9e936cbe9a1cc8bd6c30030cb0d3fd39",
+          "decodedPixelSha256": "190f9fa8e3e81a9b1af75731b9db3f8366b510af228e7e7f977e52e96da10b9c",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11395
+      },
+      "allBatchVariationsDistinct": true
+    },
+    {
+      "case": "batch-two",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Both distinct variations depict coherent orange ceramic vases. First is inset within a rectangular cream panel on white; second is a clean uninterrupted product image. No lettering or refusal message.",
+      "elapsedSeconds": 61.0033399,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "f31ca4eded603effaf0784c5f288bf4e524eba7dba7703fdee905ae712674911",
+          "decodedPixelSha256": "ed30612c587fe57325dc4d896852af6002caf0a04076cc173a5a142a7238eb1e",
+          "matchesReceipt": true
+        },
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "cee96e7b9c82493f5151e2351b1ae990ae42e7ed07590f49f52703a337eb2dc8",
+          "decodedPixelSha256": "0292e1b6572fcf03dd992f9a8eb1adda09eddeede87fde005ed9841fd6a9154e",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11352
+      },
+      "allBatchVariationsDistinct": true
+    },
+    {
+      "case": "boxes-landscape",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Correct relative vertical offset and left/right positions, clean colors and no outlines. Shapes follow nearly square boxes with minor geometric deviation.",
+      "elapsedSeconds": 52.9371953,
+      "takes": [
+        {
+          "size": [
+            1536,
+            1024
+          ],
+          "fileSha256": "0eb78a9a3a583227aadc3ef98a70061794853979cf9618e9755fe886ffea9e08",
+          "decodedPixelSha256": "e22edec84a0a174d4e657d8105ba629199987d800b7f4c781caf86c465b682d9",
+          "matchesReceipt": true,
+          "boxes": [
+            {
+              "detected": true,
+              "color": "red",
+              "requestedPixelBoxYxyx": [
+                153,
+                76,
+                666,
+                615
+              ],
+              "measuredPixelBoxYxyx": [
+                155,
+                78,
+                666,
+                612
+              ],
+              "boxIoU": 0.98686109212425,
+              "coloredPixelContainment": 1.0,
+              "centerErrorDiagonalFraction": 0.0006056383524863694,
+              "substantialColorComponents": 1
+            },
+            {
+              "detected": true,
+              "color": "blue",
+              "requestedPixelBoxYxyx": [
+                358,
+                921,
+                871,
+                1460
+              ],
+              "measuredPixelBoxYxyx": [
+                359,
+                922,
+                870,
+                1459
+              ],
+              "boxIoU": 0.9924052555631503,
+              "coloredPixelContainment": 1.0,
+              "centerErrorDiagonalFraction": 0.0,
+              "substantialColorComponents": 1
+            }
+          ]
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11220
+      }
+    },
+    {
+      "case": "boxes-portrait",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "No unwanted borders or lettering, but both shapes are aligned vertically instead of honoring the requested offset. Circle is vertically oval and the blue shape rectangular, although less stretched than Ideogram.",
+      "elapsedSeconds": 50.7113572,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1536
+          ],
+          "fileSha256": "7db256c45f591513506bd436ef841405bf3a146b623f2a3a626638a046bed129",
+          "decodedPixelSha256": "77558511c2f20631483e6729721d050bfd2163b4a700c1103c6f11f8d16bc4ff",
+          "matchesReceipt": true,
+          "boxes": [
+            {
+              "detected": true,
+              "color": "red",
+              "requestedPixelBoxYxyx": [
+                230,
+                51,
+                999,
+                410
+              ],
+              "measuredPixelBoxYxyx": [
+                540,
+                54,
+                996,
+                408
+              ],
+              "boxIoU": 0.5847191483350298,
+              "coloredPixelContainment": 1.0,
+              "centerErrorDiagonalFraction": 0.08315130061487501,
+              "substantialColorComponents": 1
+            },
+            {
+              "detected": true,
+              "color": "blue",
+              "requestedPixelBoxYxyx": [
+                537,
+                614,
+                1306,
+                973
+              ],
+              "measuredPixelBoxYxyx": [
+                538,
+                618,
+                997,
+                971
+              ],
+              "boxIoU": 0.5869033690608575,
+              "coloredPixelContainment": 1.0,
+              "centerErrorDiagonalFraction": 0.08342346794371479,
+              "substantialColorComponents": 1
+            }
+          ]
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11358
+      }
+    },
+    {
+      "case": "boxes-square",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Clean true red circle and blue square without unwanted outlines or text. The model horizontally aligns the shapes, weakening the requested vertical offset; blue shape extends above its placement box.",
+      "elapsedSeconds": 34.6867195,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "2962fe23c72ecf8aab10329a9fac6c3ee7d5ab25ff72d74b8f82f07abee94b7e",
+          "decodedPixelSha256": "da9193d4f57206cfe6091f43881a8d3b2f9b8e70e01b0e29d0fb8460a46249ef",
+          "matchesReceipt": true,
+          "boxes": [
+            {
+              "detected": true,
+              "color": "red",
+              "requestedPixelBoxYxyx": [
+                153,
+                51,
+                666,
+                410
+              ],
+              "measuredPixelBoxYxyx": [
+                313,
+                55,
+                666,
+                407
+              ],
+              "boxIoU": 0.6746919915077076,
+              "coloredPixelContainment": 1.0,
+              "centerErrorDiagonalFraction": 0.0552437962289844,
+              "substantialColorComponents": 1
+            },
+            {
+              "detected": true,
+              "color": "blue",
+              "requestedPixelBoxYxyx": [
+                358,
+                614,
+                871,
+                973
+              ],
+              "measuredPixelBoxYxyx": [
+                313,
+                619,
+                664,
+                969
+              ],
+              "boxIoU": 0.5357223247647774,
+              "coloredPixelContainment": 0.8717948717948718,
+              "centerErrorDiagonalFraction": 0.08700796476715429,
+              "substantialColorComponents": 1
+            }
+          ]
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11209
+      }
+    },
+    {
+      "case": "extreme-wide",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Exact LOCAL centered, colored objects at opposite edges, no clipping or borders. Slight widening of circle and square remains at 6:1.",
+      "elapsedSeconds": 16.4974003,
+      "takes": [
+        {
+          "size": [
+            1536,
+            256
+          ],
+          "fileSha256": "54341c5fb9f5dd2539c35a1f24a87c770b1e40c67db5aeda6f1b021ac024aa85",
+          "decodedPixelSha256": "f30b01f3e53845b9d33df74cdcf8dab419e1296fd484a466af6ba831efff84bb",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11336
+      }
+    },
+    {
+      "case": "fixed-seed-repeat",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Decoded pixels exactly match boxes-square. Fixed-seed reproducibility passed; vertical alignment drift remains identical.",
+      "elapsedSeconds": 32.6649514,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "0675d666bd0689c341c231bf3a36c302a92f638f40479cd632631f26f0dbbcff",
+          "decodedPixelSha256": "da9193d4f57206cfe6091f43881a8d3b2f9b8e70e01b0e29d0fb8460a46249ef",
+          "matchesReceipt": true,
+          "boxes": [
+            {
+              "detected": true,
+              "color": "red",
+              "requestedPixelBoxYxyx": [
+                153,
+                51,
+                666,
+                410
+              ],
+              "measuredPixelBoxYxyx": [
+                313,
+                55,
+                666,
+                407
+              ],
+              "boxIoU": 0.6746919915077076,
+              "coloredPixelContainment": 1.0,
+              "centerErrorDiagonalFraction": 0.0552437962289844,
+              "substantialColorComponents": 1
+            },
+            {
+              "detected": true,
+              "color": "blue",
+              "requestedPixelBoxYxyx": [
+                358,
+                614,
+                871,
+                973
+              ],
+              "measuredPixelBoxYxyx": [
+                313,
+                619,
+                664,
+                969
+              ],
+              "boxIoU": 0.5357223247647774,
+              "coloredPixelContainment": 0.8717948717948718,
+              "centerErrorDiagonalFraction": 0.08700796476715429,
+              "substantialColorComponents": 1
+            }
+          ]
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11435
+      },
+      "pixelsMatchInitial": true
+    },
+    {
+      "case": "minimum-size",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Clean blue circle on white with generous margins and no extra fragments, text or borders at 256 square.",
+      "elapsedSeconds": 10.4678903,
+      "takes": [
+        {
+          "size": [
+            256,
+            256
+          ],
+          "fileSha256": "52225af1d1593d4b11123accf40c960fcf930f3cbf8927c12e79919e5ccd0b5f",
+          "decodedPixelSha256": "01548b489077fad23c0786befd22467e114d42451c4177f42f91aa063a11ed61",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11392
+      }
+    },
+    {
+      "case": "multiline-unicode",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Correct CAFÉ accent, HELSINKI on the second line, and exact 茶 • 2026 footer. Clean readable glyphs and requested placement. This score uses the corrected UTF-8 fixture only; the invalid earlier input is archived separately.",
+      "elapsedSeconds": 28.5260658,
+      "takes": [
+        {
+          "size": [
+            768,
+            1152
+          ],
+          "fileSha256": "727f0bf51e5d7969e9efb854cda8ba8fedb420cb606cf9823400f8cc17438a6b",
+          "decodedPixelSha256": "01d254afd51e90fb16138af61b9d165b8d7b52df95f53b081219d69ad3f254fd",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11122
+      }
+    },
+    {
+      "case": "negative-control",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Nearly the same dark blue cup as the negative-prompt case. Subject is present and free of unwanted lettering; palette fidelity is limited. The negative prompt changes pixels slightly, not the overall composition.",
+      "elapsedSeconds": 32.6248354,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "faaa32ff34d38568d6cc04463d5d2998ae76d2630bcf378042f75eee94ebf87b",
+          "decodedPixelSha256": "6f431bb64f783c1c2b2d9336c6c0bfbec50109445a9b2364c7aeda9aeb12a3cb",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11434
+      }
+    },
+    {
+      "case": "negative-prompt",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Coherent dark blue ceramic cup on white, without letters. Cobalt is darker than requested and the cream/brown rim remains despite the negative prompt. Pixels differ from the control, but the visible effect is weak; this is not a reliable exclusion control.",
+      "elapsedSeconds": 32.5351227,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "a7bbfdabab9ddeac8ab2bba9e67ae2c054ec52d0834f3ceef733501cee8c467c",
+          "decodedPixelSha256": "73722fe187a210bd17384a0a73bbb335c579a15323ed9cb215b361c04a18e514",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11409
+      },
+      "pixelsMatchNegativeControl": false
+    },
+    {
+      "case": "people-scene",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Correct blue-clad woman on left and orange-clad man on right, mutual gaze, plausible faces and visible hands, and a park bench. An unrequested white print border surrounds the scene.",
+      "elapsedSeconds": 34.6090639,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "7248890ca9ddfff7ff68861daafa71d6e32c722cabdb99f5fceb1fb2d5670d95",
+          "decodedPixelSha256": "4d71c6c75aea081ccc2cccd77aaeaacbd1757288f789bd790381951bd3d9adf5",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11469
+      }
+    },
+    {
+      "case": "photography-freeform",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Convincing blue ceramic cup, glaze, rainy window, table and natural light; no unwanted lettering. Steam is faint or absent. The cup has no handle, which is plausible for a ceramic cup.",
+      "elapsedSeconds": 50.7263994,
+      "takes": [
+        {
+          "size": [
+            1536,
+            1024
+          ],
+          "fileSha256": "2591b0049231c287293349fcc4ef693ff088e37a635a3b1d068de3efe3696e33",
+          "decodedPixelSha256": "e72933514b8a9acb7336ad5330527c44eea722912d7e2f6f121207a9506a0357",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11208
+      }
+    },
+    {
+      "case": "poster-exact-text",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "EXPLORE spelled exactly with clean large lettering in its top region. Dark blue mountain and cream background follow the composition; rendering is flatter and less textured than Ideogram.",
+      "elapsedSeconds": 32.6726516,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "d6ae3f5e68d1dfcf313b1b22890393194460819bb76f645f381cb259c337f58d",
+          "decodedPixelSha256": "731e11dfcfbda3af8fc301e806245a3087886c07e77f0f79eafa7ebc308f3248",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11375
+      }
+    },
+    {
+      "case": "quality-large",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "pass",
+      "visualNotes": "Detailed 2048-square fern photo with coherent leaf veins, branching and rough ceramic texture. Entire pot visible, some outer fronds cropped. Full render took 249.7 s versus 774.3 s for Ideogram in their respective Quality presets.",
+      "elapsedSeconds": 249.6859721,
+      "takes": [
+        {
+          "size": [
+            2048,
+            2048
+          ],
+          "fileSha256": "8da67fd9b87a5b441b64452f7c26cd2f2ce4d7946c1ce7eccf67e87682c6208d",
+          "decodedPixelSha256": "47d1faab11baff882958a21b11836038374346027986d102e9fe94420c69d22d",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11478
+      }
+    },
+    {
+      "case": "random-seed",
+      "backend": "moss",
+      "status": "rendered-awaiting-review",
+      "qualityVerdict": "partial",
+      "visualNotes": "Nonzero random seed recorded and a coherent orange ceramic vase produced. An unrequested rectangular cream inset panel surrounds the vase.",
+      "elapsedSeconds": 32.6224667,
+      "takes": [
+        {
+          "size": [
+            1024,
+            1024
+          ],
+          "fileSha256": "95736db23fe20d24c6314c69f0facc16824db4fdd7fbb428976bfc1c0216e260",
+          "decodedPixelSha256": "a0d4971bfc277ede1703b47cce82263e5809ae351abc79181565c67cae9e090a",
+          "matchesReceipt": true
+        }
+      ],
+      "gpuTelemetry": {
+        "sampleIntervalSeconds": 2,
+        "coversWholeRender": true,
+        "peakUsedMiBObserved": 11297
+      }
+    }
+  ],
+  "lifecycle": {
+    "ideogram": {
+      "status": "passed",
+      "cancelReachedSubmittedPrompt": true,
+      "completedTakesUnchanged": 1,
+      "elapsedSeconds": 3.5190225
+    },
+    "moss": {
+      "status": "passed",
+      "cancelReachedSubmittedPrompt": true,
+      "completedTakesUnchanged": 1,
+      "elapsedSeconds": 3.5227570999999998
+    }
+  },
+  "agent": {
+    "model": "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (Strata)",
+    "stages": [
+      "develop",
+      "revise"
+    ],
+    "parser": "ImageStudio.parseImageProposal",
+    "bothPromptPacksParsed": true,
+    "bothRevisionsSwappedObjectSides": true
+  }
+}

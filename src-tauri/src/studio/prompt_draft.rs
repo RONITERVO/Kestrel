@@ -24,12 +24,12 @@ use super::{
 // Prompt drafting is an explicit producer action and may need a long private reasoning pass
 // before any visible prose arrives. Use its tested ceiling when the configured runtime allows it,
 // while respecting the runtime's explicit output limit.
-/// Ideogram 4's structured prompt, in the key order the format requires. It mirrors the proposal
+/// Kestrel composition proposal, preserving its established editable schema. It mirrors the proposal
 /// parser in `ImageStudio.tsx`: background is text, the style has exactly one of `photo` or
 /// `art_style`, boxes are four integers from 0 to 1000, and palettes are uppercase #RRGGBB
 /// (16 global, 5 per element). llama.cpp turns it into a grammar; Strata reads it in the prompt.
 const IMAGE_COMPOSITION_SCHEMA: OrderedSchema = OrderedSchema {
-    name: "kestrel_ideogram4_composition",
+    name: "kestrel_image_composition",
     text: r##"{"type":"object","additionalProperties":false,
 "properties":{
 "high_level_description":{"type":"string","minLength":1},
@@ -83,8 +83,37 @@ fn prompt_inference_allowance(settings: &ControlSettings) -> PromptInferenceAllo
     }
 }
 
+/// The desktop and headless acceptance runner observe the same streaming job.
+pub struct PromptDraftEvents {
+    app: Option<AppHandle>,
+    #[cfg(test)]
+    observer: Option<std::sync::Arc<std::sync::Mutex<Vec<PromptDraftEvent>>>>,
+}
+
+impl From<AppHandle> for PromptDraftEvents {
+    fn from(app: AppHandle) -> Self {
+        Self {
+            app: Some(app),
+            #[cfg(test)]
+            observer: None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl PromptDraftEvents {
+    pub(super) fn headless(
+        observer: std::sync::Arc<std::sync::Mutex<Vec<PromptDraftEvent>>>,
+    ) -> Self {
+        Self {
+            app: None,
+            observer: Some(observer),
+        }
+    }
+}
+
 pub struct PromptDraftJob {
-    pub app: AppHandle,
+    pub events: PromptDraftEvents,
     pub runtime: Arc<RuntimeManager>,
     pub models: Vec<ModelInfo>,
     pub settings: ControlSettings,
@@ -95,7 +124,7 @@ pub struct PromptDraftJob {
 impl PromptDraftJob {
     pub async fn run(self) -> Result<(), String> {
         let Self {
-            app,
+            events,
             runtime,
             models,
             settings,
@@ -140,7 +169,7 @@ impl PromptDraftJob {
             .find(|model| model.id == request.model_id)
             .expect("validated prompt collaborator model");
         emit(
-            &app,
+            &events,
             &request.request_id,
             "queued",
             None,
@@ -149,11 +178,11 @@ impl PromptDraftJob {
             None,
         );
         let lease = tokio::select! {
-            result = runtime.lease_model(&request.model_id, &models, &settings, Some(&app)) => {
+            result = runtime.lease_model(&request.model_id, &models, &settings, events.app.as_ref()) => {
                 result.map_err(|error| error.to_string())?
             }
             _ = cancel.cancelled() => {
-                emit(&app, &request.request_id, "cancelled", None, Some(&model.name), Some(effective_thinking_level), None);
+                emit(&events, &request.request_id, "cancelled", None, Some(&model.name), Some(effective_thinking_level), None);
                 return Ok(());
             }
         };
@@ -224,7 +253,7 @@ impl PromptDraftJob {
             ));
         }
         emit(
-            &app,
+            &events,
             &request.request_id,
             "started",
             None,
@@ -237,8 +266,8 @@ impl PromptDraftJob {
         let mut decoder = OpenAiSseDecoder::default();
         let mut emitted_bytes = 0usize;
         let mut output_limited = false;
-        let mut accept_events = |events: Vec<OpenAiStreamEvent>| -> bool {
-            for event in events {
+        let mut accept_events = |stream_events: Vec<OpenAiStreamEvent>| -> bool {
+            for event in stream_events {
                 let OpenAiStreamEvent::Message(value) = event else {
                     continue;
                 };
@@ -251,7 +280,7 @@ impl PromptDraftJob {
                     if !accepted.is_empty() {
                         emitted_bytes = emitted_bytes.saturating_add(accepted.len());
                         emit(
-                            &app,
+                            &events,
                             &request.request_id,
                             "token",
                             Some(accepted),
@@ -262,7 +291,7 @@ impl PromptDraftJob {
                     }
                     if accepted.len() < token.len() || emitted_bytes >= remaining_bytes {
                         emit(
-                            &app,
+                            &events,
                             &request.request_id,
                             "limited",
                             None,
@@ -282,7 +311,7 @@ impl PromptDraftJob {
                 }
                 if let Some(token) = reasoning_delta(&value) {
                     emit(
-                        &app,
+                        &events,
                         &request.request_id,
                         "reasoning",
                         Some(token),
@@ -298,7 +327,7 @@ impl PromptDraftJob {
             let next = tokio::select! {
                 value = bytes.next() => value,
                 _ = cancel.cancelled() => {
-                    emit(&app, &request.request_id, "cancelled", None, Some(&model.name), Some(effective_thinking_level), None);
+                    emit(&events, &request.request_id, "cancelled", None, Some(&model.name), Some(effective_thinking_level), None);
                     return Ok(());
                 }
             };
@@ -313,7 +342,7 @@ impl PromptDraftJob {
             return Ok(());
         }
         emit(
-            &app,
+            &events,
             &request.request_id,
             if output_limited {
                 "limited"
@@ -329,7 +358,7 @@ impl PromptDraftJob {
     }
 }
 
-/// Image compositions must follow Ideogram's structure; every other draft is free text.
+/// Image compositions must follow the editable Kestrel structure; every other draft is free text.
 fn prepare_request(
     body: Value,
     target: PromptDraftTarget,
@@ -602,15 +631,31 @@ fn target_name(target: PromptDraftTarget) -> &'static str {
 }
 
 pub fn emit_error(app: &AppHandle, request_id: &str, error: String) {
-    emit(app, request_id, "error", Some(&error), None, None, None);
+    emit(
+        &app.clone().into(),
+        request_id,
+        "error",
+        Some(&error),
+        None,
+        None,
+        None,
+    );
 }
 
 pub fn emit_settled(app: &AppHandle, request_id: &str) {
-    emit(app, request_id, "settled", None, None, None, None);
+    emit(
+        &app.clone().into(),
+        request_id,
+        "settled",
+        None,
+        None,
+        None,
+        None,
+    );
 }
 
 fn emit(
-    app: &AppHandle,
+    events: &PromptDraftEvents,
     request_id: &str,
     kind: &str,
     content: Option<&str>,
@@ -618,18 +663,22 @@ fn emit(
     thinking_level: Option<ThinkingLevel>,
     receipt: Option<PromptDraftReceipt>,
 ) {
-    let _ = crate::ipc_events::emit::<kestrel_app_core::events::StudioPromptDraft>(
-        app,
-        &PromptDraftEvent {
-            request_id: request_id.into(),
-            kind: kind.into(),
-            content: content.map(str::to_owned),
-            model_name: model_name.map(str::to_owned),
-            thinking_level,
-            receipt,
-            at: Utc::now().to_rfc3339(),
-        },
-    );
+    let event = PromptDraftEvent {
+        request_id: request_id.into(),
+        kind: kind.into(),
+        content: content.map(str::to_owned),
+        model_name: model_name.map(str::to_owned),
+        thinking_level,
+        receipt,
+        at: Utc::now().to_rfc3339(),
+    };
+    if let Some(app) = &events.app {
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::StudioPromptDraft>(app, &event);
+    }
+    #[cfg(test)]
+    if let Some(observer) = &events.observer {
+        observer.lock().expect("prompt observer").push(event);
+    }
 }
 
 fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
@@ -646,6 +695,9 @@ fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
+
+#[cfg(test)]
+mod acceptance;
 
 #[cfg(test)]
 mod tests {
@@ -795,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn image_composition_schema_matches_the_proposal_parser_in_ideogram_order() {
+    fn image_composition_schema_matches_the_proposal_parser_in_editor_order() {
         let text = IMAGE_COMPOSITION_SCHEMA.text;
         let schema: Value = serde_json::from_str(text).unwrap();
         let order = |keys: &[&str]| {
@@ -843,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn only_image_compositions_carry_the_ideogram_schema() {
+    fn only_image_compositions_carry_the_composition_schema() {
         let body = json!({"model":"m","messages":[{"role":"user","content":"Develop the brief."}]});
         let llama = prepare_request(
             body.clone(),
@@ -855,7 +907,7 @@ mod tests {
         assert!(wire.contains(IMAGE_COMPOSITION_SCHEMA.text));
         assert_eq!(
             llama.receipt["response_format"]["json_schema"]["name"],
-            "kestrel_ideogram4_composition"
+            "kestrel_image_composition"
         );
 
         let strata = prepare_request(

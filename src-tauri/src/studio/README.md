@@ -25,7 +25,7 @@ unapplied suggestion until a typed native boundary saves it.
 - `project.json`, producer workspaces, every story revision, scene-history snapshot, conversation,
   source object, master, edit decision, and export receipt are durable user data. Interrupted work is
   surfaced and partial collaborator text is preserved. It is never silently resumed or discarded.
-- H3, Ideogram 4, and Music 3 rendering starts only after language-model inference releases its lease
+- H3, MOSS-Image Base, and Music 3 rendering starts only after language-model inference releases its lease
   and Kestrel unloads the model runtime from the GPU.
 - Model output is never executed. Parse bounded typed data, validate IDs and sizes, use fixed argument
   arrays, and persist the native result.
@@ -46,7 +46,7 @@ unapplied suggestion until a typed native boundary saves it.
 | `prompt_draft.rs` | Tool-free image/reference/music drafting from producer context | Applying proposals, movie-scene mutation, or rendering |
 | `model_stream.rs` | OpenAI-compatible SSE framing and explicit reasoning-channel extraction | Feature prompts, schemas, or persistence |
 | `image_assets.rs` | Listing and recovery of stills made by the retired H3 pseudo-image pass (new pictures come from Image Studio takes) | Generating images or story/scene authority |
-| `image_studio.rs` | Recoverable image projects, structured composition, native Ideogram graphs, immutable PNG takes | LLM process ownership or public-network fallback |
+| `image_studio.rs` | Recoverable image projects, structured composition, native MOSS graphs, immutable PNG takes | LLM process ownership or public-network fallback |
 | `live_preview.rs` | Bounded process-local preview state and visible preview events | Durable final-render truth |
 | `music.rs` | Recoverable song projects, producer arrangements, native Music 3 graphs, immutable takes and lyric revisions | LLM process ownership or fake stem claims |
 | `music_lyrics_model.rs` | Bounded audio-listening and translation suggestions through a caller-owned lease | Durable lyric mutation or runtime ownership |

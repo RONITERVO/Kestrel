@@ -33,8 +33,6 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState<SetupProgress | null>(null);
   const [advanced, setAdvanced] = useState(false);
-  const [ideogramLicenseOpen, setIdeogramLicenseOpen] = useState(false);
-  const [ideogramLicenseAccepted, setIdeogramLicenseAccepted] = useState(false);
   const [muscriptorLicenseOpen, setMuscriptorLicenseOpen] = useState(false);
   const [muscriptorLicenseAccepted, setMuscriptorLicenseAccepted] = useState(false);
   const [existingModelPaths, setExistingModelPaths] = useState<Record<string, string>>({});
@@ -42,7 +40,6 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   const [modelScanMessage, setModelScanMessage] = useState("");
   const [scanningModels, setScanningModels] = useState(false);
   const [locations, setLocations] = useState<SetupLocations>(() => fromSnapshot(snapshot));
-  const ideogramLicenseDialogRef = useRef<HTMLDialogElement>(null);
   const muscriptorLicenseDialogRef = useRef<HTMLDialogElement>(null);
   const guide = useRef<FlowPagesController | null>(null);
   const advancedRef = useRef<HTMLElement>(null);
@@ -52,12 +49,6 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   useEffect(() => setStrataSize((current) => snapshot.setup.strataChoices.some((choice) => choice.size === current && choice.fits)
     ? current
     : recommendedStrataSize(snapshot)), [snapshot.setup.strataChoices]);
-  useEffect(() => {
-    const dialog = ideogramLicenseDialogRef.current;
-    if (!ideogramLicenseOpen || !dialog || dialog.open) return;
-    if (typeof dialog.showModal === "function") dialog.showModal();
-    else dialog.setAttribute("open", "");
-  }, [ideogramLicenseOpen]);
   useEffect(() => {
     const dialog = muscriptorLicenseDialogRef.current;
     if (!muscriptorLicenseOpen || !dialog || dialog.open) return;
@@ -76,7 +67,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
 
   const requiredReady = snapshot.setup.components.filter((item) => !item.optional && item.status === "ready").length;
   const installed = snapshot.setup.components.filter((item) => item.status === "ready").length;
-  const productionIds = ["media", "studio", "music", "speech"];
+  const productionIds = ["media", "studio", "image", "music", "speech"];
   const productionReady = productionIds.every((id) => snapshot.setup.components.find((item) => item.id === id)?.status === "ready");
   const productionBytes = snapshot.setup.components.filter((item) => productionIds.includes(item.id) && item.status !== "ready").reduce((total, item) => total + item.downloadBytes, 0);
   const strataComponent = snapshot.setup.components.find((item) => item.id === "strata");
@@ -102,7 +93,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
     return next;
   };
 
-  const runInstall = async (component: string, acceptedIdeogramLicense = false, acceptedMuscriptorLicense = false) => {
+  const runInstall = async (component: string, acceptedMuscriptorLicense = false) => {
     setBusy(component);
     setProgress({ component, stage: "preparing", detail: "Checking saved files and available downloads…", downloadedBytes: 0, totalBytes: 0, bytesPerSecond: 0 });
     try {
@@ -111,7 +102,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
         component,
         installRoot: saved.settings.installRoot,
         wikipediaEdition: edition,
-        acceptIdeogramNonCommercialLicense: acceptedIdeogramLicense,
+        acceptIdeogramNonCommercialLicense: false,
         whisperCheckpointPath: component === "speech" ? existingModelPaths[WHISPER_MODEL_ID]?.trim() ?? "" : "",
         muscriptorCheckpointPath: component === "muscriptor" ? existingModelPaths[MUSCRIPTOR_MODEL_ID]?.trim() ?? "" : "",
         acceptMuscriptorNonCommercialLicense: acceptedMuscriptorLicense,
@@ -161,11 +152,6 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
   };
 
   const install = async (component: string) => {
-    if (component === "image") {
-      setIdeogramLicenseAccepted(false);
-      setIdeogramLicenseOpen(true);
-      return;
-    }
     if (component === "muscriptor") {
       setMuscriptorLicenseAccepted(false);
       setMuscriptorLicenseOpen(true);
@@ -279,9 +265,9 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
           <label><input value={locations.installRoot} onChange={(event) => setLocations((current) => ({ ...current, installRoot: event.target.value }))} /><button onClick={() => void chooseFolder("installRoot")}><FolderOpen /> Browse</button></label>
         </section>
         {!snapshot.setup.gpuName && <div className="setup-hardware-note"><TriangleAlert /><div><strong>No NVIDIA graphics card was detected.</strong><span>The assistant and Wikipedia can still work, although Bonsai may be slow on a laptop processor. Movie Studio stays optional because MiniMax H3 is not practical on this hardware.</span></div></div>}
-        {snapshot.setup.gpuName && <div className="setup-hardware-note compatible"><Check /><div><strong>{snapshot.setup.gpuName}</strong><span>{formatBytes(snapshot.setup.gpuMemoryBytes)} graphics memory detected. Kestrel can install the validated NVIDIA profiles for Bonsai, H3, Music 3, Ideogram 4, narration, and dictation.</span></div></div>}
+        {snapshot.setup.gpuName && <div className="setup-hardware-note compatible"><Check /><div><strong>{snapshot.setup.gpuName}</strong><span>{formatBytes(snapshot.setup.gpuMemoryBytes)} graphics memory detected. Kestrel can install the validated NVIDIA profiles for Bonsai, H3, Music 3, MOSS-Image Base, narration, and dictation.</span></div></div>}
         <section className={`setup-simple-panel setup-production-panel ${productionReady ? "ready" : ""}`}>
-          <div><span className="eyebrow">Complete production suite</span><h2>{productionReady ? "Every distributable production service is ready." : "Set up the full studio for me"}</h2><p>Installs movie finishing, H3 video and image generation, Music 3, Chatterbox narration, and timestamped Whisper dictation. Downloads are pinned, resumable, and verified before use.</p><small>MuScriptor audio-to-MIDI remains a separately licensed non-commercial extension; its dedicated card below guides the required producer acceptance and checkpoint import.</small></div>
+          <div><span className="eyebrow">Complete production suite</span><h2>{productionReady ? "Every distributable production service is ready." : "Set up the full studio for me"}</h2><p>Installs movie finishing, H3 video, MOSS-Image stills, Music 3, Chatterbox narration, and timestamped Whisper dictation. Downloads are pinned, resumable, and verified before use.</p><small>MuScriptor audio-to-MIDI remains a separately licensed non-commercial extension; its dedicated card below guides the required producer acceptance and checkpoint import.</small></div>
           {!productionReady && <div className="setup-speed"><strong>{productionBytes ? `${formatBytes(productionBytes)} remaining` : "Models already present"}</strong><small>{productionBytes ? `Roughly ${formatTime(productionBytes, speed)} at ${speed} Mbps, plus extraction and verification.` : "Setup will verify them and add only missing support files."}</small></div>}
           <button className={productionReady ? "quiet-button" : "primary-button setup-main-button"} disabled={!!busy || productionReady} onClick={() => void installProductionSuite()}>{busy === "production" ? <LoaderCircle className="spin" /> : productionReady ? <Check /> : <Download />} {productionReady ? "Production ready" : "Set up production suite"}</button>
         </section>
@@ -294,7 +280,7 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
         {advanced && <section className="setup-advanced-panel" ref={advancedRef}>
           <div className="setup-advanced-heading"><div><span className="eyebrow">Advanced and portable</span><h2>Use files already on this PC</h2><p>Nothing is tied to a drive letter. These saved locations remain editable in the installed app.</p></div><TriangleAlert /></div>
           <section className="setup-model-reuse" aria-labelledby="setup-model-reuse-title">
-            <div className="setup-model-reuse-heading"><div><h3 id="setup-model-reuse-title">Reuse every supported model you already have</h3><p>Choose each AI folder once. Kestrel finds known Bonsai, Qwen3.8-Flash-Next, H3, Music 3, Ideogram 4, Chatterbox, Whisper, and MuScriptor files recursively. Scan more than one folder when your library spans drives.</p></div><button className="quiet-button" disabled={!!busy || scanningModels} onClick={() => void findExistingModels()}>{scanningModels ? <LoaderCircle className="spin" /> : <FolderOpen />} Find models in a folder</button></div>
+            <div className="setup-model-reuse-heading"><div><h3 id="setup-model-reuse-title">Reuse every supported model you already have</h3><p>Choose each AI folder once. Kestrel finds known Bonsai, Qwen3.8-Flash-Next, H3, Music 3, MOSS-Image Base, Chatterbox, Whisper, and MuScriptor files recursively. Scan more than one folder when your library spans drives.</p></div><button className="quiet-button" disabled={!!busy || scanningModels} onClick={() => void findExistingModels()}>{scanningModels ? <LoaderCircle className="spin" /> : <FolderOpen />} Find models in a folder</button></div>
             {(modelScanRoot || modelScanMessage) && <div className="setup-model-scan-status" role="status" aria-live="polite"><strong>{modelScanRoot ? `Last scanned: ${modelScanRoot}` : "Existing model search"}</strong><span>{modelScanMessage}</span></div>}
             <div className="setup-model-assets">
               {(snapshot.setup.modelAssets ?? []).map((asset) => {
@@ -368,9 +354,8 @@ export function SetupConsole({ snapshot, onChanged, onError }: {
       </FlowPages>
     </div>
 
-    {ideogramLicenseOpen && <dialog ref={ideogramLicenseDialogRef} className="setup-license-dialog" aria-labelledby="ideogram-license-title" onCancel={() => setIdeogramLicenseOpen(false)}><div className="setup-license-icon"><ImageIcon /></div><div><span className="eyebrow">Separate model terms</span><h2 id="ideogram-license-title">Ideogram 4 is non-commercial.</h2><p>The published agreement does not permit client deliverables, promotion, advertising, or other revenue-generating use without separate rights from Ideogram. Kestrel’s MIT license does not change those model terms.</p><a href="https://github.com/ideogram-oss/ideogram4/blob/main/model_licenses/LICENSE-IDEOGRAM-4-NON-COMMERCIAL" target="_blank" rel="noreferrer">Read the complete Ideogram 4 agreement</a><label><input type="checkbox" checked={ideogramLicenseAccepted} onChange={(event) => setIdeogramLicenseAccepted(event.target.checked)} /> I have read and accept the Ideogram Non-Commercial Model Agreement for this installation.</label></div><footer><button disabled={!!busy} onClick={() => setIdeogramLicenseOpen(false)}>Cancel</button><button className="primary-button" disabled={!!busy || !ideogramLicenseAccepted} onClick={() => { setIdeogramLicenseOpen(false); void runInstall("image", true); }}><Download /> Accept and install</button></footer></dialog>}
 
-    {muscriptorLicenseOpen && <dialog ref={muscriptorLicenseDialogRef} className="setup-license-dialog" aria-labelledby="muscriptor-license-title" onCancel={() => setMuscriptorLicenseOpen(false)}><div className="setup-license-icon"><FileMusic /></div><div><span className="eyebrow">Separate gated model terms</span><h2 id="muscriptor-license-title">MuScriptor is for permitted non-commercial transcription.</h2><p>The official weights use CC BY-NC 4.0 plus gated conditions requiring you to have the necessary rights to music you transcribe. Kestrel can prepare the isolated Windows GPU runner, but it cannot accept those terms or grant commercial rights for you.</p><a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Read and accept the official MuScriptor conditions</a><label><input type="checkbox" checked={muscriptorLicenseAccepted} onChange={(event) => setMuscriptorLicenseAccepted(event.target.checked)} /> I accepted the official conditions, have rights to the music I will transcribe, and understand this extension is non-commercial.</label></div><footer><button disabled={!!busy} onClick={() => setMuscriptorLicenseOpen(false)}>Cancel</button><button className="primary-button" disabled={!!busy || !muscriptorLicenseAccepted || !existingModelPaths[MUSCRIPTOR_MODEL_ID]?.trim()} onClick={() => { setMuscriptorLicenseOpen(false); void runInstall("muscriptor", false, true); }}><Download /> Prepare offline MuScriptor</button></footer></dialog>}
+    {muscriptorLicenseOpen && <dialog ref={muscriptorLicenseDialogRef} className="setup-license-dialog" aria-labelledby="muscriptor-license-title" onCancel={() => setMuscriptorLicenseOpen(false)}><div className="setup-license-icon"><FileMusic /></div><div><span className="eyebrow">Separate gated model terms</span><h2 id="muscriptor-license-title">MuScriptor is for permitted non-commercial transcription.</h2><p>The official weights use CC BY-NC 4.0 plus gated conditions requiring you to have the necessary rights to music you transcribe. Kestrel can prepare the isolated Windows GPU runner, but it cannot accept those terms or grant commercial rights for you.</p><a href="https://huggingface.co/MuScriptor/muscriptor-large" target="_blank" rel="noreferrer">Read and accept the official MuScriptor conditions</a><label><input type="checkbox" checked={muscriptorLicenseAccepted} onChange={(event) => setMuscriptorLicenseAccepted(event.target.checked)} /> I accepted the official conditions, have rights to the music I will transcribe, and understand this extension is non-commercial.</label></div><footer><button disabled={!!busy} onClick={() => setMuscriptorLicenseOpen(false)}>Cancel</button><button className="primary-button" disabled={!!busy || !muscriptorLicenseAccepted || !existingModelPaths[MUSCRIPTOR_MODEL_ID]?.trim()} onClick={() => { setMuscriptorLicenseOpen(false); void runInstall("muscriptor", true); }}><Download /> Prepare offline MuScriptor</button></footer></dialog>}
   </div>;
 }
 

@@ -1,4 +1,4 @@
-//! Durable, producer-owned still-image production through native ComfyUI Ideogram 4 nodes.
+//! Durable, producer-owned still-image production through native ComfyUI MOSS-Image nodes.
 //!
 //! The frontend may edit only these typed fields. Kestrel compiles them into a fixed graph and
 //! never accepts executable workflow JSON from a model or producer. Completed PNGs, prompt JSON,
@@ -14,10 +14,6 @@ use super::{
 };
 use chrono::Utc;
 use futures_util::StreamExt;
-use kestrel_app_core::ideogram::{
-    OrderedArtStyle, OrderedCaption, OrderedComposition, OrderedElement, OrderedObject,
-    OrderedPhotoStyle, OrderedStyle, OrderedText,
-};
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
@@ -32,16 +28,15 @@ use tauri::AppHandle;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-const IMAGE_SCHEMA_VERSION: u32 = 3;
+const IMAGE_SCHEMA_VERSION: u32 = 4;
 const MAX_IMAGE_TEXT_BYTES: usize = 64 * 1024;
 const MAX_IMAGE_ELEMENTS: usize = 64;
 const MAX_IMAGE_TAKES: usize = 256;
 const IMAGE_RENDER_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
-const IDEOGRAM_MODEL: &str = "ideogram4_nvfp4_mixed.safetensors";
-const IDEOGRAM_UNCONDITIONAL_MODEL: &str = "ideogram4_unconditional_nvfp4_mixed.safetensors";
-const IDEOGRAM_TEXT_ENCODER: &str = "qwen3vl_8b_nvfp4.safetensors";
-const IDEOGRAM_VAE: &str = "flux2-vae.safetensors";
-pub const IDEOGRAM_LICENSE_NOTICE: &str = "Ideogram 4 is provided under the Ideogram Non-Commercial Model Agreement. Generated work may not be used in or to advertise revenue-generating products or services unless Ideogram grants separate rights.";
+const MOSS_MODEL: &str = "moss_image_base_int8_convrot.safetensors";
+const MOSS_TEXT_ENCODER: &str = "qwen3.5_9b_int8_convrot.safetensors";
+const MOSS_VAE: &str = "flux2-vae.safetensors";
+pub const MOSS_LICENSE_NOTICE: &str = "MOSS-Image Base is released under Apache 2.0. Earlier takes retain their original model and license receipts.";
 
 pub trait ImageGenerationEventPolicy: Sized {
     fn new(
@@ -78,6 +73,7 @@ impl ImageGenerationEventPolicy for ImageGenerationEvent {
 
 #[derive(Clone)]
 pub struct ImageStudio {
+    backend: ImageBackend,
     root: PathBuf,
     http: Client,
 }
@@ -87,6 +83,7 @@ impl ImageStudio {
         let root = library_root.join("images");
         fs::create_dir_all(&root)?;
         let studio = Self {
+            backend: ImageBackend::default(),
             root,
             http: Client::builder()
                 .no_proxy()
@@ -117,6 +114,7 @@ impl ImageStudio {
         let mut project: ImageProject =
             read_recoverable(&self.project_dir(id).join("project.json"))?;
         project.schema_version = IMAGE_SCHEMA_VERSION;
+        project.license_notice = self.backend.license().into();
         Ok(project)
     }
 
@@ -149,7 +147,7 @@ impl ImageStudio {
             phase: "composing".into(),
             detail: "Shape the brief, visual style, exact text, and composition, then create a preserved take.".into(),
             error: String::new(),
-            license_notice: IDEOGRAM_LICENSE_NOTICE.into(),
+            license_notice: self.backend.license().into(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -212,7 +210,7 @@ impl ImageStudio {
             ));
         }
         let seed = resolved_seed(project.settings.seed);
-        let (prompt, prompt_text) = structured_prompt(&project)?;
+        let (prompt, prompt_text) = self.backend.prompt(&project)?;
         let created_at = Utc::now().to_rfc3339();
         let mut take_ids = Vec::with_capacity(batch_size);
         for batch_index in 0..batch_size {
@@ -240,8 +238,8 @@ impl ImageStudio {
                 exact_prompt: prompt.clone(),
                 exact_prompt_text: prompt_text.clone(),
                 exact_graph: Value::Null,
-                model_profile: "Ideogram 4 NVFP4 mixed + Qwen3-VL 8B NVFP4 + Flux 2 VAE".into(),
-                license_notice: IDEOGRAM_LICENSE_NOTICE.into(),
+                model_profile: self.backend.profile().into(),
+                license_notice: self.backend.license().into(),
             });
         }
         project.status = "generating".into();
@@ -261,7 +259,7 @@ impl ImageStudio {
                 "queued",
                 "queued",
                 format!(
-                    "{batch_size} variation{} queued. Kestrel is releasing other GPU models before loading Ideogram 4.",
+                    "{batch_size} variation{} queued. Kestrel is releasing other GPU models before loading MOSS-Image.",
                     if batch_size == 1 { "" } else { "s" }
                 ),
             ),
@@ -328,7 +326,7 @@ impl ImageStudio {
                 primary_take_id,
                 "progress",
                 "starting-renderer",
-                "Preparing local ComfyUI and checking the native Ideogram 4 nodes.",
+                "Preparing local ComfyUI and checking the native MOSS-Image nodes.",
             ),
         );
         shared_renderer.release_comfy_memory().await;
@@ -339,10 +337,9 @@ impl ImageStudio {
                 Some(cancel),
             )
             .await?;
-        verify_ideogram_nodes(&self.http).await?;
-        verify_ideogram_assets(&comfy_root)?;
+        self.backend.verify(&self.http, &comfy_root).await?;
         let prefix = format!("kestrel_image/{project_id}/take_{:03}", take_index + 1);
-        let graph = ideogram_graph(
+        let graph = self.backend.graph(
             &project.settings,
             project.takes[take_index].seed,
             &project.takes[take_index].exact_prompt_text,
@@ -352,7 +349,7 @@ impl ImageStudio {
             project.takes[*index].exact_graph = graph.clone();
             project.takes[*index].status = "generating".into();
             project.takes[*index].detail =
-                "Ideogram 4 is sampling the full-resolution image locally.".into();
+                "MOSS-Image is sampling the full-resolution image locally.".into();
         }
         project.phase = "sampling".into();
         project.detail = project.takes[take_index].detail.clone();
@@ -387,7 +384,7 @@ impl ImageStudio {
         let value: Value = response.json().await?;
         if !status.is_success() {
             return Err(StudioError::Render(format!(
-                "ComfyUI rejected the native Ideogram 4 workflow: {}",
+                "ComfyUI rejected the native MOSS-Image workflow: {}",
                 truncate(&value.to_string(), 900)
             )));
         }
@@ -599,6 +596,7 @@ impl ImageStudio {
         app: Option<&AppHandle>,
     ) -> Result<(), StudioError> {
         project.schema_version = IMAGE_SCHEMA_VERSION;
+        project.license_notice = self.backend.license().into();
         project.updated_at = Utc::now().to_rfc3339();
         self.persist(project)?;
         if let Some(app) = app {
@@ -631,6 +629,7 @@ impl ImageStudio {
             .into();
             project.phase = "interrupted".into();
             project.schema_version = IMAGE_SCHEMA_VERSION;
+            project.license_notice = self.backend.license().into();
             project.detail = "Kestrel closed during generation. Completed takes and the exact in-progress prompt and graph are safe; create a new take when ready.".into();
             project.error.clear();
             for take in project
@@ -762,7 +761,7 @@ fn parse_image_progress(
         let (phase, detail) = match node {
             "1" | "2" | "3" | "4" => (
                 "loading",
-                "Loading the verified Ideogram 4 model, text encoder, and full-quality decoder.",
+                "Loading the verified MOSS-Image model, text encoder, and full-quality decoder.",
             ),
             "5" => (
                 "encoding",
@@ -786,79 +785,29 @@ fn emit_image(app: Option<&AppHandle>, event: ImageGenerationEvent) {
     }
 }
 
-/// Compile the producer-owned composition into Ideogram's order-sensitive caption schema.
-/// The string is durable inference truth; the Value is only a convenient UI/receipt view.
+/// Exact native model input, preserved beside every take.
 fn structured_prompt(project: &ImageProject) -> Result<(Value, String), StudioError> {
-    let elements = project
-        .elements
-        .iter()
-        .map(|element| {
-            if element.kind == "text" {
-                OrderedElement::Text(OrderedText {
-                    kind: "text",
-                    bbox: element.bbox,
-                    text: element.text.as_str(),
-                    desc: element.description.trim(),
-                    color_palette: (!element.color_palette.is_empty())
-                        .then_some(element.color_palette.as_slice()),
-                })
-            } else {
-                OrderedElement::Object(OrderedObject {
-                    kind: "obj",
-                    bbox: element.bbox,
-                    desc: element.description.trim(),
-                    color_palette: (!element.color_palette.is_empty())
-                        .then_some(element.color_palette.as_slice()),
-                })
-            }
-        })
-        .collect();
-    let style_description = if project.style.mode == "art" {
-        OrderedStyle::Art(OrderedArtStyle {
-            aesthetics: project.style.aesthetics.trim(),
-            lighting: project.style.lighting.trim(),
-            medium: project.style.medium.trim(),
-            art_style: project.style.art_style.trim(),
-            color_palette: (!project.style.color_palette.is_empty())
-                .then_some(project.style.color_palette.as_slice()),
-        })
-    } else {
-        OrderedStyle::Photo(OrderedPhotoStyle {
-            aesthetics: project.style.aesthetics.trim(),
-            lighting: project.style.lighting.trim(),
-            photo: project.style.photo.trim(),
-            medium: project.style.medium.trim(),
-            color_palette: (!project.style.color_palette.is_empty())
-                .then_some(project.style.color_palette.as_slice()),
-        })
-    };
-    let caption = OrderedCaption {
-        high_level_description: project.high_level_description.trim(),
-        style_description,
-        compositional_deconstruction: OrderedComposition {
-            background: project.background.trim(),
-            elements,
-        },
-    };
-    let text = serde_json::to_string(&caption)?;
-    let value = serde_json::from_str(&text)?;
-    Ok((value, text))
+    Ok(kestrel_app_core::moss::prompt(project)?)
 }
 
-fn ideogram_graph(settings: &ImageSettings, seed: u64, prompt: &str, prefix: &str) -> Value {
-    let (steps, mu, std) = preset_parameters(&settings.preset);
+fn moss_graph(settings: &ImageSettings, seed: u64, prompt: &str, prefix: &str) -> Value {
+    let steps = match settings.preset.as_str() {
+        "quality" => 75,
+        "turbo" => 30,
+        _ => 50,
+    };
+    // Native MOSS uses shift 5 / timestep multiplier 1. Do not insert the plugin's SD3 patch.
     json!({
-        "1":{"class_type":"UNETLoader","inputs":{"unet_name":IDEOGRAM_MODEL,"weight_dtype":"default"}},
-        "2":{"class_type":"UNETLoader","inputs":{"unet_name":IDEOGRAM_UNCONDITIONAL_MODEL,"weight_dtype":"default"}},
-        "3":{"class_type":"CLIPLoader","inputs":{"clip_name":IDEOGRAM_TEXT_ENCODER,"type":"ideogram4","device":"default"}},
-        "4":{"class_type":"VAELoader","inputs":{"vae_name":IDEOGRAM_VAE}},
+        "1":{"class_type":"UNETLoader","inputs":{"unet_name":MOSS_MODEL,"weight_dtype":"default"}},
+        "3":{"class_type":"CLIPLoader","inputs":{"clip_name":MOSS_TEXT_ENCODER,"type":"moss_image","device":"default"}},
+        "4":{"class_type":"VAELoader","inputs":{"vae_name":MOSS_VAE}},
         "5":{"class_type":"CLIPTextEncode","inputs":{"clip":["3",0],"text":prompt}},
-        "6":{"class_type":"ConditioningZeroOut","inputs":{"conditioning":["5",0]}},
-        "7":{"class_type":"CFGOverride","inputs":{"model":["1",0],"cfg":3.0,"start_percent":0.7,"end_percent":1.0}},
-        "8":{"class_type":"DualModelGuider","inputs":{"model":["7",0],"model_negative":["2",0],"positive":["5",0],"negative":["6",0],"cfg":7.0}},
+        "6":{"class_type":"CLIPTextEncode","inputs":{"clip":["3",0],"text":settings.negative_prompt}},
+        "7":{"class_type":"SkipLayerGuidanceDiTSimple","inputs":{"model":["1",0],"double_layers":"","single_layers":"22","start_percent":0.0,"end_percent":1.0}},
+        "8":{"class_type":"CFGGuider","inputs":{"model":["7",0],"positive":["5",0],"negative":["6",0],"cfg":3.0}},
         "9":{"class_type":"RandomNoise","inputs":{"noise_seed":seed}},
         "10":{"class_type":"KSamplerSelect","inputs":{"sampler_name":"euler"}},
-        "11":{"class_type":"Ideogram4Scheduler","inputs":{"steps":steps,"width":settings.width,"height":settings.height,"mu":mu,"std":std}},
+        "11":{"class_type":"BasicScheduler","inputs":{"model":["7",0],"scheduler":"sgm_uniform","steps":steps,"denoise":1.0}},
         "12":{"class_type":"EmptyFlux2LatentImage","inputs":{"width":settings.width,"height":settings.height,"batch_size":settings.batch_size}},
         "13":{"class_type":"SamplerCustomAdvanced","inputs":{"noise":["9",0],"guider":["8",0],"sampler":["10",0],"sigmas":["11",0],"latent_image":["12",0]}},
         "14":{"class_type":"VAEDecode","inputs":{"samples":["13",0],"vae":["4",0]}},
@@ -866,56 +815,96 @@ fn ideogram_graph(settings: &ImageSettings, seed: u64, prompt: &str, prefix: &st
     })
 }
 
-fn preset_parameters(preset: &str) -> (u32, f64, f64) {
-    match preset {
-        "quality" => (48, 0.0, 1.5),
-        "turbo" => (12, 0.5, 1.75),
-        _ => (20, 0.0, 1.75),
+#[derive(Clone, Copy, Default)]
+enum ImageBackend {
+    #[default]
+    Moss,
+    #[cfg(test)]
+    Ideogram,
+}
+
+impl ImageBackend {
+    fn profile(self) -> &'static str {
+        match self {
+            Self::Moss => "MOSS-Image Base INT8 ConvRot + Qwen3.5 9B INT8 ConvRot + Flux 2 VAE; ComfyUI v0.42.1; model revision ee64003102c8470ee32501cf883419235db81884",
+            #[cfg(test)]
+            Self::Ideogram => "Ideogram 4 NVFP4 mixed + Qwen3-VL 8B NVFP4 + Flux 2 VAE",
+        }
+    }
+    fn license(self) -> &'static str {
+        match self {
+            Self::Moss => MOSS_LICENSE_NOTICE,
+            #[cfg(test)]
+            Self::Ideogram => ideogram_baseline::IDEOGRAM_LICENSE_NOTICE,
+        }
+    }
+    fn prompt(self, project: &ImageProject) -> Result<(Value, String), StudioError> {
+        match self {
+            Self::Moss => structured_prompt(project),
+            #[cfg(test)]
+            Self::Ideogram => ideogram_baseline::structured_prompt(project),
+        }
+    }
+    fn graph(self, settings: &ImageSettings, seed: u64, prompt: &str, prefix: &str) -> Value {
+        match self {
+            Self::Moss => moss_graph(settings, seed, prompt, prefix),
+            #[cfg(test)]
+            Self::Ideogram => ideogram_baseline::ideogram_graph(settings, seed, prompt, prefix),
+        }
+    }
+    async fn verify(self, http: &Client, root: &Path) -> Result<(), StudioError> {
+        #[cfg(test)]
+        if matches!(self, Self::Ideogram) {
+            ideogram_baseline::verify_ideogram_nodes(http).await?;
+            return ideogram_baseline::verify_ideogram_assets(root);
+        }
+        let info: Value = http
+            .get(format!("{COMFY_BASE}/object_info"))
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        for node in [
+            "MOSSImageLayoutPrompt",
+            "SkipLayerGuidanceDiTSimple",
+            "CFGGuider",
+            "BasicScheduler",
+            "EmptyFlux2LatentImage",
+            "SamplerCustomAdvanced",
+        ] {
+            if info.get(node).is_none() {
+                return Err(StudioError::Render(format!("the running ComfyUI does not expose {node}. Install ComfyUI v0.42.1 or newer, restart it, then resume Image Studio in Setup")));
+            }
+        }
+        let types = info
+            .pointer("/CLIPLoader/input/required/type/0")
+            .and_then(Value::as_array);
+        if !types.is_some_and(|types| types.iter().any(|kind| kind == "moss_image")) {
+            return Err(StudioError::Render("the running ComfyUI text encoder does not support moss_image; install ComfyUI v0.42.1 or newer and restart it".into()));
+        }
+        for relative in [
+            format!("models/diffusion_models/{MOSS_MODEL}"),
+            format!("models/text_encoders/{MOSS_TEXT_ENCODER}"),
+            format!("models/vae/{MOSS_VAE}"),
+        ] {
+            if !root.join(&relative).is_file() {
+                return Err(StudioError::Render(format!(
+                    "MOSS-Image asset is missing: {}. Resume Image Studio in Setup.",
+                    root.join(relative).display()
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
-async fn verify_ideogram_nodes(http: &Client) -> Result<(), StudioError> {
-    let info: Value = http
-        .get(format!("{COMFY_BASE}/object_info"))
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await?
-        .json()
-        .await?;
-    for node in [
-        "Ideogram4Scheduler",
-        "DualModelGuider",
-        "CFGOverride",
-        "EmptyFlux2LatentImage",
-        "SamplerCustomAdvanced",
-    ] {
-        if info.get(node).is_none() {
-            return Err(StudioError::Render(format!(
-                "the running ComfyUI does not expose {node}. Update ComfyUI to 0.33.1 or newer, restart it, then resume Image Studio in Setup"
-            )));
-        }
-    }
-    Ok(())
-}
+#[cfg(test)]
+mod ideogram_baseline;
 
-fn verify_ideogram_assets(comfy_root: &Path) -> Result<(), StudioError> {
-    for relative in [
-        format!("models/diffusion_models/{IDEOGRAM_MODEL}"),
-        format!("models/diffusion_models/{IDEOGRAM_UNCONDITIONAL_MODEL}"),
-        format!("models/text_encoders/{IDEOGRAM_TEXT_ENCODER}"),
-        format!("models/vae/{IDEOGRAM_VAE}"),
-        "models/diffusion_models/IDEOGRAM-4-NON-COMMERCIAL-LICENSE.txt".into(),
-    ] {
-        let path = comfy_root.join(relative);
-        if !path.is_file() {
-            return Err(StudioError::Render(format!(
-                "Ideogram 4 asset is missing: {}. Resume Image Studio in Setup.",
-                path.display()
-            )));
-        }
-    }
-    Ok(())
-}
+#[cfg(test)]
+mod acceptance;
 
 fn safe_comfy_output(
     comfy_root: &Path,
@@ -986,7 +975,7 @@ fn find_image_outputs(
         .pointer("/outputs/15/images")
         .and_then(Value::as_array)
         .ok_or_else(|| {
-            StudioError::Render("the completed Ideogram graph exposed no saved image output".into())
+            StudioError::Render("the completed image graph exposed no saved image output".into())
         })?;
     let mut outputs = Vec::with_capacity(images.len());
     let mut unique = HashSet::new();
@@ -1008,7 +997,7 @@ fn find_image_outputs(
     }
     if outputs.len() != expected_count {
         return Err(StudioError::Render(format!(
-            "ComfyUI completed the Ideogram batch with {} image{}, but Kestrel expected {expected_count}; no partial batch was registered",
+            "ComfyUI completed the image batch with {} image{}, but Kestrel expected {expected_count}; no partial batch was registered",
             outputs.len(),
             if outputs.len() == 1 { "" } else { "s" }
         )));
@@ -1047,6 +1036,12 @@ fn validate_render_ready(project: &ImageProject) -> Result<(), StudioError> {
 }
 
 fn validate_editable(project: &ImageProject) -> Result<(), StudioError> {
+    validate_bounded_text(
+        "negative prompt",
+        &project.settings.negative_prompt,
+        4_000,
+        true,
+    )?;
     validate_title(&project.title)?;
     for (label, value) in [
         ("image idea", project.idea.as_str()),
@@ -1110,17 +1105,17 @@ fn validate_editable(project: &ImageProject) -> Result<(), StudioError> {
         || settings.width.max(settings.height) > settings.width.min(settings.height) * 6
     {
         return Err(StudioError::Invalid(
-            "Ideogram image dimensions must be 256 to 2048 pixels, multiples of 16, with an aspect ratio no wider than 6:1".into(),
+            "Image dimensions must be 256 to 2048 pixels, multiples of 16, with an aspect ratio no wider than 6:1".into(),
         ));
     }
     if !matches!(settings.preset.as_str(), "quality" | "standard" | "turbo") {
         return Err(StudioError::Invalid(
-            "Ideogram sampling preset must be quality, standard, or turbo".into(),
+            "Image sampling preset must be quality, standard, or turbo".into(),
         ));
     }
     if !(1..=4).contains(&settings.batch_size) {
         return Err(StudioError::Invalid(
-            "an Ideogram batch may contain one to four variations".into(),
+            "an image batch may contain one to four variations".into(),
         ));
     }
     if settings.seed > i64::MAX as u64 {
@@ -1279,6 +1274,94 @@ mod tests {
     use kestrel_app_core::ImageElement;
     use tempfile::TempDir;
 
+    #[test]
+    fn moss_preserves_text_palette_layer_order_and_converts_boxes() {
+        let root = TempDir::new().unwrap();
+        let studio = ImageStudio::new(root.path()).unwrap();
+        let mut project = project(&studio);
+        project.elements[0].text = "CAFÉ\n東京 — 2026".into();
+        project.elements.push(ImageElement {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: "obj".into(),
+            bbox: [250, 0, 1000, 1000],
+            text: String::new(),
+            description: "A cobalt bird behind the title".into(),
+            color_palette: vec!["#0044CC".into()],
+        });
+        let (prompt, text) = structured_prompt(&project).unwrap();
+        assert_eq!(prompt["items"][0]["bbox"], json!([-441, -646, -276, 646]));
+        assert_eq!(prompt["items"][0]["text"], "CAFÉ\n東京 — 2026");
+        assert_eq!(prompt["items"][1]["label"], "object");
+        assert_eq!(prompt["items"][1]["palette"], json!(["#0044CC"]));
+        assert!(prompt["items"][1].get("text").is_none());
+        assert_eq!(prompt["bbox_coord_space"], "abs_centralized");
+        assert_eq!(prompt["bbox_format"], "yxyx");
+        assert!(!text.contains("compositional_deconstruction"));
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), prompt);
+        project.elements.clear();
+        let (prompt, text) = structured_prompt(&project).unwrap();
+        assert_eq!(prompt.as_str(), Some(text.as_str()));
+        assert!(text.contains(project.style.photo.trim()));
+        project.style.mode = "art".into();
+        let (_, text) = structured_prompt(&project).unwrap();
+        assert!(text.contains(project.style.art_style.trim()));
+        assert!(!text.contains(project.style.photo.trim()));
+    }
+
+    #[test]
+    fn moss_native_graph_uses_guidance_and_negative_prompt_for_every_preset() {
+        for (preset, steps) in [("quality", 75), ("standard", 50), ("turbo", 30)] {
+            let settings = ImageSettings {
+                preset: preset.into(),
+                negative_prompt: "avoid red".into(),
+                batch_size: 4,
+                ..ImageSettings::default()
+            };
+            let graph = moss_graph(&settings, 42, "a blue bird", "test");
+            assert_eq!(graph["3"]["inputs"]["type"], "moss_image");
+            assert_eq!(graph["11"]["inputs"]["steps"], steps);
+            assert_eq!(graph["11"]["inputs"]["scheduler"], "sgm_uniform");
+            assert_eq!(graph["7"]["inputs"]["single_layers"], "22");
+            assert_eq!(graph["6"]["inputs"]["text"], "avoid red");
+            assert_eq!(graph["12"]["inputs"]["batch_size"], 4);
+            assert_eq!(graph["9"]["inputs"]["noise_seed"], 42);
+            assert!(!graph.to_string().contains("ModelSamplingSD3"));
+            assert!(!graph.to_string().contains("Ideogram"));
+        }
+    }
+
+    #[test]
+    fn legacy_take_receipts_survive_moss_migration_and_negative_prompt_is_bounded() {
+        let root = TempDir::new().unwrap();
+        let mut studio = ImageStudio::new(root.path()).unwrap();
+        studio.backend = ImageBackend::Ideogram;
+        let project = project(&studio);
+        let (_, ids) = studio.begin_generation(&project.id, None).unwrap();
+        studio.fail_generation(&project.id, &ids, "baseline receipt".into(), true, None);
+        let baseline = studio.get(&project.id).unwrap();
+        let receipt = serde_json::to_value(&baseline.takes[0]).unwrap();
+        let mut old = serde_json::to_value(&baseline).unwrap();
+        old["schemaVersion"] = json!(3);
+        old["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("negativePrompt");
+        write_json_recoverable(&studio.project_dir(&project.id).join("project.json"), &old)
+            .unwrap();
+        studio.backend = ImageBackend::Moss;
+        let mut migrated = studio.get(&project.id).unwrap();
+        assert!(!migrated.settings.negative_prompt.is_empty());
+        assert_eq!(serde_json::to_value(&migrated.takes[0]).unwrap(), receipt);
+        assert!(migrated.license_notice.contains("Apache 2.0"));
+        migrated.settings.negative_prompt = "x".repeat(4_001);
+        assert!(studio.save_editable(migrated.clone()).is_err());
+        migrated.settings.negative_prompt.clear();
+        studio.save_editable(migrated).unwrap();
+        let (next, _) = studio.begin_generation(&project.id, None).unwrap();
+        assert_eq!(serde_json::to_value(&next.takes[0]).unwrap(), receipt);
+        assert!(next.takes[1].model_profile.starts_with("MOSS-Image"));
+    }
+
     fn project(studio: &ImageStudio) -> ImageProject {
         let mut project = studio
             .create(CreateImageProjectRequest {
@@ -1308,7 +1391,7 @@ mod tests {
         let studio = ImageStudio::new(root.path()).unwrap();
         let mut project = project(&studio);
         project.high_level_description.push_str(" — café");
-        let (prompt, text) = structured_prompt(&project).unwrap();
+        let (prompt, text) = ideogram_baseline::structured_prompt(&project).unwrap();
         assert_eq!(
             prompt["compositional_deconstruction"]["elements"][0]["text"],
             "THE MORNING SHOW"
@@ -1343,7 +1426,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let studio = ImageStudio::new(root.path()).unwrap();
         let mut project = project(&studio);
-        let (_, photo) = structured_prompt(&project).unwrap();
+        let (_, photo) = ideogram_baseline::structured_prompt(&project).unwrap();
         assert!(photo.contains("\"photo\":"));
         assert!(!photo.contains("\"art_style\":"));
         assert!(photo.find("\"photo\":") < photo.find("\"medium\":"));
@@ -1351,7 +1434,7 @@ mod tests {
         project.style.mode = "art".into();
         project.style.medium = "Risograph print".into();
         project.style.art_style = "Geometric editorial illustration".into();
-        let (_, art) = structured_prompt(&project).unwrap();
+        let (_, art) = ideogram_baseline::structured_prompt(&project).unwrap();
         assert!(!art.contains("\"photo\":"));
         assert!(art.contains("\"art_style\":\"Geometric editorial illustration\""));
         assert!(art.find("\"medium\":") < art.find("\"art_style\":"));
@@ -1365,7 +1448,7 @@ mod tests {
             comfy_root: r"D:\AI\ComfyUI".into(),
             ..ImageSettings::default()
         };
-        let graph = ideogram_graph(
+        let graph = ideogram_baseline::ideogram_graph(
             &settings,
             42,
             "{\"high_level_description\":\"test\"}",
@@ -1383,7 +1466,7 @@ mod tests {
         );
         assert_eq!(graph["15"]["class_type"], "SaveImage");
 
-        let standard = ideogram_graph(
+        let standard = ideogram_baseline::ideogram_graph(
             &ImageSettings::default(),
             42,
             "{\"high_level_description\":\"test\"}",
@@ -1535,8 +1618,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires KESTREL_LIVE_COMFY_ROOT, native Ideogram 4 nodes and verified NVFP4 weights, and several minutes"]
-    async fn live_ideogram_graph_preserves_a_full_resolution_png() {
+    #[ignore = "requires KESTREL_LIVE_COMFY_ROOT, native MOSS-Image nodes and verified INT8 weights, and several minutes"]
+    async fn live_moss_graph_preserves_a_full_resolution_png() {
         let comfy_root = std::env::var("KESTREL_LIVE_COMFY_ROOT")
             .expect("set KESTREL_LIVE_COMFY_ROOT to the absolute ComfyUI folder");
         let root = TempDir::new().unwrap();
@@ -1544,7 +1627,7 @@ mod tests {
         let renderer = MovieStudio::new(root.path()).unwrap();
         let mut project = studio
             .create(CreateImageProjectRequest {
-                title: "Ideogram 4 acceptance".into(),
+                title: "MOSS-Image acceptance".into(),
                 idea: "A restrained editorial poster for an offline image studio.".into(),
                 comfy_root,
             })

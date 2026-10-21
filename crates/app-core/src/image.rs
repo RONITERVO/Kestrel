@@ -24,7 +24,7 @@ pub struct ImageStyle {
 pub struct ImageElement {
     pub id: String,
     pub kind: String,
-    /// Ideogram coordinates in `[y_min, x_min, y_max, x_max]` order, normalized to 0..1000.
+    /// Editor coordinates in `[y_min, x_min, y_max, x_max]` order, normalized to 0..1000.
     pub bbox: [u16; 4],
     pub text: String,
     pub description: String,
@@ -43,6 +43,8 @@ pub struct ImageSettings {
     pub seed: u64,
     #[serde(default = "default_batch_size")]
     pub batch_size: u32,
+    #[serde(default = "default_negative_prompt")]
+    pub negative_prompt: String,
     pub comfy_root: String,
 }
 
@@ -161,6 +163,10 @@ pub fn default_style_mode() -> String {
     "photo".into()
 }
 
+pub fn default_negative_prompt() -> String {
+    "worst quality, bad anatomy, watermark, jpeg artifact".into()
+}
+
 impl Default for ImageStyle {
     fn default() -> Self {
         Self {
@@ -183,6 +189,7 @@ impl Default for ImageSettings {
             preset: "standard".into(),
             seed: 0,
             batch_size: default_batch_size(),
+            negative_prompt: default_negative_prompt(),
             comfy_root: String::new(),
         }
     }

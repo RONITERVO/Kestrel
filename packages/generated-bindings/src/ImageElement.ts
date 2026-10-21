@@ -2,6 +2,6 @@
 
 export type ImageElement = { id: string, kind: string,
 /**
- * Ideogram coordinates in `[y_min, x_min, y_max, x_max]` order, normalized to 0..1000.
+ * Editor coordinates in `[y_min, x_min, y_max, x_max]` order, normalized to 0..1000.
  */
 bbox: [number, number, number, number], text: string, description: string, colorPalette: Array<string>, };
