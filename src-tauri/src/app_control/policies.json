@@ -1,0 +1,638 @@
+{
+  "list_app_actions": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "describe_app_action": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "execute_app_action": [
+    "protocol",
+    "Producer protocol operation; call directly, never recursively as an app action."
+  ],
+  "get_app_action_receipt": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_app_job": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "create_producer_workflow": [
+    "write",
+    "Save a sequential native plan for review; this does not start work. Local task plans retain approved workspace folders, including after restart. No nested workflows or consent-only steps."
+  ],
+  "get_producer_workflow": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "list_producer_workflows": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "start_producer_workflow": [
+    "write",
+    "Explicitly start or resume a reviewed saved plan. Computer Tasks waits for its plan to finish, stop or fail before continuing. Interrupted uncertain actions require reconciliation."
+  ],
+  "stop_producer_workflow": [
+    "write",
+    "Stop scheduling later plan steps. An already-running render has its own cancel action."
+  ],
+  "import_context_paths": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "import_movie_reference_paths": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "bootstrap": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_speech_preferences": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "save_vad_settings": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "save_narration_speech_preferences": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "save_research_speech_preferences": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "get_report": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_local_speech_snapshot": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_voice_library": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "create_voice_profile": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "update_voice_profile": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "set_default_voice_profile": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "delete_voice_profile": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "prepare_local_speech": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "synthesize_local_speech": [
+    "write",
+    "Generate speech with the installed TTS voice. Discover model/voice IDs through get_local_speech_snapshot. checkMistakes follows the saved human narration preference when omitted; Whisper checks use the same native path. Returned relativePath is an opaque speech cache reference. sourceKind must be research, chat, task, or copilot; use task for producer-authored narration. Use a selected, already-consented voice from get_local_speech_snapshot. Keep the same sourceId, passageId, text, and returned relativePath across synthesis/alignment/export."
+  ],
+  "export_narration": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion. Agent calls must provide a non-existing absolute destinationPath ending in .m4a; WAV is not this exporter format. Set wordTimings to save LRC, VTT, JSON and HTML alongside the audio. Create the parent directory in the approved workspace first if needed."
+  ],
+  "export_music_lyrics": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion. Agent calls must provide a non-existing absolute destinationPath ending in .m4a. The corresponding lyric alignment must match the selected take."
+  ],
+  "get_cached_local_speech_clip": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "cancel_local_speech": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "transcribe_local_speech": [
+    "write",
+    "Transcribe provided audio with the installed local Whisper model. This is separate from music generation and its optional timing metadata."
+  ],
+  "align_local_speech": [
+    "write",
+    "Use installed Whisper to align the known spoken text against a generated TTS relativePath. Native validation and cached word timings match human narration. sourceKind must be research, chat, task, or copilot; use task for producer-authored narration. Use a selected, already-consented voice from get_local_speech_snapshot. Keep the same sourceId, passageId, text, and returned relativePath across synthesis/alignment/export."
+  ],
+  "release_local_speech_memory": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "run_research": [
+    "write",
+    "Research inspiration from the installed local Wikipedia archive using the selected local model. Native opened-source citations are validated before an immutable report is saved. No public network or remote model is used."
+  ],
+  "cancel_research": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "list_movies": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_movie": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "create_movie_producer_project": [
+    "write",
+    "Create a producer-owned movie. Preserve native faster defaults (768x448, 20 steps) unless the user requests higher detail. settings may be omitted to use defaults. Generation edges must be multiples of 32, 320–1344 normally or up to 2048 in Advanced mode. Clip length 5–15 seconds. Media composition scales to the requested frame shape independently."
+  ],
+  "attach_movie_producer_references": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "get_movie_producer_workspace": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_movie_studio_conversation": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "save_movie_story_revision": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "accept_movie_story_revision": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "save_movie_scenes": [
+    "write",
+    "Save producer-owned shots and real visual bindings. Recurring characters/objects need image conditioning or prior-shot frames; prose alone does not bind their identity. firstFrame/lastFrame use referenceImage with an attached assetId, or previousScene for the prior shot endpoint. Do not combine first/last-frame conditioning with the separate per-scene references mode; H3 rejects that combination. Imported image takes can be attached through import_image_take_as_movie_reference and attach_movie_producer_references."
+  ],
+  "reset_movie_studio_conversation": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "summarize_movie_studio_conversation": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "start_movie_studio_chat": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "cancel_movie_studio_chat": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "start_studio_prompt_draft": [
+    "write",
+    "Ask the selected LOCAL model for an unapplied draft. Read get_app_job with request.requestId, wait for complete, then explicitly save the chosen text. Agent-authored text uses the same save actions without this draft step. Use apply_music_text for musicCaption/musicLyrics, or apply_image_composition for imageComposition after inspecting the result."
+  ],
+  "cancel_studio_prompt_draft": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "get_movie_render_state": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "pick_movie_reference_files": [
+    "human",
+    "Use import_movie_reference_paths with explicit absolute paths for agent parity."
+  ],
+  "list_movie_image_assets": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "import_image_take_as_movie_reference": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "save_movie_edits": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "render_movie_scenes": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "get_movie_editor_state": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "prepare_movie_editor_range": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "start_movie_editor_generation": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "cancel_movie_render": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "render_movie_edit": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "reveal_movie": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "list_music_projects": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_music_project": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "create_music_project": [
+    "write",
+    "Create a new song project. Only request.title and request.idea are needed; other fields have native defaults. Omit installation/tool paths: Kestrel uses configured Setup paths. Returns the editable project and its stable ID."
+  ],
+  "save_music_project": [
+    "write",
+    "Save producer-authored fields only. The producer may author them directly or use an inspected local-model proposal. Native validation preserves immutable takes and provenance."
+  ],
+  "create_music_lyrics_draft": [
+    "write",
+    "Word-timed lyrics for an ALREADY RENDERED music take. For songwriting before rendering, use apply_music_text with field lyrics instead."
+  ],
+  "get_music_lyrics_document": [
+    "read",
+    "Word-timed lyrics for an ALREADY RENDERED music take. For songwriting before rendering, use apply_music_text with field lyrics instead."
+  ],
+  "save_music_lyrics_document": [
+    "write",
+    "Word-timed lyrics for an ALREADY RENDERED music take. For songwriting before rendering, use apply_music_text with field lyrics instead."
+  ],
+  "transcribe_music_lyrics": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "repair_music_lyrics_range": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "draft_lyrics_from_audio_range": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "translate_music_lyrics": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "start_music_generation": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "cancel_music_generation": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "transcribe_music_midi": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "get_music_midi_document": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "save_music_midi_document": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "export_music_midi": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "reveal_music_midi": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "reveal_music_project": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "list_image_projects": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_image_project": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "create_image_project": [
+    "write",
+    "Create a new image project. Only request.title and request.idea are needed; other fields have native defaults. Omit installation/tool paths: Kestrel uses configured Setup paths. Returns the editable project and its stable ID."
+  ],
+  "save_image_project": [
+    "write",
+    "Save producer-authored fields only. The producer may author them directly or use an inspected local-model proposal. Native validation preserves immutable takes and provenance."
+  ],
+  "start_image_generation": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "cancel_image_generation": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "reveal_image_project": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "prepare_services": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "get_setup_snapshot": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "open_comfy_ui": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "save_setup_locations": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "pick_setup_folder": [
+    "human",
+    "A human picker returns a local path. Agents supply an explicit absolute path to the corresponding native action, subject to the existing access policy."
+  ],
+  "pick_setup_file": [
+    "human",
+    "A human picker returns a local path. Agents supply an explicit absolute path to the corresponding native action, subject to the existing access policy."
+  ],
+  "scan_setup_model_folder": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "install_setup_component": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "cancel_setup_install": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "get_system_snapshot": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "preview_vram_cleanup": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "clean_vram": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "force_clean_vram": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "get_control_snapshot": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "scan_local_models": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "list_model_downloads": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "inspect_model_download": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "start_model_download": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "resume_model_download": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "cancel_model_download": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "export_setup_profile": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "get_setup_profile_text": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "export_setup_profile_text": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "get_prompt_pack_text": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_default_prompt_pack_text": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "save_prompt_pack_text": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "reset_prompt_pack": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "export_prompt_pack_text": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "import_prompt_pack": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "pick_prompt_pack_file": [
+    "human",
+    "A human picker returns a local path. Agents supply an explicit absolute path to the corresponding native action, subject to the existing access policy."
+  ],
+  "import_setup_profile": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "import_setup_profile_text": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "save_research_settings": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "save_control_settings": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "apply_model_runtime": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "start_local_model": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "stop_local_model": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "release_ai_memory": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "list_chat_sessions": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_chat_session": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "delete_chat_session": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "save_chat_reply_edit": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "discard_chat_reply_edit": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "pick_context_files": [
+    "human",
+    "Use import_context_paths with explicit absolute paths for agent parity."
+  ],
+  "open_context_attachment": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "pick_local_model_folder": [
+    "human",
+    "A human picker returns a local path. Agents supply an explicit absolute path to the corresponding native action, subject to the existing access policy."
+  ],
+  "start_chat_stream": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "cancel_chat_stream": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "list_computer_tasks": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "get_computer_task": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "start_computer_task": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "resume_computer_task": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "stop_computer_task": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "open_task_artifact": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "run_native_diagnostics": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "run_codex_repair": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
+  ],
+  "open_standalone_report": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "reveal_library": [
+    "write",
+    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  ],
+  "get_proven_hardware_profiles": [
+    "read",
+    "Read the current native state. This does not authorize generation or apply a proposal."
+  ],
+  "apply_music_text": [
+    "write",
+    "Apply producer-authored or inspected local-model text to caption or lyrics. Tagged lyrics merge by section occurrence and preserve IDs; native validation and immutable takes are shared with human saves."
+  ],
+  "apply_image_composition": [
+    "write",
+    "Apply producer-authored or inspected local-model composition JSON in the documented imageComposition format. Native parsing validates style, boxes and palettes before the same producer save."
+  ],
+  "start_producer_task": [
+    "write",
+    "Delegate a plain-language production request to the selected LOCAL Kestrel model. Only objective is needed. Returns a durable Computer Task; poll get_producer_task_status (compact), inspect get_computer_task for the full transcript, answer with resume_computer_task, and stop with stop_computer_task. Workspace access and configured step budget apply. Ordinary chat stays tool-free."
+  ],
+  "get_producer_task_status": [
+    "read",
+    "Compact producer task progress, question and artifact paths. Prefer this for polling; get_computer_task returns the full durable transcript for detailed inspection."
+  ],
+  "get_producer_environment": [
+    "read",
+    "One compact view of the selected local model, authoritative new-model download destination, library, approved output workspaces, and configured FFmpeg/FFprobe/Strata/ComfyUI/archive paths with filesystem presence. No scans, downloads or model work. Includes effective native generationDefaults; preserve the faster video defaults unless the user asks for higher detail."
+  ],
+  "export_media_composition": [
+    "write",
+    "Compose existing native artifacts into a new durable audio-only M4A or silent/soundtrack MP4. Visuals are ordered image holds or trimmed video; transitionSeconds is overlap into that segment. Audio layers can place narration, music, or video sound independently with gain and fades, including sequential songs. No media type is mandatory. Inspect the Rust types. Visual durations minus overlaps must equal durationSeconds; no implicit looping. Sources are IDs or opaque speech cache references, never arbitrary paths. Preserve the returned composition ID for reuse; outputDirectory is an explicit new delivery folder. Nothing is uploaded."
+  ],
+  "list_media_compositions": [
+    "read",
+    "List up to 200 recent completed or incomplete native compositions. Discovery never resumes partial work. Completed IDs can be reused as source kind composition."
+  ],
+  "get_media_composition": [
+    "read",
+    "Read a completed composition manifest with exact source identities/hashes/FFmpeg arguments, or the saved request for incomplete work."
+  ],
+  "export_production_bundle": [
+    "write",
+    "Deliver any selected artifacts and producer-authored text/code as a new folder with a manifest. No output type or platform is required. Artifacts use shared ProductionArtifact handles: image/music takes, movie clips/edits, speech, compositions, imported attachments, or immutable research HTML/JSON/evidence/provenance. Original copies keep their extensions; jpegImage converts image options to explicit dimensions/fit. filenames are safe relative paths; roles are producer-defined. files contains exact authored text/code, which is saved but never executed. No uploads occur. Discover export_media_composition separately when timing/mixing is needed."
+  ],
+  "cancel_production_job": [
+    "write",
+    "Cancel a running composition or bundle using its request.jobId. Partial native artifacts survive; no automatic resume."
+  ],
+  "list_production_bundles": [
+    "read",
+    "List up to 200 recent native bundles, including incomplete records, without resuming anything. Complete means native assets were assembled; inspect the action receipt for delivery success."
+  ],
+  "get_production_bundle": [
+    "read",
+    "Read a native bundle manifest with file roles/source identities/hashes, or its preserved incomplete request. Use bundle id from the list/export, not jobId."
+  ]
+}

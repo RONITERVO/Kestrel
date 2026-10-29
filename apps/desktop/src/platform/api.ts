@@ -1,4 +1,13 @@
 import { invoke, listen, type UnlistenFn } from "./transport";
+import type { AppActionRequest, ProducerWorkflowPlan } from "../contracts/index";
+export const listAppActions = (filter?: string) => invoke("list_app_actions", { filter });
+export const describeAppAction = (command: string) => invoke("describe_app_action", { command });
+export const executeAppAction = (request: AppActionRequest) => invoke("execute_app_action", { request });
+export const listProducerWorkflows = () => invoke("list_producer_workflows", {});
+export const createProducerWorkflow = (plan: ProducerWorkflowPlan) => invoke("create_producer_workflow", { plan });
+export const startProducerWorkflow = (id: string) => invoke("start_producer_workflow", { id });
+export const stopProducerWorkflow = (id: string) => invoke("stop_producer_workflow", { id });
+export const getProducerTaskStatus = (id: string) => invoke("get_producer_task_status", { id });
 import type { MovieEditorGenerateRequest, MovieEditorJob, MovieEditorRangeRequest, MovieEditorState } from "../contracts/index";
 import { readLegacySpeechPreferences } from "./legacySpeechPreferences";
 import type { DesktopCommands, ExportedFiles, NarrationExportRequest, NarrationPreferences, ResearchSpeechPreferences, VadSettings } from "../contracts/index";

@@ -34,7 +34,7 @@ describe("SetupConsole", () => {
     expect(screen.getByRole("heading", { name: "Included local model" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MiniMax H3 Movie Studio" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MOSS-Image Base Image Studio" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "MiniMax Music 3 Production" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "YuE2 Music Production" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Whisper dictation + local voice" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Install Whisper + voice" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "MuScriptor audio to MIDI" })).toBeInTheDocument();
@@ -157,7 +157,7 @@ describe("SetupConsole", () => {
 
     await waitFor(() => expect(setupApi.scanModels).toHaveBeenCalledWith("D:\\AI"));
     expect(screen.getByText(/Found 1 supported model file/)).toBeInTheDocument();
-    const musicCard = screen.getByRole("heading", { name: "MiniMax Music 3 Production" }).closest("article");
+    const musicCard = screen.getByRole("heading", { name: "YuE2 Music Production" }).closest("article");
     fireEvent.click(musicCard!.querySelector("button")!);
     await waitFor(() => expect(setupApi.install).toHaveBeenCalledWith(expect.objectContaining({
       component: "music",

@@ -330,6 +330,14 @@ impl ResearchStore {
 }
 
 pub(crate) fn default_research_root() -> PathBuf {
+    // Explicit developer acceptance isolation; release builds always use the durable user library.
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("KESTREL_ACCEPTANCE_LIBRARY") {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            return path;
+        }
+    }
     UserDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))

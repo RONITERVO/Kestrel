@@ -1689,7 +1689,7 @@ fn validate_music_range_request(
 
 fn safe_source(kind: &str, id: &str) -> Result<(), SpeechError> {
     if !matches!(kind, "research" | "chat" | "task" | "copilot") {
-        return Err(SpeechError::Invalid("unsafe speech source kind".into()));
+        return Err(SpeechError::Invalid("speech sourceKind must be research, chat, task, or copilot; use task for a producer-authored narration".into()));
     }
     safe_identifier(id, "speech source ID")
 }

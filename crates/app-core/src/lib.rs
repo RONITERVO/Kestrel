@@ -21,6 +21,12 @@ pub use prompt_pack::*;
 mod external_collaboration;
 pub use external_collaboration::*;
 mod seed_serde;
+mod app_control;
+pub use app_control::*;
+mod media_composition;
+pub use media_composition::*;
+mod production;
+pub use production::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]

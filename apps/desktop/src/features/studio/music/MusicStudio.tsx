@@ -576,7 +576,7 @@ export function MusicStudio({
       <div className="music-empty-record"><Disc3 /><span /></div>
       <span className="eyebrow">Kestrel Music</span>
       <h1>Start with a feeling, hook, lyric, or full arrangement.</h1>
-      <p>You own every section. A local model can help write; MiniMax Music 3 creates private stereo takes through your ComfyUI.</p>
+      <p>You own every section. A local model can help write; YuE2 and MiniMax create private stereo takes through your ComfyUI.</p>
       <button className="primary-button" onClick={() => setNewOpen(true)}><Plus /> New song</button>
       {newOpen && <NewSongDialog title={newTitle} idea={newIdea} busy={creating} onTitle={setNewTitle} onIdea={setNewIdea} onClose={() => setNewOpen(false)} onCreate={() => void create()} />}
     </div>
@@ -623,7 +623,7 @@ export function MusicStudio({
         <section className="music-monitor">
           <div className="music-now-playing">
             <span className={`music-record-art ${playing ? "playing" : ""}`}><Disc3 /></span>
-            <div><small>{activeTake ? "Now playing" : "Generated master"}</small><strong>{activeTake ? `Take ${project.takes.findIndex((take) => take.id === activeTake.id) + 1}` : "No take yet"}</strong><span>{activeTake?.resolvedModel || "MiniMax Music 3 · local ComfyUI"}</span></div>
+            <div><small>{activeTake ? "Now playing" : "Generated master"}</small><strong>{activeTake ? `Take ${project.takes.findIndex((take) => take.id === activeTake.id) + 1}` : "No take yet"}</strong><span>{activeTake?.resolvedModel || "Local ComfyUI music generation"}</span></div>
           </div>
           <div className="music-waveform" aria-hidden="true">{Array.from({ length: 92 }, (_, index) => <i key={index} style={{ height: `${18 + ((index * 29) % 67)}%` }} />)}<span style={{ width: activeTake ? `${Math.min(100, currentTime / Math.max(.01, activeTake.durationSeconds) * 100)}%` : "0%" }} /></div>
           {/* The visualizer's MediaElementAudioSourceNode requires a CORS-enabled fetch.
@@ -647,7 +647,7 @@ export function MusicStudio({
         </section>
 
         <section className="music-writing-desk">
-          <div className="music-writing-heading"><span><small>Music description</small><strong>Sound, performance, and production</strong></span><span className="music-structure-check"><i className={structuredCaption(project.caption) ? "ready" : ""} />{structuredCaption(project.caption) ? "Structured for Music 3" : "Describe freely or ask a local model"}</span></div>
+          <div className="music-writing-heading"><span><small>Music description</small><strong>Sound, performance, and production</strong></span><span className="music-structure-check"><i className={structuredCaption(project.caption) ? "ready" : ""} />{structuredCaption(project.caption) ? "Production description ready" : "Describe freely or ask a local model"}</span></div>
           <textarea aria-label="Music description" disabled={busy || assistantBusy} value={project.caption} onChange={(event) => mutate((current) => ({ ...current, caption: event.target.value }))} placeholder={`Global Metadata: genre, BPM, key, emotion, production profile…\n\nVocal Details: timbre, performance, harmonies, effects…\n\nArrangement: instruments, groove, section evolution, textures, space…`} />
           <div className="music-assist-bar">
             <Bot /><select aria-label="Music collaborator model" disabled={assistantBusy || busy} value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Choose local model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select>
@@ -688,7 +688,9 @@ export function MusicStudio({
             <summary><span><SlidersHorizontal /> Generation</span><ChevronDown /></summary>
             <fieldset disabled={busy}>
               <label>Maximum length <span>{formatTime(project.settings.maxDurationSeconds)}</span><input aria-label="Maximum song duration" type="range" min={15} max={300} step={1} value={project.settings.maxDurationSeconds} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, maxDurationSeconds: Number(event.target.value) } }))} /></label>
-              {advancedEnabled && <><div className="music-field-row"><label>Steps<input type="number" min={1} max={100} value={project.settings.steps} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 100, (steps) => mutate((current) => ({ ...current, settings: { ...current.settings, steps } })))} /></label><label>Seed<input inputMode="numeric" pattern="[0-9]*" value={project.settings.seed} onChange={(event) => { const seed = event.currentTarget.value; if (/^\d{0,20}$/.test(seed)) mutate((current) => ({ ...current, settings: { ...current.settings, seed: seed || 0 } })); }} /></label></div><div className="music-field-row"><label>CFG<input type="number" min={0} max={100} step={.1} value={project.settings.cfgScale} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 0, 100, (cfgScale) => mutate((current) => ({ ...current, settings: { ...current.settings, cfgScale } })))} /></label><label>Top K<input type="number" min={1} max={16384} value={project.settings.topK} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 16384, (topK) => mutate((current) => ({ ...current, settings: { ...current.settings, topK } })))} /></label></div><label>Model<select value={project.settings.modelVariant} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, modelVariant: event.target.value as MusicProject["settings"]["modelVariant"] } }))}><option value="auto">Auto · best installed</option><option value="int8">INT8 · lower VRAM</option><option value="fp16">FP16 · maximum fidelity</option></select></label><label className="music-toggle"><input type="checkbox" checked={project.settings.tiledDecode} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, tiledDecode: event.target.checked } }))} /><span><strong>Tiled full-quality decode</strong><small>Lower VRAM; never changes the preserved source format</small></span></label></>}
+              <label>Music generator<select value={project.settings.backend} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, backend: event.target.value as MusicProject["settings"]["backend"], modelVariant: "auto" } }))}><option value="yue2">YuE2 · score and stereo audio</option><option value="minimaxMusic3">MiniMax Music 3 · existing projects</option></select></label>
+              {project.settings.backend === "yue2" && <><label>Composition<select value={project.settings.planningMode} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, planningMode: event.target.value } }))}><option value="full">Melody and chords</option><option value="melody">Melody</option><option value="off">Direct audio without a score</option></select></label><label>Optional ABC score<textarea rows={4} value={project.settings.abcScore} disabled={project.settings.planningMode === "off"} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, abcScore: event.target.value } }))} placeholder="Leave empty for YuE2 to compose, or supply your own score." /></label>{activeTake?.abcScore && <details><summary>Saved composition for this take</summary><pre>{activeTake.abcScore}</pre><button onClick={() => mutate((current) => ({ ...current, settings: { ...current.settings, abcScore: activeTake.abcScore } }))}>Use this score for the next take</button></details>}<small>The composition is preserved with the take. Word timing is a separate optional operation.</small></>}
+              {advancedEnabled && <><div className="music-field-row"><label>Steps<input type="number" min={1} max={100} value={project.settings.steps} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 100, (steps) => mutate((current) => ({ ...current, settings: { ...current.settings, steps } })))} /></label><label>Seed<input inputMode="numeric" pattern="[0-9]*" value={project.settings.seed} onChange={(event) => { const seed = event.currentTarget.value; if (/^\d{0,20}$/.test(seed)) mutate((current) => ({ ...current, settings: { ...current.settings, seed: seed || 0 } })); }} /></label></div><div className="music-field-row"><label>CFG<input type="number" min={0} max={100} step={.1} value={project.settings.cfgScale} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 0, 100, (cfgScale) => mutate((current) => ({ ...current, settings: { ...current.settings, cfgScale } })))} /></label><label>Top K<input type="number" min={1} max={16384} value={project.settings.topK} onChange={(event) => finiteSetting(event.currentTarget.valueAsNumber, 1, 16384, (topK) => mutate((current) => ({ ...current, settings: { ...current.settings, topK } })))} /></label></div><label>Model<select value={project.settings.modelVariant} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, modelVariant: event.target.value as MusicProject["settings"]["modelVariant"] } }))}><option value="auto">Auto · installed default</option><option value="int8">INT8 · lower VRAM</option>{project.settings.backend === "yue2" ? <option value="bf16">BF16 · more VRAM</option> : <option value="fp16">FP16 · more VRAM</option>}</select></label><label className="music-toggle"><input type="checkbox" checked={project.settings.tiledDecode} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, tiledDecode: event.target.checked } }))} /><span><strong>Tiled full-quality decode</strong><small>Lower VRAM; never changes the preserved source format</small></span></label></>}
             </fieldset>
           </details>
 
@@ -711,18 +713,18 @@ export function MusicStudio({
             <span className="eyebrow">Write with another chat or agent</span>
             <ExternalCollaborationExchange
               title="Develop description in another chat or agent"
-              summary="Copy the song idea, section map, lyrics, and Music 3 writing contract; validate the returned description here."
+              summary="Copy the song idea, section map, lyrics, and music writing contract; validate the returned description here."
               disabled={assistantBusy || busy}
               buildRequest={() => buildExternalCollaborationRequest({
                 target: "music-description",
-                role: "a senior music producer arranging for MiniMax Music 3",
+                role: "a senior music producer arranging a complete song",
                 instructions: [
-                  "Return a complete Music 3 production description in result.text with Global Metadata, Vocal Details, and Arrangement sections.",
+                  "Return a complete music production description in result.text with Global Metadata, Vocal Details, and Arrangement sections.",
                   "Specify genre, subgenre, BPM, meter, key, emotional progression, voice/performance, instruments, groove, section evolution, production, and spatial treatment.",
                   "Respect the producer's section map and current lyrics; do not add lyrics to the description or claim to render audio.",
                 ],
                 context: { songIdea: project.idea, currentDescription: project.caption, existingTextMeaning: project.caption.trim() ? draftMode : "empty-create-complete-description", instrumental: project.instrumental, sectionPlan: project.sections.map(({ name, tag, bars, direction }) => ({ name, tag, bars, direction })), currentLyrics: compiledLyrics(project), maximumCharacters: 65_536 },
-                resultTemplate: { text: "Complete editable Music 3 production description" },
+                resultTemplate: { text: "Complete editable music production description" },
               })}
               parseResponse={(text) => parseExternalTextResult(text, "music-description")}
               onApply={(caption) => mutate((current) => ({ ...current, caption }))}

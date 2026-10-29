@@ -53,7 +53,7 @@ pub async fn run(
     if access == Access::Full && !settings.allow_full_access_agent {
         return Err("Full computer access is locked in the runtime profile.".into());
     }
-    if access == Access::Workspace && settings.agent_workspace_roots.is_empty() {
+    if access == Access::Workspace && settings.agent_workspace_roots.is_empty() && app.is_none() {
         return Err(
             "Add at least one Computer Tasks workspace folder in the runtime profile.".into(),
         );
@@ -128,11 +128,15 @@ pub async fn run(
         prompt_catalog::text(PromptId::ComputerAttachmentNotice)
     };
     let roots = if settings.agent_workspace_roots.is_empty() {
-        "full access explicitly enabled".into()
+        if access == ComputerTaskAccess::Full {
+            "full access explicitly enabled".into()
+        } else {
+            "No filesystem folders approved. Use native app-owned projects; ask the user to choose a workspace before importing or exporting external files.".into()
+        }
     } else {
         settings.agent_workspace_roots.join("; ")
     };
-    let system = prompt_catalog::render(
+    let mut system = prompt_catalog::render(
         PromptId::ComputerSystem,
         &[
             ("access_label", access_label),
@@ -140,6 +144,9 @@ pub async fn run(
             ("attachment_instruction", &attachment_instruction),
         ],
     );
+    if app.is_some() {
+        system.push_str("\nYou can act as the Kestrel producer using app_actions, app_describe, and app_call. Prefer these native semantic actions over internal file editing. Discover and describe actions before calling. You may author creative material yourself, or explicitly ask the app's LOCAL model to draft it with start_studio_prompt_draft. A local draft is an unapplied proposal: read get_app_job, inspect it, then save the chosen material. Use get_producer_environment for installed tools, the selected model, new-model download destination and approved output folders. Use get_setup_snapshot for readiness. The native app_call waits for its child generation to release the work slot; inspect completed projects/takes afterwards. Preserve the native generation defaults from get_producer_environment unless the user asks to change them, especially the faster video size and step count. You do not need to fill every optional field. Clarify a decision that materially affects a vague request, especially duration or output location, in ordinary language before costly generation. Never impersonate the local collaborator or claim generation from a proposal. Use a unique request ID for each intentional mutation; retries reuse the same ID and exact args. Consent-only commands cannot be delegated; ask the user if one is needed. Long work must stay within the task's explicit step budget. Saved producer workflows run sequentially with explicit waits, cannot nest, and keep workspace restrictions after restart. Production is composable: do not force a music-video template or generate modalities the user did not request. Discover export_media_composition for image slideshows, mixed still/video sequences, narration over music, audio-only arrangements and sequential songs. Use export_production_bundle to deliver any selected generated/imported artifacts, research files and authored text or application code with descriptive filenames and roles. No specialized output workflow is required. Reuse existing artifact IDs. For recurring visual identities, use generated image references and first/last-frame or previousScene bindings; a repeated text description is not evidence of continuity. Never claim a model can accept audio references or continue audio unless its discovered native schema exposes that input.");
+    }
     let mut messages = vec![
         json!({"role":"system","content":system}),
         json!({"role":"user","content":prepared.content}),
@@ -156,7 +163,10 @@ pub async fn run(
             None,
         );
     }
-    let tools = tool_schemas(access, !context_attachments.is_empty());
+    let mut tools = tool_schemas(access, !context_attachments.is_empty());
+    if app.is_some() {
+        tools.extend(crate::agent_app::schemas());
+    }
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(3_600))
@@ -178,15 +188,6 @@ pub async fn run(
             .max(1)
             .min(settings.agent_max_output_tokens.max(1))
     };
-    let lease = tokio::select! {
-        result = runtime.lease_model(&request.model_id, &models, &settings, app.as_ref()) => {
-            result.map_err(|error| error.to_string())?
-        }
-        _ = cancel.cancelled() => {
-            event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "No computer action was started.", None);
-            return Ok(());
-        }
-    };
     event(
         &app,
         &store,
@@ -194,10 +195,11 @@ pub async fn run(
         0,
         "start",
         "Computer task started",
-        &format!("{} · {}", lease.connection.model_label, access_label),
+        &format!("{} · {}", request.model_id, access_label),
         None,
     );
     let thinking_level = request.thinking_level.unwrap_or(settings.thinking_level);
+    let mut truncated_retries = 0_u8;
     for step in 1..=max_steps {
         if cancel.is_cancelled() {
             event(
@@ -236,6 +238,15 @@ pub async fn run(
         )
         .unwrap_or(16_384);
         messages = compact_messages(messages, prompt_chars.max(16_384));
+        let lease = tokio::select! {
+            result = runtime.lease_model(&request.model_id, &models, &settings, app.as_ref()) => {
+                result.map_err(|error| error.to_string())?
+            }
+            _ = cancel.cancelled() => {
+                event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "No computer action was started.", None);
+                return Ok(());
+            }
+        };
         let mut request_body = json!({
             "model": lease.connection.model_id,
             "messages": messages,
@@ -245,6 +256,12 @@ pub async fn run(
             "temperature": 0.2,
             "max_tokens": max_output_tokens
         });
+        apply_thinking_budget(
+            &mut request_body,
+            lease.connection.engine,
+            thinking_level,
+            max_output_tokens,
+        );
         if thinking_level.is_off() {
             request_body["thinking_budget_tokens"] = json!(0);
             request_body["chat_template_kwargs"] =
@@ -272,6 +289,7 @@ pub async fn run(
         };
         let status = response.status();
         let body: Value = response.json().await.map_err(|error| error.to_string())?;
+        drop(lease); // App actions may acquire this same inference gate.
         if !status.is_success() {
             return Err(format!(
                 "computer task model returned {status}: {}",
@@ -282,6 +300,32 @@ pub async fn run(
             .pointer("/choices/0/message")
             .cloned()
             .ok_or_else(|| "computer task model returned no message".to_string())?;
+        if completion_hit_limit(&body) {
+            truncated_retries += 1;
+            // A truncated tool batch may contain incomplete arguments. Execute none of it,
+            // and never turn a token-limit response into a completed task.
+            if truncated_retries > 2 {
+                return Err("The local model reached its response limit three times without completing an action. Completed work is preserved; review the transcript and resume with a smaller step or a larger output budget.".into());
+            }
+            event(&app, &store, &run_id, step, "progress", "Continuing after the model response limit", "The model ran out of response space. Its incomplete tool batch was not executed. Retrying with a smaller next step; this is not task completion.", Some(json!({"finishReason":"length","retry":truncated_retries})));
+            if let Some(content) = message
+                .get("content")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                messages.push(json!({"role":"assistant","content":content}));
+            }
+            messages.push(json!({"role":"user","content":"Native runner feedback: your last response reached the token limit; none of its proposed tools were executed and the task is still unfinished. Continue the existing authorized task with ONE small concrete action. Do not repeat the plan or broad discovery. Reuse known artifact IDs. For large authored files, write a minimal complete version first or split the work into bounded actions. Finish only after checking the actual requested result; if blocked, use ask_user."}));
+            continue;
+        }
+        truncated_retries = 0;
+        if matches!(
+            body.pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str),
+            Some("content_filter" | "error")
+        ) {
+            return Err("The local model stopped without a successful completion. No action from that response was executed; inspect the model's response before resuming.".into());
+        }
         if let Some(reasoning) = message
             .get("reasoning_content")
             .and_then(Value::as_str)
@@ -428,18 +472,33 @@ pub async fn run(
                 argument_text,
                 Some(arguments.clone()),
             );
-            let result = tokio::select! {
-                result = execute_tool(
-                    name,
-                    &arguments,
-                    access,
-                    &settings.agent_workspace_roots,
-                    &attachment_store,
-                    &request.attachment_ids,
-                ) => result,
-                _ = cancel.cancelled() => {
-                    event(&app, &store, &run_id, step, "cancelled", "Stopped by you", "The active operation was cancelled and no further tools will run.", None);
-                    return Ok(());
+            let result = if name.starts_with("app_") {
+                match app.as_ref() {
+                    Some(handle) => crate::agent_app::execute(
+                        handle, &run_id, name, &arguments, &settings, access, &cancel,
+                    )
+                    .await
+                    .map(|value| ToolOutput {
+                        text: value.to_string(),
+                        artifact: crate::agent_app::artifact(&arguments, &value),
+                        data: Some(value),
+                    }),
+                    None => Err("App actions require the running Kestrel desktop.".into()),
+                }
+            } else {
+                tokio::select! {
+                    result = execute_tool(
+                        name,
+                        &arguments,
+                        access,
+                        &settings.agent_workspace_roots,
+                        &attachment_store,
+                        &request.attachment_ids,
+                    ) => result,
+                    _ = cancel.cancelled() => {
+                        event(&app, &store, &run_id, step, "cancelled", "Stopped by you", "The active operation was cancelled and no further tools will run.", None);
+                        return Ok(());
+                    }
                 }
             };
             let (output, failed) = match result {
@@ -503,6 +562,29 @@ pub fn emit_error(app: Option<&AppHandle>, store: &WorkspaceStore, run_id: &str,
         &detail,
         None,
     );
+}
+
+fn completion_hit_limit(body: &Value) -> bool {
+    body.pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        == Some("length")
+}
+
+fn apply_thinking_budget(
+    body: &mut Value,
+    engine: crate::models::ModelEngine,
+    level: crate::models::ThinkingLevel,
+    max_output: u32,
+) {
+    // Strata calls this reasoning_budget_tokens; thinking_budget_tokens is ignored there.
+    // Keep room for a real answer/tool call even at high effort.
+    let budget = level.budget_tokens(max_output.saturating_sub(512).max(1));
+    let key = if engine == crate::models::ModelEngine::Strata {
+        "reasoning_budget_tokens"
+    } else {
+        "thinking_budget_tokens"
+    };
+    body[key] = json!(budget);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -856,7 +938,11 @@ fn output(text: impl Into<String>) -> ToolOutput {
     }
 }
 
-fn allowed_existing(value: &str, access: Access, roots: &[String]) -> Result<PathBuf, String> {
+pub(crate) fn allowed_existing(
+    value: &str,
+    access: Access,
+    roots: &[String],
+) -> Result<PathBuf, String> {
     let path = absolute(value)?;
     let canonical = path
         .canonicalize()
@@ -865,7 +951,11 @@ fn allowed_existing(value: &str, access: Access, roots: &[String]) -> Result<Pat
     Ok(canonical)
 }
 
-fn allowed_new(value: &str, access: Access, roots: &[String]) -> Result<PathBuf, String> {
+pub(crate) fn allowed_new(
+    value: &str,
+    access: Access,
+    roots: &[String],
+) -> Result<PathBuf, String> {
     let path = absolute(value)?;
     let parent = path
         .parent()
@@ -1011,6 +1101,33 @@ fn compact_messages(messages: Vec<Value>, max_chars: usize) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_limit_is_not_success_even_when_it_contains_summary_or_tools() {
+        assert!(completion_hit_limit(
+            &json!({"choices":[{"finish_reason":"length","message":{"content":"I will assemble it now","tool_calls":[{"function":{"name":"write_file","arguments":"{partial"}}]}}]})
+        ));
+        assert!(!completion_hit_limit(
+            &json!({"choices":[{"finish_reason":"stop","message":{"content":"The saved output was verified."}}]})
+        ));
+        assert!(!completion_hit_limit(
+            &json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[]}}]})
+        ));
+    }
+
+    #[test]
+    fn strata_receives_its_real_budget_key_and_reserves_output_space() {
+        use crate::models::{ModelEngine, ThinkingLevel};
+        let mut strata = json!({});
+        apply_thinking_budget(&mut strata, ModelEngine::Strata, ThinkingLevel::Low, 8192);
+        assert_eq!(strata["reasoning_budget_tokens"], 2048);
+        assert!(strata.get("thinking_budget_tokens").is_none());
+        apply_thinking_budget(&mut strata, ModelEngine::Strata, ThinkingLevel::Max, 8192);
+        assert_eq!(strata["reasoning_budget_tokens"], 7680);
+        let mut llama = json!({});
+        apply_thinking_budget(&mut llama, ModelEngine::LlamaCpp, ThinkingLevel::Off, 8192);
+        assert_eq!(llama["thinking_budget_tokens"], 0);
+    }
 
     #[test]
     fn workspace_paths_cannot_escape_an_approved_root() {

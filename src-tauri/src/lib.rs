@@ -1,6 +1,8 @@
 #![recursion_limit = "256"]
 
 mod agent;
+mod agent_app;
+mod app_control;
 mod attachments;
 mod chat;
 mod config;
@@ -12,10 +14,15 @@ mod html;
 mod ipc_events;
 mod kiwix;
 mod local_speech;
+mod media_composition;
+mod media_delivery;
 mod model;
 mod model_download;
 mod models;
 mod narration;
+mod producer_text;
+mod production_artifacts;
+mod production_bundle;
 mod profile;
 mod prompt_catalog;
 mod runtime;
@@ -36,6 +43,7 @@ mod test_support;
 
 #[cfg(test)]
 include!(concat!(env!("OUT_DIR"), "/command_bindings.rs"));
+include!(concat!(env!("OUT_DIR"), "/app_dispatch.rs"));
 
 use attachments::AttachmentStore;
 use config::{ControlSettingsStore, SettingsStore};
@@ -92,6 +100,7 @@ use workspace::WorkspaceStore;
 /// Shared native state. Keep authority visibly separated: research owns evidence/storage, runtime
 /// owns the only model process, and developer owns the optional Codex child.
 struct AppState {
+    control: app_control::AppControl,
     speech_preferences: speech_preferences::SpeechPreferencesStore,
     store: ResearchStore,
     harness: ResearchHarness,
@@ -156,6 +165,261 @@ impl Drop for WorkGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
+}
+
+#[tauri::command]
+fn list_app_actions(filter: Option<String>) -> Vec<String> {
+    app_control::catalog(filter.as_deref())
+}
+
+#[tauri::command]
+fn describe_app_action(command: String) -> Result<kestrel_app_core::AppActionDescription, String> {
+    app_control::describe(&command)
+}
+
+#[tauri::command]
+async fn execute_app_action(
+    request: kestrel_app_core::AppActionRequest,
+    app: AppHandle,
+) -> Result<kestrel_app_core::AppActionReceipt, String> {
+    app_control::execute(&app, request).await
+}
+
+#[tauri::command]
+fn get_app_action_receipt(
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::AppActionReceipt, String> {
+    state.control.receipt(&request_id)
+}
+
+#[tauri::command]
+fn get_app_job(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::AppJobObservation, String> {
+    state.control.job(&id)
+}
+
+#[tauri::command]
+fn create_producer_workflow(
+    plan: kestrel_app_core::ProducerWorkflowPlan,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ProducerWorkflowRun, String> {
+    state.control.create_workflow(plan)
+}
+
+#[tauri::command]
+fn get_producer_workflow(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ProducerWorkflowRun, String> {
+    state.control.get_workflow(&id)
+}
+
+#[tauri::command]
+fn list_producer_workflows(
+    state: State<'_, AppState>,
+) -> Result<Vec<kestrel_app_core::ProducerWorkflowRun>, String> {
+    state.control.list_workflows()
+}
+
+#[tauri::command]
+fn start_producer_workflow(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ProducerWorkflowRun, String> {
+    ensure_workspace_idle(&state)?;
+    app_control::start_workflow(app, &id)
+}
+
+#[tauri::command]
+fn stop_producer_workflow(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .control
+        .workflows
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn import_context_paths(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<ContextAttachmentImport, String> {
+    let paths = app_control::import_paths(paths)?;
+    let store = state.attachments.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut attachments = Vec::new();
+        let mut failures = Vec::new();
+        for path in paths {
+            match store.import_path(&path) {
+                Ok(value) => attachments.push(value),
+                Err(error) => failures.push(format!("{}: {error}", path.display())),
+            }
+        }
+        ContextAttachmentImport {
+            attachments,
+            failures,
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn import_movie_reference_paths(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<MovieReferenceImport, String> {
+    let paths = app_control::import_paths(paths)?;
+    let studio = state.studio.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut references = Vec::new();
+        let mut failures = Vec::new();
+        for path in paths {
+            match studio.import_reference_path(&path) {
+                Ok(value) => references.push(value),
+                Err(error) => failures.push(format!("{}: {error}", path.display())),
+            }
+        }
+        MovieReferenceImport {
+            references,
+            failures,
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_production_bundle(
+    request: kestrel_app_core::ProductionBundleRequest,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ProductionBundle, String> {
+    let _guard = claim_workspace(&state)?;
+    let id = request.job_id.clone();
+    let cancel = register_production_job(&state, &id)?;
+    let result = production_bundle::export(&state, request, cancel).await;
+    state
+        .interactive_jobs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&id);
+    result
+}
+
+#[tauri::command]
+async fn export_media_composition(
+    request: kestrel_app_core::MediaCompositionRequest,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::MediaCompositionExport, String> {
+    let _guard = claim_workspace(&state)?;
+    let id = request.job_id.clone();
+    let cancel = register_production_job(&state, &id)?;
+    let result = media_composition::export(&state, request, cancel).await;
+    state
+        .interactive_jobs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&id);
+    result
+}
+
+fn register_production_job(state: &AppState, id: &str) -> Result<CancellationToken, String> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return Err("Production jobId needs 1–128 letters, digits, hyphens or underscores.".into());
+    }
+    let cancel = CancellationToken::new();
+    let mut jobs = state.interactive_jobs.lock().map_err(|e| e.to_string())?;
+    if jobs.contains_key(id) {
+        return Err("That production job is already running.".into());
+    }
+    jobs.insert(id.to_string(), cancel.clone());
+    Ok(cancel)
+}
+
+#[tauri::command]
+fn cancel_production_job(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(cancel) = state
+        .interactive_jobs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&id)
+    {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_media_compositions(
+    state: State<'_, AppState>,
+) -> Result<Vec<kestrel_app_core::MediaCompositionSummary>, String> {
+    media_composition::list(state.store.root())
+}
+
+#[tauri::command]
+fn list_production_bundles(
+    state: State<'_, AppState>,
+) -> Result<Vec<kestrel_app_core::ProductionBundleSummary>, String> {
+    production_bundle::list(state.store.root())
+}
+
+#[tauri::command]
+fn get_production_bundle(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    production_bundle::get(state.store.root(), &id)
+}
+
+#[tauri::command]
+fn get_media_composition(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    media_composition::get(state.store.root(), &id)
+}
+
+#[tauri::command]
+fn apply_music_text(
+    id: String,
+    field: String,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<MusicProject, String> {
+    let _guard = claim_workspace(&state)?;
+    let project = state.music.get(&id).map_err(|e| e.to_string())?;
+    state
+        .music
+        .save_editable(producer_text::music(project, &field, &text)?)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn apply_image_composition(
+    id: String,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<ImageProject, String> {
+    let _guard = claim_workspace(&state)?;
+    let project = state.images.get(&id).map_err(|e| e.to_string())?;
+    state
+        .images
+        .save_editable(producer_text::image(project, &text)?)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -535,6 +799,7 @@ fn exported_files(files: Vec<std::path::PathBuf>) -> kestrel_app_core::ExportedF
 #[tauri::command]
 async fn export_narration(
     request: kestrel_app_core::NarrationExportRequest,
+    destination_path: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Option<kestrel_app_core::ExportedFiles>, String> {
     if request.passages.is_empty() || request.passages.len() > MAX_EXPORT_PASSAGES {
@@ -552,7 +817,11 @@ async fn export_narration(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
-    let Some(destination) = choose_export_file(&request.title).await else {
+    let destination = match destination_path {
+        Some(path) => Some(app_control::export_path(&path, "m4a")?),
+        None => choose_export_file(&request.title).await,
+    };
+    let Some(destination) = destination else {
         return Ok(None);
     };
     let cancel = register_speech_job(&state, &request.job_id)?;
@@ -575,6 +844,7 @@ async fn export_narration(
 #[tauri::command]
 async fn export_music_lyrics(
     request: kestrel_app_core::MusicLyricsExportRequest,
+    destination_path: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Option<kestrel_app_core::ExportedFiles>, String> {
     let lyrics = MusicLyricsRequest {
@@ -589,7 +859,11 @@ async fn export_music_lyrics(
         .music
         .lyrics_audio_source(&lyrics)
         .map_err(|error| error.to_string())?;
-    let Some(destination) = choose_export_file(&loaded.project.title).await else {
+    let destination = match destination_path {
+        Some(path) => Some(app_control::export_path(&path, "m4a")?),
+        None => choose_export_file(&loaded.project.title).await,
+    };
+    let Some(destination) = destination else {
         return Ok(None);
     };
     let cancel = CancellationToken::new();
@@ -744,6 +1018,7 @@ async fn run_research(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ResearchReport, String> {
+    app_control::ensure_task_access(&state)?;
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -782,6 +1057,7 @@ async fn run_research(
         .map_err(|error| error.to_string())?;
     let job_id = uuid::Uuid::new_v4().to_string();
     let cancel = CancellationToken::new();
+    let started = std::time::Instant::now();
     state
         .jobs
         .lock()
@@ -795,10 +1071,30 @@ async fn run_research(
             settings,
             &lease.connection,
             &job_id,
-            cancel,
+            cancel.clone(),
         )
         .await
         .map_err(|error| error.to_string());
+    if let Err(error) = &result {
+        let cancelled = cancel.is_cancelled();
+        let _ = ipc_events::emit::<kestrel_app_core::events::ResearchProgress>(
+            &app,
+            &models::ResearchProgress {
+                job_id: job_id.clone(),
+                stage: if cancelled { "cancelled" } else { "failed" }.into(),
+                title: if cancelled {
+                    "Research stopped"
+                } else {
+                    "Research could not finish"
+                }
+                .into(),
+                detail: error.clone(),
+                current: 0,
+                total: 6,
+                elapsed_seconds: started.elapsed().as_secs(),
+            },
+        );
+    }
     if let Ok(mut jobs) = state.jobs.lock() {
         jobs.remove(&job_id);
     }
@@ -1068,6 +1364,7 @@ async fn start_studio_prompt_draft(
     ensure_workspace_idle(&state)?;
     let models = state.models.read().await.clone();
     studio::validate_prompt_draft_request(&request, &models)?;
+    state.control.require_new_job(&request.request_id)?;
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -1459,6 +1756,13 @@ fn create_music_project(
     state: State<'_, AppState>,
 ) -> Result<MusicProject, String> {
     let _guard = claim_workspace(&state)?;
+    if request.comfy_root.trim().is_empty() {
+        request.comfy_root = state
+            .research_settings
+            .load()
+            .map_err(|e| e.to_string())?
+            .comfy_root;
+    }
     if request.muscriptor_executable_path.trim().is_empty()
         && request.muscriptor_model_path.trim().is_empty()
     {
@@ -1905,6 +2209,7 @@ fn save_music_midi_document(
 #[tauri::command]
 async fn export_music_midi(
     request: MusicMidiRequest,
+    destination_path: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let (_, title) = state
@@ -1912,16 +2217,20 @@ async fn export_music_midi(
         .midi_artifact(&request)
         .map_err(|error| error.to_string())?;
     let filename = format!("{}.mid", safe_export_filename(&title));
-    let Some(destination) = rfd::AsyncFileDialog::new()
-        .set_title("Export editable MIDI")
-        .set_file_name(&filename)
-        .add_filter("Standard MIDI file", &["mid", "midi"])
-        .save_file()
-        .await
-    else {
-        return Ok(None);
+    let path = if let Some(path) = destination_path {
+        app_control::export_path(&path, "mid")?
+    } else {
+        let Some(destination) = rfd::AsyncFileDialog::new()
+            .set_title("Export editable MIDI")
+            .set_file_name(&filename)
+            .add_filter("Standard MIDI file", &["mid", "midi"])
+            .save_file()
+            .await
+        else {
+            return Ok(None);
+        };
+        destination.path().to_path_buf()
     };
-    let path = destination.path().to_path_buf();
     state
         .music
         .export_midi_artifact(&request, &path)
@@ -1959,10 +2268,17 @@ fn get_image_project(id: String, state: State<'_, AppState>) -> Result<ImageProj
 
 #[tauri::command]
 fn create_image_project(
-    request: CreateImageProjectRequest,
+    mut request: CreateImageProjectRequest,
     state: State<'_, AppState>,
 ) -> Result<ImageProject, String> {
     let _guard = claim_workspace(&state)?;
+    if request.comfy_root.trim().is_empty() {
+        request.comfy_root = state
+            .research_settings
+            .load()
+            .map_err(|e| e.to_string())?
+            .comfy_root;
+    }
     state
         .images
         .create(request)
@@ -3178,9 +3494,143 @@ fn list_computer_tasks(state: State<'_, AppState>) -> Result<Vec<ComputerTaskSum
     state.workspace.list_tasks()
 }
 
+/// Delegate plain-language production through the selected local model's Computer Tasks runner.
+#[tauri::command]
+async fn start_producer_task(
+    objective: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ComputerTaskRun, String> {
+    let settings = state.control_settings.load().map_err(|e| e.to_string())?;
+    let models = state.models.read().await.clone();
+    let model_id = default_runtime_model(&models, &settings)?.id.clone();
+    start_computer_task(
+        ComputerTaskRequest {
+            model_id,
+            objective,
+            access: ComputerTaskAccess::Workspace,
+            max_steps: settings.agent_max_steps,
+            max_output_tokens: settings.agent_max_output_tokens,
+            attachment_ids: Vec::new(),
+            thinking_level: None,
+        },
+        app,
+        state,
+    )
+    .await
+}
+
 #[tauri::command]
 fn get_computer_task(id: String, state: State<'_, AppState>) -> Result<ComputerTaskRun, String> {
     state.workspace.get_task(&id)
+}
+
+#[tauri::command]
+fn get_producer_task_status(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ProducerTaskStatus, String> {
+    let task = state.workspace.get_task(&id)?;
+    let last = task.events.last();
+    let mut status = kestrel_app_core::ProducerTaskStatus {
+        id: task.id,
+        status: task.status.clone(),
+        step: last.map_or(0, |event| event.step),
+        title: last.map_or_else(String::new, |event| event.title.clone()),
+        detail: last.map_or_else(String::new, |event| {
+            event.detail.chars().take(1800).collect()
+        }),
+        question: if task.status == "waiting" {
+            task.events
+                .iter()
+                .rev()
+                .find(|event| event.kind == "question")
+                .and_then(|event| event.data.clone())
+        } else {
+            None
+        },
+        artifact_paths: task.artifacts.into_iter().rev().take(24).collect(),
+        event_count: task.events.len(),
+        updated_at: task.updated_at,
+    };
+    if task.status == "running" && last.is_some_and(|event| event.kind == "tool_start") {
+        if let Some((title, detail, at)) = state
+            .control
+            .task_progress
+            .lock()
+            .map_err(|e| e.to_string())?
+            .clone()
+        {
+            status.title = title;
+            status.detail = detail;
+            status.updated_at = at;
+        }
+    }
+    Ok(status)
+}
+
+#[tauri::command]
+async fn get_producer_environment(
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ProducerEnvironment, String> {
+    let research = state.research_settings.load().map_err(|e| e.to_string())?;
+    let control = state.control_settings.load().map_err(|e| e.to_string())?;
+    let models = state.models.read().await;
+    let selected_model = default_runtime_model(&models, &control).ok().cloned();
+    let video_defaults = kestrel_app_core::MovieSettings {
+        comfy_root: research.comfy_root.clone(),
+        ..Default::default()
+    };
+    let music_defaults = kestrel_app_core::MusicSettings {
+        comfy_root: research.comfy_root.clone(),
+        ..Default::default()
+    };
+    let image_defaults = kestrel_app_core::ImageSettings {
+        comfy_root: research.comfy_root.clone(),
+        ..Default::default()
+    };
+    let paths = [
+        ("FFmpeg", research.ffmpeg_path),
+        ("FFprobe", research.ffprobe_path),
+        ("Strata", research.strata_root),
+        ("ComfyUI (image, music, video, speech)", research.comfy_root),
+        ("Kiwix server", research.kiwix_server_path),
+        ("Offline Wikipedia archive", research.wikipedia_zim_path),
+        ("MuScriptor executable", research.muscriptor_executable_path),
+        ("MuScriptor model", research.muscriptor_model_path),
+    ];
+    Ok(kestrel_app_core::ProducerEnvironment {
+        selected_model,
+        generation_defaults: std::collections::BTreeMap::from([
+            (
+                "video".into(),
+                serde_json::to_value(video_defaults).map_err(|e| e.to_string())?,
+            ),
+            (
+                "music".into(),
+                serde_json::to_value(music_defaults).map_err(|e| e.to_string())?,
+            ),
+            (
+                "image".into(),
+                serde_json::to_value(image_defaults).map_err(|e| e.to_string())?,
+            ),
+        ]),
+        library_directory: state.store.root().to_string_lossy().into_owned(),
+        model_download_directory: state
+            .model_downloads
+            .models_root()
+            .to_string_lossy()
+            .into_owned(),
+        workspace_directories: control.agent_workspace_roots,
+        tools: paths
+            .into_iter()
+            .map(|(name, path)| kestrel_app_core::ProducerToolPath {
+                name: name.into(),
+                path_exists: std::path::Path::new(&path).exists(),
+                path,
+            })
+            .collect(),
+    })
 }
 
 #[tauri::command]
@@ -3333,9 +3783,14 @@ fn spawn_computer_task(
     cancel: CancellationToken,
     continuation: Option<String>,
 ) {
+    app.state::<AppState>()
+        .control
+        .task_active
+        .store(true, Ordering::Release);
     tauri::async_runtime::spawn(async move {
         let managed = app.state::<AppState>();
         let _work_guard = WorkGuard(&managed.work_active);
+        let _task_guard = WorkGuard(&managed.control.task_active);
         let models = managed.models.read().await.clone();
         let result = agent::run(
             Some(app.clone()),
@@ -3678,6 +4133,7 @@ async fn refresh_model_catalog(
 }
 
 fn ensure_workspace_idle(state: &AppState) -> Result<(), String> {
+    app_control::ensure_task_access(state)?;
     if state.work_active.load(Ordering::Acquire) {
         Err("Chat, research, a computer task, movie production, or a model transfer is active. Stop or finish it before changing runtime or developer state.".into())
     } else {
@@ -3686,6 +4142,7 @@ fn ensure_workspace_idle(state: &AppState) -> Result<(), String> {
 }
 
 fn claim_workspace(state: &AppState) -> Result<WorkGuard<'_>, String> {
+    app_control::ensure_task_access(state)?;
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -3793,6 +4250,7 @@ pub fn run() {
             let speech = LocalSpeech::new(store.root()).map_err(|error| error.to_string())?;
             let voice_library = VoiceLibrary::new(store.root()).map_err(|error| error.to_string())?;
             app.manage(AppState {
+                control: app_control::AppControl::new(store.root())?,
                 speech_preferences: speech_preferences::SpeechPreferencesStore::new(store.root()),
                 store,
                 harness,
@@ -3824,6 +4282,9 @@ pub fn run() {
                 setup_job: Mutex::new(None),
                 model_download_job: Mutex::new(None),
             });
+            if let Some(path) = std::env::var_os("KESTREL_PRODUCER_SESSION") {
+                app_control::transport::start(app.handle().clone(), &PathBuf::from(path))?;
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
@@ -3857,6 +4318,27 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            list_app_actions,
+            describe_app_action,
+            execute_app_action,
+            get_app_action_receipt,
+            get_app_job,
+            create_producer_workflow,
+            get_producer_workflow,
+            list_producer_workflows,
+            start_producer_workflow,
+            stop_producer_workflow,
+            import_context_paths,
+            import_movie_reference_paths,
+            export_production_bundle,
+            export_media_composition,
+            cancel_production_job,
+            list_media_compositions,
+            list_production_bundles,
+            get_production_bundle,
+            get_media_composition,
+            apply_music_text,
+            apply_image_composition,
             get_speech_preferences,
             save_vad_settings,
             save_research_speech_preferences,
@@ -3986,7 +4468,10 @@ pub fn run() {
             cancel_chat_stream,
             list_computer_tasks,
             get_computer_task,
+            get_producer_task_status,
+            get_producer_environment,
             start_computer_task,
+            start_producer_task,
             resume_computer_task,
             stop_computer_task,
             open_task_artifact,

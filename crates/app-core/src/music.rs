@@ -4,10 +4,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub enum MusicBackend {
+    /// Legacy projects without a backend retain their original generator.
+    #[default]
+    MinimaxMusic3,
+    Yue2,
+}
+
+fn default_planning_mode() -> String {
+    "full".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicSettings {
+    #[serde(default)]
+    pub backend: MusicBackend,
+    #[serde(default = "default_planning_mode")]
+    pub planning_mode: String,
+    /// Optional producer-authored ABC. Empty means YuE2 composes its own score.
+    #[serde(default)]
+    pub abc_score: String,
     pub max_duration_seconds: f64,
     pub steps: u32,
     pub cfg_scale: f64,
@@ -62,6 +83,9 @@ pub struct MusicTake {
     pub lyrics: String,
     pub prompt_id: String,
     pub exact_graph: Value,
+    /// The exact composition used by YuE2; a score, not verified sung-word timing.
+    #[serde(default)]
+    pub abc_score: String,
     pub midi_path: String,
     pub midi_receipt_path: String,
     #[serde(default)]
@@ -335,10 +359,13 @@ pub fn default_lyrics_language() -> String {
 impl Default for MusicSettings {
     fn default() -> Self {
         Self {
+            backend: MusicBackend::Yue2,
+            planning_mode: default_planning_mode(),
+            abc_score: String::new(),
             max_duration_seconds: 120.0,
-            steps: 30,
-            cfg_scale: 1.7,
-            top_k: 50,
+            steps: 32,
+            cfg_scale: 1.0,
+            top_k: 100,
             seed: 0,
             tiled_decode: true,
             model_variant: "auto".into(),
