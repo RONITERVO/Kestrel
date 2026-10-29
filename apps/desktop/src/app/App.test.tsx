@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { demoSnapshot } from "../preview/fixtures";
@@ -19,6 +19,7 @@ const memoryApi = vi.hoisted(() => ({
   forceCleanVram: vi.fn(),
   releaseAiMemory: vi.fn(),
 }));
+const progressApi = vi.hoisted(() => ({ onProgress: vi.fn() }));
 
 vi.mock("../platform/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("../platform/api")>(),
@@ -31,9 +32,11 @@ vi.mock("../platform/api", async (importOriginal) => ({
   cleanVram: memoryApi.cleanVram,
   forceCleanVram: memoryApi.forceCleanVram,
   releaseAiMemory: memoryApi.releaseAiMemory,
+  onProgress: progressApi.onProgress,
 }));
 
 beforeEach(() => {
+  progressApi.onProgress.mockReset().mockResolvedValue(() => {});
   profileApi.exportSetupProfile.mockReset().mockResolvedValue({ path: "C:\\Research\\portable.json", message: "Safe profile exported." });
   profileApi.exportSetupProfileText.mockReset().mockResolvedValue({ path: "C:\\Research\\portable.json", message: "Validated profile exported." });
   profileApi.getSetupProfileText.mockReset().mockResolvedValue(JSON.stringify({ schemaVersion: 1, app: "Kestrel" }, null, 2));
@@ -74,6 +77,18 @@ afterEach(() => {
 });
 
 describe("Kestrel research experience", () => {
+  it.each(["complete", "cancelled", "failed"] as const)("settles %s research started outside the window", async (stage) => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "The Antikythera mechanism" });
+    const receive = progressApi.onProgress.mock.calls.at(-1)![0];
+    const event = { jobId: "producer-research", stage: "reading", title: "External producer research", detail: "Opening local evidence", current: 3, total: 6, elapsedSeconds: 10 };
+    act(() => receive(event));
+    expect(screen.getByRole("heading", { name: event.title })).toBeInTheDocument();
+    await act(async () => receive({ ...event, stage, detail: stage === "failed" ? "Local archive stopped" : "Finished" }));
+    expect(screen.queryByRole("heading", { name: event.title })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop research" })).not.toBeInTheDocument();
+  });
+
   it("keeps composer attachments within native count and byte limits", () => {
     const attachment = (id: string, bytes: number): ContextAttachment => ({
       id,

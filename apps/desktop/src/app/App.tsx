@@ -91,8 +91,16 @@ function App() {
     void refresh();
     let dispose: (() => void) | undefined;
     void onProgress((event) => {
+      if (["complete", "failed", "cancelled"].includes(event.stage)) {
+        // Native producers may start research without this window calling handleResearch.
+        // Its terminal event must settle the same visible status as a human-started run.
+        setProgress((current) => current?.jobId && current.jobId !== event.jobId ? current : null);
+        if (event.stage === "failed") setError(event.detail);
+        if (event.stage === "complete") void bootstrap().then(setSnapshot).catch((cause) => setError(String(cause)));
+        return;
+      }
       setProgress(event);
-      setActivity((items) => [...items.filter((item) => item.stage !== event.stage), event].slice(-8));
+      setActivity((items) => [...items.filter((item) => item.jobId === event.jobId && item.stage !== event.stage), event].slice(-8));
     }).then((unlisten) => {
       dispose = unlisten;
     });

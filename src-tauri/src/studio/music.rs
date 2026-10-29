@@ -1,7 +1,7 @@
 //! Durable offline music production built on the user's loopback-only ComfyUI.
 //!
-//! The music workspace owns producer-authored structure and immutable generated takes. MiniMax
-//! Music 3 produces a stereo master, not stems, so this module deliberately does not invent
+//! The music workspace owns producer-authored structure and immutable generated takes. YuE2 and
+//! MiniMax Music 3 produce stereo masters, not stems, so this module deliberately does not invent
 //! per-instrument media. Optional MuScriptor transcription is an explicit, fixed-argument
 //! audio-to-MIDI export using a producer-supplied executable and locally accepted checkpoint.
 
@@ -25,6 +25,7 @@ use super::{
 use crate::local_speech::{SpeechFileTranscription, SpeechTiming};
 use chrono::Utc;
 use futures_util::StreamExt;
+use kestrel_app_core::music::MusicBackend;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -429,6 +430,7 @@ impl MusicStudio {
             lyrics: render_lyrics(&project),
             prompt_id: String::new(),
             exact_graph: Value::Null,
+            abc_score: String::new(),
             midi_path: String::new(),
             midi_receipt_path: String::new(),
             midi_source_path: String::new(),
@@ -490,7 +492,7 @@ impl MusicStudio {
                 take_id,
                 "progress",
                 "starting-renderer",
-                "Preparing local ComfyUI and checking the native MiniMax Music 3 nodes.",
+                "Preparing local ComfyUI and checking the selected music backend nodes.",
             ),
         );
         self.release_comfy_memory().await;
@@ -501,13 +503,25 @@ impl MusicStudio {
                 Some(cancel),
             )
             .await?;
-        verify_music_nodes(&self.http, project.settings.tiled_decode).await?;
-        let model_file = resolve_music_model(&comfy_root, &project.settings.model_variant)?;
-        verify_music_assets(&comfy_root, &model_file)?;
+        verify_music_nodes(&self.http, &project.settings).await?;
+        let model_file = match project.settings.backend {
+            MusicBackend::Yue2 => {
+                super::music_yue2::resolve(&comfy_root, &project.settings.model_variant)?
+            }
+            MusicBackend::MinimaxMusic3 => {
+                let model = resolve_music_model(&comfy_root, &project.settings.model_variant)?;
+                verify_music_assets(&comfy_root, &model)?;
+                model
+            }
+        };
         let prefix = format!("kestrel_music/{project_id}/take_{}", take_index + 1);
         let caption = project.takes[take_index].caption.clone();
         let lyrics = project.takes[take_index].lyrics.clone();
-        let graph = minimax_music_graph(
+        let graph_builder = match project.settings.backend {
+            MusicBackend::Yue2 => super::music_yue2::graph,
+            MusicBackend::MinimaxMusic3 => minimax_music_graph,
+        };
+        let graph = graph_builder(
             &project.settings,
             &caption,
             &lyrics,
@@ -520,8 +534,14 @@ impl MusicStudio {
             .clone_from(&model_file);
         project.takes[take_index].exact_graph = graph.clone();
         project.takes[take_index].status = "generating".into();
-        project.takes[take_index].detail =
-            "MiniMax Music 3 is composing the preserved stereo master.".into();
+        project.takes[take_index].detail = format!(
+            "{} is composing the preserved stereo master.",
+            if project.settings.backend == MusicBackend::Yue2 {
+                "YuE2"
+            } else {
+                "MiniMax Music 3"
+            }
+        );
         project.phase = "generating".into();
         project.detail = project.takes[take_index].detail.clone();
         self.persist_emit(&mut project, app)?;
@@ -545,7 +565,7 @@ impl MusicStudio {
         let value: Value = response.json().await?;
         if !status.is_success() {
             return Err(StudioError::Render(format!(
-                "ComfyUI rejected the MiniMax Music 3 workflow: {}",
+                "ComfyUI rejected the selected music workflow: {}",
                 truncate(&value.to_string(), 900)
             )));
         }
@@ -560,7 +580,7 @@ impl MusicStudio {
         self.persist(&project)?;
 
         let deadline = tokio::time::Instant::now() + MUSIC_RENDER_TIMEOUT;
-        let (source_name, source_subfolder) = loop {
+        let (source_name, source_subfolder, abc_score) = loop {
             if cancel.is_cancelled() {
                 let _ = self
                     .http
@@ -594,7 +614,12 @@ impl MusicStudio {
                             "the completed music graph exposed no saved audio output".into(),
                         )
                     })?;
-                    break media;
+                    let abc_score = if project.settings.backend == MusicBackend::Yue2 {
+                        super::music_yue2::completed_score(entry, &project.settings)?
+                    } else {
+                        String::new()
+                    };
+                    break (media.0, media.1, abc_score);
                 }
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -646,6 +671,16 @@ impl MusicStudio {
             .ok_or_else(|| {
                 StudioError::Invalid("music take disappeared during preservation".into())
             })?;
+        if !abc_score.is_empty() {
+            write_bytes_recoverable(
+                &self
+                    .project_dir(project_id)
+                    .join("receipts")
+                    .join(format!("{take_id}.abc")),
+                abc_score.as_bytes(),
+            )?;
+        }
+        take.abc_score = abc_score;
         take.status = "complete".into();
         take.detail = "Full-quality local master preserved. Earlier takes remain unchanged.".into();
         take.path = target.to_string_lossy().into_owned();
@@ -1729,7 +1764,8 @@ impl MusicProgressSession {
         let task_take = take_id.to_string();
         let task = tokio::spawn(async move {
             let (_, mut reader) = stream.split();
-            let started = Instant::now();
+            let mut node_started = Instant::now();
+            let mut active_node = String::new();
             loop {
                 tokio::select! {
                     _ = task_cancel.cancelled() => break,
@@ -1737,7 +1773,7 @@ impl MusicProgressSession {
                         let Some(Ok(message)) = message else { break; };
                         if !message.is_text() { continue; }
                         let Ok(text) = message.into_text() else { continue; };
-                        if let Some(event) = parse_music_progress(&text, &task_project, &task_take, started) {
+                        if let Some(event) = parse_music_progress(&text, &task_project, &task_take, &mut active_node, &mut node_started) {
                             let _ = crate::ipc_events::emit::<kestrel_app_core::events::MusicGeneration>(&task_app, &event);
                         }
                     }
@@ -1779,19 +1815,46 @@ fn parse_music_progress(
     text: &str,
     project_id: &str,
     take_id: &str,
-    started: Instant,
+    active_node: &mut String,
+    node_started: &mut Instant,
 ) -> Option<MusicGenerationEvent> {
     let value: Value = serde_json::from_str(text).ok()?;
     let kind = value.get("type")?.as_str()?;
     let data = value.get("data")?;
+    if let Some(node) = data.get("node").and_then(Value::as_str) {
+        if node != active_node {
+            *active_node = node.into();
+            *node_started = Instant::now();
+        }
+    }
     if kind == "progress" {
         let step = u32::try_from(data.get("value")?.as_u64()?).ok()?;
         let total = u32::try_from(data.get("max")?.as_u64()?).ok()?;
         if total == 0 || step > total || total > 100_000 {
             return None;
         }
+        // Composition progress uses a token ceiling, not a known amount of remaining work.
+        // Calling it diffusion steps fabricates a percentage and a potentially huge ETA.
+        if matches!(active_node.as_str(), "9" | "4") {
+            let (phase, subject) = if active_node == "9" {
+                ("planning", "Composing the editable score")
+            } else {
+                ("composing", "Composing the musical performance")
+            };
+            return Some(MusicGenerationEvent::new(project_id, take_id, "progress", phase,
+                format!("{subject} · {step} tokens generated (limit {total}). This stage can finish before the limit.")));
+        }
+        if active_node != "7" {
+            return Some(MusicGenerationEvent::new(
+                project_id,
+                take_id,
+                "progress",
+                "processing",
+                format!("Local audio processing · {step} of {total}."),
+            ));
+        }
         let percent = f64::from(step) * 100.0 / f64::from(total);
-        let elapsed = started.elapsed().as_secs_f64();
+        let elapsed = node_started.elapsed().as_secs_f64();
         let eta_seconds = (step > 0)
             .then(|| ((elapsed / f64::from(step)) * f64::from(total - step)).round() as u64);
         let mut event = MusicGenerationEvent::new(
@@ -1810,6 +1873,10 @@ fn parse_music_progress(
     if kind == "executing" {
         let node = data.get("node").and_then(Value::as_str).unwrap_or_default();
         let (phase, detail) = match node {
+            "9" => (
+                "planning",
+                "YuE2 is composing an editable melody and chord score.",
+            ),
             "4" => (
                 "composing",
                 "Composing long-range structure, performance, and lyrics locally.",
@@ -2511,7 +2578,7 @@ fn validate_editable(project: &MusicProject) -> Result<(), StudioError> {
         }
         if !valid_section_tag(&section.tag) {
             return Err(StudioError::Invalid(format!(
-                "{} is not a supported MiniMax Music section tag",
+                "{} is not a supported music section tag",
                 section.tag
             )));
         }
@@ -2545,12 +2612,22 @@ fn validate_editable(project: &MusicProject) -> Result<(), StudioError> {
         || !(1..=16_384).contains(&settings.top_k)
     {
         return Err(StudioError::Invalid(
-            "music sampling settings are outside the native MiniMax Music 3 limits".into(),
+            "music sampling settings are outside the native limits".into(),
         ));
     }
-    if !matches!(settings.model_variant.as_str(), "auto" | "int8" | "fp16") {
+    if !matches!(settings.planning_mode.as_str(), "full" | "melody" | "off")
+        || settings.abc_score.len() > 256 * 1024
+    {
         return Err(StudioError::Invalid(
-            "music model variant must be auto, int8, or fp16".into(),
+            "YuE2 planning mode must be full, melody or off, with ABC score up to 256 KiB.".into(),
+        ));
+    }
+    if !matches!(
+        settings.model_variant.as_str(),
+        "auto" | "int8" | "fp16" | "bf16"
+    ) {
+        return Err(StudioError::Invalid(
+            "music model variant must be auto, int8, fp16 (MiniMax) or bf16 (YuE2)".into(),
         ));
     }
     if !settings.comfy_root.trim().is_empty()
@@ -2763,7 +2840,7 @@ fn is_managed_muscriptor_uvx(executable: &Path, model: &Path) -> bool {
         && model == root.join("models/model.safetensors")
 }
 
-async fn verify_music_nodes(http: &Client, tiled_decode: bool) -> Result<(), StudioError> {
+async fn verify_music_nodes(http: &Client, settings: &MusicSettings) -> Result<(), StudioError> {
     let info: Value = http
         .get(format!("{MUSIC_COMFY_BASE}/object_info"))
         .timeout(Duration::from_secs(30))
@@ -2772,10 +2849,24 @@ async fn verify_music_nodes(http: &Client, tiled_decode: bool) -> Result<(), Stu
         .json()
         .await?;
     for node in [
-        "MiniMaxMusic3TextEncode",
-        "EmptyMiniMaxMusic3LatentAudio",
+        if settings.backend == MusicBackend::Yue2 {
+            "YuE2GenerateMusic"
+        } else {
+            "MiniMaxMusic3TextEncode"
+        },
+        if settings.backend == MusicBackend::Yue2 {
+            "EmptyYuE2LatentAudio"
+        } else {
+            "EmptyMiniMaxMusic3LatentAudio"
+        },
+        if settings.backend == MusicBackend::Yue2 {
+            "YuE2GenerateABC"
+        } else {
+            "CLIPLoader"
+        },
+        "PreviewAny",
         "SaveAudioAdvanced",
-        if tiled_decode {
+        if settings.tiled_decode {
             "VAEDecodeAudioTiled"
         } else {
             "VAEDecodeAudio"
@@ -2783,7 +2874,7 @@ async fn verify_music_nodes(http: &Client, tiled_decode: bool) -> Result<(), Stu
     ] {
         if info.get(node).is_none() {
             return Err(StudioError::Render(format!(
-                "the running ComfyUI does not expose {node}. Update ComfyUI to 0.33.0 or newer, restart it, then resume Music Production in Setup"
+                "the running ComfyUI does not expose {node}. Update ComfyUI to a version with the selected native music nodes, restart it, then resume Music Production in Setup"
             )));
         }
     }
@@ -2827,7 +2918,7 @@ fn verify_music_assets(comfy_root: &Path, model_file: &str) -> Result<(), Studio
         let path = comfy_root.join("models").join(&relative);
         if !path.is_file() {
             return Err(StudioError::Render(format!(
-                "MiniMax Music 3 asset is missing: {}. Resume Music Production in Setup.",
+                "MiniMax Music 3 asset is missing: {}. Restore the legacy model files or select YuE2 in this project.",
                 path.display()
             )));
         }
@@ -3917,7 +4008,8 @@ mod tests {
             &json!({"type":"progress","data":{"value":5,"max":20}}).to_string(),
             "project",
             "take",
-            Instant::now(),
+            &mut String::from("7"),
+            &mut Instant::now(),
         )
         .unwrap();
         assert_eq!(event.percent, Some(25.0));
@@ -3926,9 +4018,35 @@ mod tests {
             &json!({"type":"progress","data":{"value":21,"max":20}}).to_string(),
             "project",
             "take",
-            Instant::now(),
+            &mut String::from("7"),
+            &mut Instant::now(),
         )
         .is_none());
+    }
+
+    #[test]
+    fn composition_token_ceiling_is_not_presented_as_remaining_render_steps() {
+        let mut node = String::new();
+        let mut started = Instant::now();
+        parse_music_progress(
+            r#"{"type":"executing","data":{"node":"9"}}"#,
+            "p",
+            "t",
+            &mut node,
+            &mut started,
+        )
+        .unwrap();
+        let event = parse_music_progress(
+            r#"{"type":"progress","data":{"value":165,"max":8192}}"#,
+            "p",
+            "t",
+            &mut node,
+            &mut started,
+        )
+        .unwrap();
+        assert_eq!(event.phase, "planning");
+        assert!(event.detail.contains("165 tokens"));
+        assert!(event.percent.is_none() && event.eta_seconds.is_none() && event.total.is_none());
     }
 
     #[tokio::test]
@@ -3995,6 +4113,7 @@ mod tests {
             .unwrap();
         project.caption = "Global Metadata: chamber electronic, 92 BPM, D minor, intimate and resolved.\n\nVocal Details: instrumental, no voice.\n\nArrangement: felt piano and warm analog pulse, one clear eight-bar arc with a quiet ending.".into();
         project.instrumental = true;
+        project.settings.backend = MusicBackend::MinimaxMusic3;
         project.settings.max_duration_seconds = 15.0;
         project.sections = vec![MusicSection {
             id: uuid::Uuid::new_v4().to_string(),

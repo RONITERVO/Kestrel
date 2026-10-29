@@ -1,0 +1,12 @@
+.producer-workspace .flow-columns > * + * { margin-top: 14px; }
+.producer-workspace h1 { font-size: var(--text-title); line-height: 1.1; }
+.producer-workspace p { color: var(--ink-2); font-family: var(--font-read); font-size: var(--text-md); line-height: 1.5; }
+.producer-workspace label { display: grid; gap: 6px; margin-block: 10px; }
+.producer-workspace textarea, .producer-workspace select { width: 100%; min-width: 0; }
+.producer-workspace textarea { padding: 10px; font-family: var(--font-data); font-size: var(--text-sm); line-height: 1.5; resize: vertical; }
+.producer-workspace pre { font-family: var(--font-data); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
+.producer-advanced { border-top: var(--stroke-soft); padding-top: 10px; }
+.producer-workspace summary { cursor: pointer; color: var(--ink-2); }
+.producer-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.producer-run { border: var(--stroke-soft); border-radius: var(--radius-card); padding: 12px; background: var(--paper-raised); }
+.producer-run h3 { font-family: var(--font-hand); font-size: var(--text-xl); }

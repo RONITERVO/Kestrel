@@ -41,6 +41,7 @@ mod model_stream;
 mod music;
 mod music_lyrics_model;
 mod music_midi;
+mod music_yue2;
 mod producer;
 mod producer_chat;
 mod prompt_draft;
@@ -339,7 +340,7 @@ impl MovieSettingsPolicy for MovieSettings {
         let runtime_limits = runtime_policy_limits(advanced);
         if !self.width.is_multiple_of(32) || !self.height.is_multiple_of(32) {
             return Err(StudioError::Invalid(
-                "H3 width and height must be multiples of 32".into(),
+                "H3 generation width and height must be multiples of 32. The faster default is 768×448; media composition chooses its final frame size independently.".into(),
             ));
         }
         let maximum_edge = if advanced { 2_048 } else { 1_344 };
@@ -1204,7 +1205,7 @@ impl MovieStudio {
                 tokio::fs::copy(source, target).await?;
                 Some(relative)
             } else {
-                None
+                return Err(StudioError::Render(format!("Scene {} requires the previous scene's last frame, but {} is missing. Render the preceding shot first; Kestrel will not replace visual continuity with text-only generation.", index + 1, source.display())));
             }
         } else {
             None
@@ -1233,6 +1234,29 @@ impl MovieStudio {
             ref_image_size: &project.settings.ref_image_size,
             preview_available,
         });
+        let receipt_dir = self
+            .project_dir(&project.id)
+            .join("render-receipts")
+            .join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&receipt_dir)?;
+        let mut endpoint_receipts = Vec::new();
+        for (role, relative) in [
+            ("first", continuity_input.as_ref()),
+            ("last", explicit_last.as_ref()),
+        ] {
+            if let Some(relative) = relative {
+                let path = PathBuf::from(&project.settings.comfy_root)
+                    .join("input")
+                    .join(relative);
+                endpoint_receipts
+                    .push(json!({"role":role,"input":relative,"sha256":hash_reference(&path)?}));
+            }
+        }
+        producer::write_recoverable_json(&receipt_dir.join("graph.json"), &graph)?;
+        producer::write_recoverable_json(
+            &receipt_dir.join("request.json"),
+            &json!({"projectId":project.id,"clipId":planned.id,"clipIndex":index,"variant":variant,"seed":seed.to_string(),"plan":planned,"endpoints":endpoint_receipts,"references":project.references}),
+        )?;
         if let Some(id) = variant.filter(|_| planned.id.starts_with("editor-")) {
             // The native graph is preserved before submission, including exact endpoint inputs.
             producer::write_recoverable_json(
@@ -1263,6 +1287,7 @@ impl MovieStudio {
             .await?;
         let status = response.status();
         let value: Value = response.json().await?;
+        producer::write_recoverable_json(&receipt_dir.join("submission.json"), &value)?;
         if !status.is_success() {
             return Err(StudioError::Render(format!(
                 "ComfyUI rejected clip: {}",
@@ -1327,6 +1352,10 @@ impl MovieStudio {
                             source.display()
                         ))
                     })?;
+                    producer::write_recoverable_json(
+                        &receipt_dir.join("result.json"),
+                        &json!({"promptId":prompt_id,"path":target,"sha256":hash_reference(&target)?,"history":entry}),
+                    )?;
                     return Ok(target.to_string_lossy().into_owned());
                 }
             }

@@ -19,7 +19,7 @@ export const sampleMusic = {
     { id: "preview-verse", tag: "Verse", name: "Verse 1", bars: 8, lyrics: "Across the water, one light stays\nA quiet signal through the haze", direction: "Close voice and soft piano" },
     { id: "preview-chorus", tag: "Chorus", name: "Chorus", bars: 8, lyrics: "Keep the light on\nI am coming home", direction: "Open the harmony" },
   ],
-  settings: { maxDurationSeconds: 120, steps: 32, cfgScale: 3, topK: 50, seed: 42, tiledDecode: true, modelVariant: "auto", comfyRoot: "" },
+  settings: { backend: "minimaxMusic3", planningMode: "full", abcScore: "", maxDurationSeconds: 120, steps: 32, cfgScale: 3, topK: 50, seed: 42, tiledDecode: true, modelVariant: "auto", comfyRoot: "" },
   midi: { executablePath: "", modelPath: "", instruments: "piano" }, takes: [], activeTakeId: "",
 } satisfies MusicProject;
 
@@ -87,7 +87,7 @@ const signalLines = [
 const signalTake = {
   id: "preview-take", createdAt: date, status: "complete", detail: "", error: "", path: "", bytes: 0, sha256: "preview",
   durationSeconds: 151, seed: 42, resolvedModel: "Preview music model", caption: sampleMusic.caption,
-  lyrics: signalLines.join("\n"), promptId: "preview", exactGraph: {}, midiPath: "", midiReceiptPath: "", midiSourcePath: "",
+  lyrics: signalLines.join("\n"), promptId: "preview", exactGraph: {}, abcScore: "", midiPath: "", midiReceiptPath: "", midiSourcePath: "",
   midiDocumentPath: "", midiRevision: 0, lyricsDocumentPath: "preview-lyrics.json", lyricsReceiptPath: "", lyricsRevision: 3,
 };
 

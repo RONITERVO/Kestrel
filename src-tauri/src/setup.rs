@@ -24,7 +24,7 @@ const BONSAI_REVISION: &str = "abbae723028d71be674e71e1a71201a6f43fab22";
 const BONSAI_RELEASE: &str = "prism-b9596-9fcaed7";
 const H3_REVISION: &str = "0bd506d2e895983a9663037febda27aa3948cf48";
 const COMFY_VERSION: &str = "v0.42.1";
-const MUSIC_REVISION: &str = "6444666eb6edfb2c7fcab5f8b81da8b84b4b17b6";
+const MUSIC_REVISION: &str = "8e6fcf0f23252ed188b634bd50d44f4b01fba890";
 const MOSS_REVISION: &str = "ee64003102c8470ee32501cf883419235db81884";
 const FLUX2_REVISION: &str = "06029c966dd5b73929c909f046cbd29303b98879";
 const KJ_PREVIEW_REVISION: &str = "3f20054214fec9f9234fd3841ae6f1e4287948f6";
@@ -285,10 +285,7 @@ pub fn snapshot(
     let music_files = music_assets()
         .iter()
         .all(|asset| file_has_size(&comfy.join("models").join(asset.relative), asset.bytes));
-    let music_nodes = comfy
-        .join("comfy_extras")
-        .join("nodes_minimax_music.py")
-        .is_file();
+    let music_nodes = comfy.join("comfy_extras").join("nodes_yue2.py").is_file();
     let music_launcher = comfy.join("Start-Kestrel-ComfyUI-Music.ps1").is_file();
     let music_ready =
         comfy.join("main.py").is_file() && music_launcher && music_nodes && music_files;
@@ -432,14 +429,14 @@ pub fn snapshot(
         ),
         component(
             "music",
-            "MiniMax Music 3 Production",
+            "YuE2 Music Production",
             (music_ready, music_partial),
             if music_ready {
                 "Ready for private full-song generation with producer-owned structure and immutable takes."
             } else if comfy.join("main.py").is_file() && !music_nodes {
-                "ComfyUI must be updated to 0.33.0 or newer before Kestrel can install the native music workflow."
+                "ComfyUI needs native YuE2 nodes before Kestrel can install the music workflow."
             } else {
-                "Optional: about 12 GB for the verified INT8 model, text encoder, full-quality decoder, and dedicated GPU profile."
+                "Optional: about 4 GB for the verified YuE2 INT8 checkpoint, including its music encoder and full-quality decoder."
             },
             &research.comfy_root,
             (missing_model_bytes("music") + missing_comfy_bytes, true),
@@ -1054,7 +1051,7 @@ impl ComfyRequirement {
     fn available_in(self, comfy: &Path) -> bool {
         match self {
             Self::Base => true,
-            Self::Music => comfy.join("comfy_extras/nodes_minimax_music.py").is_file(),
+            Self::Music => comfy.join("comfy_extras/nodes_yue2.py").is_file(),
             Self::Moss => {
                 comfy.join("comfy_extras/nodes_moss_image.py").is_file()
                     && comfy.join("comfy_extras/nodes_custom_sampler.py").is_file()
@@ -1065,7 +1062,7 @@ impl ComfyRequirement {
     fn missing_detail(self) -> &'static str {
         match self {
             Self::Base => "the installed ComfyUI is incomplete",
-            Self::Music => "the installed ComfyUI does not contain native MiniMax Music 3 nodes; remove the stale Kestrel-owned portable folder or update it to 0.33.0+, then resume",
+            Self::Music => "the installed ComfyUI does not contain native YuE2 nodes; update ComfyUI to a version supporting YuE2, then resume",
             Self::Moss => "the installed ComfyUI does not contain native MOSS-Image Base nodes; remove the stale Kestrel-owned portable folder or update it to 0.42.1+, then resume",
         }
     }
@@ -1127,23 +1124,20 @@ async fn install_music(
 ) -> Result<(), SetupError> {
     if crate::services::gpu_snapshot().await.is_none() {
         return Err(SetupError::Download {
-            name: "MiniMax Music 3 Production".into(),
+            name: "YuE2 Music Production".into(),
             details: "no NVIDIA GPU was detected. Keep using the rest of Kestrel, or configure a supported local ComfyUI computer before installing music generation.".into(),
         });
     }
     let configured = PathBuf::from(settings.comfy_root.trim());
     let comfy = if configured.join("main.py").is_file() {
-        if !configured
-            .join("comfy_extras/nodes_minimax_music.py")
-            .is_file()
-        {
+        if !configured.join("comfy_extras/nodes_yue2.py").is_file() {
             if is_kestrel_managed_comfy_root(&configured, root) {
                 install_comfy_portable(app, root, "music", ComfyRequirement::Music, &cancel).await?
             } else {
                 return Err(SetupError::Download {
-                    name: "MiniMax Music 3 Production".into(),
+                    name: "YuE2 Music Production".into(),
                     details: format!(
-                        "{} is older than ComfyUI 0.33.0. Update this shared ComfyUI installation first; Kestrel will not overwrite a producer-managed installation.",
+                        "{} does not contain native YuE2 nodes. Update this shared ComfyUI installation first; Kestrel will not overwrite a producer-managed installation.",
                         configured.display()
                     ),
                 });
@@ -1170,7 +1164,7 @@ async fn install_music(
         app,
         "music",
         "complete",
-        "MiniMax Music 3 is installed and verified for offline production.",
+        "YuE2 INT8 is installed and verified for offline production.",
         1,
         1,
         0,
@@ -2418,7 +2412,7 @@ impl MusicAsset {
         Asset::new(
             name,
             &format!(
-                "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/{MUSIC_REVISION}/{}",
+                "https://huggingface.co/Comfy-Org/YuE2/resolve/{MUSIC_REVISION}/{}",
                 self.relative
             ),
             name,
@@ -2429,23 +2423,11 @@ impl MusicAsset {
 }
 
 fn music_assets() -> Vec<MusicAsset> {
-    vec![
-        MusicAsset {
-            relative: "diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
-            bytes: 2_502_161_682,
-            sha256: "d6b959633e69899f99f3a92d6741c0fe79f26958a30811e50e372ef978b24d5f",
-        },
-        MusicAsset {
-            relative: "text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
-            bytes: 9_196_611_886,
-            sha256: "010b7416d2336a08c711bc22ee65849c9623069ddb7d89bec011a75699e52014",
-        },
-        MusicAsset {
-            relative: "vae/minimax_music3_dav.safetensors",
-            bytes: 216_696_128,
-            sha256: "2a32155b769be01445fcc2a8663b910fc9e1751e18dc1c3ec528064512d9ef0c",
-        },
-    ]
+    vec![MusicAsset {
+        relative: "checkpoints/yue2_3b_int8_convrot.safetensors",
+        bytes: 3_960_938_800,
+        sha256: "96fe199377309001ed8cd26a944baeee8cc31a20ba7c36d1d3c0a7e1f4149db6",
+    }]
 }
 
 struct ImageAsset {
@@ -3368,7 +3350,7 @@ exit $LASTEXITCODE
     if !generic_target.is_file() || generic_managed {
         fs::write(generic_target, generic_script)?;
     }
-    let music_script = r#"# Kestrel-managed MiniMax Music 3 GPU launcher
+    let music_script = r#"# Kestrel-managed music GPU launcher
 param(
   [int]$Port = 8189,
   [switch]$NoBrowser
@@ -3379,16 +3361,8 @@ $python=Join-Path $root '.venv\Scripts\python.exe'
 if(-not (Test-Path $python)){ $python=Join-Path (Split-Path $root -Parent) 'python_embeded\python.exe' }
 if(-not (Test-Path $python)){ throw "ComfyUI Python is missing: $python" }
 if(-not (Test-Path (Join-Path $root 'main.py'))){ throw "ComfyUI main.py is missing from $root" }
-$required=[ordered]@{
-  'models\diffusion_models\minimax_music3_dit_int8_convrot.safetensors'=2502161682
-  'models\text_encoders\minimax_music3_text_encoder_pruned_int8_convrot.safetensors'=9196611886
-  'models\vae\minimax_music3_dav.safetensors'=216696128
-}
-$missing=@($required.GetEnumerator() | Where-Object {
-  $path=Join-Path $root $_.Key
-  (-not (Test-Path -LiteralPath $path)) -or ((Get-Item -LiteralPath $path).Length -ne $_.Value)
-} | ForEach-Object { $_.Key })
-if($missing){ throw "MiniMax Music 3 files are missing or incomplete: $($missing -join ', '). Open Kestrel Setup and resume Music Production." }
+# Model assets are checked by the selected native backend before submission.
+# A shared launcher must not require a different backend's weights.
 $arguments=@(
   (Join-Path $root 'main.py'),
   '--listen','127.0.0.1',
@@ -3418,7 +3392,10 @@ exit $LASTEXITCODE
 "#;
     let music_target = comfy.join("Start-Kestrel-ComfyUI-Music.ps1");
     let music_managed = fs::read_to_string(&music_target)
-        .map(|value| value.contains("Kestrel-managed MiniMax Music 3 GPU launcher"))
+        .map(|value| {
+            value.contains("Kestrel-managed MiniMax Music 3 GPU launcher")
+                || value.contains("Kestrel-managed music GPU launcher")
+        })
         .unwrap_or(false);
     if !music_target.is_file() || music_managed {
         fs::write(music_target, music_script)?;
@@ -3963,9 +3940,9 @@ mod tests {
 
         let music = assets
             .iter()
-            .find(|asset| asset.download.file_name == "minimax_music3_dit_int8_convrot.safetensors")
+            .find(|asset| asset.download.file_name == "yue2_3b_int8_convrot.safetensors")
             .unwrap();
-        let nested = root.path().join("ComfyUI/models/diffusion_models");
+        let nested = root.path().join("ComfyUI/models/checkpoints");
         fs::create_dir_all(&nested).unwrap();
         crate::test_support::sparse_file(
             nested.join(&music.download.file_name),
@@ -4302,6 +4279,39 @@ mod tests {
             .path()
             .join("custom_nodes/Kestrel-Whisper/THIRD_PARTY_NOTICES.md")
             .is_file());
+    }
+
+    #[test]
+    fn managed_music_launcher_upgrades_without_replacing_producer_scripts() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("Start-Kestrel-ComfyUI-Music.ps1");
+        fs::write(
+            &path,
+            "# Kestrel-managed MiniMax Music 3 GPU launcher\nold profile",
+        )
+        .unwrap();
+        ensure_comfy_launcher(root.path()).unwrap();
+        let upgraded = fs::read_to_string(&path).unwrap();
+        assert!(upgraded.contains("Kestrel-managed music GPU launcher"));
+        assert!(!upgraded.contains("minimax_music3"));
+        fs::write(&path, "# My custom music launcher\ncustom profile").unwrap();
+        ensure_comfy_launcher(root.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# My custom music launcher\ncustom profile"
+        );
+    }
+
+    #[test]
+    #[ignore = "refreshes Kestrel-owned launchers in KESTREL_LIVE_COMFY_ROOT after an explicit music installation"]
+    fn live_refresh_configured_comfy_launchers() {
+        let root = std::env::var_os("KESTREL_LIVE_COMFY_ROOT")
+            .map(PathBuf::from)
+            .expect("KESTREL_LIVE_COMFY_ROOT is required");
+        assert!(root.is_absolute() && root.join("main.py").is_file());
+        assert!(root.join("comfy_extras/nodes_yue2.py").is_file());
+        ensure_comfy_launcher(&root).unwrap();
+        assert!(root.join("Start-Kestrel-ComfyUI-Music.ps1").is_file());
     }
 
     #[test]

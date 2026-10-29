@@ -31,6 +31,8 @@ pub struct SpeechSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct SpeechSynthesisRequest {
     pub job_id: String,
+    /// Native source namespace; use task for producer-authored narration.
+    #[ts(type = "\"research\" | \"chat\" | \"task\" | \"copilot\"")]
     pub source_kind: String,
     pub source_id: String,
     pub passage_id: String,
@@ -82,6 +84,8 @@ pub struct ExportedFiles {
 #[serde(rename_all = "camelCase")]
 pub struct SpeechAlignmentRequest {
     pub job_id: String,
+    /// Native source namespace; use task for producer-authored narration.
+    #[ts(type = "\"research\" | \"chat\" | \"task\" | \"copilot\"")]
     pub source_kind: String,
     pub source_id: String,
     pub passage_id: String,
@@ -121,6 +125,8 @@ pub struct SpeechClip {
 #[serde(rename_all = "camelCase")]
 pub struct SpeechTranscriptionRequest {
     pub job_id: String,
+    /// Native source namespace; use task for producer-authored narration.
+    #[ts(type = "\"research\" | \"chat\" | \"task\" | \"copilot\"")]
     pub source_kind: String,
     pub source_id: String,
     pub recording_id: String,

@@ -21,19 +21,16 @@ fn type_name(ty: &Type) -> Option<&str> {
     }
 }
 
-fn success_type(output: &ReturnType) -> String {
+fn success_rust_type(output: &ReturnType) -> Type {
     let ReturnType::Type(_, ty) = output else {
-        return "\"void\".to_owned()".into();
+        return syn::parse_quote!(());
     };
     let Type::Path(path) = ty.as_ref() else {
         panic!("IPC results must be Result<T, String>")
     };
     let segment = path.path.segments.last().unwrap();
     if segment.ident != "Result" {
-        return format!(
-            "<{} as ts_rs::TS>::name(&ts_rs::Config::from_env())",
-            ty.to_token_stream()
-        );
+        return ty.as_ref().clone();
     }
     let PathArguments::AngleBracketed(args) = &segment.arguments else {
         panic!("missing Result types")
@@ -46,7 +43,12 @@ fn success_type(output: &ReturnType) -> String {
         "String",
         "IPC error type must be String"
     );
-    if matches!(result, Type::Tuple(t) if t.elems.is_empty()) {
+    result.clone()
+}
+
+fn success_type(output: &ReturnType) -> String {
+    let result = success_rust_type(output);
+    if matches!(&result, Type::Tuple(t) if t.elems.is_empty()) {
         "\"void\".to_owned()".into()
     } else {
         format!(
@@ -92,6 +94,8 @@ pub fn generate() {
     handlers.visit_file(&tree);
     let mut names = BTreeSet::new();
     let mut commands = Vec::new();
+    let mut dispatch = Vec::new();
+    let mut descriptions = Vec::new();
     for item in tree.items {
         let Item::Fn(function) = item else { continue };
         let Some(attribute) = function
@@ -108,11 +112,23 @@ pub fn generate() {
         let name = function.sig.ident.to_string();
         names.insert(name.clone());
         let mut arguments = Vec::new();
+        let mut decoded = Vec::new();
+        let mut calls = Vec::new();
+        let mut keys = Vec::new();
+        let mut argument_types = Vec::new();
         for input in &function.sig.inputs {
             let FnArg::Typed(argument) = input else {
                 panic!("IPC receiver unsupported")
             };
-            if type_name(&argument.ty).is_some() {
+            if let Some(injected) = type_name(&argument.ty) {
+                calls.push(
+                    if injected == "State" {
+                        "app.state::<AppState>()"
+                    } else {
+                        "app.clone()"
+                    }
+                    .to_string(),
+                );
                 continue;
             }
             let Pat::Ident(ident) = argument.pat.as_ref() else {
@@ -131,6 +147,11 @@ pub fn generate() {
                 }
             }
             let ty = argument.ty.to_token_stream();
+            let variable = ident.ident.to_string();
+            keys.push(format!("{camel:?}"));
+            decoded.push(format!("let {variable}: {ty} = serde_json::from_value(args.get({camel:?}).cloned().unwrap_or(serde_json::Value::Null)).map_err(|e| format!(\"Invalid argument {{}} for {{}}: {{e}}\", {camel:?}, {name:?}))?;"));
+            calls.push(variable);
+            argument_types.push(format!("app_control::describe_type::<{ty}>(&mut types);"));
             let optional = matches!(argument.ty.as_ref(), Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "Option"));
             arguments.push(format!("serde_json::json!({{\"name\": {camel:?}, \"type\": <{ty} as ts_rs::TS>::name(&ts_rs::Config::from_env()), \"optional\": {optional}}})"));
         }
@@ -139,6 +160,35 @@ pub fn generate() {
             "serde_json::json!({{\"name\": {name:?}, \"args\": [{}], \"result\": {result}}})",
             arguments.join(",")
         ));
+        let await_call = if function.sig.asyncness.is_some() {
+            ".await"
+        } else {
+            ""
+        };
+        let fallible = matches!(&function.sig.output, ReturnType::Type(_, ty) if matches!(ty.as_ref(), Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "Result")));
+        let question = if fallible { "?" } else { "" };
+        let call = format!("{name}({}){await_call}{question}", calls.join(","));
+        let invocation = if result == "\"void\".to_owned()" {
+            format!("{call}; Ok(serde_json::Value::Null)")
+        } else {
+            format!("let result = {call}; serde_json::to_value(result).map_err(|e| e.to_string())")
+        };
+        dispatch.push(format!(
+            "{name:?} => {{ app_control::validate_keys(&args, &[{}])?; {} {invocation} }}",
+            keys.join(","),
+            decoded.join("\n")
+        ));
+        let result_rust = success_rust_type(&function.sig.output);
+        if !matches!(&result_rust, Type::Tuple(t) if t.elems.is_empty()) {
+            let ty = result_rust.to_token_stream();
+            argument_types.push(format!("app_control::describe_type::<{ty}>(&mut types);"));
+        }
+        let mutable = if argument_types.is_empty() {
+            ""
+        } else {
+            "mut "
+        };
+        descriptions.push(format!("{name:?} => {{ let {mutable}types = std::collections::BTreeMap::new(); {} Ok((serde_json::json!([{}]), {result}, types)) }}", argument_types.join("\n"), arguments.join(",")));
     }
     assert_eq!(
         names,
@@ -167,6 +217,29 @@ fn export_command_bindings() {{
     fs::write(
         PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("command_bindings.rs"),
         code,
+    )
+    .unwrap();
+    let dispatch_code = format!(
+        r#"
+fn dispatch_app_command<'a>(app: &'a AppHandle, name: &'a str, args: serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>> {{
+    Box::pin(async move {{ match name {{ {}, _ => Err(format!("Unknown app command: {{name}}")) }} }})
+}}
+fn describe_app_command(name: &str) -> Result<app_control::TypeDescription, String> {{
+    match name {{ {}, _ => Err(format!("Unknown app command: {{name}}")) }}
+}}
+const APP_COMMAND_NAMES: &[&str] = &[{}];
+"#,
+        dispatch.join(",\n"),
+        descriptions.join(",\n"),
+        names
+            .iter()
+            .map(|n| format!("{n:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    fs::write(
+        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("app_dispatch.rs"),
+        dispatch_code,
     )
     .unwrap();
 }

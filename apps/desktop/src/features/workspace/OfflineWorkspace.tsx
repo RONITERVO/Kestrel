@@ -40,6 +40,7 @@ import { CardPages, MessagePages, ReplyViewToggle, type ReplyView } from "../../
 import { PagedList } from "../../shared/book/PagedList";
 import { formatMib } from "../../shared/format";
 import "./workspace.css";
+import { ProducerWorkspace } from "./ProducerWorkspace";
 import { useInferenceTelemetryReporter } from "../control/InferenceTelemetry";
 import { SpeechDictationButton, SpeechPlaybackButton } from "../speech/LocalSpeechControls";
 import {
@@ -48,6 +49,7 @@ import {
   discardChatReplyEdit,
   getChatSession,
   getComputerTask,
+  getProducerTaskStatus,
   getControlSnapshot,
   listChatSessions,
   listComputerTasks,
@@ -76,6 +78,7 @@ import type {
   ComputerTaskEvent,
   ComputerTaskRun,
   ComputerTaskSummary,
+  ProducerTaskStatus,
   ContextAttachment,
   ControlSnapshot,
   SpeechRecordingAttachment,
@@ -92,6 +95,7 @@ type Props = {
 type WorkKind = "chat" | "task";
 
 export function OfflineWorkspace({ control, onChanged, onError, visible = true }: Props) {
+  const [producerOpen, setProducerOpen] = useState(false);
   const [kind, setKind] = useState<WorkKind>("chat");
   const [selectedId, setSelectedId] = useState(
     control.settings.selectedModelId ?? control.models[0]?.id ?? "",
@@ -840,6 +844,8 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     ["interrupted", "limited"].includes(session.messages.at(-1)?.status ?? "");
   const gpu = control.gpu;
 
+  if (producerOpen) return <ProducerWorkspace onClose={() => setProducerOpen(false)} onDelegate={() => { setKind("task"); setProducerOpen(false); }} onError={onError} />;
+
   return (
     <div className="control-plane offline-workspace spread" data-mode={kind}>
       <div className="page page-left control-drawer-page" data-left={leftView}>
@@ -849,6 +855,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       </div>
       <aside className="model-drawer">
         <div className="work-mode-switch">
+          <button onClick={() => setProducerOpen(true)}><Play /> Producer</button>
           <button
             className={kind === "chat" ? "active" : ""}
             onClick={() => setKind("chat")}
@@ -1567,6 +1574,23 @@ function ComputerTasks({
   onError: (message: string) => void;
 }) {
   const [dictating, setDictating] = useState(false);
+  const [progress, setProgress] = useState<ProducerTaskStatus | null>(null);
+  useEffect(() => {
+    setProgress(null);
+    if (!run || !running) return;
+    let live = true;
+    let pending = false;
+    const refresh = async () => {
+      if (pending) return;
+      pending = true;
+      try { const next = await getProducerTaskStatus(run.id); if (live) setProgress(next); }
+      catch { /* The durable transcript and existing task events remain available. */ }
+      finally { pending = false; }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2500);
+    return () => { live = false; window.clearInterval(timer); };
+  }, [run?.id, running]);
   const resumable =
     !!run &&
     ["waiting", "cancelled", "interrupted", "failed"].includes(run.status);
@@ -1690,6 +1714,10 @@ function ComputerTasks({
               </button>
             )}
           </header>
+          {running && progress && <div role="status" aria-live="polite">
+            <strong>{progress.title}</strong>
+            <p>{progress.detail}</p>
+          </div>}
           <MessagePages className="task-pages" label="Task steps" unit="steps" resetKey={run.id} live>
             {run.events.map((event, index) => (
               <TaskEvent key={`${event.at}-${index}`} event={event} index={index} runId={run.id} onOpen={onOpen} />
