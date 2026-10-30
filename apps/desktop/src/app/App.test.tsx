@@ -389,11 +389,11 @@ describe("Kestrel research experience", () => {
     expect(screen.getByText("Vision")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Add local model folder/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Computer/i }));
-    expect(screen.getByRole("heading", { name: /bounded objective/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /What would you like to make or do/i })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Computer Tasks policy" })).toBeInTheDocument();
-    expect(screen.getByText(/Every decision, tool call, result, error, and artifact/i)).toBeInTheDocument();
+    expect(screen.getByText(/You can change direction or return later/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Attach files as context/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Start visible task/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Send request/i })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /New chat/i }));
     expect(screen.getByRole("button", { name: /^Chat$/i })).toHaveClass("active");
 
@@ -419,7 +419,7 @@ describe("computer task terminal states", () => {
     ["done", "completed"],
     ["cancelled", "cancelled"],
     ["error", "failed"],
-    ["limit", "failed"],
+    ["limit", "paused"],
     ["question", "waiting"],
   ])("maps %s to %s", (kind, expected) => {
     expect(terminalTaskStatus(kind, "running")).toBe(expected);
@@ -427,5 +427,8 @@ describe("computer task terminal states", () => {
 
   it("promotes the starting fallback while waiting for events", () => {
     expect(terminalTaskStatus("start", "starting")).toBe("running");
+    expect(terminalTaskStatus("start", "completed")).toBe("running");
+    expect(terminalTaskStatus("user_input", "waiting")).toBe("waiting");
+    expect(terminalTaskStatus("checkpoint", "paused")).toBe("paused");
   });
 });

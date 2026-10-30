@@ -496,6 +496,44 @@ unsafe impl Sync for ProcessJob {}
 
 #[cfg(windows)]
 impl ProcessJob {
+    /// Termination is asynchronous in Windows. Keep ownership until every member has exited,
+    /// so a subsequent media/model load cannot overlap a still-releasing engine allocation.
+    pub async fn terminate_and_wait(&self, maximum: std::time::Duration) -> io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectBasicAccountingInformation, QueryInformationJobObject, TerminateJobObject,
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        };
+        // SAFETY: this job handle stays owned and open across termination and each query.
+        if unsafe { TerminateJobObject(self.0, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let deadline = tokio::time::Instant::now() + maximum;
+        loop {
+            let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+            // SAFETY: the output buffer is sized for the requested information class.
+            if unsafe {
+                QueryInformationJobObject(
+                    self.0,
+                    JobObjectBasicAccountingInformation,
+                    std::ptr::from_mut(&mut accounting).cast(),
+                    std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if accounting.ActiveProcesses == 0 {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(io::Error::new(io::ErrorKind::TimedOut,
+                    "Strata's owned process tree is still stopping. Wait, then retry Stop before loading another model."));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     /// Start `command` inside a new job before it runs a single instruction. The process is
     /// created suspended, assigned to the job, and only then resumed, so nothing it starts can
     /// be created outside the job. This sets the command's creation flags to a hidden, suspended
@@ -1095,6 +1133,17 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn dropping_the_job_stops_processes_the_server_started() {
+        check_owned_tree_stop(false).await;
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn explicit_stop_waits_for_the_whole_owned_tree_before_returning() {
+        check_owned_tree_stop(true).await;
+    }
+
+    #[cfg(windows)]
+    async fn check_owned_tree_stop(explicit_stop: bool) {
         use tokio::io::AsyncBufReadExt;
         use windows_sys::Win32::System::JobObjects::IsProcessInJob;
         let mut command = tokio::process::Command::new("powershell.exe");
@@ -1128,6 +1177,15 @@ mod tests {
                 .unwrap();
         assert!(process_exists(grandchild));
 
+        if explicit_stop {
+            job.terminate_and_wait(std::time::Duration::from_secs(10))
+                .await
+                .unwrap();
+            assert!(
+                !process_exists(grandchild),
+                "Stop returned before the grandchild exited"
+            );
+        }
         drop(job);
 
         let mut stopped = false;

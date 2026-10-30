@@ -27,6 +27,8 @@ mod media_composition;
 pub use media_composition::*;
 mod production;
 pub use production::*;
+mod task_memory;
+pub use task_memory::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]

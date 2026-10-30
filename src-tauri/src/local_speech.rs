@@ -412,9 +412,9 @@ impl LocalSpeech {
             request,
             "generating",
             if attempt == 0 {
-                "ComfyUI is generating this passage with the selected local voice model."
+                "Generating this passage with your selected local voice."
             } else {
-                "The voice drifted from the text; ComfyUI is generating another take of this passage."
+                "The voice drifted from the text; generating another take of this passage."
             },
         );
         let prefix = format!("kestrel_speech/{}-{attempt}", cache_key(request, voice));
@@ -574,13 +574,13 @@ impl LocalSpeech {
             // timings). The take still plays, unchecked, and is not checked again every time.
             Err(error) => {
                 record_unfinished_check(&target, &error.to_string())?;
-                return Ok(first);
+                return Ok(with_narration_check(first, &target));
             }
         };
         let first_check = check_narration(&spoken, &aligned.words);
         if first_check.passed {
             record_narration_check(&target, &first_check, 1)?;
-            return Ok(aligned);
+            return Ok(with_narration_check(aligned, &target));
         }
 
         let retake_path = target.with_extension("retake.opus");
@@ -637,7 +637,7 @@ impl LocalSpeech {
         let _ = fs::remove_file(&retake_receipt);
         let (clip, check) = chosen.unwrap_or((aligned, first_check));
         record_narration_check(&target, &check, 2)?;
-        Ok(clip)
+        Ok(with_narration_check(clip, &target))
     }
 
     /// A generated passage for a narration export, and where to stop reading it so speech the
@@ -1037,7 +1037,7 @@ impl LocalSpeech {
             app,
             &request,
             "aligning",
-            "Whisper is aligning words to the unchanged local voice recording.",
+            "Matching word timings to the unchanged voice recording.",
         );
         let input_directory = Path::new(comfy_root).join("input/kestrel_speech");
         fs::create_dir_all(&input_directory)?;
@@ -1520,6 +1520,7 @@ fn validate_synthesis_request(
             "passage text must contain 1-{MAX_TEXT_BYTES} UTF-8 bytes"
         )));
     }
+    validate_synthesis_length(&spoken_text(text), &voice.performance)?;
     if !discover_chatterbox_models(root)
         .iter()
         .any(|model| model.id == request.model_id)
@@ -1816,6 +1817,17 @@ fn heard_too_little(heard: &[SpeechTiming], spoken: &str) -> bool {
 fn narration_checked(target: &Path) -> bool {
     read_receipt_recoverable(&sidecar_path(target))
         .is_some_and(|receipt| receipt.get("narrationCheck").is_some())
+}
+
+fn narration_check(target: &Path) -> Option<kestrel_app_core::speech::SpeechNarrationCheck> {
+    read_receipt_recoverable(&sidecar_path(target))
+        .and_then(|receipt| receipt.get("narrationCheck").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn with_narration_check(mut clip: SpeechClip, target: &Path) -> SpeechClip {
+    clip.narration_check = narration_check(target);
+    clip
 }
 
 fn record_narration_check(
@@ -2186,15 +2198,25 @@ fn chatterbox_graph(
 /// slow passages up to 14. The limit leaves room for that plus three seconds, and stops a
 /// looping generation before it runs on for a minute.
 fn speech_token_budget(speech_text: &str, performance: &str) -> u32 {
+    requested_speech_tokens(speech_text, performance).clamp(128, 1_600)
+}
+
+fn requested_speech_tokens(speech_text: &str, performance: &str) -> u32 {
     let per_word = match performance {
         "expressive" | "dramatic" => 17,
         _ => 15,
     };
     let words = speech_text.split_whitespace().count() as u32;
-    words
-        .saturating_mul(per_word)
-        .saturating_add(75)
-        .clamp(128, 1_600)
+    words.saturating_mul(per_word).saturating_add(75)
+}
+
+fn validate_synthesis_length(spoken: &str, performance: &str) -> Result<(), SpeechError> {
+    if requested_speech_tokens(spoken, performance) > 1_600 || spoken.chars().count() > 640 {
+        return Err(SpeechError::Invalid(
+            "This passage is too long for one local voice take. Split narration at sentence boundaries into passages of about 320 characters, synthesize each with a distinct passageId, inspect each narrationCheck, then join the clips with export_narration or export_media_composition. No audio was generated for this oversized request.".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn performance_parameters(performance: &str) -> (f64, f64, f64, f64) {
@@ -2674,6 +2696,7 @@ fn clip_receipt(
         cache_hit,
         segments,
         words,
+        narration_check: narration_check(target),
     };
     let created_at = existing_receipt
         .as_ref()
@@ -2724,6 +2747,7 @@ fn alignment_clip(
         cache_hit,
         segments,
         words,
+        narration_check: None,
     }
 }
 
@@ -3206,6 +3230,44 @@ fn is_music_section_heading(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_voice_input_is_rejected_before_a_truncated_take_can_be_generated() {
+        assert!(validate_synthesis_length(
+            "The Moon reflects sunlight. Its shape stays round.",
+            "natural"
+        )
+        .is_ok());
+        assert!(validate_synthesis_length(&"word ".repeat(500), "natural")
+            .unwrap_err()
+            .to_string()
+            .contains("Split narration"));
+        assert!(validate_synthesis_length(&"月".repeat(641), "natural").is_err());
+    }
+
+    #[test]
+    fn failed_narration_check_survives_return_and_cached_playback() {
+        let directory = tempfile::tempdir().unwrap();
+        let audio = directory.path().join("clip.opus");
+        fs::write(&audio, "saved audio").unwrap();
+        fs::write(sidecar_path(&audio), "{}").unwrap();
+        let check = check_narration("The moon reflects sunlight", &[]);
+        record_narration_check(&audio, &check, 2).unwrap();
+        let clip = clip_receipt(
+            directory.path(),
+            &request("The moon reflects sunlight"),
+            &default_conditioning(),
+            &audio,
+            true,
+        )
+        .unwrap();
+        assert!(!clip.narration_check.as_ref().unwrap().passed);
+        assert_eq!(clip.narration_check.as_ref().unwrap().attempts, 2);
+        assert_eq!(clip.narration_check.as_ref().unwrap().matched, Some(0.0));
+        let checked = with_narration_check(clip, &audio);
+        assert!(!checked.narration_check.unwrap().passed);
+        assert!(narration_checked(&audio));
+    }
 
     fn write_test_wav(path: &Path, block_align: u16, samples: &[u8]) {
         let data_length = u32::try_from(samples.len()).unwrap();

@@ -189,6 +189,13 @@
 .task-run-view > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .task-run-view > header h2 { font-size: var(--text-xl); }
 .task-pages { min-height: 0; }
+.task-view-tabs { display: flex; flex-wrap: wrap; gap: 4px; flex: 0 0 auto; }
+.task-view-tabs button { padding: 3px 7px; border: var(--stroke-soft); border-radius: var(--radius-chip); background: var(--paper-raised); color: var(--ink-2); font-size: var(--text-sm); }
+.task-view-tabs button[aria-pressed="true"] { color: var(--act-ink); border-color: var(--act-ink); background: var(--act-wash); }
+.task-memory-panel { min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; }
+.task-memory-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-xs); }
+.task-review { display: grid; gap: 5px; }
+.task-review textarea { min-height: 64px; resize: none; }
 .task-timeline { display: block; }
 /* Long results continue on the next page instead of scrolling inside the event. */
 .task-event { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; padding: 7px 0; }
@@ -207,7 +214,8 @@
 .task-event pre { margin: 5px 0 0; color: var(--ink-2); font-size: var(--text-xs); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .artifact-button { margin-top: 6px; display: inline-flex; align-items: center; gap: 5px; border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper-raised); }
 .artifact-button svg { width: 14px; }
-.task-question { display: grid; gap: 7px; padding: 10px 12px; border: 1px solid var(--wait); border-radius: var(--radius-card); background: var(--wait-wash); }
+.task-question { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 7px; padding: 10px 12px; border: 1px solid var(--wait); border-radius: var(--radius-card); background: var(--wait-wash); }
+.task-question select { width: 100%; min-width: 0; }
 .task-question h3 { font-family: var(--font-read); font-size: var(--text-md); }
 .question-options { display: flex; flex-wrap: wrap; gap: 6px; }
 .question-options button { padding: 4px 10px; display: flex; flex-direction: column; border: var(--stroke-soft); border-radius: var(--radius-sketch); background: var(--paper-raised); text-align: left; }

@@ -74,6 +74,8 @@ fn validate_plan(plan: &ProducerWorkflowPlan) -> Result<(), String> {
                 "start_computer_task"
                     | "start_producer_task"
                     | "resume_computer_task"
+                    | "send_producer_message"
+                    | "acknowledge_task_action"
                     | "stop_computer_task"
                     | "start_chat_stream"
                     | "start_local_model"

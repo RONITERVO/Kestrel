@@ -124,6 +124,13 @@ impl AppControl {
                     title = format!("Rendering video scene {}", index.saturating_add(1));
                 }
             }
+            if event == "local-speech-progress" {
+                title = match title.as_str() {
+                    "generating" => "Generating narration".into(),
+                    "aligning" => "Timing the narration".into(),
+                    _ => title,
+                };
+            }
             let mut detail: String = value
                 .get("detail")
                 .and_then(Value::as_str)
@@ -340,7 +347,13 @@ pub fn catalog(filter: Option<&str>) -> Vec<String> {
         .collect()
 }
 pub fn describe(name: &str) -> Result<AppActionDescription, String> {
-    let (access, guidance) = policy(name)?;
+    let (access, mut guidance) = policy(name)?;
+    if name == "apply_image_composition" {
+        // The action accepts a string containing another format. Describe that format from
+        // the same literal schema used by native drafting; editor state is a different type.
+        guidance.push_str(" The text argument contains JSON matching this schema, not ImageProject editor fields. Preserve the listed key order; bbox is [top,left,bottom,right] in 0–1000 coordinates. Schema: ");
+        guidance.push_str(crate::studio::IMAGE_COMPOSITION_SCHEMA.text);
+    }
     let (arguments, result_type, types) = describe_app_command(name)?;
     Ok(AppActionDescription {
         command: name.into(),

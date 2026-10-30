@@ -136,7 +136,10 @@ struct AppState {
 async fn release_all_comfy_memory(state: &AppState) {
     tokio::join!(
         state.studio.release_comfy_memory(),
-        state.music.release_comfy_memory()
+        state.music.release_comfy_memory(),
+        // Whisper is cached outside ComfyUI's ordinary model manager. /free alone leaves it
+        // resident when narration hands the machine back to the language model.
+        state.speech.release_model_memory()
     );
 }
 
@@ -3526,47 +3529,108 @@ fn get_computer_task(id: String, state: State<'_, AppState>) -> Result<ComputerT
 }
 
 #[tauri::command]
+fn get_task_memory(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::TaskMemorySnapshot, String> {
+    state.workspace.task_memory(&id)
+}
+
+#[tauri::command]
+fn get_task_history(
+    id: String,
+    query: kestrel_app_core::TaskHistoryQuery,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::TaskHistoryPage, String> {
+    state.workspace.task_history(&id, query)
+}
+
+#[tauri::command]
+fn read_task_record(
+    id: String,
+    sequence: u32,
+    offset: u32,
+    limit: u32,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::TaskRecordPage, String> {
+    state
+        .workspace
+        .read_task_record(&id, sequence, offset, limit)
+}
+
+/// Human conversation input. A running task receives it at its next safe boundary; an idle task
+/// resumes only because the human explicitly sent this message. The local agent cannot call this.
+#[tauri::command]
+async fn send_producer_message(
+    request: ResumeComputerTaskRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ProducerTaskStatus, String> {
+    if request.answer.trim().is_empty() || request.answer.len() > 65_536 {
+        return Err("Write a message of up to 64 KiB.".into());
+    }
+    {
+        let jobs = state
+            .interactive_jobs
+            .lock()
+            .map_err(|_| "interactive job registry is unavailable")?;
+        if jobs.contains_key(&request.run_id) {
+            let event = models::ComputerTaskEvent {
+                run_id: request.run_id,
+                step: 0,
+                kind: "user_input".into(),
+                title: "You".into(),
+                detail: request.answer,
+                data: None,
+                at: chrono::Utc::now().to_rfc3339(),
+            };
+            let run = state.workspace.add_task_event(event.clone())?;
+            let _ = crate::ipc_events::emit::<kestrel_app_core::events::ComputerTask>(&app, &event);
+            return Ok(agent::progress::snapshot(&run, None));
+        }
+    }
+    let run = resume_computer_task(request, app, state).await?;
+    Ok(agent::progress::snapshot(&run, None))
+}
+
+/// Explicit human review of a crash-uncertain action. Does not assert that the action succeeded,
+/// grant access, or resume execution. The local task and saved workflows cannot call this.
+#[tauri::command]
+fn acknowledge_task_action(
+    id: String,
+    sequence: u32,
+    review_note: String,
+    state: State<'_, AppState>,
+) -> Result<ComputerTaskRun, String> {
+    if review_note.trim().is_empty() || review_note.len() > 4000 {
+        return Err(
+            "Describe what you checked in up to 4,000 bytes before recording the review.".into(),
+        );
+    }
+    let jobs = state
+        .interactive_jobs
+        .lock()
+        .map_err(|_| "interactive job registry is unavailable")?;
+    if jobs.contains_key(&id) {
+        return Err("Stop the conversation or wait for its question before reviewing the interrupted action.".into());
+    }
+    state.workspace.settle_task_action(&id,sequence,"humanReview",serde_json::json!({"note":review_note,"outcome":"reviewedByProducer","successNotAssumed":true}))?;
+    state.workspace.get_task(&id)
+}
+
+#[tauri::command]
 fn get_producer_task_status(
     id: String,
     state: State<'_, AppState>,
 ) -> Result<kestrel_app_core::ProducerTaskStatus, String> {
     let task = state.workspace.get_task(&id)?;
-    let last = task.events.last();
-    let mut status = kestrel_app_core::ProducerTaskStatus {
-        id: task.id,
-        status: task.status.clone(),
-        step: last.map_or(0, |event| event.step),
-        title: last.map_or_else(String::new, |event| event.title.clone()),
-        detail: last.map_or_else(String::new, |event| {
-            event.detail.chars().take(1800).collect()
-        }),
-        question: if task.status == "waiting" {
-            task.events
-                .iter()
-                .rev()
-                .find(|event| event.kind == "question")
-                .and_then(|event| event.data.clone())
-        } else {
-            None
-        },
-        artifact_paths: task.artifacts.into_iter().rev().take(24).collect(),
-        event_count: task.events.len(),
-        updated_at: task.updated_at,
-    };
-    if task.status == "running" && last.is_some_and(|event| event.kind == "tool_start") {
-        if let Some((title, detail, at)) = state
-            .control
-            .task_progress
-            .lock()
-            .map_err(|e| e.to_string())?
-            .clone()
-        {
-            status.title = title;
-            status.detail = detail;
-            status.updated_at = at;
-        }
-    }
-    Ok(status)
+    let progress = state
+        .control
+        .task_progress
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    Ok(agent::progress::snapshot(&task, progress))
 }
 
 #[tauri::command]
@@ -3710,10 +3774,11 @@ async fn resume_computer_task(
     let run = state.workspace.get_task(&request.run_id)?;
     if !matches!(
         run.status.as_str(),
-        "waiting" | "cancelled" | "interrupted" | "failed"
+        "waiting" | "cancelled" | "interrupted" | "failed" | "completed" | "paused"
     ) {
         return Err(
-            "Only a waiting, stopped, interrupted, or failed task can be continued.".into(),
+            "This task is still active. Send a message to steer it, or stop it before continuing."
+                .into(),
         );
     }
     let settings = state
@@ -3736,14 +3801,35 @@ async fn resume_computer_task(
         data: None,
         at: chrono::Utc::now().to_rfc3339(),
     };
-    let updated = match state.workspace.add_task_event(input_event.clone()) {
-        Ok(updated) => updated,
+    match state.workspace.add_task_event(input_event.clone()) {
+        Ok(_) => {}
         Err(error) => {
             state.work_active.store(false, Ordering::Release);
             return Err(error);
         }
-    };
+    }
     let _ = crate::ipc_events::emit::<kestrel_app_core::events::ComputerTask>(&app, &input_event);
+    // Persist acceptance before spawning. A crash here must leave an interrupted continuation,
+    // not a task still labelled completed/waiting after acknowledging the new human message.
+    let queued = models::ComputerTaskEvent {
+        run_id: run.id.clone(),
+        step: 0,
+        kind: "queued".into(),
+        title: "Message saved".into(),
+        detail: "Continuing from your saved message.".into(),
+        data: None,
+        at: chrono::Utc::now().to_rfc3339(),
+    };
+    let updated = match state.workspace.add_task_event(queued.clone()) {
+        Ok(updated) => updated,
+        Err(error) => {
+            state.work_active.store(false, Ordering::Release);
+            return Err(format!(
+                "Your message was saved, but continuation could not be queued: {error}"
+            ));
+        }
+    };
+    let _ = crate::ipc_events::emit::<kestrel_app_core::events::ComputerTask>(&app, &queued);
     let task_request = ComputerTaskRequest {
         model_id: run.model_id.clone(),
         objective: run.objective.clone(),
@@ -3753,7 +3839,7 @@ async fn resume_computer_task(
         attachment_ids: run.attachments.iter().map(|item| item.id.clone()).collect(),
         thinking_level: None,
     };
-    let continuation = task_continuation(&run, answer);
+    let continuation = "Continue this conversation from its durable task context. Re-inspect current files/projects/jobs before further changes. The latest human message is saved as user_input; completed work and earlier direction remain retrievable through task_history and task_read.".to_string();
     let cancel = CancellationToken::new();
     match state.interactive_jobs.lock() {
         Ok(mut jobs) => {
@@ -3792,49 +3878,48 @@ fn spawn_computer_task(
         let _work_guard = WorkGuard(&managed.work_active);
         let _task_guard = WorkGuard(&managed.control.task_active);
         let models = managed.models.read().await.clone();
-        let result = agent::run(
-            Some(app.clone()),
-            managed.runtime.clone(),
-            managed.workspace.clone(),
-            managed.attachments.clone(),
-            run_id.clone(),
-            request,
-            models,
-            settings,
-            cancel,
-            continuation,
-        )
-        .await;
-        if let Err(error) = result {
-            agent::emit_error(Some(&app), &managed.workspace, &run_id, error);
-        }
-        if let Ok(mut jobs) = managed.interactive_jobs.lock() {
-            jobs.remove(&run_id);
-        };
-    });
-}
-
-fn task_continuation(run: &ComputerTaskRun, answer: &str) -> String {
-    let mut transcript = String::new();
-    for event in run
-        .events
-        .iter()
-        .filter(|event| event.kind != "reasoning")
-        .rev()
-        .take(30)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-    {
-        transcript.push_str(&format!("- {}: {}\n", event.title, event.detail));
-        if transcript.len() >= 24_000 {
-            transcript = transcript.chars().take(24_000).collect();
+        let mut continuation = continuation;
+        loop {
+            let result = agent::run(
+                Some(app.clone()),
+                managed.runtime.clone(),
+                managed.workspace.clone(),
+                managed.attachments.clone(),
+                run_id.clone(),
+                request.clone(),
+                models.clone(),
+                settings.clone(),
+                cancel.clone(),
+                continuation.clone(),
+            )
+            .await;
+            if let Err(error) = result {
+                agent::emit_error(Some(&app), &managed.workspace, &run_id, error);
+            }
+            // A human can send while the final answer is being published. Serialize the shutdown
+            // check with message delivery so that accepted direction is never stranded silently.
+            if let Ok(mut jobs) = managed.interactive_jobs.lock() {
+                let pending = managed.workspace.get_task(&run_id).is_ok_and(|run| {
+                    let direction = run.events.iter().rposition(|e| e.kind == "user_input");
+                    let terminal = run.events.iter().rposition(|e| {
+                        matches!(
+                            e.kind.as_str(),
+                            "done" | "question" | "error" | "cancelled" | "limit"
+                        )
+                    });
+                    direction.is_some_and(|direction| {
+                        terminal.is_some_and(|terminal| direction > terminal)
+                    })
+                });
+                if pending && !cancel.is_cancelled() {
+                    continuation = Some("A new human message arrived after the last response. Continue from durable task context and the latest user_input.".into());
+                    continue;
+                }
+                jobs.remove(&run_id);
+            }
             break;
         }
-    }
-    format!(
-        "Continue the same durable task. Re-inspect current state before further changes because the prior run may have stopped between actions.\n\nRecent verified transcript:\n{transcript}\nUser's new direction:\n{answer}"
-    )
+    });
 }
 
 #[tauri::command]
@@ -4468,6 +4553,11 @@ pub fn run() {
             cancel_chat_stream,
             list_computer_tasks,
             get_computer_task,
+            get_task_memory,
+            get_task_history,
+            read_task_record,
+            send_producer_message,
+            acknowledge_task_action,
             get_producer_task_status,
             get_producer_environment,
             start_computer_task,

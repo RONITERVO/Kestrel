@@ -1,3 +1,4 @@
+import { TaskMemoryPanel } from "./TaskMemoryPanel";
 import {
   AudioLines,
   Bot,
@@ -60,7 +61,7 @@ import {
   openTaskArtifact,
   pickContextFiles,
   pickLocalModelFolder,
-  resumeComputerTask,
+  sendProducerMessage,
   saveChatReplyEdit,
   saveControlSettings,
   scanLocalModels,
@@ -316,38 +317,53 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   }
 
   function handleTaskEvent(event: ComputerTaskEvent) {
-    if (taskRunRef.current && event.runId !== taskRunRef.current) return;
+    const terminal = ["done", "cancelled", "error", "limit", "question", "interrupted"].includes(event.kind);
+    // Another native client can continue a saved conversation while this desktop shows
+    // something else. Refresh its summary without buffering an unselected transcript.
+    if (terminal || event.kind === "start") void refreshHistory().catch(() => undefined);
     if (taskStartingRef.current) {
       earlyTaskEventsRef.current.push(event);
       return;
     }
-    if (latestTaskRef.current?.id !== event.runId) {
-      earlyTaskEventsRef.current.push(event);
-      return;
-    }
-    setTask((current) => {
-      if (current?.id !== event.runId) return current;
-      return {
-        ...current,
-        status: terminalTaskStatus(event.kind, current.status),
-        updatedAt: event.at,
-        events: [...current.events, event],
-        artifacts:
-          event.kind === "artifact" &&
-          event.data?.path &&
-          !current.artifacts.includes(event.data.path)
-            ? [...current.artifacts, event.data.path]
-            : current.artifacts,
-      };
-    });
-    if (
-      ["done", "cancelled", "error", "limit", "question"].includes(event.kind)
-    ) {
+    if (latestTaskRef.current?.id !== event.runId) return;
+    const current = latestTaskRef.current;
+    const status = terminalTaskStatus(event.kind, current.status);
+    taskRunRef.current = ["running", "starting"].includes(status) ? event.runId : null;
+    const updated = {
+      ...current,
+      status,
+      updatedAt: event.at,
+      events: [...current.events, event],
+      artifacts:
+        event.kind === "artifact" &&
+        event.data?.path &&
+        !current.artifacts.includes(event.data.path)
+          ? [...current.artifacts, event.data.path]
+          : current.artifacts,
+    };
+    latestTaskRef.current = updated;
+    setTask(updated);
+    if (terminal) {
       taskRunRef.current = null;
       setStoppingTask(false);
       setWorking(null);
-      void refreshHistory().catch(() => undefined);
     }
+  }
+
+  function showTaskSnapshot(run: ComputerTaskRun) {
+    const early = earlyTaskEventsRef.current.filter((event) => event.runId === run.id);
+    earlyTaskEventsRef.current = [];
+    const additional = early.filter((event) => !run.events.some((known) =>
+      known.at === event.at && known.kind === event.kind && known.title === event.title));
+    const status = additional.reduce((current, event) => terminalTaskStatus(event.kind, current), run.status);
+    const artifacts = [...run.artifacts];
+    for (const event of additional) {
+      if (event.kind === "artifact" && typeof event.data?.path === "string" && !artifacts.includes(event.data.path)) artifacts.push(event.data.path);
+    }
+    const initialized = { ...run, status, events: [...run.events, ...additional], artifacts };
+    taskRunRef.current = ["running", "starting"].includes(status) ? run.id : null;
+    latestTaskRef.current = initialized;
+    setTask(initialized);
   }
 
   const act = async (
@@ -377,16 +393,17 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   };
 
   const openTask = async (summary: ComputerTaskSummary) => {
-    if (taskRunRef.current) return;
+    if (taskRunRef.current || taskStartingRef.current) return;
+    taskStartingRef.current = true;
     try {
       const next = await getComputerTask(summary.id);
-      setTask(next);
-      taskRunRef.current = ["running", "starting"].includes(next.status)
-        ? next.id
-        : null;
+      showTaskSnapshot(next);
       setKind("task");
     } catch (cause) {
       onError(String(cause));
+    } finally {
+      taskStartingRef.current = false;
+      earlyTaskEventsRef.current = [];
     }
   };
 
@@ -400,6 +417,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   };
   const newTask = () => {
     if (active) return;
+    latestTaskRef.current = null;
     setTask(null);
     setObjective("");
     setTaskAttachments([]);
@@ -641,29 +659,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
         maxOutputTokens: settings.agentMaxOutputTokens,
         thinkingLevel: taskThinkingLevel === "default" ? undefined : taskThinkingLevel,
       });
-      const early = earlyTaskEventsRef.current.filter(
-        (event) => event.runId === run.id,
-      );
-      earlyTaskEventsRef.current = earlyTaskEventsRef.current.filter(
-        (event) => event.runId !== run.id,
-      );
-      const terminal = early
-        .filter((event) =>
-          ["done", "cancelled", "error", "limit", "question"].includes(
-            event.kind,
-          ),
-        )
-        .at(-1);
-      taskRunRef.current = terminal ? null : run.id;
-      const initialized = {
-        ...run,
-        status: terminal
-          ? terminalTaskStatus(terminal.kind, run.status)
-          : run.status,
-        events: [...run.events, ...early],
-      };
-      latestTaskRef.current = initialized;
-      setTask(initialized);
+      showTaskSnapshot(run);
       taskStartingRef.current = false;
       setWorking(null);
       setObjective("");
@@ -671,6 +667,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       void refreshHistory();
     } catch (cause) {
       taskStartingRef.current = false;
+      earlyTaskEventsRef.current = [];
       setWorking(null);
       onError(String(cause));
     }
@@ -700,47 +697,21 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     setWorking("task");
     taskStartingRef.current = true;
     try {
-      const next = await resumeComputerTask({
+      const accepted = await sendProducerMessage({
         runId: task.id,
         answer: taskAnswer.trim(),
       });
-      const early = earlyTaskEventsRef.current.filter(
-        (event) => event.runId === next.id,
-      );
-      earlyTaskEventsRef.current = earlyTaskEventsRef.current.filter(
-        (event) => event.runId !== next.id,
-      );
-      const additional = early.filter(
-        (event) =>
-          !next.events.some(
-            (known) =>
-              known.at === event.at &&
-              known.kind === event.kind &&
-              known.title === event.title,
-          ),
-      );
-      const terminal = additional
-        .filter((event) =>
-          ["done", "cancelled", "error", "limit", "question"].includes(
-            event.kind,
-          ),
-        )
-        .at(-1);
-      taskRunRef.current = terminal ? null : next.id;
-      const initialized = {
-        ...next,
-        status: terminal
-          ? terminalTaskStatus(terminal.kind, next.status)
-          : next.status,
-        events: [...next.events, ...additional],
-      };
-      latestTaskRef.current = initialized;
-      setTask(initialized);
+      setTaskAnswer("");
+      // Message acknowledgements stay compact for every client. This desktop view explicitly
+      // loads its transcript; agents and future chat clients can use paged native history.
+      const next = await getComputerTask(accepted.id);
+      showTaskSnapshot(next);
       taskStartingRef.current = false;
       setTaskAnswer("");
       void refreshHistory();
     } catch (cause) {
       taskStartingRef.current = false;
+      earlyTaskEventsRef.current = [];
       onError(String(cause));
     } finally {
       setWorking(null);
@@ -1491,7 +1462,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
             attachments={taskAttachments}
             answer={taskAnswer}
             access={access}
-            ready={control.runtime.phase === "ready"}
+            ready={task ? control.models.some((model) => model.id === task.modelId) : Boolean(selected)}
             running={!!taskRunRef.current}
             stopping={stoppingTask}
             resuming={working === "task"}
@@ -1574,6 +1545,8 @@ function ComputerTasks({
   onError: (message: string) => void;
 }) {
   const [dictating, setDictating] = useState(false);
+  const [taskView, setTaskView] = useState<"conversation" | "memory" | "activity">("conversation");
+  useEffect(() => setTaskView("conversation"), [run?.id]);
   const [progress, setProgress] = useState<ProducerTaskStatus | null>(null);
   useEffect(() => {
     setProgress(null);
@@ -1593,8 +1566,8 @@ function ComputerTasks({
   }, [run?.id, running]);
   const resumable =
     !!run &&
-    ["waiting", "cancelled", "interrupted", "failed"].includes(run.status);
-  const question = run
+    ["waiting", "cancelled", "interrupted", "failed", "paused", "completed", "running", "starting"].includes(run.status);
+  const question = run?.status === "waiting"
     ? [...run.events].reverse().find((event) => event.kind === "question")
     : undefined;
   return (
@@ -1604,13 +1577,12 @@ function ComputerTasks({
           <div className="task-orbit">
             <MonitorCog />
           </div>
-          <span className="eyebrow">ACTUAL COMPUTER WORK</span>
-          <h2>Give the local model a bounded objective.</h2>
+          <span className="eyebrow">LOCAL PRODUCER</span>
+          <h2>What would you like to make or do?</h2>
           <p>
-            Every decision, tool call, result, error, and artifact stays visible
-            and is saved locally. Attachments become durable task context.
-            Decision-critical questions pause safely for your answer. Workspace
-            mode is the everyday default.
+            Describe what you want in your own words. Kestrel can use your local tools,
+            ask questions and keep the work saved. You can change direction or return later.
+            It works within your approved folders.
           </p>
           <div className="speech-input-wrap">
             <textarea
@@ -1682,10 +1654,10 @@ function ComputerTasks({
           </div>
           <button
             className="primary-button task-run"
-            disabled={dictating || !ready || (!objective.trim() && attachments.length === 0)}
+            disabled={dictating || resuming || !ready || (!objective.trim() && attachments.length === 0)}
             onClick={onRun}
           >
-            <Play /> Start visible task
+            <Play /> Send request
           </button>
         </section>
       ) : (
@@ -1695,7 +1667,6 @@ function ComputerTasks({
               <span className="eyebrow">
                 {run.access.toUpperCase()} ACCESS · {run.status.toUpperCase()}
               </span>
-              <h2>{run.objective}</h2>
               {(run.attachments?.length ?? 0) > 0 && (
                 <AttachmentShelf
                   attachments={run.attachments!}
@@ -1718,54 +1689,49 @@ function ComputerTasks({
             <strong>{progress.title}</strong>
             <p>{progress.detail}</p>
           </div>}
-          <MessagePages className="task-pages" label="Task steps" unit="steps" resetKey={run.id} live>
-            {run.events.map((event, index) => (
-              <TaskEvent key={`${event.at}-${index}`} event={event} index={index} runId={run.id} onOpen={onOpen} />
-            ))}
-          </MessagePages>
+          <div className="task-view-tabs" role="group" aria-label="Conversation views">
+            <button type="button" aria-pressed={taskView === "conversation"} onClick={() => setTaskView("conversation")}>Conversation</button>
+            <button type="button" aria-pressed={taskView === "memory"} onClick={() => setTaskView("memory")}>Working plan and memory</button>
+            <button type="button" aria-pressed={taskView === "activity"} onClick={() => setTaskView("activity")}>Activity and technical details</button>
+          </div>
+          {taskView === "conversation" && <MessagePages className="task-pages" label="Producer conversation" resetKey={run.id} live>
+            <article className="task-event"><strong>You</strong><div><CardPages label="Original request"><MarkdownContent value={run.objective} /></CardPages></div></article>
+            {run.events.map((event, index) => ({ event, index }))
+              .filter(({ event }) => ["user_input", "message", "question", "done", "error", "limit", "cancelled", "interrupted"].includes(event.kind))
+              .map(({ event, index }) => <TaskEvent key={`${event.at}-${index}`} event={event} index={index} runId={run.id} onOpen={onOpen} />)}
+          </MessagePages>}
+          {taskView === "memory" && <TaskMemoryPanel key={run.id} taskId={run.id} events={run.events} active={run.status === "starting" || run.status === "running"} onError={onError} />}
+          {taskView === "activity" && <MessagePages className="task-pages" label="Task activity" unit="steps" resetKey={run.id} live>
+              {run.events.map((event, index) => <TaskEvent key={`${event.at}-${index}`} event={event} index={index} runId={run.id} onOpen={onOpen} />)}
+            </MessagePages>}
           {resumable && (
             <section className="task-question">
               <span className="eyebrow">
                 {run.status === "waiting"
                   ? "YOUR DECISION"
-                  : "CONTINUE DURABLE TASK"}
+                  : running ? "MESSAGE KESTREL" : "CONTINUE THE CONVERSATION"}
               </span>
-              <h3>
-                {question?.detail ?? "Add direction before the model resumes."}
-              </h3>
               {question?.data?.options && (
-                <div className="question-options">
+                <select aria-label="Suggested answers" value="" onChange={(event) => { if (event.target.value) onAnswer(event.target.value); }}>
+                  <option value="">Choose a suggested answer, or write your own…</option>
                   {question.data.options.map((option, index) => (
-                    <button
-                      key={option}
-                      className={
-                        question.data?.recommendedIndex === index
-                          ? "recommended"
-                          : ""
-                      }
-                      onClick={() => onAnswer(option)}
-                    >
-                      {option}
-                      {question.data?.recommendedIndex === index && (
-                        <small>Recommended</small>
-                      )}
-                    </button>
+                    <option key={option} value={option}>{option}{question.data?.recommendedIndex === index ? " (Recommended)" : ""}</option>
                   ))}
-                </div>
+                </select>
               )}
               <div className="speech-input-wrap"><textarea
                 value={answer}
                 readOnly={dictating}
                 onChange={(event) => onAnswer(event.target.value)}
-                placeholder="Answer or add a precise continuation instruction…"
-              /><SpeechDictationButton sourceKind="task" sourceId={run.id} value={answer} onChange={onAnswer} onActiveChange={setDictating} disabled={running || resuming} label="Dictate answer" /></div>
+                aria-label="Message Kestrel"
+                placeholder="Write a message…"
+              /><SpeechDictationButton sourceKind="task" sourceId={run.id} value={answer} onChange={onAnswer} onActiveChange={setDictating} disabled={resuming} label="Dictate answer" /></div>
               <button
                 className="primary-button"
-                disabled={dictating || !ready || !answer.trim() || resuming}
+                disabled={dictating || (!ready && !running) || !answer.trim() || resuming}
                 onClick={onResume}
               >
-                {resuming ? <LoaderCircle className="spin" /> : <Play />} Resume
-                this task
+                {resuming ? <LoaderCircle className="spin" /> : <Send />} Send
               </button>
             </section>
           )}
@@ -1947,7 +1913,7 @@ function Message({
  * tool call keeps its page with the result that follows it.
  */
 function TaskEvent({ event, index, runId, onOpen }: { event: ComputerTaskEvent; index: number; runId: string; onOpen: (path: string) => void }) {
-  const answer = ["done", "question"].includes(event.kind);
+  const answer = ["done", "question", "message", "user_input"].includes(event.kind);
   return (
     <article className={`task-event ${event.kind}`} data-keep-with-next={event.kind === "tool_start" || undefined}>
       <div className="event-glyph">
@@ -1983,6 +1949,11 @@ function TaskEvent({ event, index, runId, onOpen }: { event: ComputerTaskEvent; 
             : ["reasoning", "thinking"].includes(event.kind)
               ? <TextParagraphs className="task-reasoning" text={event.detail} />
               : <pre>{event.detail}</pre>}
+          {event.kind === "question" && event.data?.options && <ol>
+            {event.data.options.map((option, optionIndex) => <li key={optionIndex}>
+              {option}{event.data?.recommendedIndex === optionIndex ? " (Recommended)" : ""}
+            </li>)}
+          </ol>}
         </CardPages>
         {answer && event.detail.trim() && (
           <SpeechPlaybackButton sourceKind="task" sourceId={runId} passageId={`${event.kind}-${index}`} text={event.detail} label="Listen" />
@@ -2231,10 +2202,13 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 export function terminalTaskStatus(kind: string, fallback: string) {
+  if (kind === "interrupted") return "interrupted";
   if (kind === "done") return "completed";
   if (kind === "cancelled") return "cancelled";
   if (kind === "question") return "waiting";
-  if (kind === "error" || kind === "limit") return "failed";
+  if (kind === "error") return "failed";
+  if (kind === "limit") return "paused";
+  if (["queued", "start", "thinking", "tool_start", "tool_result", "tool_error", "message", "artifact"].includes(kind)) return "running";
   return fallback === "starting" ? "running" : fallback;
 }
 function relativeTime(value: string) {

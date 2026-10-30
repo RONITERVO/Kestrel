@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 pub fn schemas() -> Vec<Value> {
     let schema = |name: &str, description: &str, parameters: Value| json!({"type":"function","function":{"name":name,"description":description,"parameters":parameters}});
     vec![
-        schema("app_actions", "Discover Kestrel native producer actions by name fragment, e.g. music, image, movie, draft, research. App projects are managed through these actions, never by editing internal files.", json!({"type":"object","properties":{"filter":{"type":"string"}}})),
+        schema("app_actions", "List native producer action names and access by name fragment, e.g. music, image, movie, draft, research. Use app_describe for a selected action's guidance and exact formats. App projects are managed through these actions, never by editing internal files.", json!({"type":"object","properties":{"filter":{"type":"string"}}})),
         schema("app_describe", "Read the exact Rust-owned argument types, access policy and guidance for an action before invoking it.", json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})),
         schema("app_call", "Perform one native producer action with typed arguments. Use a unique request_id per intentional action; retry unchanged with the same ID. You are the producer: write text yourself using save actions OR ask the app's local model via start_studio_prompt_draft and inspect get_app_job before saving. Generation acceptance is not completion. Never claim a render exists without inspecting its completed native take.", json!({"type":"object","properties":{"request_id":{"type":"string"},"command":{"type":"string"},"args":{"type":"object"}},"required":["request_id","command","args"]})),
     ]
@@ -19,6 +19,10 @@ pub fn artifact(arguments: &Value, receipt: &Value) -> Option<std::path::PathBuf
     let command = arguments.get("command")?.as_str()?;
     let result = receipt.get("result")?;
     let path = match command {
+        "run_research" | "get_report" => result.get("htmlPath")?.as_str()?,
+        "export_narration" | "export_music_lyrics" => {
+            result.get("files")?.as_array()?.first()?.as_str()?
+        }
         "export_production_bundle" => result.get("manifestPath")?.as_str()?,
         "export_media_composition" => result.get("mediaPath")?.as_str()?,
         "get_movie" => result.get("finalPath")?.as_str()?,
@@ -61,9 +65,9 @@ pub async fn execute(
         )
         .iter()
         .map(|name| {
-            let (access, guidance) =
+            let (access, _) =
                 app_control::policy(name).unwrap_or_else(|error| ("unavailable".into(), error));
-            json!({"command":name,"access":access,"guidance":guidance})
+            json!({"command":name,"access":access})
         })
         .collect::<Vec<_>>())),
         "app_describe" => {
@@ -76,6 +80,8 @@ pub async fn execute(
                 "start_computer_task"
                     | "start_producer_task"
                     | "resume_computer_task"
+                    | "send_producer_message"
+                    | "acknowledge_task_action"
                     | "stop_computer_task"
                     | "start_chat_stream"
                     | "start_local_model"
@@ -273,6 +279,28 @@ pub(crate) fn check_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inspected_research_and_audio_exports_are_visible_task_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("report.html");
+        let audio = dir.path().join("narration.m4a");
+        std::fs::write(&report, "local report").unwrap();
+        std::fs::write(&audio, "local audio").unwrap();
+        assert_eq!(
+            artifact(
+                &json!({"command":"run_research"}),
+                &json!({"result":{"htmlPath":report}})
+            ),
+            Some(report)
+        );
+        assert_eq!(
+            artifact(
+                &json!({"command":"export_narration"}),
+                &json!({"result":{"files":[audio]}})
+            ),
+            Some(audio)
+        );
+    }
     #[test]
     fn app_tools_cannot_use_paths_to_escape_workspace() {
         let temp = tempfile::tempdir().unwrap();
