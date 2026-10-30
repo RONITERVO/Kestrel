@@ -101,7 +101,7 @@
   ],
   "synthesize_local_speech": [
     "write",
-    "Generate speech with the installed TTS voice. Discover model/voice IDs through get_local_speech_snapshot. checkMistakes follows the saved human narration preference when omitted; Whisper checks use the same native path. Returned relativePath is an opaque speech cache reference. sourceKind must be research, chat, task, or copilot; use task for producer-authored narration. Use a selected, already-consented voice from get_local_speech_snapshot. Keep the same sourceId, passageId, text, and returned relativePath across synthesis/alignment/export."
+    "Generate one short speech passage with the installed TTS voice. Split long narration at sentence boundaries into about 320-character passages, each with a distinct passageId; do not put a whole guide into one take. Join successful clips with export_narration or export_media_composition. From get_local_speech_snapshot, modelId is the complete voices[].id (including its prefix and voice-pack suffix), while voiceProfileId is a consented voiceProfiles[].id. Do not shorten these IDs. checkMistakes follows the saved human preference when omitted; set true when verified narration is needed. narrationCheck reports passed, matched fraction or unfinished error when Whisper checked the take. A false or missing check is not verified speech: inspect/revise the passage or report the limitation. relativePath is an opaque cache reference. sourceKind must be research, chat, task, or copilot; use task for producer-authored narration. Keep sourceId, passageId, text, and relativePath consistent across synthesis/alignment/export."
   ],
   "export_narration": [
     "write",
@@ -547,6 +547,11 @@
     "read",
     "Read the current native state. This does not authorize generation or apply a proposal."
   ],
+  "get_task_memory": ["read", "Inspect durable working notes, original direction references and unsettled native actions. Notes are fallible, not authorization."],
+  "get_task_history": ["read", "Search and paginate saved task events. Use read_task_record for full original content."],
+  "read_task_record": ["read", "Read an exact saved task record in bounded pages. Sequence 0 contains the original objective."],
+  "send_producer_message": ["write", "Send human producer direction to a task conversation, including while it works or after completion. Stored before acknowledgement; current actions finish before the next safe boundary. Never grants new filesystem access."],
+  "acknowledge_task_action": ["write", "Explicit human/producer review of an interrupted action with an uncertain outcome. Supply a note explaining what was checked. Records review only, never success or permission, and never resumes execution. Unavailable to the task itself and saved workflows."],
   "get_computer_task": [
     "read",
     "Read the current native state. This does not authorize generation or apply a proposal."
@@ -597,7 +602,7 @@
   ],
   "start_producer_task": [
     "write",
-    "Delegate a plain-language production request to the selected LOCAL Kestrel model. Only objective is needed. Returns a durable Computer Task; poll get_producer_task_status (compact), inspect get_computer_task for the full transcript, answer with resume_computer_task, and stop with stop_computer_task. Workspace access and configured step budget apply. Ordinary chat stays tool-free."
+    "Delegate a plain-language production request to the selected LOCAL Kestrel model. Only objective is needed. Returns a durable Computer Task; poll get_producer_task_status (compact), inspect paged get_task_history/read_task_record, send replies or new direction with send_producer_message (compact acknowledgement), and stop with stop_computer_task. get_computer_task explicitly reads the full transcript. Workspace access and configured step budget apply. Ordinary chat stays tool-free."
   ],
   "get_producer_task_status": [
     "read",

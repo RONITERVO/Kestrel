@@ -118,6 +118,28 @@ pub struct SpeechClip {
     pub cache_hit: bool,
     pub segments: Vec<SpeechTiming>,
     pub words: Vec<SpeechTiming>,
+    /// A quality observation, not a guarantee. None means this audio has not been checked.
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub narration_check: Option<SpeechNarrationCheck>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechNarrationCheck {
+    pub passed: bool,
+    pub attempts: u32,
+    pub checked_at: String,
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched: Option<f64>,
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tail_words: Option<usize>,
+    #[ts(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unfinished: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]

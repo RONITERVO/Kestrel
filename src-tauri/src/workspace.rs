@@ -14,13 +14,21 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod task_journal;
+mod task_memory;
+pub(crate) use task_memory::task_result_preview;
+
 /// Largest edited copy of a reply; replies themselves are bounded by the model's output.
 const MAX_EDITED_REPLY_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct WorkspaceStore {
     root: PathBuf,
+    // OS releases the lock even after a crash. Clones share ownership; a second app must not
+    // recover an active writer's task or race its journal sequence allocation.
+    _ownership: Arc<fs::File>,
     write_lock: Arc<Mutex<()>>,
+    direction_changed: Arc<tokio::sync::Notify>,
 }
 
 struct ChatMessageDraft {
@@ -35,13 +43,25 @@ struct ChatMessageDraft {
 impl WorkspaceStore {
     pub fn new(library_root: &Path) -> Result<Self, String> {
         let root = library_root.join("workspace");
+        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        let ownership = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join("writer.lock"))
+            .map_err(|error| format!("Cannot open conversation ownership lock: {error}"))?;
+        fs2::FileExt::try_lock_exclusive(&ownership).map_err(|error| format!(
+            "This conversation library is already open in another Kestrel instance, or its ownership lock is unavailable ({error}). Close the other instance before opening {}. Saved tasks were not changed.",root.display()))?;
         fs::create_dir_all(root.join("chats")).map_err(|error| error.to_string())?;
         fs::create_dir_all(root.join("tasks")).map_err(|error| error.to_string())?;
         fs::create_dir_all(root.join("chat-index")).map_err(|error| error.to_string())?;
         fs::create_dir_all(root.join("task-index")).map_err(|error| error.to_string())?;
         let store = Self {
             root,
+            _ownership: Arc::new(ownership),
             write_lock: Arc::new(Mutex::new(())),
+            direction_changed: Arc::new(tokio::sync::Notify::new()),
         };
         store.ensure_indices()?;
         store.recover_interrupted_tasks()?;
@@ -279,7 +299,9 @@ impl WorkspaceStore {
     }
 
     pub fn get_task(&self, id: &str) -> Result<ComputerTaskRun, String> {
-        read_recoverable(&self.task_path(id)?)
+        let mut run: ComputerTaskRun = read_recoverable(&self.task_path(id)?)?;
+        self.replay_task_journal(&mut run)?;
+        Ok(run)
     }
 
     pub fn add_task_event(&self, event: ComputerTaskEvent) -> Result<ComputerTaskRun, String> {
@@ -287,31 +309,7 @@ impl WorkspaceStore {
             .write_lock
             .lock()
             .map_err(|_| "task store lock is unavailable".to_string())?;
-        let mut run: ComputerTaskRun = read_recoverable(&self.task_path(&event.run_id)?)?;
-        run.updated_at = event.at.clone();
-        match event.kind.as_str() {
-            "done" => run.status = "completed".into(),
-            "error" | "limit" => run.status = "failed".into(),
-            "cancelled" => run.status = "cancelled".into(),
-            "question" => run.status = "waiting".into(),
-            _ => run.status = "running".into(),
-        }
-        if event.kind == "artifact" {
-            if let Some(path) = event
-                .data
-                .as_ref()
-                .and_then(|data| data.get("path"))
-                .and_then(serde_json::Value::as_str)
-            {
-                if !run.artifacts.iter().any(|known| known == path) {
-                    run.artifacts.push(path.to_string());
-                }
-            }
-        }
-        run.events.push(event);
-        atomic_json(&self.task_path(&run.id)?, &run)?;
-        self.write_task_summary(&run)?;
-        Ok(run)
+        self.append_task_event_locked(event)
     }
 
     fn save_task(&self, run: &ComputerTaskRun) -> Result<(), String> {
@@ -387,10 +385,11 @@ impl WorkspaceStore {
             let Some(id) = path.file_stem().and_then(|value| value.to_str()) else {
                 continue;
             };
-            if uuid::Uuid::parse_str(id).is_ok() && !self.task_index_path(id)?.is_file() {
-                if let Ok(run) = read_recoverable::<ComputerTaskRun>(&path) {
-                    self.write_task_summary(&run)?;
-                }
+            if uuid::Uuid::parse_str(id).is_ok() {
+                // Task indexes are disposable. A crash may have committed a journal event
+                // without updating its index; always derive it from authoritative records.
+                let run = self.get_task(id)?;
+                self.write_task_summary(&run)?;
             }
         }
         Ok(())
@@ -399,13 +398,9 @@ impl WorkspaceStore {
     fn recover_interrupted_tasks(&self) -> Result<(), String> {
         for summary in read_json_directory::<ComputerTaskSummary>(&self.root.join("task-index"))? {
             if matches!(summary.status.as_str(), "starting" | "running") {
-                let Ok(mut run) = self.get_task(&summary.id) else {
-                    continue;
-                };
+                let run = self.get_task(&summary.id)?;
                 let now = chrono::Utc::now().to_rfc3339();
-                run.status = "interrupted".into();
-                run.updated_at = now.clone();
-                run.events.push(ComputerTaskEvent {
+                self.add_task_event(ComputerTaskEvent {
                     run_id: run.id.clone(),
                     step: 0,
                     kind: "interrupted".into(),
@@ -413,9 +408,7 @@ impl WorkspaceStore {
                     detail: "The previous process ended before this task recorded completion. No action was resumed automatically.".into(),
                     data: None,
                     at: now,
-                });
-                atomic_json(&self.task_path(&run.id)?, &run)?;
-                self.write_task_summary(&run)?;
+                })?;
             }
         }
         Ok(())

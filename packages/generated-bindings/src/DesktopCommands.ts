@@ -93,6 +93,10 @@ import type { SpeechTranscriptionRequest } from "./SpeechTranscriptionRequest.js
 import type { StartChatRequest } from "./StartChatRequest.js";
 import type { SummarizeMovieStudioConversationRequest } from "./SummarizeMovieStudioConversationRequest.js";
 import type { SystemSnapshot } from "./SystemSnapshot.js";
+import type { TaskHistoryPage } from "./TaskHistoryPage.js";
+import type { TaskHistoryQuery } from "./TaskHistoryQuery.js";
+import type { TaskMemorySnapshot } from "./TaskMemorySnapshot.js";
+import type { TaskRecordPage } from "./TaskRecordPage.js";
 import type { TranscribeMusicLyricsRequest } from "./TranscribeMusicLyricsRequest.js";
 import type { TranslateMusicLyricsRequest } from "./TranslateMusicLyricsRequest.js";
 import type { TranslateMusicLyricsResult } from "./TranslateMusicLyricsResult.js";
@@ -105,6 +109,7 @@ import type { JsonValue } from "./serde_json/JsonValue.js";
 
 export type DesktopCommands = {
   accept_movie_story_revision: { args: { request: AcceptMovieStoryRevisionRequest }; result: MovieProducerWorkspace };
+  acknowledge_task_action: { args: { id: string; sequence: number; reviewNote: string }; result: ComputerTaskRun };
   align_local_speech: { args: { request: SpeechAlignmentRequest }; result: SpeechClip };
   apply_image_composition: { args: { id: string; text: string }; result: ImageProject };
   apply_model_runtime: { args: { settings: ControlSettings }; result: SystemSnapshot };
@@ -173,6 +178,8 @@ export type DesktopCommands = {
   get_setup_snapshot: { args: Record<string, never>; result: SetupSnapshot };
   get_speech_preferences: { args: { legacy?: LegacySpeechPreferences | null }; result: SpeechPreferences };
   get_system_snapshot: { args: Record<string, never>; result: SystemSnapshot };
+  get_task_history: { args: { id: string; query: TaskHistoryQuery }; result: TaskHistoryPage };
+  get_task_memory: { args: { id: string }; result: TaskMemorySnapshot };
   get_voice_library: { args: Record<string, never>; result: VoiceLibrarySnapshot };
   import_context_paths: { args: { paths: Array<string> }; result: ContextAttachmentImport };
   import_image_take_as_movie_reference: { args: { imageProjectId: string; takeId: string }; result: MovieReferenceAsset };
@@ -207,6 +214,7 @@ export type DesktopCommands = {
   prepare_movie_editor_range: { args: { request: MovieEditorRangeRequest; edit: MovieEdit }; result: MovieEditorJob };
   prepare_services: { args: Record<string, never>; result: AppSnapshot };
   preview_vram_cleanup: { args: Record<string, never>; result: VramCleanupPreview };
+  read_task_record: { args: { id: string; sequence: number; offset: number; limit: number }; result: TaskRecordPage };
   release_ai_memory: { args: Record<string, never>; result: ControlSnapshot };
   release_local_speech_memory: { args: Record<string, never>; result: void };
   render_movie_edit: { args: { id: string }; result: MovieProject };
@@ -241,6 +249,7 @@ export type DesktopCommands = {
   save_vad_settings: { args: { settings: VadSettings }; result: SpeechPreferences };
   scan_local_models: { args: Record<string, never>; result: ControlSnapshot };
   scan_setup_model_folder: { args: { path: string }; result: { [key in string]: string } };
+  send_producer_message: { args: { request: ResumeComputerTaskRequest }; result: ProducerTaskStatus };
   set_default_voice_profile: { args: { profileId: string }; result: VoiceLibrarySnapshot };
   start_chat_stream: { args: { request: StartChatRequest }; result: ChatStart };
   start_computer_task: { args: { request: ComputerTaskRequest }; result: ComputerTaskRun };

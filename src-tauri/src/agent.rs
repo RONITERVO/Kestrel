@@ -20,11 +20,15 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::{process::Command, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 type Access = ComputerTaskAccess;
+mod context;
+mod memory;
+pub(crate) mod progress;
+mod recovery;
 
 struct ToolOutput {
     text: String,
@@ -67,7 +71,7 @@ pub async fn run(
         "Waiting for the local model",
         "Research, chat, and computer tasks share one inference slot.",
         None,
-    );
+    )?;
     let access_label = if access == Access::Workspace {
         "workspace-restricted file access"
     } else {
@@ -105,7 +109,7 @@ pub async fn run(
         result = preparation => result
             .map_err(|error| format!("Attachment preparation stopped unexpectedly: {error}"))??,
         _ = cancel.cancelled() => {
-            event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "The task stopped while preparing local attachment context. No tool was started.", None);
+            event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "The task stopped while preparing local attachment context. No tool was started.", None)?;
             return Ok(());
         }
     };
@@ -119,7 +123,7 @@ pub async fn run(
             "Stopped by you",
             "The task stopped after preparing local attachment context. No tool was started.",
             None,
-        );
+        )?;
         return Ok(());
     }
     let attachment_instruction = if context_attachments.is_empty() {
@@ -145,7 +149,7 @@ pub async fn run(
         ],
     );
     if app.is_some() {
-        system.push_str("\nYou can act as the Kestrel producer using app_actions, app_describe, and app_call. Prefer these native semantic actions over internal file editing. Discover and describe actions before calling. You may author creative material yourself, or explicitly ask the app's LOCAL model to draft it with start_studio_prompt_draft. A local draft is an unapplied proposal: read get_app_job, inspect it, then save the chosen material. Use get_producer_environment for installed tools, the selected model, new-model download destination and approved output folders. Use get_setup_snapshot for readiness. The native app_call waits for its child generation to release the work slot; inspect completed projects/takes afterwards. Preserve the native generation defaults from get_producer_environment unless the user asks to change them, especially the faster video size and step count. You do not need to fill every optional field. Clarify a decision that materially affects a vague request, especially duration or output location, in ordinary language before costly generation. Never impersonate the local collaborator or claim generation from a proposal. Use a unique request ID for each intentional mutation; retries reuse the same ID and exact args. Consent-only commands cannot be delegated; ask the user if one is needed. Long work must stay within the task's explicit step budget. Saved producer workflows run sequentially with explicit waits, cannot nest, and keep workspace restrictions after restart. Production is composable: do not force a music-video template or generate modalities the user did not request. Discover export_media_composition for image slideshows, mixed still/video sequences, narration over music, audio-only arrangements and sequential songs. Use export_production_bundle to deliver any selected generated/imported artifacts, research files and authored text or application code with descriptive filenames and roles. No specialized output workflow is required. Reuse existing artifact IDs. For recurring visual identities, use generated image references and first/last-frame or previousScene bindings; a repeated text description is not evidence of continuity. Never claim a model can accept audio references or continue audio unless its discovered native schema exposes that input.");
+        system.push_str(include_str!("agent/producer.md"));
     }
     let mut messages = vec![
         json!({"role":"system","content":system}),
@@ -161,9 +165,10 @@ pub async fn run(
             "Attachment context prepared",
             &notice,
             None,
-        );
+        )?;
     }
     let mut tools = tool_schemas(access, !context_attachments.is_empty());
+    tools.extend(memory::schemas());
     if app.is_some() {
         tools.extend(crate::agent_app::schemas());
     }
@@ -197,10 +202,12 @@ pub async fn run(
         "Computer task started",
         &format!("{} · {}", request.model_id, access_label),
         None,
-    );
+    )?;
     let thinking_level = request.thinking_level.unwrap_or(settings.thinking_level);
     let mut truncated_retries = 0_u8;
-    for step in 1..=max_steps {
+    let mut unavailable_retries = 0_u8;
+    let base_objective = messages[1]["content"].clone();
+    'steps: for step in 1..=max_steps {
         if cancel.is_cancelled() {
             event(
                 &app,
@@ -211,7 +218,7 @@ pub async fn run(
                 "Stopped by you",
                 "No further tools will run.",
                 None,
-            );
+            )?;
             return Ok(());
         }
         let thinking_detail = if thinking_level.is_off() {
@@ -222,6 +229,60 @@ pub async fn run(
                 thinking_level.as_str()
             )
         };
+        let prompt_chars = crate::models::prompt_char_budget(
+            settings.context_window,
+            // A preliminary byte bound; the local tokenizer below admits the real combined
+            // input/output request and fits its output allowance to the space actually left.
+            2_048,
+        )
+        .unwrap_or(16_384);
+        let direction_revision = store.task_direction_revision(&run_id)?;
+        // Keep the prompt prefix stable between normal turns. Rewriting the first user message
+        // after every event invalidates the local engine's KV cache and repeatedly prefills the
+        // entire history. Fresh native recovery is needed on entry/direction/compaction, while
+        // ordinary turns already contain their actual tool outcomes.
+        if messages.len() == 2 {
+            messages[1]["content"] =
+                memory::with_context(&base_objective, &store.task_recovery_context(&run_id)?);
+        }
+        let tool_chars = tools
+            .iter()
+            .map(|value| value.to_string().len())
+            .sum::<usize>();
+        let previous_count = messages.len();
+        messages = compact_messages(
+            messages,
+            prompt_chars.max(16_384).saturating_sub(tool_chars),
+        )?;
+        if messages.len() != previous_count {
+            messages[1]["content"] =
+                memory::with_context(&base_objective, &store.task_recovery_context(&run_id)?);
+            messages = compact_messages(
+                messages,
+                prompt_chars.max(16_384).saturating_sub(tool_chars),
+            )?;
+        }
+        // Media actions stop the language runtime while owning the workspace. Release their
+        // caches before reloading it; otherwise Whisper and the LLM compete for host RAM/VRAM.
+        // Do not poll or unload anything on ordinary planning turns with a ready runtime.
+        if runtime.snapshot().await.phase != "ready" {
+            if let Some(app) = &app {
+                crate::release_all_comfy_memory(&app.state::<crate::AppState>()).await;
+            }
+        }
+        let lease = tokio::select! {
+            result = runtime.lease_model(&request.model_id, &models, &settings, app.as_ref()) => {
+                result.map_err(|error| error.to_string())?
+            }
+            _ = cancel.cancelled() => {
+                event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "No computer action was started.", None)?;
+                return Ok(());
+            }
+        };
+        if store.task_direction_revision(&run_id)? != direction_revision {
+            messages.truncate(2);
+            continue 'steps;
+        }
         event(
             &app,
             &store,
@@ -231,21 +292,27 @@ pub async fn run(
             "Model is deciding",
             &thinking_detail,
             Some(json!({"thinkingLevel": thinking_level.as_str()})),
-        );
-        let prompt_chars = crate::models::prompt_char_budget(
-            settings.context_window,
-            max_output_tokens.saturating_add(2_048),
-        )
-        .unwrap_or(16_384);
-        messages = compact_messages(messages, prompt_chars.max(16_384));
-        let lease = tokio::select! {
-            result = runtime.lease_model(&request.model_id, &models, &settings, app.as_ref()) => {
-                result.map_err(|error| error.to_string())?
-            }
+        )?;
+        let step_output_tokens = loop {
+            let previous_count = messages.len();
+            let output = tokio::select! {
+            result = context::fit(&client, &lease.connection, &mut messages, &tools, settings.context_window, max_output_tokens, thinking_level) => result?,
             _ = cancel.cancelled() => {
-                event(&app, &store, &run_id, 0, "cancelled", "Stopped by you", "No computer action was started.", None);
+                event(&app,&store,&run_id,step,"cancelled","Stopped by you","No action started while checking context space.",None)?;
                 return Ok(());
             }
+            direction = store.wait_for_task_direction(&run_id,direction_revision) => {
+                direction?;
+                messages.truncate(2);
+                continue 'steps;
+            }
+            };
+            if messages.len() == previous_count {
+                break output;
+            }
+            messages[1]["content"] =
+                memory::with_context(&base_objective, &store.task_recovery_context(&run_id)?);
+            // Measure the fresh recovery packet too; it may change the admission count.
         };
         let mut request_body = json!({
             "model": lease.connection.model_id,
@@ -254,13 +321,13 @@ pub async fn run(
             "tool_choice": "auto",
             "stream": false,
             "temperature": 0.2,
-            "max_tokens": max_output_tokens
+            "max_tokens": step_output_tokens
         });
         apply_thinking_budget(
             &mut request_body,
             lease.connection.engine,
             thinking_level,
-            max_output_tokens,
+            step_output_tokens,
         );
         if thinking_level.is_off() {
             request_body["thinking_budget_tokens"] = json!(0);
@@ -274,23 +341,49 @@ pub async fn run(
                 "enable_thinking": true
             });
         }
-        let response_request = authorized(
-            client.post(format!("{}/chat/completions", lease.connection.endpoint)),
-            &lease.connection,
-        )
-        .json(&request_body)
-        .send();
-        let response = tokio::select! {
+        let response_request = async {
+            let response = authorized(
+                client.post(format!("{}/chat/completions", lease.connection.endpoint)),
+                &lease.connection,
+            )
+            .json(&request_body)
+            .send()
+            .await?;
+            let status = response.status();
+            // Some servers send headers before finishing the JSON body. Human direction and
+            // cancellation must also interrupt that body wait, not just connection setup.
+            let body = response.json::<Value>().await?;
+            Ok::<_, reqwest::Error>((status, body))
+        };
+        let (status, body) = tokio::select! {
             response = response_request => response.map_err(|error| format!("computer task model request failed: {error}"))?,
+            direction = store.wait_for_task_direction(&run_id, direction_revision) => {
+                direction?;
+                messages.truncate(2);
+                continue 'steps;
+            }
             _ = cancel.cancelled() => {
-                event(&app, &store, &run_id, step, "cancelled", "Stopped by you", "The pending model request was cancelled. No tool was started.", None);
+                event(&app, &store, &run_id, step, "cancelled", "Stopped by you", "The pending model request was cancelled. No tool was started.", None)?;
                 return Ok(());
             }
         };
-        let status = response.status();
-        let body: Value = response.json().await.map_err(|error| error.to_string())?;
         drop(lease); // App actions may acquire this same inference gate.
+        if store.task_direction_revision(&run_id)? != direction_revision {
+            messages.truncate(2);
+            continue 'steps;
+        }
         if !status.is_success() {
+            if status == reqwest::StatusCode::SERVICE_UNAVAILABLE && unavailable_retries == 0 {
+                unavailable_retries += 1;
+                // This request only generated a proposal. No returned tool was dispatched, so
+                // retrying inference cannot replay a mutation. Keep the normal step budget,
+                // direction revision and cancellation checks; never loop on a broken engine.
+                event(&app, &store, &run_id, step, "progress", "Recovering the local assistant",
+                    "The local model could not finish its reply. Your work is saved. Retrying its next decision once; completed actions will not be repeated.",
+                    Some(json!({"httpStatus":status.as_u16(),"retry":unavailable_retries,"error":truncate(&body.to_string(),800)})))?;
+                messages.truncate(2);
+                continue 'steps;
+            }
             return Err(format!(
                 "computer task model returned {status}: {}",
                 truncate(&body.to_string(), 800)
@@ -307,7 +400,7 @@ pub async fn run(
             if truncated_retries > 2 {
                 return Err("The local model reached its response limit three times without completing an action. Completed work is preserved; review the transcript and resume with a smaller step or a larger output budget.".into());
             }
-            event(&app, &store, &run_id, step, "progress", "Continuing after the model response limit", "The model ran out of response space. Its incomplete tool batch was not executed. Retrying with a smaller next step; this is not task completion.", Some(json!({"finishReason":"length","retry":truncated_retries})));
+            event(&app, &store, &run_id, step, "progress", "Continuing after the model response limit", "The model ran out of response space. Its incomplete tool batch was not executed. Retrying with a smaller next step; this is not task completion.", Some(json!({"finishReason":"length","retry":truncated_retries})))?;
             if let Some(content) = message
                 .get("content")
                 .and_then(Value::as_str)
@@ -346,45 +439,64 @@ pub async fn run(
                 "Reasoning",
                 reasoning,
                 None,
-            );
+            )?;
         }
         let tool_calls = message
             .get("tool_calls")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        messages.push(message.clone());
+        messages.push(memory::conversation_reply(&message));
         if tool_calls.is_empty() {
             let answer = message
                 .get("content")
                 .and_then(Value::as_str)
                 .unwrap_or("The task ended without a summary.");
-            if answer.trim_end().ends_with('?') {
-                event(
-                    &app,
-                    &store,
-                    &run_id,
-                    step,
-                    "question",
-                    "Needs your input",
-                    answer,
-                    Some(json!({"question": answer, "options": []})),
-                );
-                return Ok(());
-            }
-            event(
-                &app,
-                &store,
-                &run_id,
+            let unsettled = store.task_memory(&run_id)?.unsettled_actions;
+            let question = !unsettled.is_empty() || answer.trim_end().ends_with('?');
+            let answer = if unsettled.is_empty() {
+                answer.to_string()
+            } else {
+                format!("{answer}\n\nAn earlier action still has an uncertain outcome. Review it in Working plan and memory before more changes; this work is not marked complete.")
+            };
+            let response = ComputerTaskEvent {
+                run_id: run_id.clone(),
                 step,
-                "done",
-                "Completed",
-                answer,
-                Some(body),
-            );
+                kind: if question { "question" } else { "done" }.into(),
+                title: if question {
+                    "Needs your input"
+                } else {
+                    "Completed"
+                }
+                .into(),
+                detail: answer.clone(),
+                data: if question {
+                    Some(json!({"question":answer,"options":[]}))
+                } else {
+                    None
+                },
+                at: chrono::Utc::now().to_rfc3339(),
+            };
+            if !publish_if_current(&app, &store, response, direction_revision)? {
+                messages.truncate(2);
+                continue 'steps;
+            }
             return Ok(());
         }
+        if let Some(content) = message
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            event(
+                &app, &store, &run_id, step, "message", "Kestrel", content, None,
+            )?;
+        }
         for call in tool_calls {
+            if store.task_direction_revision(&run_id)? != direction_revision {
+                messages.truncate(2);
+                continue 'steps;
+            }
             if cancel.is_cancelled() {
                 event(
                     &app,
@@ -395,7 +507,7 @@ pub async fn run(
                     "Stopped by you",
                     "No further tools will run.",
                     None,
-                );
+                )?;
                 return Ok(());
             }
             let call_id = call.get("id").and_then(Value::as_str).unwrap_or("tool");
@@ -419,29 +531,45 @@ pub async fn run(
                         "tool_error",
                         &format!("{name} finished"),
                         &detail,
-                        None,
-                    );
+                        Some(json!({"unstarted":true})),
+                    )?;
                     messages.push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
                     continue;
                 }
             };
+            if !arguments.is_object() {
+                let detail = "ERROR: tool arguments must be a JSON object; no action was started.";
+                event(
+                    &app,
+                    &store,
+                    &run_id,
+                    step,
+                    "tool_error",
+                    "Invalid tool arguments",
+                    detail,
+                    Some(json!({"unstarted":true})),
+                )?;
+                messages.push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
+                continue;
+            }
             if name == "ask_user" {
                 match parse_question(&arguments) {
                     Ok(question) => {
-                        event(
-                            &app,
-                            &store,
-                            &run_id,
+                        let response = ComputerTaskEvent {
+                            run_id: run_id.clone(),
                             step,
-                            "question",
-                            "Needs your input",
-                            &question.question,
-                            Some(json!({
-                                "question": question.question,
-                                "options": question.options,
-                                "recommendedIndex": question.recommended_index
-                            })),
-                        );
+                            kind: "question".into(),
+                            title: "Needs your input".into(),
+                            detail: question.question.clone(),
+                            data: Some(
+                                json!({"question":question.question,"options":question.options,"recommendedIndex":question.recommended_index}),
+                            ),
+                            at: chrono::Utc::now().to_rfc3339(),
+                        };
+                        if !publish_if_current(&app, &store, response, direction_revision)? {
+                            messages.truncate(2);
+                            continue 'steps;
+                        }
                         return Ok(());
                     }
                     Err(error) => {
@@ -454,25 +582,81 @@ pub async fn run(
                             "tool_error",
                             "ask_user finished",
                             &detail,
-                            None,
-                        );
+                            Some(json!({"unstarted":true})),
+                        )?;
                         messages
                             .push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
                         continue;
                     }
                 }
             }
-            event(
-                &app,
-                &store,
-                &run_id,
+            let mutation = recovery::is_mutation(name, &arguments);
+            if mutation {
+                if let Err(error) = recovery::require_reconciled(&store, &run_id) {
+                    let detail = format!("ERROR: {error}");
+                    event(
+                        &app,
+                        &store,
+                        &run_id,
+                        step,
+                        "tool_error",
+                        "Action needs review",
+                        &detail,
+                        Some(json!({"unstarted":true})),
+                    )?;
+                    messages.push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
+                    continue;
+                }
+            }
+            let action_id = uuid::Uuid::new_v4().to_string();
+            let mut started = arguments.clone();
+            if let Some(object) = started.as_object_mut() {
+                object.insert("actionId".into(), json!(action_id));
+                object.insert("tool".into(), json!(name));
+                object.insert("mutation".into(), json!(mutation));
+                object.remove("sourceSha256");
+                if let Some(hash) = recovery::source_identity(
+                    name,
+                    &arguments,
+                    access,
+                    &settings.agent_workspace_roots,
+                ) {
+                    object.insert("sourceSha256".into(), json!(hash));
+                }
+            }
+            let starting = ComputerTaskEvent {
+                run_id: run_id.clone(),
                 step,
-                "tool_start",
-                &format!("Using {name}"),
-                argument_text,
-                Some(arguments.clone()),
-            );
-            let result = if name.starts_with("app_") {
+                kind: "tool_start".into(),
+                title: format!("Using {name}"),
+                detail: argument_text.into(),
+                data: Some(started),
+                at: chrono::Utc::now().to_rfc3339(),
+            };
+            if store
+                .add_task_event_if_current(starting.clone(), direction_revision)?
+                .is_none()
+            {
+                messages.truncate(2);
+                continue 'steps;
+            }
+            if let Some(app) = &app {
+                let _ = crate::ipc_events::emit::<kestrel_app_core::events::ComputerTask>(
+                    app, &starting,
+                );
+            }
+            let result = if name == "task_reconcile" {
+                recovery::reconcile(
+                    app.as_ref(),
+                    &store,
+                    &run_id,
+                    &arguments,
+                    access,
+                    &settings.agent_workspace_roots,
+                )
+            } else if name.starts_with("task_") {
+                memory::execute(&store, &run_id, name, &arguments)
+            } else if name.starts_with("app_") {
                 match app.as_ref() {
                     Some(handle) => crate::agent_app::execute(
                         handle, &run_id, name, &arguments, &settings, access, &cancel,
@@ -496,7 +680,7 @@ pub async fn run(
                         &request.attachment_ids,
                     ) => result,
                     _ = cancel.cancelled() => {
-                        event(&app, &store, &run_id, step, "cancelled", "Stopped by you", "The active operation was cancelled and no further tools will run.", None);
+                        event(&app, &store, &run_id, step, "cancelled", "Stopped by you", "The active operation was cancelled and no further tools will run.", None)?;
                         return Ok(());
                     }
                 }
@@ -512,16 +696,16 @@ pub async fn run(
                     true,
                 ),
             };
-            event(
+            let result_sequence = event(
                 &app,
                 &store,
                 &run_id,
                 step,
                 if failed { "tool_error" } else { "tool_result" },
                 &format!("{name} finished"),
-                &truncate(&output.text, 8_000),
-                output.data,
-            );
+                &output.text,
+                Some(json!({"actionId":action_id,"result":output.data})),
+            )?;
             if let Some(path) = output.artifact {
                 event(
                     &app,
@@ -532,9 +716,9 @@ pub async fn run(
                     "Artifact ready",
                     &path.to_string_lossy(),
                     Some(json!({"path": path.to_string_lossy()})),
-                );
+                )?;
             }
-            messages.push(json!({"role":"tool","tool_call_id":call_id,"content":output.text}));
+            messages.push(json!({"role":"tool","tool_call_id":call_id,"content":memory::preview(&output.text, result_sequence)}));
         }
     }
     event(
@@ -543,16 +727,16 @@ pub async fn run(
         &run_id,
         max_steps,
         "limit",
-        "Step limit reached",
-        "The task stopped before another action. Increase the limit only after reviewing the transcript.",
+        "Progress saved — ready to continue",
+        "I reached this run's work limit and paused before another action. Send a message to continue or change direction; the saved work will stay in this conversation.",
         None,
-    );
+    )?;
     Ok(())
 }
 
 pub fn emit_error(app: Option<&AppHandle>, store: &WorkspaceStore, run_id: &str, detail: String) {
     let owned = app.cloned();
-    event(
+    if let Err(error) = event(
         &owned,
         store,
         run_id,
@@ -561,7 +745,36 @@ pub fn emit_error(app: Option<&AppHandle>, store: &WorkspaceStore, run_id: &str,
         "Computer task stopped",
         &detail,
         None,
-    );
+    ) {
+        eprintln!("Task {run_id} stopped; its final error could not be saved: {error}");
+        if let Some(app) = app {
+            let value = ComputerTaskEvent {
+                run_id: run_id.into(), step: 0, kind: "error".into(),
+                title: "Stopped because task history could not be saved".into(),
+                detail: format!("{detail}\nStorage error: {error}. Check free space and permissions before continuing. This final notice is not saved."),
+                data: None, at: chrono::Utc::now().to_rfc3339(),
+            };
+            let _ = crate::ipc_events::emit::<kestrel_app_core::events::ComputerTask>(app, &value);
+        }
+    }
+}
+
+fn publish_if_current(
+    app: &Option<AppHandle>,
+    store: &WorkspaceStore,
+    value: ComputerTaskEvent,
+    direction_revision: u32,
+) -> Result<bool, String> {
+    if store
+        .add_task_event_if_current(value.clone(), direction_revision)?
+        .is_none()
+    {
+        return Ok(false);
+    }
+    if let Some(app) = app {
+        let _ = crate::ipc_events::emit::<kestrel_app_core::events::ComputerTask>(app, &value);
+    }
+    Ok(true)
 }
 
 fn completion_hit_limit(body: &Value) -> bool {
@@ -597,7 +810,7 @@ fn event(
     title: &str,
     detail: &str,
     data: Option<Value>,
-) {
+) -> Result<usize, String> {
     let value = ComputerTaskEvent {
         run_id: run_id.to_string(),
         step,
@@ -607,14 +820,11 @@ fn event(
         data,
         at: chrono::Utc::now().to_rfc3339(),
     };
-    if let Err(error) = store.add_task_event(value.clone()) {
-        eprintln!(
-            "failed to persist computer task event run={run_id} step={step} kind={kind}: {error}"
-        );
-    }
+    let sequence = store.add_task_event(value.clone())?.events.len();
     if let Some(app) = app {
         let _ = crate::ipc_events::emit::<kestrel_app_core::events::ComputerTask>(app, &value);
     }
+    Ok(sequence)
 }
 
 fn tool_schemas(access: Access, has_attachments: bool) -> Vec<Value> {
@@ -631,13 +841,13 @@ fn tool_schemas(access: Access, has_attachments: bool) -> Vec<Value> {
         ),
         schema(
             "read_file",
-            &prompt_catalog::text(PromptId::ToolReadFile),
-            json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
+            "Read a local text file in bounded character pages. Returns content, nextOffset and sha256. Inspect existing content before changing it; pass its sha256 as expectedSha256 to write_file. Supports text files up to 64 MiB without filling model context.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":16000}},"required":["path"]}),
         ),
         schema(
             "write_file",
-            &prompt_catalog::text(PromptId::ToolWriteFile),
-            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}),
+            "Save exact text to an approved path with a recovery copy. To overwrite an existing file, first read it and pass its exact sha256 as expectedSha256; intervening changes are rejected. Omit expectedSha256 only for a new file. Never overwrite another person's changes without inspecting and preserving their work.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expectedSha256":{"type":"string"}},"required":["path","content"]}),
         ),
         schema(
             "create_directory",
@@ -772,12 +982,35 @@ async fn execute_tool(
         "read_file" => {
             let path = allowed_existing(string("path")?, access, roots)?;
             let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
-            if !metadata.is_file() || metadata.len() > 1_048_576 {
-                return Err("read_file accepts a text file up to 1 MiB".into());
+            if !metadata.is_file() || metadata.len() > 64 * 1_048_576 {
+                return Err("read_file accepts a text file up to 64 MiB in bounded pages".into());
             }
-            Ok(output(
-                fs::read_to_string(path).map_err(|error| error.to_string())?,
-            ))
+            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+            use sha2::Digest;
+            let sha256 = hex::encode(sha2::Sha256::digest(&bytes));
+            let text = std::str::from_utf8(&bytes).map_err(|_| "read_file requires UTF-8 text")?;
+            let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
+            let total = text.chars().count() as u64;
+            if offset > total {
+                return Err("Read offset is beyond the end of the file".into());
+            }
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(12_000)
+                .clamp(1, 16_000);
+            let content: String = text
+                .chars()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
+            let next = offset + content.chars().count() as u64;
+            let data = json!({"path":path,"sha256":sha256,"text":content,"totalChars":total,"offset":offset,"nextOffset":(next<total).then_some(next)});
+            Ok(ToolOutput {
+                text: data.to_string(),
+                data: Some(data),
+                artifact: None,
+            })
         }
         "write_file" => {
             let content = string("content")?;
@@ -785,6 +1018,10 @@ async fn execute_tool(
                 return Err("write_file content exceeds 5 MiB".into());
             }
             let path = allowed_new(string("path")?, access, roots)?;
+            verify_write_version(
+                &path,
+                arguments.get("expectedSha256").and_then(Value::as_str),
+            )?;
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|error| error.to_string())?;
             }
@@ -796,20 +1033,40 @@ async fn execute_tool(
                 None
             };
             let temporary = path.with_extension(format!(
-                "{}.kestrel-tmp",
+                "{}.{}.kestrel-tmp",
                 path.extension()
                     .and_then(|value| value.to_str())
-                    .unwrap_or("file")
+                    .unwrap_or("file"),
+                uuid::Uuid::new_v4()
             ));
-            fs::write(&temporary, content.as_bytes()).map_err(|error| error.to_string())?;
-            if path.exists() {
-                if let Err(error) = fs::remove_file(&path) {
-                    let _ = fs::remove_file(&temporary);
-                    return Err(error.to_string());
-                }
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| error.to_string())?;
+            let staged = file
+                .write_all(content.as_bytes())
+                .and_then(|()| file.sync_all());
+            drop(file);
+            if let Err(error) = staged {
+                let _ = fs::remove_file(&temporary);
+                return Err(error.to_string());
+            }
+            if let Err(error) = verify_write_version(
+                &path,
+                arguments.get("expectedSha256").and_then(Value::as_str),
+            ) {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
             }
             if let Err(error) = fs::rename(&temporary, &path) {
                 let _ = fs::remove_file(&temporary);
+                if !path.exists() {
+                    if let Some(backup) = &backup {
+                        let _ = fs::copy(backup, &path);
+                    }
+                }
                 return Err(error.to_string());
             }
             Ok(ToolOutput {
@@ -823,7 +1080,9 @@ async fn execute_tool(
                         .unwrap_or_default()
                 ),
                 artifact: Some(path.clone()),
-                data: Some(json!({"path":path,"backup":backup})),
+                data: Some(
+                    json!({"path":path,"backup":backup,"sha256":text_sha256(content.as_bytes())}),
+                ),
             })
         }
         "create_directory" => {
@@ -965,6 +1224,15 @@ pub(crate) fn allowed_new(
         .canonicalize()
         .map_err(|error| error.to_string())?;
     ensure_access(&canonical_parent, access, roots)?;
+    if fs::symlink_metadata(&path).is_ok() {
+        let canonical = path.canonicalize().map_err(|e| {
+            format!(
+                "Cannot resolve existing destination {}: {e}",
+                path.display()
+            )
+        })?;
+        ensure_access(&canonical, access, roots)?;
+    }
     Ok(path)
 }
 
@@ -1014,88 +1282,67 @@ fn recovery_path(path: &Path) -> PathBuf {
         .and_then(|value| value.to_str())
         .unwrap_or("file");
     path.with_file_name(format!(
-        "{name}.kestrel-backup-{}",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+        "{name}.kestrel-backup-{}-{}",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S"),
+        uuid::Uuid::new_v4()
     ))
+}
+
+fn text_sha256(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+fn verify_write_version(path: &Path, expected: Option<&str>) -> Result<(), String> {
+    if path.exists() {
+        let expected = expected.ok_or("This file already exists. Read it first, preserve existing work and pass its sha256 as expectedSha256 before replacing it.")?;
+        if fs::metadata(path).map_err(|e| e.to_string())?.len() > 64 * 1_048_576 {
+            return Err("This file exceeds the 64 MiB safe text overwrite limit.".into());
+        }
+        let bytes = fs::read(path).map_err(|e| e.to_string())?;
+        if text_sha256(&bytes) != expected {
+            return Err("The file changed after it was inspected. Read it again and preserve the newer changes before saving.".into());
+        }
+    } else if expected.is_some() {
+        return Err("The inspected file no longer exists. Re-inspect the destination before creating a replacement.".into());
+    }
+    Ok(())
 }
 
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-fn compact_messages(messages: Vec<Value>, max_chars: usize) -> Vec<Value> {
-    let total = messages
-        .iter()
-        .map(|value| value.to_string().len())
-        .sum::<usize>();
-    if total <= max_chars || messages.len() <= 4 {
-        return messages;
+/// Durable records carry old history. This only selects whole recent assistant/tool groups;
+/// it never promotes tool text into system instructions or recursively summarizes summaries.
+fn compact_messages(messages: Vec<Value>, max_chars: usize) -> Result<Vec<Value>, String> {
+    let mut iter = messages.into_iter();
+    let mut output: Vec<Value> = iter.by_ref().take(2).collect();
+    let mut used = output.iter().map(|v| v.to_string().len()).sum::<usize>();
+    if used > max_chars {
+        return Err("The task's fixed context exceeds this model's input budget. Its records are saved; lower the output reservation or use a larger supported context before continuing.".into());
     }
-    let prefix = messages.iter().take(2).cloned().collect::<Vec<_>>();
-    let mut groups = Vec::<Vec<Value>>::new();
-    for message in messages.into_iter().skip(2) {
-        let starts_group = message.get("role").and_then(Value::as_str) == Some("assistant");
-        if starts_group || groups.is_empty() {
+    let mut groups: Vec<Vec<Value>> = Vec::new();
+    for message in iter {
+        if message.get("role").and_then(Value::as_str) == Some("assistant") || groups.is_empty() {
             groups.push(Vec::new());
         }
-        if let Some(group) = groups.last_mut() {
-            group.push(message);
-        }
+        groups
+            .last_mut()
+            .expect("a group was created")
+            .push(message);
     }
-    let prefix_chars = prefix
-        .iter()
-        .map(|value| value.to_string().len())
-        .sum::<usize>();
-    let recent_budget = max_chars.saturating_sub(prefix_chars).saturating_mul(3) / 4;
-    let mut kept = Vec::<Vec<Value>>::new();
-    let mut used = 0usize;
-    while let Some(group) = groups.pop() {
-        let size = group
-            .iter()
-            .map(|value| value.to_string().len())
-            .sum::<usize>();
-        if !kept.is_empty() && used.saturating_add(size) > recent_budget {
-            groups.push(group);
+    let mut kept = Vec::new();
+    for group in groups.into_iter().rev() {
+        let size = group.iter().map(|v| v.to_string().len()).sum::<usize>();
+        if used.saturating_add(size) > max_chars {
             break;
         }
-        used = used.saturating_add(size);
+        used += size;
         kept.push(group);
     }
-    kept.reverse();
-    if groups.is_empty() {
-        let mut output = prefix;
-        output.extend(kept.into_iter().flatten());
-        return output;
-    }
-    let mut ledger = Vec::new();
-    for group in &groups {
-        for message in group {
-            if message.get("role").and_then(Value::as_str) == Some("tool") {
-                let content = message
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                ledger.push(truncate(content, 500));
-            }
-        }
-    }
-    let memory = prompt_catalog::render(
-        PromptId::ComputerCompaction,
-        &[
-            ("omitted_count", &groups.len().to_string()),
-            ("tool_results", &ledger.join("\n---\n")),
-        ],
-    );
-    let mut output = prefix;
-    if let Some(system) = output.first_mut() {
-        let original = system
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        system["content"] = Value::String(format!("{original}\n\n{memory}"));
-    }
-    output.extend(kept.into_iter().flatten());
-    output
+    output.extend(kept.into_iter().rev().flatten());
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -1156,34 +1403,27 @@ mod tests {
     }
 
     #[test]
-    fn compact_memory_keeps_objective_and_recent_tool_group() {
-        let messages = vec![
-            json!({"role":"system","content":"policy"}),
-            json!({"role":"user","content":"objective"}),
-            json!({"role":"assistant","tool_calls":[{"id":"old"}]}),
-            json!({"role":"tool","tool_call_id":"old","content":"old result that should enter the ledger"}),
-            json!({"role":"assistant","tool_calls":[{"id":"new"}]}),
-            json!({"role":"tool","tool_call_id":"new","content":"new result"}),
+    fn repeated_compaction_is_bounded_and_keeps_policy_objective_and_whole_groups() {
+        let mut messages = vec![
+            json!({"role":"system","content":"policy and recovery packet"}),
+            json!({"role":"user","content":"original objective"}),
         ];
-        let compacted = compact_messages(messages, 180);
-        assert!(compacted[0]["content"]
-            .as_str()
-            .is_some_and(|value| value.starts_with("policy\n\n")));
-        assert_eq!(compacted[1]["content"], "objective");
-        assert!(compacted
-            .iter()
-            .any(|message| message["content"] == "new result"));
-        assert!(compacted.iter().any(|message| message["content"]
-            .as_str()
-            .is_some_and(|value| value.contains("COMPACT SHARED MEMORY"))));
-        assert_eq!(
-            compacted
-                .iter()
-                .filter(|message| message["role"] == "system")
-                .count(),
-            1
-        );
-        assert_eq!(compacted[0]["role"], "system");
+        for i in 0..100 {
+            messages.push(json!({"role":"assistant","tool_calls":[{"id":i.to_string()}]}));
+            messages.push(
+                json!({"role":"tool","tool_call_id":i.to_string(),"content":"x".repeat(100)}),
+            );
+            messages = compact_messages(messages, 600).unwrap();
+            assert!(messages.iter().map(|v| v.to_string().len()).sum::<usize>() <= 600);
+            assert_eq!(messages[0]["content"], "policy and recovery packet");
+            assert_eq!(messages[1]["content"], "original objective");
+            assert_eq!(messages.last().unwrap()["tool_call_id"], i.to_string());
+            for pair in messages[2..].chunks(2) {
+                assert_eq!(pair.len(), 2);
+                assert_eq!(pair[0]["tool_calls"][0]["id"], pair[1]["tool_call_id"]);
+            }
+        }
+        assert!(compact_messages(messages, 10).is_err());
     }
 
     #[test]
@@ -1213,10 +1453,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let path = root.join("cat.svg");
         fs::write(&path, "old version").unwrap();
+        let other_staging = path.with_extension("svg.kestrel-tmp");
+        fs::write(&other_staging, "another writer's unfinished file").unwrap();
         let attachment_store = AttachmentStore::new(directory.path()).unwrap();
         let result = execute_tool(
             "write_file",
-            &json!({"path":path,"content":"<svg><path d=\"M0 0\"/></svg>"}),
+            &json!({"path":path,"content":"<svg><path d=\"M0 0\"/></svg>","expectedSha256":text_sha256(b"old version")}),
             Access::Workspace,
             &[root.to_string_lossy().into_owned()],
             &attachment_store,
@@ -1236,6 +1478,132 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap();
         assert_eq!(fs::read_to_string(backup).unwrap(), "old version");
+        let second = execute_tool(
+            "write_file",
+            &json!({"path":path,"content":"third version","expectedSha256":result.data.as_ref().unwrap()["sha256"]}),
+            Access::Workspace,
+            &[root.to_string_lossy().into_owned()],
+            &attachment_store,
+            &[],
+        ).await.unwrap();
+        let second_backup = second.data.as_ref().unwrap()["backup"].as_str().unwrap();
+        assert_ne!(backup, second_backup);
+        assert_eq!(fs::read_to_string(backup).unwrap(), "old version");
+        assert_eq!(
+            fs::read_to_string(second_backup).unwrap(),
+            "<svg><path d=\"M0 0\"/></svg>"
+        );
+        assert_eq!(
+            fs::read_to_string(other_staging).unwrap(),
+            "another writer's unfinished file"
+        );
+    }
+
+    #[tokio::test]
+    async fn inspected_file_cannot_overwrite_another_writers_new_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shared.txt");
+        fs::write(&path, "human version").unwrap();
+        let attachments = AttachmentStore::new(directory.path()).unwrap();
+        let roots = vec![directory.path().to_string_lossy().into_owned()];
+        let read = execute_tool(
+            "read_file",
+            &json!({"path":path}),
+            Access::Workspace,
+            &roots,
+            &attachments,
+            &[],
+        )
+        .await
+        .unwrap();
+        let sha = read.data.unwrap()["sha256"].clone();
+        fs::write(&path, "new changes from someone else").unwrap();
+        let stale = execute_tool(
+            "write_file",
+            &json!({"path":path,"content":"agent proposal","expectedSha256":sha}),
+            Access::Workspace,
+            &roots,
+            &attachments,
+            &[],
+        )
+        .await;
+        assert!(stale.err().unwrap().contains("changed"));
+        let blind = execute_tool(
+            "write_file",
+            &json!({"path":path,"content":"agent proposal"}),
+            Access::Workspace,
+            &roots,
+            &attachments,
+            &[],
+        )
+        .await;
+        assert!(blind.err().unwrap().contains("Read it first"));
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "new changes from someone else"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_pages_handle_large_unicode_documents_with_stable_hashes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("large.txt");
+        fs::write(&path, "🦉ä".repeat(300_000)).unwrap();
+        let attachments = AttachmentStore::new(directory.path()).unwrap();
+        let roots = vec![directory.path().to_string_lossy().into_owned()];
+        let first = execute_tool(
+            "read_file",
+            &json!({"path":path,"limit":9}),
+            Access::Workspace,
+            &roots,
+            &attachments,
+            &[],
+        )
+        .await
+        .unwrap()
+        .data
+        .unwrap();
+        let next = execute_tool(
+            "read_file",
+            &json!({"path":path,"offset":first["nextOffset"],"limit":9}),
+            Access::Workspace,
+            &roots,
+            &attachments,
+            &[],
+        )
+        .await
+        .unwrap()
+        .data
+        .unwrap();
+        assert_eq!(first["totalChars"], 600_000);
+        assert_eq!(first["nextOffset"], 9);
+        assert_eq!(first["sha256"], next["sha256"]);
+        assert_eq!(next["text"], "ä🦉ä🦉ä🦉ä🦉ä");
+    }
+
+    #[test]
+    fn failed_event_persistence_prevents_starting_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::new(directory.path()).unwrap();
+        let run = store
+            .create_task("local", "persist before action", Access::Workspace)
+            .unwrap();
+        fs::write(
+            directory.path().join("workspace/task-journal"),
+            "not a directory",
+        )
+        .unwrap();
+        assert!(event(
+            &None,
+            &store,
+            &run.id,
+            1,
+            "tool_start",
+            "write_file",
+            "args",
+            None
+        )
+        .is_err());
     }
 
     #[tokio::test]

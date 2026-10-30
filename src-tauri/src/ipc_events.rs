@@ -15,6 +15,7 @@ pub fn emit<E: DesktopEvent>(app: &AppHandle, payload: &E::Payload) -> tauri::Re
                 | "movie-render-preview"
                 | "runtime-progress"
                 | "local-speech-progress"
+                | "media-composition"
         )
     }) {
         if let Ok(value) = serde_json::to_value(payload) {

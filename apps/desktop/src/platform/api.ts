@@ -755,6 +755,18 @@ export async function resumeComputerTask(
   return invoke("resume_computer_task", { request });
 }
 
+export async function sendProducerMessage(request: ResumeComputerTaskRequest): Promise<import("../contracts/index").ProducerTaskStatus> {
+  return invoke("send_producer_message", { request });
+}
+
+export async function getTaskMemory(id: string) {
+  return invoke("get_task_memory", { id });
+}
+
+export async function acknowledgeTaskAction(id: string, sequence: number, reviewNote: string) {
+  return invoke("acknowledge_task_action", { id, sequence, reviewNote });
+}
+
 export async function stopComputerTask(runId: string): Promise<void> {
   await invoke("stop_computer_task", { runId });
 }

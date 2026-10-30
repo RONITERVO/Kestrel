@@ -28,7 +28,7 @@ use super::{
 /// parser in `ImageStudio.tsx`: background is text, the style has exactly one of `photo` or
 /// `art_style`, boxes are four integers from 0 to 1000, and palettes are uppercase #RRGGBB
 /// (16 global, 5 per element). llama.cpp turns it into a grammar; Strata reads it in the prompt.
-const IMAGE_COMPOSITION_SCHEMA: OrderedSchema = OrderedSchema {
+pub(crate) const IMAGE_COMPOSITION_SCHEMA: OrderedSchema = OrderedSchema {
     name: "kestrel_image_composition",
     text: r##"{"type":"object","additionalProperties":false,
 "properties":{

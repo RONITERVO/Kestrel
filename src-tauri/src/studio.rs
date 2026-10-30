@@ -70,7 +70,7 @@ pub use producer_chat::{
 };
 pub(crate) use prompt_draft::{
     emit_error as emit_prompt_draft_error, emit_settled as emit_prompt_draft_settled,
-    validate_request as validate_prompt_draft_request,
+    validate_request as validate_prompt_draft_request, IMAGE_COMPOSITION_SCHEMA,
 };
 pub use prompt_draft::{PromptDraftJob, PromptDraftRequest};
 

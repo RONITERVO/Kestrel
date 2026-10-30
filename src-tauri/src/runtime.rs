@@ -176,7 +176,7 @@ struct RuntimeProcess {
     api_key_file: Option<PathBuf>,
     /// Strata's server, engine, and vision encoder; dropping the job terminates all of them.
     #[cfg(windows)]
-    _job: Option<crate::strata::ProcessJob>,
+    job: Option<crate::strata::ProcessJob>,
     connection: ModelConnection,
     snapshot: ManagedRuntimeSnapshot,
 }
@@ -226,7 +226,7 @@ impl RuntimeManager {
                 {
                     current.snapshot.phase = "failed".into();
                     current.snapshot.detail = "The managed model process exited. Its logs remain visible in the runtime feed.".into();
-                } else {
+                } else if current.snapshot.phase != "starting" {
                     current.snapshot.phase = "unavailable".into();
                     current.snapshot.detail =
                         "The runtime endpoint did not answer its local health check.".into();
@@ -532,7 +532,7 @@ impl RuntimeManager {
                 child: Some(child),
                 api_key_file,
                 #[cfg(windows)]
-                _job: job,
+                job,
                 connection: connection.clone(),
                 snapshot,
             });
@@ -576,6 +576,15 @@ impl RuntimeManager {
     pub async fn stop_managed(&self) -> Result<(), RuntimeError> {
         let mut process = self.process.lock().await;
         if let Some(current) = process.as_mut() {
+            #[cfg(windows)]
+            if let Some(job) = current.job.as_ref() {
+                current.snapshot.phase = "stopping".into();
+                current.snapshot.detail =
+                    "Waiting for the owned local model processes to exit.".into();
+                job.terminate_and_wait(Duration::from_secs(30))
+                    .await
+                    .map_err(|error| RuntimeError::Maintenance(error.to_string()))?;
+            }
             if let Some(child) = current.child.as_mut() {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
@@ -896,17 +905,28 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn strata_engine_count() -> usize {
-        std::process::Command::new("tasklist")
+    fn strata_engine_pids() -> HashSet<u32> {
+        let output = std::process::Command::new("tasklist")
             .args(["/FI", "IMAGENAME eq strata.exe", "/NH", "/FO", "CSV"])
             .output()
-            .map(|output| {
-                String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .filter(|line| line.to_ascii_lowercase().contains("\"strata.exe\""))
-                    .count()
+            .expect("Windows process listing could not start");
+        assert!(
+            output.status.success(),
+            "Windows process listing failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| line.to_ascii_lowercase().starts_with("\"strata.exe\","))
+            .map(|line| {
+                line.split(',')
+                    .nth(1)
+                    .unwrap()
+                    .trim_matches('"')
+                    .parse()
+                    .expect("tasklist returned an invalid Strata PID")
             })
-            .unwrap_or(0)
+            .collect()
     }
 
     #[cfg(windows)]
@@ -949,7 +969,7 @@ mod tests {
             .into_iter()
             .next()
             .expect("no runnable Strata model is installed");
-        let engines_before = strata_engine_count();
+        let engines_before = strata_engine_pids();
         let manager = Arc::new(RuntimeManager::new());
         let models = std::slice::from_ref(&model);
         let settings = ControlSettings::default();
@@ -962,10 +982,13 @@ mod tests {
         let snapshot = manager.snapshot().await;
         assert_eq!(snapshot.phase, "ready");
         assert_eq!(Some(snapshot.context_window), model.fixed_context_window);
-        assert!(
-            strata_engine_count() > engines_before,
-            "strata.exe did not start"
-        );
+        let engines_after = strata_engine_pids();
+        let started: HashSet<_> = engines_after.difference(&engines_before).copied().collect();
+        // A prior terminated engine can still appear in Windows' process listing briefly.
+        // Compare identities, not counts: an old process disappearing must not hide a new one,
+        // and losing an unrelated process must not disguise a leaked engine at shutdown.
+        println!("LIVE_STRATA_PROCESS_IDS before={engines_before:?} after={engines_after:?}");
+        assert!(!started.is_empty(), "strata.exe did not start");
         let first_pid = snapshot.pid;
         println!("LIVE_STRATA_MODEL={} PID={first_pid:?}", model.name);
 
@@ -1030,7 +1053,7 @@ mod tests {
         manager.stop_managed().await.unwrap();
         let mut stopped = false;
         for _ in 0..60 {
-            if strata_engine_count() <= engines_before {
+            if strata_engine_pids().is_disjoint(&started) {
                 stopped = true;
                 break;
             }
