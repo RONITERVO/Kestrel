@@ -19,6 +19,25 @@ describe("shared local-model runtime policy", () => {
       contextWindow: 32_768,
       maxOutputTokens: 16_384,
     });
+    expect(effectiveModelRuntimePolicy(settings, "director", 65_536)).toEqual({
+      contextWindow: 65_536,
+      maxOutputTokens: 27_648,
+    });
+  });
+
+  it("shows the native fixed window while leaving output editable", () => {
+    const onChange = vi.fn();
+    render(<ModelRuntimePolicyControls
+      value={{ contextWindow: 32_768, maxOutputTokens: 16_384 }}
+      fixedContextWindow={65_536}
+      disabled={false}
+      scope="Strata collaborator"
+      onChange={onChange}
+    />);
+    expect(screen.getByLabelText("Strata collaborator context window")).toHaveValue(65_536);
+    expect(screen.getByLabelText("Strata collaborator context window")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Strata collaborator maximum output"), { target: { value: "8192" } });
+    expect(onChange).toHaveBeenCalledWith({ contextWindow: 32_768, maxOutputTokens: 8_192 });
   });
 
   it("emits only finite bounded producer edits", () => {

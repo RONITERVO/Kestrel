@@ -28,7 +28,9 @@
 .error-banner strong { font-family: var(--font-hand); font-size: var(--text-xl); }
 .error-banner span { overflow-wrap: anywhere; color: var(--ink); font-family: var(--font-read); font-size: var(--text-sm); }
 
-.status-pill { max-width: 280px; }
+.status-pill { max-width: 280px; min-width: 0; }
+.status-pill .status-label { min-width: 0; white-space: nowrap; }
+.status-pill small, .status-pill .status-dot { flex-shrink: 0; }
 .status-pill > :not(.status-dot):not(small) { overflow: hidden; text-overflow: ellipsis; }
 .status-pill small { color: inherit; opacity: .75; }
 .status-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--ink-4); }

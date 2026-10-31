@@ -161,8 +161,10 @@ export function ImageStudio({
     if (!modelId && (selectedModelId || models[0]?.id)) setModelId(selectedModelId ?? models[0]?.id ?? "");
   }, [modelId, models, selectedModelId]);
 
-  const inheritedRuntimePolicy = effectiveModelRuntimePolicy(controlSettings, modelId);
-  const runtimePolicy = runtimePolicyOverride ?? inheritedRuntimePolicy;
+  const fixedContextWindow = models.find((model) => model.id === modelId)?.fixedContextWindow;
+  const inheritedRuntimePolicy = effectiveModelRuntimePolicy(controlSettings, modelId, fixedContextWindow);
+  const requestedRuntimePolicy = runtimePolicyOverride ?? inheritedRuntimePolicy;
+  const runtimePolicy = { ...requestedRuntimePolicy, contextWindow: fixedContextWindow ?? requestedRuntimePolicy.contextWindow };
   const completedTakes = project?.takes.filter((take) => take.status === "complete") ?? [];
   const activeTake = completedTakes.find((take) => take.id === project?.activeTakeId);
   const plainPrompt = project?.settings.promptMode === "plain";
@@ -506,7 +508,7 @@ export function ImageStudio({
             setSelectedElementId(proposal.elements[0]?.id ?? "");
           }}
         />
-        <details className="workspace-runtime-policy"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} disabled={busy} expert={advancedEnabled} scope="Image collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
+        <details className="workspace-runtime-policy"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} fixedContextWindow={fixedContextWindow} disabled={busy} expert={advancedEnabled} scope="Image collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
         <label>High-level description<textarea disabled={busy} value={project.highLevelDescription} onChange={(event) => mutate((current) => ({ ...current, highLevelDescription: event.target.value }))} /></label>
         </>}
         <div className="image-output-controls"><label>Canvas<select disabled={busy} value={`${project.settings.width}x${project.settings.height}`} onChange={(event) => { const [, width, height] = SIZE_PRESETS.find((item) => `${item[1]}x${item[2]}` === event.target.value) ?? SIZE_PRESETS[0]; mutate((current) => ({ ...current, settings: { ...current.settings, width, height } })); }}>{SIZE_PRESETS.map(([label, width, height]) => <option key={label} value={`${width}x${height}`}>{label}</option>)}</select></label><label>Variations<select disabled={busy} value={project.settings.batchSize} onChange={(event) => mutate((current) => ({ ...current, settings: { ...current.settings, batchSize: Number(event.target.value) } }))}><option value={1}>1 image</option><option value={2}>2 images</option><option value={4}>4 images</option></select></label></div>

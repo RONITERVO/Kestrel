@@ -27,6 +27,7 @@ pub const STRATA_ONLY_ARCHITECTURES: &[&str] = &["qwen4exp"];
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
+const MAX_SERVER_CAPABILITY_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_INSTALLS: usize = 16;
 const MAX_CONFIGS_PER_INSTALL: usize = 16;
 const MIN_CONTEXT: u32 = 4_096;
@@ -84,7 +85,7 @@ impl LaunchPlan {
     /// its context instead of refusing it, matching how llama.cpp stops at the end of its window.
     /// The API key travels in `STRATA_API_KEY`, never on the command line.
     pub fn server_args(&self, port: u16) -> Vec<String> {
-        vec![
+        let mut args = vec![
             "-u".into(),
             self.server.to_string_lossy().into_owned(),
             "--engine".into(),
@@ -96,7 +97,21 @@ impl LaunchPlan {
             "--port".into(),
             port.to_string(),
             "--fit-max-tokens".into(),
-        ]
+        ];
+        // Older supported installs (including the pinned setup release) do not know this flag.
+        // Inspect the installed launcher without executing it; diagnostics must never stop a model
+        // from starting. A bounded or unreadable source simply leaves optional capture disabled.
+        if read_bounded(&self.server, MAX_SERVER_CAPABILITY_BYTES).is_ok_and(|source| {
+            [
+                b"\"--api-monitor\"".as_slice(),
+                b"'--api-monitor'".as_slice(),
+            ]
+            .iter()
+            .any(|flag| source.windows(flag.len()).any(|part| part == *flag))
+        }) {
+            args.push("--api-monitor".into());
+        }
+        args
     }
 }
 
@@ -919,8 +934,9 @@ mod tests {
         assert_eq!(model.name, "Qwen3.8-Flash-Next GSQ-RCO IQ3_S (Strata)");
         assert_eq!(model.path, fixture.config.to_string_lossy());
         assert!(!model.supports_vision);
-        assert_eq!(model.serving_context(98_304), 65_536);
-        assert_eq!(model.serving_context(32_768), 32_768);
+        for requested in [4_096, 32_768, 65_536, 98_304] {
+            assert_eq!(model.serving_context(requested), 65_536);
+        }
         assert_eq!(
             ready_install(std::slice::from_ref(&fixture.root)),
             Some(fixture.root.clone())
@@ -956,9 +972,28 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair == ["--host", "127.0.0.1"]));
         assert!(args.windows(2).any(|pair| pair == ["--port", "4321"]));
         assert!(args.contains(&"--fit-max-tokens".to_string()));
+        assert!(!args.contains(&"--api-monitor".to_string()));
         assert!(!args
             .iter()
             .any(|value| value == "--api-key" || value == "--open"));
+    }
+
+    #[test]
+    fn request_capture_is_enabled_only_when_the_installed_server_supports_it() {
+        let fixture = install(json!({}));
+        let plan = launch_plan(&fixture.config).unwrap();
+        fs::write(
+            &plan.server,
+            b"parser.add_argument(\"--api-monitor\", action='store_true')",
+        )
+        .unwrap();
+        assert!(plan
+            .server_args(4321)
+            .contains(&"--api-monitor".to_string()));
+        fs::write(&plan.server, b"older server without request capture").unwrap();
+        assert!(!plan
+            .server_args(4321)
+            .contains(&"--api-monitor".to_string()));
     }
 
     #[test]

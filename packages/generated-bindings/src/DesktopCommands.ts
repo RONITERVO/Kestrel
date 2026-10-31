@@ -91,6 +91,8 @@ import type { SpeechSynthesisRequest } from "./SpeechSynthesisRequest.js";
 import type { SpeechTranscription } from "./SpeechTranscription.js";
 import type { SpeechTranscriptionRequest } from "./SpeechTranscriptionRequest.js";
 import type { StartChatRequest } from "./StartChatRequest.js";
+import type { StrataDashboardRequestDetail } from "./StrataDashboardRequestDetail.js";
+import type { StrataDashboardSnapshot } from "./StrataDashboardSnapshot.js";
 import type { SummarizeMovieStudioConversationRequest } from "./SummarizeMovieStudioConversationRequest.js";
 import type { SystemSnapshot } from "./SystemSnapshot.js";
 import type { TaskHistoryPage } from "./TaskHistoryPage.js";
@@ -177,6 +179,8 @@ export type DesktopCommands = {
   get_setup_profile_text: { args: Record<string, never>; result: string };
   get_setup_snapshot: { args: Record<string, never>; result: SetupSnapshot };
   get_speech_preferences: { args: { legacy?: LegacySpeechPreferences | null }; result: SpeechPreferences };
+  get_strata_dashboard: { args: Record<string, never>; result: StrataDashboardSnapshot };
+  get_strata_request_detail: { args: { id: string }; result: StrataDashboardRequestDetail };
   get_system_snapshot: { args: Record<string, never>; result: SystemSnapshot };
   get_task_history: { args: { id: string; query: TaskHistoryQuery }; result: TaskHistoryPage };
   get_task_memory: { args: { id: string }; result: TaskMemorySnapshot };

@@ -29,6 +29,8 @@ mod production;
 pub use production::*;
 mod task_memory;
 pub use task_memory::*;
+mod strata_dashboard;
+pub use strata_dashboard::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -96,17 +98,18 @@ pub struct ModelInfo {
     #[serde(default)]
     pub engine: ModelEngine,
     /// Context the engine was installed with. Kestrel never asks such an engine for another
-    /// window, and every prompt budget for the model is capped to it.
+    /// window, and every feature uses this exact window when budgeting its prompts.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub fixed_context_window: Option<u32>,
 }
 
 impl ModelInfo {
-    /// The context a request to this model may use, given the window the settings asked for.
+    /// The context this model actually serves. Fixed-context engines ignore a feature's saved
+    /// window in both directions; reserving a reply against a smaller window can discard history
+    /// even though the loaded engine has room for it. Configurable engines use the requested size.
     pub fn serving_context(&self, requested: u32) -> u32 {
-        self.fixed_context_window
-            .map_or(requested, |fixed| requested.min(fixed))
+        self.fixed_context_window.unwrap_or(requested)
     }
 }
 

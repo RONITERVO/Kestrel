@@ -68,9 +68,15 @@ One `RuntimeManager` owns Kestrel-managed model processes and one semaphore owns
 
 Movie story/scene chat, Image Studio design assistance, and Music's optional writing assistants use that same lease. Kestrel explicitly unloads Comfy models before language-model work and stops the language-model runtime before H3, MOSS-Image Base, or Music 3 rendering, so large stacks never compete for the GPU. Kestrel owns Comfy lifecycle and queue polling; it never routes through or assumes a separate hosted product.
 
-Managed launches bind to a private loopback port, use a random session API key, one slot, strict full-GPU placement, no prompt RAM cache, and no silent fit/offload. The API key is redacted from the visible launch proof.
+Managed launches bind to a private loopback port, use a random session API key, and share one inference slot. llama.cpp uses strict full-GPU placement, no prompt RAM cache, and no silent fit/offload. Strata uses its validated installed configuration, including the fixed context and CPU/GPU expert placement. The API key is redacted from the visible launch proof.
 
 System defines the default engine, context, output allowance, thread count, and advanced policy for every local model. Optional per-model exceptions override those defaults; a workspace's explicit model setting overrides both. Research keeps its additional archive and tool-loop limits in a separate, clearly labeled override.
+
+Strata's installed context is fixed: Kestrel uses that exact window for chat, Computer Tasks, research, and Studio assistants, even when older saved settings request a smaller window. The context controls show the installed value and are read-only for Strata; output allowances remain adjustable.
+
+Open **Strata dashboard** in the shared header to monitor Kestrel's current Strata runtime: activity, GPU/CPU/RAM, context, prompt processing, output speed, and recent request timing and text. It observes the existing authenticated loopback server without loading another model or occupying inference. Updates run only while the dashboard is open and visible, and can be paused. Strata keeps at most 100 request records in memory; stopping the runtime clears these diagnostics without deleting saved conversations or tasks. Request text is fetched only when selected and is size-limited. Runtime credentials never reach the UI. This is separate from a manually launched Strata server on port 8080; Kestrel's owned server uses a private port.
+
+Older Strata installations remain usable: Kestrel enables optional request capture only when the installed server supports it. Missing metrics appear as unavailable rather than guessed values. Update Strata and restart the model to obtain features absent from an older server.
 
 > Warning: invalid or oversized values can stop startup or exhaust VRAM. Runtime and hardware limits still apply.
 

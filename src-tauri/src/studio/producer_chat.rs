@@ -1353,6 +1353,14 @@ mod tests {
         );
         assert_eq!(turn.bytes, (65_536 - 32_768 - 2_048) * 4);
         assert!(turn.boundary.contains("65536-token"), "{}", turn.boundary);
+        let lower_saved_window = PromptLimit::for_model(
+            &model,
+            32_768,
+            MAX_CHAT_OUTPUT_TOKENS + STUDIO_TEMPLATE_TOKENS,
+            MAX_CONTEXT_BYTES,
+        );
+        assert_eq!(lower_saved_window.bytes, turn.bytes);
+        assert_eq!(lower_saved_window.boundary, turn.boundary);
 
         // Far under the old 768 KiB ceiling, yet more than a 64K window can read.
         let prepared = PreparedStudioTurn {

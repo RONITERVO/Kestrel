@@ -1,6 +1,7 @@
 import { Bird, BookOpen, Rotate3d, ShieldCheck } from "lucide-react";
 import type { AppSnapshot, ServiceStatus } from "../contracts/index";
 import { GpuMemoryActions, InferenceSpeedIndicator } from "../features/control/GpuMemory";
+import { StrataDashboardButton } from "../features/control/StrataDashboard";
 import type { BookControls } from "./book/BookShell";
 import { chapterOf, type AppView } from "./book/chapters";
 
@@ -52,6 +53,7 @@ export function BookBanner({
       </div>
       <div className="banner-actions header-actions">
         <InferenceSpeedIndicator />
+        <StrataDashboardButton />
         <GpuMemoryActions gpu={gpu} onClean={onCleanVram} onRelease={onReleaseAiMemory} onError={onError} />
         {!allReady && <button className="quiet-button compact" onClick={onPrepare}>Prepare services</button>}
         {controls.webgl && (
@@ -76,7 +78,7 @@ function StatusPill({ state, label, kind }: { state: ServiceState; label: string
   return (
     <span className={`chip status-pill status-${state} ${tone}`} aria-label={`${label}: ${state}`} title={`${kind}: ${label} (${state})`}>
       <span className="status-dot" aria-hidden="true" />
-      {label}
+      <span className="status-label">{label}</span>
       <small>{stateWords[state]}</small>
     </span>
   );

@@ -154,8 +154,10 @@ export function MusicStudio({
     if (!modelId && (selectedModelId || models[0]?.id)) setModelId(selectedModelId ?? models[0]?.id ?? "");
   }, [modelId, models, selectedModelId]);
 
-  const inheritedRuntimePolicy = effectiveModelRuntimePolicy(controlSettings, modelId);
-  const runtimePolicy = runtimePolicyOverride ?? inheritedRuntimePolicy;
+  const fixedContextWindow = models.find((model) => model.id === modelId)?.fixedContextWindow;
+  const inheritedRuntimePolicy = effectiveModelRuntimePolicy(controlSettings, modelId, fixedContextWindow);
+  const requestedRuntimePolicy = runtimePolicyOverride ?? inheritedRuntimePolicy;
+  const runtimePolicy = { ...requestedRuntimePolicy, contextWindow: fixedContextWindow ?? requestedRuntimePolicy.contextWindow };
   const inspectorPages = useRef<FlowPagesController | null>(null);
   const elsewhereRef = useRef<HTMLElement>(null);
   const selectedSection = project?.sections.find((section) => section.id === selectedSectionId) ?? project?.sections[0];
@@ -748,7 +750,7 @@ export function MusicStudio({
               onApply={(lyrics) => mutate((current) => ({ ...current, sections: applyTaggedLyrics(current.sections, lyrics) }))}
             />
           </section>
-          <details className="workspace-runtime-policy music-model-limits"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} disabled={assistantBusy || busy} expert={advancedEnabled} scope="Music collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
+          <details className="workspace-runtime-policy music-model-limits"><summary>Model limits · {runtimePolicy.contextWindow.toLocaleString()} context · {runtimePolicy.maxOutputTokens.toLocaleString()} output</summary><ModelRuntimePolicyControls value={runtimePolicy} inherited={inheritedRuntimePolicy} fixedContextWindow={fixedContextWindow} disabled={assistantBusy || busy} expert={advancedEnabled} scope="Music collaborator" onChange={setRuntimePolicyOverride} onReset={() => setRuntimePolicyOverride(undefined)} /></details>
         </FlowPages>
       </aside>
 
