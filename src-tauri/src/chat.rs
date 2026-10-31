@@ -509,6 +509,48 @@ mod tests {
         assert_eq!(attachment_budget, 5_000);
     }
 
+    #[test]
+    fn strata_keeps_an_earlier_image_with_a_reply_as_large_as_the_saved_window() {
+        let model = crate::model::ModelInfo {
+            id: "strata".into(),
+            name: "Strata".into(),
+            path: "strata-iq3_s.json".into(),
+            source: "Strata".into(),
+            bytes: 1,
+            architecture: None,
+            context_length: Some(65_536),
+            chat_template: true,
+            quantization: None,
+            mmproj_path: Some("mmproj.gguf".into()),
+            supports_vision: true,
+            supports_audio: false,
+            recommendation: String::new(),
+            engine: crate::model::ModelEngine::Strata,
+            fixed_context_window: Some(65_536),
+        };
+        let mut first = chat_message("user", "Read this page and calculate its totals.");
+        let mut image = test_attachment("a", 0);
+        image.name = "page.png".into();
+        image.kind = "image".into();
+        image.mime_type = "image/png".into();
+        image.context_mode = "native_media".into();
+        first.attachments.push(image);
+        let messages = [
+            first,
+            chat_message("assistant", "The report is ready."),
+            chat_message("user", "Recheck the footer in the original image."),
+        ];
+        // Reproduces the live failure: saved context 32K, requested reply 32K, loaded Strata 64K.
+        // A smaller feature budget fell back to 4K characters and omitted the image-bearing turn.
+        let context = model.serving_context(32_768);
+        let budget = crate::models::prompt_char_budget(context, 32_768 + 1_024)
+            .unwrap_or(4_096)
+            .saturating_sub(prompt_catalog::text(PromptId::ChatSystem).len());
+        let (history, omitted, _) = fit_chat_history(&messages, budget);
+        assert_eq!(omitted, 0);
+        assert_eq!(history, messages);
+    }
+
     fn test_attachment(id: &str, extracted_chars: usize) -> crate::attachments::ContextAttachment {
         crate::attachments::ContextAttachment {
             id: id.repeat(64),

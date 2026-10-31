@@ -8,6 +8,6 @@ export type ModelInfo = { id: string, name: string,
 path: string, source: string, bytes: number, architecture?: string | null, contextLength?: number | null, chatTemplate: boolean, quantization?: string | null, mmprojPath?: string | null, supportsVision: boolean, supportsAudio: boolean, recommendation: string, engine: ModelEngine,
 /**
  * Context the engine was installed with. Kestrel never asks such an engine for another
- * window, and every prompt budget for the model is capped to it.
+ * window, and every feature uses this exact window when budgeting its prompts.
  */
 fixedContextWindow?: number | null, };

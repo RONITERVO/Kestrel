@@ -8,6 +8,8 @@ export const createProducerWorkflow = (plan: ProducerWorkflowPlan) => invoke("cr
 export const startProducerWorkflow = (id: string) => invoke("start_producer_workflow", { id });
 export const stopProducerWorkflow = (id: string) => invoke("stop_producer_workflow", { id });
 export const getProducerTaskStatus = (id: string) => invoke("get_producer_task_status", { id });
+export const getStrataDashboard = () => invoke("get_strata_dashboard", {});
+export const getStrataRequestDetail = (id: string) => invoke("get_strata_request_detail", { id });
 import type { MovieEditorGenerateRequest, MovieEditorJob, MovieEditorRangeRequest, MovieEditorState } from "../contracts/index";
 import { readLegacySpeechPreferences } from "./legacySpeechPreferences";
 import type { DesktopCommands, ExportedFiles, NarrationExportRequest, NarrationPreferences, ResearchSpeechPreferences, VadSettings } from "../contracts/index";

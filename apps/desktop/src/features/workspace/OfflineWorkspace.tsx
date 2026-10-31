@@ -130,7 +130,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   const [newRoot, setNewRoot] = useState("");
   const selected = control.models.find((model) => model.id === selectedId);
   const selectedOverride = settings.modelOverrides.find((item) => item.modelId === selectedId);
-  const effectiveContext = selectedOverride?.contextWindow ?? settings.contextWindow;
+  const effectiveContext = selected?.fixedContextWindow ?? selectedOverride?.contextWindow ?? settings.contextWindow;
   const effectiveMaxOutput = selectedOverride?.maxOutputTokens ?? settings.maxOutputTokens;
   const effectiveThinkingLevel: ThinkingLevel = selectedOverride?.thinkingLevel ?? settings.thinkingLevel ?? "high";
   const [chatThinkingLevel, setChatThinkingLevel] = useState<ThinkingLevel | "default">("default");
@@ -1069,8 +1069,9 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
               Context
               <input
                 type="number"
-                disabled={!selectedOverride}
+                disabled={!selectedOverride || selected?.fixedContextWindow != null}
                 value={effectiveContext}
+                title={selected?.fixedContextWindow != null ? "Fixed by the installed Strata model" : undefined}
                 onChange={(event) =>
                   updateSelectedRuntime("contextWindow", event.target.value)
                 }

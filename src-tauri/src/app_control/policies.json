@@ -1,4 +1,6 @@
 {
+  "get_strata_dashboard": ["read", "Observe the currently managed Strata runtime. Does not start a model or acquire inference; credentials remain native."],
+  "get_strata_request_detail": ["read", "Read one bounded, in-memory request record from the currently managed Strata runtime."],
   "list_app_actions": [
     "read",
     "Read the current native state. This does not authorize generation or apply a proposal."

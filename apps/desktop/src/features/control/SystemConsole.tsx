@@ -260,6 +260,7 @@ export function SystemConsole({ visible, initialSettings, initialControl, onSave
   const gpu = system?.gpu;
   const usedPercent = gpu ? Math.min(100, (gpu.usedMib / gpu.totalMib) * 100) : 0;
   const models = system?.models ?? [];
+  const researchModel = models.find((model) => model.id === system?.control.selectedModelId) ?? models[0];
   const activeModel = system?.managedRuntime.modelName ?? models.find((item) => item.id === controlDraft.selectedModelId)?.name ?? "No model selected";
 
   return (
@@ -377,12 +378,12 @@ export function SystemConsole({ visible, initialSettings, initialControl, onSave
                 <div className="model-runtime-row">
                   <TokenDropdownSetting
                     label="Context"
-                    hint="Model only"
-                    value={modelOverride?.contextWindow ?? controlDraft.contextWindow}
+                    hint={overrideModel?.fixedContextWindow != null ? "Fixed by installed model" : "Model only"}
+                    value={overrideModel?.fixedContextWindow ?? modelOverride?.contextWindow ?? controlDraft.contextWindow}
                     options={STANDARD_CONTEXT_OPTIONS}
                     recommendedValue={overrideProvenProfile?.recommendedContextWindow}
                     recommendedLabel={gpu ? `${formatMib(gpu.totalMib)} GPU` : undefined}
-                    disabled={!modelOverride}
+                    disabled={!modelOverride || overrideModel?.fixedContextWindow != null}
                     allowCustom={controlDraft.advancedMode}
                     onChange={(value) => updateOverrideNumber("contextWindow", value)}
                   />
@@ -407,7 +408,7 @@ export function SystemConsole({ visible, initialSettings, initialControl, onSave
       {tab === "research" && <FlowPages label="Research policy pages" resetKey="research" className="settings-panel system-tab-panel" footer={<div className="settings-actions"><span/><button className="primary-button" disabled={!!busy} onClick={() => void saveResearch()}>{busy === "save-research" ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Save Research policy</button></div>}>
         <div className="settings-heading"><div><span className="eyebrow">Workspace-specific override</span><h2>Offline Research policy</h2><p>Standard Research inherits the selected model's System policy. Enable this only when research genuinely needs a different context/output budget or deeper orchestration.</p></div><label className="advanced-toggle"><input type="checkbox" checked={researchDraft.advancedMode} onChange={(event) => setResearchDraft((current) => ({ ...current, advancedMode: event.target.checked }))}/><span/><strong>Research override</strong></label></div>
         <div className={`advanced-settings ${researchDraft.advancedMode ? "enabled" : "disabled"}`}>
-          <NumberSetting label="Context override" hint="Research only" value={researchDraft.contextWindow} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("contextWindow", value)}/>
+          <NumberSetting label="Context override" hint={researchModel?.fixedContextWindow != null ? "Fixed by installed model" : "Research only"} value={researchModel?.fixedContextWindow ?? researchDraft.contextWindow} disabled={!researchDraft.advancedMode || researchModel?.fixedContextWindow != null} onChange={(value) => updateResearchNumber("contextWindow", value)}/>
           <NumberSetting label="Output override" hint="Research only" value={researchDraft.maxOutputTokens} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("maxOutputTokens", value)}/>
           <NumberSetting label="Research lanes" hint="Distinct planning angles" value={researchDraft.researchLanes} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("researchLanes", value)}/>
           <NumberSetting label="Results per lane" hint="Compact candidate memory" value={researchDraft.resultsPerLane} disabled={!researchDraft.advancedMode} onChange={(value) => updateResearchNumber("resultsPerLane", value)}/>

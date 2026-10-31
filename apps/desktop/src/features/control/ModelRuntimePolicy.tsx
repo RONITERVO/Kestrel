@@ -1,4 +1,4 @@
-import type { ControlSettings } from "../../contracts/index";
+import type { ControlSettings, ModelInfo } from "../../contracts/index";
 import { runtimePolicyCatalog as limits } from "../../contracts/index";
 import "./model-streams.css";
 
@@ -7,15 +7,16 @@ export type RuntimePolicyValue = Pick<ControlSettings, "contextWindow" | "maxOut
 export function effectiveModelRuntimePolicy(
   settings: ControlSettings | undefined,
   modelId: string | undefined,
+  fixedContextWindow?: ModelInfo["fixedContextWindow"],
 ): RuntimePolicyValue {
   const fallback = {
-    contextWindow: settings?.contextWindow ?? 32_768,
+    contextWindow: fixedContextWindow ?? settings?.contextWindow ?? 32_768,
     maxOutputTokens: settings?.maxOutputTokens ?? 32_768,
   };
   if (!settings || !modelId) return fallback;
   const override = settings.modelOverrides?.find((item) => item.modelId === modelId);
   return {
-    contextWindow: override?.contextWindow ?? fallback.contextWindow,
+    contextWindow: fixedContextWindow ?? override?.contextWindow ?? fallback.contextWindow,
     maxOutputTokens: override?.maxOutputTokens ?? fallback.maxOutputTokens,
   };
 }
@@ -25,6 +26,7 @@ export function ModelRuntimePolicyControls({
   inherited,
   disabled,
   expert = false,
+  fixedContextWindow,
   scope,
   onChange,
   onReset,
@@ -33,11 +35,13 @@ export function ModelRuntimePolicyControls({
   inherited?: RuntimePolicyValue;
   disabled: boolean;
   expert?: boolean;
+  fixedContextWindow?: ModelInfo["fixedContextWindow"];
   scope: string;
   onChange: (value: RuntimePolicyValue) => void;
   onReset?: () => void;
 }) {
   const change = (key: keyof RuntimePolicyValue, raw: string) => {
+    if (key === "contextWindow" && fixedContextWindow != null) return;
     const parsed = Number.parseInt(raw, 10);
     const tier = expert ? limits.advanced : limits.standard;
     const minimum = key === "contextWindow" ? limits.minimumContextWindow : limits.minimumMaxOutputTokens;
@@ -50,9 +54,9 @@ export function ModelRuntimePolicyControls({
     && value.maxOutputTokens === inherited?.maxOutputTokens;
   return <fieldset className="model-runtime-policy" disabled={disabled}>
     <legend>Local model limits</legend>
-    <label><span>Context window<small>{scope}</small></span><input aria-label={`${scope} context window`} type="number" min={limits.minimumContextWindow} max={expert ? limits.advanced.maximumContextWindow : limits.standard.maximumContextWindow} step={1_024} value={value.contextWindow} onChange={(event) => change("contextWindow", event.target.value)} /></label>
+    <label><span>Context window<small>{fixedContextWindow != null ? "Fixed by installed model" : scope}</small></span><input aria-label={`${scope} context window`} type="number" disabled={fixedContextWindow != null} min={limits.minimumContextWindow} max={expert ? limits.advanced.maximumContextWindow : limits.standard.maximumContextWindow} step={1_024} value={fixedContextWindow ?? value.contextWindow} onChange={(event) => change("contextWindow", event.target.value)} /></label>
     <label><span>Maximum output<small>{scope}</small></span><input aria-label={`${scope} maximum output`} type="number" min={limits.minimumMaxOutputTokens} max={expert ? limits.advanced.maximumMaxOutputTokens : limits.standard.maximumMaxOutputTokens} step={1_024} value={value.maxOutputTokens} onChange={(event) => change("maxOutputTokens", event.target.value)} /></label>
-    <div className="model-runtime-policy-state"><strong>{inheritedNow ? "Matches current model policy" : "Workspace override"}</strong><small>Changes apply to the next model turn. A context change safely reloads the selected model when required.</small></div>
+    <div className="model-runtime-policy-state"><strong>{inheritedNow ? "Matches current model policy" : "Workspace override"}</strong><small>{fixedContextWindow != null ? "The installed model fixes its context window. Output changes apply to the next turn." : "Changes apply to the next model turn. A context change safely reloads the selected model when required."}</small></div>
     {onReset && <button type="button" disabled={disabled || inheritedNow} onClick={onReset}>Restore current model values</button>}
   </fieldset>;
 }

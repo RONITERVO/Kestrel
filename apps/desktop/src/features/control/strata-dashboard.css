@@ -1,0 +1,28 @@
+.strata-dashboard-overlay { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; background: var(--scrim); padding: 20px; }
+.strata-dashboard { width: min(1250px, 96vw); height: min(900px, 94vh); display: flex; flex-direction: column; gap: 12px; padding: 20px; background: var(--paper); color: var(--ink); border: var(--stroke); border-radius: var(--radius-card); box-shadow: var(--lift); min-height: 0; }
+.strata-dashboard header { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.strata-dashboard header > div:last-child { display: flex; gap: 8px; }
+.strata-dashboard h2, .strata-dashboard h3, .strata-dashboard p { margin: 0; }
+.strata-dashboard h2 { font-size: 28px; }
+.strata-dashboard h3 { font-size: 19px; }
+.strata-dashboard-notice, .strata-dashboard footer { font-size: 12px; color: var(--ink-3); }
+.strata-dashboard-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.strata-dashboard-cards article { display: flex; flex-direction: column; gap: 4px; border: var(--stroke-soft); padding: 10px; border-radius: var(--radius-chip); min-width: 0; }
+.strata-dashboard-cards strong { font: 20px var(--font-data); }
+.strata-dashboard-cards span, .strata-dashboard-cards small { font-size: 12px; }
+.strata-dashboard-cards svg { width: 100%; height: 26px; }
+.strata-dashboard-cards polyline { fill: none; stroke: var(--act); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.strata-dashboard-workspace { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr); gap: 16px; flex: 1; min-height: 0; }
+.strata-dashboard-requests, .strata-dashboard-detail { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.strata-dashboard-requests .paged-list { flex: 1; min-height: 0; }
+.strata-dashboard-requests .strata-dashboard-request { display: flex; flex-direction: column; align-items: start; gap: 4px; padding: 8px; width: 100%; text-align: left; border: var(--stroke-soft); background: var(--paper); font-size: 13px; }
+.strata-dashboard-requests .strata-dashboard-request.selected { background: var(--act-wash); border-color: var(--act); }
+.strata-dashboard-requests small { font-size: 12px; }
+.strata-dashboard-request-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-size: 12px; }
+.strata-dashboard-request-facts span { display: flex; flex-direction: column; }
+.strata-dashboard-tabs { display: flex; gap: 8px; }
+.strata-dashboard-tabs button { text-transform: capitalize; }
+.strata-dashboard-tabs [aria-selected=true] { background: var(--act-wash); }
+.strata-dashboard-content { flex: 1; min-height: 0; border: var(--stroke-soft); }
+.strata-dashboard-content pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--font-data); margin: 0; }
+@media (max-width: 900px) { .strata-dashboard { padding: 12px; gap: 8px; } .strata-dashboard-workspace { grid-template-columns: minmax(190px, 1fr) minmax(0, 2fr); } }

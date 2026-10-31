@@ -254,6 +254,17 @@ impl RuntimeManager {
             .collect()
     }
 
+    /// Observation only: never starts a process or takes the inference slot. The connection's
+    /// credential stays in native code; the dashboard only GETs fixed read-only endpoints.
+    pub(crate) async fn strata_monitor_connection(&self) -> Option<ModelConnection> {
+        self.process
+            .lock()
+            .await
+            .as_ref()
+            .filter(|process| process.connection.engine == ModelEngine::Strata)
+            .map(|process| process.connection.clone())
+    }
+
     /// The active managed process remains protected from producer-triggered competing-app cleanup.
     /// This is intentionally a passive ownership lookup and does not perform a health probe.
     pub async fn owned_process_id(&self) -> Option<u32> {
@@ -737,12 +748,10 @@ foreach($item in $all){
 }
 
 /// The context window the runtime process must have for this model. An engine that fixes its
-/// context at install time is reused at that window whatever a feature asked for; feature prompt
-/// budgets are capped separately with `ModelInfo::serving_context`.
+/// context at install time is reused at that window whatever a feature asked for. Feature prompt
+/// budgets use the same `ModelInfo::serving_context` rule.
 fn runtime_context(model: &ModelInfo, settings: &ControlSettings) -> u32 {
-    model
-        .fixed_context_window
-        .unwrap_or_else(|| settings.context_window.max(1))
+    model.serving_context(settings.context_window.max(1))
 }
 
 fn process_matches(

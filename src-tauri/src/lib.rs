@@ -32,6 +32,7 @@ mod speech_preferences;
 mod speech_text;
 mod store;
 mod strata;
+mod strata_dashboard;
 mod structured_output;
 mod studio;
 mod timed_text;
@@ -2749,6 +2750,21 @@ async fn get_control_snapshot(
 }
 
 #[tauri::command]
+async fn get_strata_dashboard(
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::StrataDashboardSnapshot, String> {
+    Ok(strata_dashboard::snapshot(&state.runtime).await)
+}
+
+#[tauri::command]
+async fn get_strata_request_detail(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::StrataDashboardRequestDetail, String> {
+    strata_dashboard::detail(&state.runtime, &id).await
+}
+
+#[tauri::command]
 async fn scan_local_models(state: State<'_, AppState>) -> Result<ControlSnapshot, String> {
     ensure_workspace_idle(&state)?;
     let research = state
@@ -4516,6 +4532,8 @@ pub fn run() {
             clean_vram,
             force_clean_vram,
             get_control_snapshot,
+            get_strata_dashboard,
+            get_strata_request_detail,
             get_proven_hardware_profiles,
             scan_local_models,
             list_model_downloads,
