@@ -61,15 +61,17 @@ use model_download::{
     ModelDownloadInspection, ModelDownloadManager, ModelDownloadRecord, ModelDownloadRequest,
 };
 use models::{
-    AcceptMovieStoryRevisionRequest, AppSnapshot, AttachMovieProducerReferencesRequest,
-    ChatSession, ChatSessionSummary, ChatStart, ComputerTaskAccess, ComputerTaskRequest,
-    ComputerTaskRun, ComputerTaskSummary, ControlSettings, ControlSnapshot,
-    CreateMovieProducerProjectRequest, DeveloperRepairReport, DeveloperRepairRequest,
-    MovieProducerWorkspace, MovieStudioChatRequest, MovieStudioConversation, ProfileTransfer,
-    ResearchReport, ResearchSettings, ResetMovieStudioConversationRequest,
-    ResumeComputerTaskRequest, RunResearchRequest, SaveMovieScenesRequest,
-    SaveMovieStoryRevisionRequest, StartChatRequest, SummarizeMovieStudioConversationRequest,
-    SystemSnapshot,
+    AppSnapshot, CaptureMovieH3FrameRequest, ChatSession, ChatSessionSummary, ChatStart,
+    CompileMovieH3WindowRequest, ComputerTaskAccess, ComputerTaskRequest, ComputerTaskRun,
+    ComputerTaskSummary, ControlSettings, ControlSnapshot, CreateMovieH3ProjectRequest,
+    CreateMovieH3SceneRequest, DeleteMovieH3EntityRequest, DeveloperRepairReport,
+    DeveloperRepairRequest, H3EnvironmentSnapshot, H3GenerationStartReceipt, H3ProductionDigest,
+    H3StageReferenceReceipt, H3StartGenerationRequest, H3TakeInspection,
+    H3UpsertPromptSectionReceipt, H3WindowCompileResult, MovieExportReceipt,
+    PlaceMovieH3TakeRequest, ProfileTransfer, RenderMovieExportRequest, ResearchReport,
+    ResearchSettings, ResumeComputerTaskRequest, RunResearchRequest, SaveMovieH3SceneRequest,
+    SaveMovieH3StoryRequest, StageMovieH3ReferenceRequest, StartChatRequest, SystemSnapshot,
+    UpsertMovieH3EntityRequest, UpsertMovieH3PromptSectionRequest,
 };
 use runtime::RuntimeManager;
 use std::{
@@ -81,14 +83,13 @@ use std::{
     },
 };
 use store::ResearchStore;
-use studio::summarize_studio_conversation;
 use studio::{
     ComfyWorkload, CreateImageProjectRequest, CreateMusicProjectRequest, ImageProject, ImageStudio,
-    ImageSummary, MovieEdit, MovieImageAssetGeneration, MovieProject, MovieReferenceImport,
-    MovieRenderState, MovieStudio, MovieStudioChatJob, MovieSummary, MusicLyricsRequest,
-    MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject, MusicStudio,
-    MusicSummary, PromptDraftJob, PromptDraftRequest, RepairMusicLyricsRangeRequest,
-    SaveMusicLyricsDocumentRequest, SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest,
+    ImageSummary, MovieImageAssetGeneration, MovieProject, MovieReferenceImport, MovieRenderState,
+    MovieStudio, MovieSummary, MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest,
+    MusicMidiSaveResult, MusicProject, MusicStudio, MusicSummary, PromptDraftJob,
+    PromptDraftRequest, RepairMusicLyricsRangeRequest, SaveMusicLyricsDocumentRequest,
+    SaveMusicMidiDocumentRequest, TranscribeMusicLyricsRequest,
 };
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -1129,17 +1130,10 @@ fn get_movie(id: String, state: State<'_, AppState>) -> Result<MovieProject, Str
 }
 
 #[tauri::command]
-async fn create_movie_producer_project(
-    request: CreateMovieProducerProjectRequest,
+fn get_movie_h3_digest(
+    id: String,
     state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    let models = state.models.read().await.clone();
-    let model = models
-        .iter()
-        .find(|model| model.id == request.collaborator_model_id)
-        .ok_or_else(|| {
-            "The selected Studio collaborator is no longer in the local model catalog.".to_string()
-        })?;
+) -> Result<H3ProductionDigest, String> {
     let research = state
         .research_settings
         .load()
@@ -1148,215 +1142,361 @@ async fn create_movie_producer_project(
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
-    let _guard = claim_workspace(&state)?;
     state
         .studio
-        .create_producer_project(
-            request,
-            &model.name,
+        .production_digest(
+            &id,
+            &research.comfy_root,
             research.advanced_mode || control.advanced_mode,
         )
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn attach_movie_producer_references(
-    request: AttachMovieProducerReferencesRequest,
+fn get_movie_h3_environment(state: State<'_, AppState>) -> Result<H3EnvironmentSnapshot, String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    Ok(state.studio.environment_snapshot(&research.comfy_root))
+}
+
+#[tauri::command]
+async fn install_movie_h3_turbo_loras(
+    state: State<'_, AppState>,
+) -> Result<H3EnvironmentSnapshot, String> {
+    let _guard = claim_workspace(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let cancel = CancellationToken::new();
+    state
+        .movie_jobs
+        .lock()
+        .map_err(|_| "movie job registry is unavailable".to_string())?
+        .insert("turbo-loras".into(), cancel.clone());
+    let result = state
+        .studio
+        .install_turbo_loras(&research.comfy_root, &cancel)
+        .await
+        .map_err(|error| error.to_string());
+    if let Ok(mut jobs) = state.movie_jobs.lock() {
+        jobs.remove("turbo-loras");
+    }
+    result
+}
+
+#[tauri::command]
+fn list_movie_reference_assets(
+    state: State<'_, AppState>,
+) -> Result<Vec<MovieReferenceAsset>, String> {
+    state
+        .studio
+        .list_reference_assets()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_movie_h3_project(
+    request: CreateMovieH3ProjectRequest,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let _guard = claim_workspace(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    state
+        .studio
+        .create_h3_project(
+            request,
+            &research.comfy_root,
+            research.advanced_mode || control.advanced_mode,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn save_movie_h3_story(
+    request: SaveMovieH3StoryRequest,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<MovieProject, String> {
     let _guard = claim_workspace(&state)?;
     state
         .studio
-        .attach_producer_references(request, Some(&app))
+        .save_h3_story(request, Some(&app))
         .await
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn get_movie_producer_workspace(
-    id: String,
-    state: State<'_, AppState>,
-) -> Result<MovieProducerWorkspace, String> {
-    state
-        .studio
-        .get_producer_workspace(&id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn get_movie_studio_conversation(
-    project_id: String,
-    conversation_id: String,
-    state: State<'_, AppState>,
-) -> Result<MovieStudioConversation, String> {
-    state
-        .studio
-        .get_producer_conversation(&project_id, &conversation_id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn save_movie_story_revision(
-    request: SaveMovieStoryRevisionRequest,
+async fn upsert_movie_h3_entity(
+    request: UpsertMovieH3EntityRequest,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<MovieProducerWorkspace, String> {
+) -> Result<MovieProject, String> {
     let _guard = claim_workspace(&state)?;
     state
         .studio
-        .save_story_revision(request, Some(&app))
+        .upsert_h3_entity(request, Some(&app))
         .await
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn accept_movie_story_revision(
-    request: AcceptMovieStoryRevisionRequest,
+async fn delete_movie_h3_entity(
+    request: DeleteMovieH3EntityRequest,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<MovieProducerWorkspace, String> {
+) -> Result<MovieProject, String> {
     let _guard = claim_workspace(&state)?;
     state
         .studio
-        .accept_story_revision(request, Some(&app))
+        .delete_h3_entity(request, Some(&app))
         .await
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn save_movie_scenes(
-    request: SaveMovieScenesRequest,
+async fn create_movie_h3_scene(
+    request: CreateMovieH3SceneRequest,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<MovieProducerWorkspace, String> {
+) -> Result<MovieProject, String> {
     let _guard = claim_workspace(&state)?;
-    state
-        .studio
-        .save_producer_scenes(request, Some(&app))
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn reset_movie_studio_conversation(
-    request: ResetMovieStudioConversationRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieStudioConversation, String> {
-    let _guard = claim_workspace(&state)?;
-    state
-        .studio
-        .reset_producer_conversation(request, Some(&app))
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn summarize_movie_studio_conversation(
-    request: SummarizeMovieStudioConversationRequest,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<MovieStudioConversation, String> {
-    ensure_workspace_idle(&state)?;
-    let models = state.models.read().await.clone();
-    if !models.iter().any(|model| model.id == request.model_id) {
-        return Err(
-            "The selected Studio collaborator is no longer in the local model catalog.".into(),
-        );
-    }
-    state
-        .work_active
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another local AI job is already active.".to_string())?;
-    let _guard = WorkGuard(&state.work_active);
-    let settings = state
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
         .control_settings
         .load()
         .map_err(|error| error.to_string())?;
-    summarize_studio_conversation(
-        &app,
-        &state.studio,
-        &state.runtime,
-        &models,
-        &settings,
-        &request,
-    )
-    .await
+    state
+        .studio
+        .create_h3_scene(
+            request,
+            research.advanced_mode || control.advanced_mode,
+            Some(&app),
+        )
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn start_movie_studio_chat(
-    request: MovieStudioChatRequest,
+async fn save_movie_h3_scene(
+    request: SaveMovieH3SceneRequest,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<MovieProject, String> {
+    let _guard = claim_workspace(&state)?;
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    state
+        .studio
+        .save_h3_scene(
+            request,
+            research.advanced_mode || control.advanced_mode,
+            Some(&app),
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn stage_movie_h3_reference(
+    request: StageMovieH3ReferenceRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<H3StageReferenceReceipt, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .stage_h3_reference(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn upsert_movie_h3_prompt_section(
+    request: UpsertMovieH3PromptSectionRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<H3UpsertPromptSectionReceipt, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .upsert_h3_prompt_section(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn capture_movie_h3_frame_guide(
+    request: CaptureMovieH3FrameRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieReferenceAsset, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .capture_h3_frame_guide(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn compile_movie_h3_window(
+    request: CompileMovieH3WindowRequest,
+    state: State<'_, AppState>,
+) -> Result<H3WindowCompileResult, String> {
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    state
+        .studio
+        .compile_h3_window_preview(
+            &request,
+            &research.comfy_root,
+            research.advanced_mode || control.advanced_mode,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn start_movie_h3_generation(
+    request: H3StartGenerationRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<H3GenerationStartReceipt, String> {
     ensure_workspace_idle(&state)?;
-    let models = state.models.read().await.clone();
-    if !models.iter().any(|model| model.id == request.model_id) {
-        return Err(
-            "The selected Studio collaborator is no longer in the local model catalog.".into(),
-        );
-    }
+    let research = state
+        .research_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let control = state
+        .control_settings
+        .load()
+        .map_err(|error| error.to_string())?;
+    let advanced = research.advanced_mode || control.advanced_mode;
+    let comfy_root = research.comfy_root;
+
     state
         .work_active
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another local AI job is already active.".to_string())?;
-    let cancel = CancellationToken::new();
-    match state.interactive_jobs.lock() {
-        Ok(mut jobs) => {
-            jobs.insert(request.request_id.clone(), cancel.clone());
-        }
-        Err(_) => {
+        .map_err(|_| "Another local AI or Studio job is already active.".to_string())?;
+
+    let project_id = request.project_id.clone();
+    let receipt = match state
+        .studio
+        .prepare_h3_generation(request, &comfy_root, advanced, Some(&app))
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
             state.work_active.store(false, Ordering::Release);
-            return Err("interactive job registry is unavailable".into());
+            return Err(error.to_string());
         }
+    };
+
+    let cancel = CancellationToken::new();
+    if let Err(error) = state
+        .movie_jobs
+        .lock()
+        .map_err(|_| "movie job registry is unavailable".to_string())
+        .map(|mut jobs| {
+            jobs.insert(project_id.clone(), cancel.clone());
+        })
+    {
+        state.work_active.store(false, Ordering::Release);
+        return Err(error);
     }
-    let request_id = request.request_id.clone();
-    let event_request = request.clone();
+
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         let managed = app_for_task.state::<AppState>();
-        let work_guard = WorkGuard(&managed.work_active);
-        let result = match managed.control_settings.load() {
-            Ok(settings) => {
-                MovieStudioChatJob {
-                    app: Some(app_for_task.clone()),
-                    studio: managed.studio.clone(),
-                    runtime: managed.runtime.clone(),
-                    models,
-                    settings,
-                    request,
-                    cancel,
-                }
-                .run()
-                .await
-            }
-            Err(error) => Err(error.to_string()),
-        };
+        let _guard = WorkGuard(&managed.work_active);
+        release_all_comfy_memory(&managed).await;
+        let _ = managed.runtime.stop_managed().await;
+        let result = managed
+            .studio
+            .run_h3_generation_queue(
+                &project_id,
+                &comfy_root,
+                advanced,
+                &cancel,
+                Some(&app_for_task),
+                |detail| {
+                    if managed.control.task_active.load(Ordering::Acquire) {
+                        if let Ok(mut tp) = managed.control.task_progress.lock() {
+                            *tp = Some((
+                                "Rendering MiniMax H3 window".into(),
+                                detail,
+                                app_control::now(),
+                            ));
+                        }
+                    }
+                },
+            )
+            .await
+            .map_err(|error| error.to_string());
+        release_all_comfy_memory(&managed).await;
         if let Err(error) = result {
-            studio::emit_studio_chat_error(&app_for_task, &event_request, error);
+            if cancel.is_cancelled() {
+                let _ = managed.studio.stop(&project_id, Some(&app_for_task));
+            } else {
+                managed.studio.fail(&project_id, error, Some(&app_for_task));
+            }
         }
-        if let Ok(mut jobs) = managed.interactive_jobs.lock() {
-            jobs.remove(&event_request.request_id);
-        }
-        drop(work_guard);
-        studio::emit_studio_chat_settled(&app_for_task, &event_request);
+        if let Ok(mut jobs) = managed.movie_jobs.lock() {
+            jobs.remove(&project_id);
+        };
     });
-    Ok(request_id)
+
+    Ok(receipt)
 }
 
 #[tauri::command]
-fn cancel_movie_studio_chat(request_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(cancel) = state
-        .interactive_jobs
-        .lock()
-        .map_err(|_| "interactive job registry is unavailable".to_string())?
-        .get(&request_id)
-    {
-        cancel.cancel();
-    }
-    Ok(())
+async fn place_movie_h3_take(
+    request: PlaceMovieH3TakeRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MovieProject, String> {
+    let _guard = claim_workspace(&state)?;
+    state
+        .studio
+        .place_h3_take(request, Some(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn inspect_movie_h3_take(
+    project_id: String,
+    job_id: String,
+    state: State<'_, AppState>,
+) -> Result<H3TakeInspection, String> {
+    state
+        .studio
+        .inspect_h3_take(&project_id, &job_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1445,28 +1585,19 @@ fn get_movie_render_state(
         .contains_key(&id);
     let render_phase = matches!(
         project.phase.as_str(),
-        "starting-renderer"
-            | "rendering"
-            | "rendering-scene-version"
-            | "rendering-transition"
-            | "assembling"
-    );
+        "starting-renderer" | "rendering" | "assembling"
+    ) || project.render_jobs.iter().any(|job| {
+        matches!(
+            job.status,
+            models::H3RenderJobStatus::Queued
+                | models::H3RenderJobStatus::Preparing
+                | models::H3RenderJobStatus::Rendering
+                | models::H3RenderJobStatus::PostProcessing
+        )
+    });
     state
         .studio
-        .movie_render_state(
-            &id,
-            registered
-                && (render_phase
-                    || state.studio.editor_state(&id).is_ok_and(|state| {
-                        state.jobs.iter().any(|job| {
-                            matches!(
-                                job.status,
-                                models::MovieEditorJobStatus::Writing
-                                    | models::MovieEditorJobStatus::Rendering
-                            )
-                        })
-                    })),
-        )
+        .movie_render_state(&id, registered && render_phase)
         .map_err(|error| error.to_string())
 }
 
@@ -1477,13 +1608,10 @@ async fn pick_movie_reference_files(
     let paths = rfd::AsyncFileDialog::new()
         .set_title("Attach H3 producer references")
         .add_filter("Pictures", &["png", "jpg", "jpeg", "webp", "bmp"])
+        .add_filter("Video", &["mp4", "m4v", "mov", "mkv", "webm"])
         .add_filter(
-            "Video (2-15 seconds)",
-            &["mp4", "m4v", "mov", "mkv", "webm"],
-        )
-        .add_filter(
-            "Audio (up to 15 seconds)",
-            &["wav", "mp3", "flac", "ogg", "oga", "m4a", "aac"],
+            "Audio",
+            &["wav", "mp3", "flac", "ogg", "oga", "opus", "m4a", "aac"],
         )
         .pick_files()
         .await
@@ -1563,159 +1691,78 @@ async fn import_image_take_as_movie_reference(
         .map_err(|error| error.to_string())
 }
 
+/// Brings a verified Kestrel-generated speech clip (`generated/*.opus`) into the movie reference
+/// library so it can bind a voice `@Handle` or sit on an audio lane.
 #[tauri::command]
-async fn save_movie_edits(
-    id: String,
-    edit: MovieEdit,
+async fn import_speech_clip_as_movie_reference(
+    relative_path: String,
+    label: Option<String>,
     state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    state
-        .studio
-        .save_edits(&id, edit)
-        .await
-        .map_err(|error| error.to_string())
+) -> Result<MovieReferenceAsset, String> {
+    let path = state
+        .speech
+        .generated_clip_path(&relative_path)
+        .map_err(|error| error.to_string())?;
+    let studio = state.studio.clone();
+    let chosen_label = label
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    tokio::task::spawn_blocking(move || {
+        studio.import_reference_path_named(&path, chosen_label.as_deref())
+    })
+    .await
+    .map_err(|error| format!("Speech reference import stopped unexpectedly: {error}"))?
+    .map_err(|error| error.to_string())
 }
 
+/// Brings a finished Music Studio take into the movie reference library for H3 audio conditioning
+/// or multi-lane soundtrack assembly.
 #[tauri::command]
-async fn render_movie_scenes(
-    id: String,
-    app: AppHandle,
+async fn import_music_take_as_movie_reference(
+    music_project_id: String,
+    take_id: String,
     state: State<'_, AppState>,
-) -> Result<MovieProject, String> {
-    ensure_workspace_idle(&state)?;
-    state
-        .work_active
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another local AI job is already active.".to_string())?;
+) -> Result<MovieReferenceAsset, String> {
     let project = state
-        .studio
-        .approve_producer_scenes(&id, Some(&app))
+        .music
+        .get(&music_project_id)
+        .map_err(|error| error.to_string())?;
+    let (index, take) = project
+        .takes
+        .iter()
+        .enumerate()
+        .find(|(_, take)| take.id == take_id)
+        .ok_or_else(|| "That music take no longer exists in its project.".to_string())?;
+    if take.status != "complete" {
+        return Err("Only a finished music take can be imported into Movie Studio.".into());
+    }
+    let folder = state
+        .music
+        .project_dir(&music_project_id)
+        .canonicalize()
+        .map_err(|error| format!("Cannot open the music project folder: {error}"))?;
+    let path = PathBuf::from(&take.path)
+        .canonicalize()
+        .map_err(|error| format!("Cannot open the music take {}: {error}", take.path))?;
+    if !path.starts_with(&folder) {
+        return Err(
+            "The music take is outside its project folder, so Kestrel will not import it.".into(),
+        );
+    }
+    let name = format!("{} · take {}", project.title.trim(), index + 1);
+    let studio = state.studio.clone();
+    tokio::task::spawn_blocking(move || studio.import_reference_path_named(&path, Some(&name)))
         .await
-        .map_err(|error| {
-            state.work_active.store(false, Ordering::Release);
-            error.to_string()
-        })?;
-    let cancel = CancellationToken::new();
-    state
-        .movie_jobs
-        .lock()
-        .map_err(|_| {
-            state.work_active.store(false, Ordering::Release);
-            "movie job registry is unavailable".to_string()
-        })?
-        .insert(id.clone(), cancel.clone());
-    spawn_movie_render(app, id, cancel);
-    Ok(project)
+        .map_err(|error| format!("Music reference import stopped unexpectedly: {error}"))?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn get_movie_editor_state(
+fn cancel_movie_render(
     id: String,
-    state: State<'_, AppState>,
-) -> Result<models::MovieEditorState, String> {
-    state
-        .studio
-        .editor_state(&id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn prepare_movie_editor_range(
-    request: models::MovieEditorRangeRequest,
-    edit: MovieEdit,
-    state: State<'_, AppState>,
-) -> Result<models::MovieEditorJob, String> {
-    let _guard = claim_workspace(&state)?;
-    state
-        .studio
-        .prepare_editor_range(request, edit)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn start_movie_editor_generation(
-    request: models::MovieEditorGenerateRequest,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<String, String> {
-    ensure_workspace_idle(&state)?;
-    let models = state.models.read().await.clone();
-    state
-        .studio
-        .validate_editor_generation(&request, &models)
-        .map_err(|error| error.to_string())?;
-    let settings = state
-        .control_settings
-        .load()
-        .map_err(|error| error.to_string())?;
-    state
-        .work_active
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another local AI or Studio job is already active.".to_string())?;
-    let cancel = CancellationToken::new();
-    let project_id = request.project_id.clone();
-    let job_id = request.job_id.clone();
-    state
-        .movie_jobs
-        .lock()
-        .map_err(|_| {
-            state.work_active.store(false, Ordering::Release);
-            "Movie job registry is unavailable".to_string()
-        })?
-        .insert(project_id.clone(), cancel.clone());
-    tauri::async_runtime::spawn(async move {
-        let managed = app.state::<AppState>();
-        let _guard = WorkGuard(&managed.work_active);
-        release_all_comfy_memory(&managed).await;
-        let _ = managed
-            .studio
-            .generate_editor_take(
-                request,
-                &managed.runtime,
-                &models,
-                &settings,
-                &cancel,
-                Some(&app),
-            )
-            .await;
-        if let Ok(mut jobs) = managed.movie_jobs.lock() {
-            jobs.remove(&project_id);
-        };
-    });
-    Ok(job_id)
-}
-
-fn spawn_movie_render(app: AppHandle, id: String, cancel: CancellationToken) {
-    tauri::async_runtime::spawn(async move {
-        let managed = app.state::<AppState>();
-        let _guard = WorkGuard(&managed.work_active);
-        release_all_comfy_memory(&managed).await;
-        let _ = managed.runtime.stop_managed().await;
-        let result = match managed.research_settings.load() {
-            Ok(settings) => managed
-                .studio
-                .render(&id, &settings.comfy_root, &cancel, Some(&app))
-                .await
-                .map_err(|error| error.to_string()),
-            Err(error) => Err(error.to_string()),
-        };
-        release_all_comfy_memory(&managed).await;
-        if let Err(error) = result {
-            if cancel.is_cancelled() {
-                let _ = managed.studio.stop(&id, Some(&app));
-            } else {
-                managed.studio.fail(&id, error, Some(&app));
-            }
-        }
-        if let Ok(mut jobs) = managed.movie_jobs.lock() {
-            jobs.remove(&id);
-        };
-    });
-}
-
-#[tauri::command]
-fn cancel_movie_render(id: String, state: State<'_, AppState>) -> Result<(), String> {
+) -> Result<MovieProject, String> {
     if let Some(cancel) = state
         .movie_jobs
         .lock()
@@ -1724,15 +1771,21 @@ fn cancel_movie_render(id: String, state: State<'_, AppState>) -> Result<(), Str
     {
         cancel.cancel();
     }
-    Ok(())
+    state
+        .studio
+        .stop(&id, Some(&app))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn render_movie_edit(id: String, state: State<'_, AppState>) -> Result<MovieProject, String> {
+async fn render_movie_edit(
+    request: RenderMovieExportRequest,
+    state: State<'_, AppState>,
+) -> Result<MovieExportReceipt, String> {
     let _guard = claim_workspace(&state)?;
     state
         .studio
-        .render_edit(&id)
+        .render_h3_export(request)
         .await
         .map_err(|error| error.to_string())
 }
@@ -3669,6 +3722,7 @@ async fn get_producer_environment(
         comfy_root: research.comfy_root.clone(),
         ..Default::default()
     };
+    let h3_env = state.studio.environment_snapshot(&research.comfy_root);
     let paths = [
         ("FFmpeg", research.ffmpeg_path),
         ("FFprobe", research.ffprobe_path),
@@ -3685,6 +3739,15 @@ async fn get_producer_environment(
             (
                 "video".into(),
                 serde_json::to_value(video_defaults).map_err(|e| e.to_string())?,
+            ),
+            (
+                "movieH3".into(),
+                serde_json::to_value(kestrel_app_core::MovieH3Defaults::default())
+                    .map_err(|e| e.to_string())?,
+            ),
+            (
+                "movieH3Environment".into(),
+                serde_json::to_value(h3_env).map_err(|e| e.to_string())?,
             ),
             (
                 "music".into(),
@@ -4465,29 +4528,32 @@ pub fn run() {
             cancel_research,
             list_movies,
             get_movie,
-            create_movie_producer_project,
-            attach_movie_producer_references,
-            get_movie_producer_workspace,
-            get_movie_studio_conversation,
-            save_movie_story_revision,
-            accept_movie_story_revision,
-            save_movie_scenes,
-            reset_movie_studio_conversation,
-            summarize_movie_studio_conversation,
-            start_movie_studio_chat,
-            cancel_movie_studio_chat,
+            get_movie_h3_digest,
+            get_movie_h3_environment,
+            install_movie_h3_turbo_loras,
+            list_movie_reference_assets,
+            create_movie_h3_project,
+            save_movie_h3_story,
+            upsert_movie_h3_entity,
+            delete_movie_h3_entity,
+            create_movie_h3_scene,
+            save_movie_h3_scene,
+            stage_movie_h3_reference,
+            upsert_movie_h3_prompt_section,
+            capture_movie_h3_frame_guide,
+            compile_movie_h3_window,
+            start_movie_h3_generation,
+            place_movie_h3_take,
+            inspect_movie_h3_take,
             start_studio_prompt_draft,
             cancel_studio_prompt_draft,
             get_movie_render_state,
             pick_movie_reference_files,
             list_movie_image_assets,
             import_image_take_as_movie_reference,
-            render_movie_scenes,
+            import_speech_clip_as_movie_reference,
+            import_music_take_as_movie_reference,
             cancel_movie_render,
-            save_movie_edits,
-            get_movie_editor_state,
-            prepare_movie_editor_range,
-            start_movie_editor_generation,
             render_movie_edit,
             reveal_movie,
             list_music_projects,

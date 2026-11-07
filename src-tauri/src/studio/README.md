@@ -1,185 +1,71 @@
 # Studio maintainer guide
 
-Kestrel Studio is producer-owned. A producer can start with a text-message-length idea: the local
-model expands the creative writing, while the producer decides where references belong. Native
-code handles long queues because small local models should not be trusted to schedule a batch.
-Every clip in a queue receives a distinct written scene, rather than a repeated prompt variation.
-Rust stores the creative record and performs every durable or
-media-affecting operation; React renders an editable view of that record. Local-model prose is an
-unapplied suggestion until a typed native boundary saves it.
+Kestrel Studio is producer-owned — whether driven by a human in the desktop UI or by the local
+Producer LLM through shared 1-to-1 `app_control` native capabilities. Rust stores the creative
+record and performs every durable, prompt-compiling, graph-constructing, and media-affecting
+operation; React renders an editable view of that record.
 
 ## Non-negotiable boundaries
 
-- Studio remains useful without the public network. Model HTTP and ComfyUI traffic are authenticated
-  loopback traffic only; there is no remote fallback.
+- Studio remains useful without the public network. Model HTTP and ComfyUI traffic are loopback
+  traffic only (`127.0.0.1`); there is no remote fallback. Optional Turbo LoRA installation uses
+  an explicit allowlisted Hugging Face commit (`Comfy-Org/MiniMax-H3`) with SHA-256 verification
+  and never runs automatically.
 - `RuntimeManager` owns the only language-model process and its semaphore owns the only inference
-  slot. Story chat, scene chat, prompt drafting, research, ordinary chat, and Computer Tasks all use
+  slot. Prompt drafting, music lyric drafting, research, ordinary chat, and Computer Tasks all use
   that gate.
-- Movie collaboration is tool-free. The story collaborator returns one complete Markdown document.
-  The scene collaborator returns bounded JSON operations that native code parses and applies to
-  producer-owned scene IDs. It has no filesystem, renderer, reference, frame, or audio authority.
-- The producer chooses scene context explicitly. The accepted story is always included; only checked
-  scene cards are sent in full. Reference assets, frame choices, and native H3 tags never enter scene
-  model context. Starting a distinct-scene queue also authorizes the four latest scenes written by
-  that queue as continuity context, as explained beside the queue controls.
-- `project.json`, producer workspaces, every story revision, scene-history snapshot, conversation,
-  source object, master, edit decision, and export receipt are durable user data. Interrupted work is
-  surfaced and partial collaborator text is preserved. It is never silently resumed or discarded.
-- H3, MOSS-Image Base, and Music 3 rendering starts only after language-model inference releases its lease
-  and Kestrel unloads the model runtime from the GPU.
-- Model output is never executed. Parse bounded typed data, validate IDs and sizes, use fixed argument
-  arrays, and persist the native result.
+- H3, MOSS-Image Base, Ideogram, and Music 3 / YuE2 rendering start only after language-model
+  inference releases its lease and Kestrel unloads the model runtime from the GPU.
+- `project.json` (`schemaVersion = 9`), reference library objects, render receipts, raw H3 masters,
+  placed timeline clips, and export receipts are durable user data. Interrupted jobs are surfaced
+  as `interrupted` on restart and are never silently resumed or discarded.
+- Model output is never executed. Parse bounded typed data, validate IDs and sizes, use fixed
+  command argument arrays without a shell, and persist the native result.
 
 ## Module ownership
 
 | Module | Owns | Must not own |
 | --- | --- | --- |
-| `studio.rs` | Movie project compatibility, reference store, H3 graphs, masters, edit/export facade | Conversation policy or React view state |
-| `producer.rs` | Recoverable producer workspace, immutable story revisions, scene cards/history, conversations, project-plan projection | Model HTTP or renderer execution |
-| `producer_chat.rs` | One-shot story/scene/summarization requests, strict scene-operation parsing, streaming events | Reference selection, frame selection, rendering, or arbitrary tools |
-| `producer/batch.rs` | Native queue validation, durable checkpoints and append receipts | Inference or automatic resume |
-| `producer_chat/batch.rs` | Fixed sequential one-scene requests using the shared inference gate | Model-selected scheduling, media selection or rendering |
-| `export.rs` | Bounded FFmpeg groups and manifest assembly | Creative decisions or source mutation |
-| `editor.rs` | Frozen endpoint jobs, one-shot writing, immutable editor masters and guarded placement | Agent loops or model-selected references/settings |
-| `editor_timeline.rs` | Timeline-to-source endpoint resolution and ripple replacement | Inference, rendering or filesystem mutation |
-| `editor_media.rs` | Fit the entire H3 frame grid to the selected duration while retaining its final frame | Original master mutation |
-| `prompt_draft.rs` | Tool-free image/reference/music drafting from producer context | Applying proposals, movie-scene mutation, or rendering |
+| `studio.rs` | Content-addressed reference store (`_references/`), ComfyUI process lifecycle, recoverable `project.json` (`schemaVersion = 9`) | React view state or arbitrary shell execution |
+| `h3_geometry.rs` | `17k + 5` frame alignment, H3 video VAE `[1, 4, 4, 4, 4]` token snapping, `40 Hz` audio mask snapping, aspect-preserving pass canvas scaling, `authored_v1` take placement | Filesystem mutation or network I/O |
+| `h3_references.rs` | `@Handle` normalization, window overlap + tightest-span specificity overrides, `9/3/3` H3 reference caps, `<Subject>`/`<Picture>`/`<Video>`/`<Audio>` slot numbering, `auto_stage_reference` | ComfyUI graph construction or FFmpeg execution |
+| `h3_prompt.rs` | 6-channel `H3FullReference`, 3-channel `H3Base`, and `CharacterSwap` / `HeadSwap` compilation, `<d>[Language] ...</d>` vocal events, 3-pass Turbo LoRA auto-binding | Filesystem mutation or ComfyUI submission |
+| `h3_graph.rs` | Pure stock ComfyUI (`v0.42.1+`) MiniMax H3 workflow JSON (`MiniMaxH3ReferenceToVideo`, `MiniMaxH3ImageToVideo`, `MiniMaxH3SigmaShift`, `MiniMaxH3AddGuide`, tiled VAE, AV noise masks, optional `taeh3` live preview) | Custom third-party Python workflow nodes or non-H3 video models |
+| `h3_media.rs` | Cropped/trimmed reference staging, spatial mask PNG generation, multi-lane window source video/WAV rendering, ridge-regularized 3×4 affine color-drift cancellation, take quality telemetry + 3 contact-sheet PNGs | Destructive edits to raw masters |
+| `h3_digest.rs` | Deterministic `< 4 KB` `H3ProductionDigest` snapshot (coverage spans, timeline gaps, entity counts, recent telemetry, concrete `nextActions`) for 64k-context Producer LLM resilience | Mutating project state |
+| `h3_engine.rs` | Shared H3 project/scene/entity/timeline commands, 3-pass quality ladder expansion (`0.2MP` -> `1MP` -> `1080p`), ComfyUI queue execution, non-destructive lane placement, legacy `v8` in-memory migration | Auto-resuming interrupted queues |
+| `export.rs` | Bounded `30s`-chunk multi-lane scene exports (`publish`, `archive`, `lossless`, `review`, `audio_flac`) with BT.709 signaling and measured linear peak-headroom audio scaling (`-1 dBFS`) | Source master mutation |
+| `prompt_draft.rs` | Tool-free story/image/reference/music drafting from producer context | Applying proposals or rendering |
 | `model_stream.rs` | OpenAI-compatible SSE framing and explicit reasoning-channel extraction | Feature prompts, schemas, or persistence |
-| `image_assets.rs` | Listing and recovery of stills made by the retired H3 pseudo-image pass (new pictures come from Image Studio takes) | Generating images or story/scene authority |
-| `image_studio.rs` | Recoverable image projects, structured composition, native MOSS graphs, immutable PNG takes | LLM process ownership or public-network fallback |
-| `live_preview.rs` | Bounded process-local preview state and visible preview events | Durable final-render truth |
-| `music.rs` | Recoverable song projects, producer arrangements, native Music 3 graphs, immutable takes and lyric revisions | LLM process ownership or fake stem claims |
+| `image_assets.rs` | Listing and recovery of legacy stills | Generating new images |
+| `image_studio.rs` | Recoverable image projects, structured composition, native MOSS/Ideogram graphs, immutable PNG takes | LLM process ownership or public-network fallback |
+| `live_preview.rs` | Bounded process-local `taeh3` preview state and visible preview events | Durable final-render truth |
+| `music.rs` | Recoverable song projects, producer arrangements, native Music 3 / YuE2 graphs, immutable takes and lyric revisions | LLM process ownership |
 | `music_lyrics_model.rs` | Bounded audio-listening and translation suggestions through a caller-owned lease | Durable lyric mutation or runtime ownership |
 | `music_midi.rs` | Bounded MIDI parsing/writing and recoverable piano-roll revisions | Source mutation or arbitrary path selection |
 
-If a change crosses rows, add a typed boundary rather than importing private state.
+## MiniMax H3 workflow & 3-pass quality ladder
 
-## Movie producer lifecycle
-
-```text
-starting material
-  -> create durable project and producer workspace
-  -> one tool-free local-model response becomes an immutable Markdown story revision
-  -> producer edits/saves any number of revisions
-  -> producer accepts one revision and chooses continued or fresh scene conversation
-  -> accepted story + explicitly selected scene cards enter scene chat
-  -> native code validates add/update/remove/split operations around stable scene IDs
-  -> every scene save creates a scene-history snapshot and projects cards into the renderer plan
-  -> producer binds first/last frames, visual references, exact audio, and guidance
-  -> explicit render queues changed scene cards; older masters remain immutable versions
-  -> producer arranges the timeline and explicitly exports an immutable cut
-```
-
-There is no Director, Reviewer, autonomous workspace, hidden plan exchange, or model-selected media.
-Legacy project fields and old folders may remain on disk for non-destructive compatibility, but no
-current command reads them as authority.
-
-## Durable movie artifacts
-
-| Artifact | Meaning |
-| --- | --- |
-| `request.json` | Exact producer starting material, settings, and attached references |
-| `project.json` | Recoverable renderer/edit compatibility projection |
-| `producer/workspace.json` | Current story pointers, conversation summaries, and scene cards |
-| `producer/story-revisions/*.json` | Immutable complete Markdown revisions |
-| `producer/scene-history/*.json` | Immutable scene-card snapshots |
-| `producer/conversations/*.json` | Recoverable full story or scene chat transcripts and summaries |
-| `plan.json` | Native projection of current scene cards for rendering |
-| `raw/*.mp4` and clip versions | Immutable H3 masters and preserved earlier masters |
-| `exports/*` and receipts | Immutable explicit deliverables and hashes |
-
-All replaceable JSON uses recovery copies. Never delete an old `agent-workspace` or other unknown
-legacy artifact while opening or saving a project.
-
-## Story and scene context rules
-
-Story requests contain the starting material, the chosen current revision when present, the saved
-conversation summary, and bounded message history. Each successful response is a complete Markdown
-replacement and therefore a new immutable revision.
-
-Scene requests contain the accepted story in full, the conversation summary/history, a compact list
-of all scene IDs/titles, and the full text of only producer-selected scene cards. The model may add,
-update, remove, or split around IDs through the response schema. Native code rejects stale revisions,
-unknown IDs, duplicates, invalid duration, oversized text, and scene-count overflow. It preserves
-reference and frame selections when updating model-owned text fields.
-
-Conversation reset archives the prior transcript and creates a new one. Carrying a saved summary is
-explicit. Summarization is a separate one-shot local inference and saves the result before returning.
-
-## H3 rendering
-
-New movies default to 768 × 448. The producer can explicitly choose 1344 × 768 for more detail;
-runtime is hardware-dependent, so the UI does not promise a fixed number of minutes.
-
-Producer scene cards are the source of renderer direction. Native code appends exact audio and
-reference requirements immediately before graph construction. First/last frame conditioning and
-native reference conditioning use their distinct H3 graph paths and cannot be combined when H3 does
-not support the combination.
-
-If any renderer-affecting scene field changes, the active master moves into immutable `versions`, the
-scene returns to `queued`, and its current path is cleared. Unchanged scene cards retain their master.
-Never let UI state decide whether an old render still matches a scene.
-
-Preview frames are approximate process-local state. Starting a render clears the previous estimate;
-the preserved full-VAE master and receipts remain durable truth.
-
-## Editor generations and later assets
-
-The editor accepts timeline ranges in seconds or time notation, including decimal commas.
-Native code validates and saves the edit, resolves trims, speed and source versions, and extracts
-immutable first/last PNGs. A producer can preview endpoints or generate immediately. One tool-free
-response expands the direction using the two scenes' written context; it never claims to see frames.
-The runtime releases its lease and unloads before H3 receives the native endpoint graph.
-
-Each `editor-generations/<uuid>/job.json` preserves the frozen edit, settings, source/frame hashes,
-partial writing, selected destination and completion status. The exact model request and H3 graph
-are saved beside it. `raw/*.mp4` preserves the full H3 output; `take.mp4` fits its complete frame grid
-to the requested duration, with a media receipt, instead of discarding the conditioned final frames.
-Durations resolve to the nearest 24-fps frame. Completed takes remain in Masters across scene saves.
-Replacement compares the saved edit hash, preserves the prior edit, splits range endpoints and
-ripples later markers. A changed timeline keeps the take as an audition. Restart never resumes work.
-
-Image creation is available in launch attachments, scene references, both frame selectors, and
-the editor reference browser. Production libraries may contain 4096 assets; H3's 9-picture,
-3-video and 3-audio-signal limits apply to each selected scene. New attachments only materialize
-new assets. Native graphs always renumber the selected references. The shared preview retains
-approximate frames through view remounts for both movie and image jobs.
-
-## Long productions
-
-The producer can request 1–4096 distinct scenes in a native queue. Each inference requests exactly
-one new scene with a fixed duration and no media authority. A malformed or repeated prompt stops
-at that checkpoint without skipping a scene. Each completed scene and its queue progress are saved
-together in the recoverable workspace. Reopening never resumes inference. Resume preserves the
-original direction and accepted story and rejects changes made after the checkpoint.
-Reference-only changes during a pause retain the checkpoint because media never enters model
-context. Changing scene text, order, or the accepted story requires a new queue.
-
-Each append has an immutable receipt in `producer/scene-history/`; batch drafting does not save
-thousands of full historical copies of a long film. Starting another batch archives the previous
-queue record in `producer/draft-batches/`. Transcripts rotate every 16 scenes and remain on disk.
-The UI paginates scene cards, masters, and the timeline index. Timeline tracks and ruler ticks render
-only around the visible scroll window. Scene saves preserve repeated items and custom export titles.
-Ordinary scene-history snapshots also preserve the prior edit so scene removal remains recoverable.
-
-Exports support up to 4096 timeline items. Native code encodes groups of at most 16 inputs with
-file-based filter graphs, then joins them with a local concat manifest. Video is encoded once;
-FLAC intermediate audio avoids per-group AAC delay. Final AAC and optional loudness processing run
-over the whole cut. Only owned scratch files are removed; source masters and exports are immutable.
-
-## Model transport
-
-All Studio streams pass bytes through `OpenAiSseDecoder`. It rejects malformed JSON, invalid UTF-8,
-duplicate completion markers, and events after completion. Explicit `reasoning_content`/`reasoning`
-deltas may appear in a bounded provisional UI pane; never infer reasoning from ordinary text or copy
-it into an executable request.
-
-When adding a runtime variation:
-
-1. Add fragmented-wire tests in `model_stream.rs`.
-2. Keep feature-specific interpretation in the owning module.
-3. Preserve partial producer-visible output and durable receipts on interruption.
-4. Never add public-network fallback.
+1. **Entities & Reference Library**: Create `@Handle` entities (`Character`, `Location`, `Prop`,
+   `Outfit`, `Voice`, `Sound`, `Other`) backed by local media or 1-click imports from Image Studio,
+   Speech Studio (`.opus`), and Music Studio.
+2. **Multi-Scene Timelines**: Use `Standard` (`1920×1088`), `Audition` (`960×544` voice/turnaround
+   tests), and `Soundtrack` (`64×32` minimal-video music/ambience generation).
+3. **Reference Lanes (`R1..Rn`)**: Stretch `@Handle` items over `[start..end]`. Tighter spans
+   override wider spans for the same `@Handle` without deleting underlying lanes.
+4. **Prompt Sections & Guides**: Write action in `Global Prompt` + `[Shot k]` sections using
+   `@Handle` names and `<d>[Language] ...</d>` vocal events; pin keyframes or pose videos on the
+   Guides track (`MiniMaxH3AddGuide`).
+5. **3-Pass Quality Ladder**:
+   - **Pass 1 (`0.2MP` Draft, ~`608×352`)**: `er_sde` + `sgm_uniform`, `10` steps, Ref2V Turbo LoRA
+     `@ 0.8` (or `20` steps without LoRA), `denoise = 1.0`. Locks motion, acting, and dialogue sync.
+   - **Pass 2 (`1MP` Detail, ~`1344×768`)**: `12` steps, Ref2V Turbo LoRA `@ 0.5`, `denoise = 0.75`
+     over Pass 1's placed master (`KeepExistingAudio` optional when locking Pass 1's voice performance).
+   - **Pass 3 (`1080p` Upscale, `1920×1088`)**: `4` steps, Ref2V Turbo LoRA `@ 0.5`, `denoise = 0.40`
+     for crisp facial identity, fabric texture, and lighting fidelity.
+6. **Inspect & Deliver**: Call `inspect_movie_h3_take` for FFprobe/peak/RMS telemetry + 3 extracted
+   contact-sheet PNGs, compare A/B takes on `V1..Vn`, mix dialogue/SFX/score on `A1..An`, and
+   render an immutable BT.709 / `-1 dBFS` deliverable via `render_movie_edit`.
 
 Music lyric alignment and visual-renderer ownership remain documented in
 [`MUSIC_LYRIC_ALIGNMENT_CONTINGENCY.md`](MUSIC_LYRIC_ALIGNMENT_CONTINGENCY.md) and

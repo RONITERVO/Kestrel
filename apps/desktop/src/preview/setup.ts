@@ -4,7 +4,10 @@ import { demoReport, demoSnapshot } from "./fixtures";
 import { samplePromptPackText } from "./promptPack";
 import { sampleComputerTask } from "./computerTask";
 import { sampleChatSession } from "./chatSession";
-import { sampleConversation, sampleFinishedConversation, sampleFinishedMovie, sampleFinishedMusic, sampleFinishedWorkspace, sampleImage, sampleImageAssets, sampleLyricsDocument, sampleMovie, sampleWorkspace } from "./studioFixtures";
+import {
+  sampleFinishedMovie, sampleFinishedMusic, sampleH3CompileResult, sampleH3Environment,
+  sampleImage, sampleImageAssets, sampleLyricsDocument, sampleMovie,
+} from "./studioFixtures";
 
 const sampleModels = [
   ...demoSnapshot.control.models,
@@ -29,6 +32,8 @@ const handlers = {
   list_music_projects: () => [],
   list_image_projects: () => [],
   list_movie_image_assets: () => [],
+  list_movie_reference_assets: () => [],
+  get_movie_h3_environment: () => sampleH3Environment,
   list_chat_sessions: () => [],
   list_computer_tasks: () => [],
   list_model_downloads: () => [],
@@ -53,12 +58,32 @@ export function setupPreview(studioSamples = true): void {
     get_chat_session: ({ id }) => ({ ...structuredClone(sampleChatSession), id, title: sampleSessions.find((session) => session.id === id)?.title ?? sampleChatSession.title }),
     list_computer_tasks: () => [{ id: sampleComputerTask.id, objective: sampleComputerTask.objective, modelId: sampleComputerTask.modelId, access: sampleComputerTask.access, status: sampleComputerTask.status, updatedAt: sampleComputerTask.updatedAt, eventCount: sampleComputerTask.events.length, artifactCount: 0 }],
     get_computer_task: () => structuredClone(sampleComputerTask),
-    list_movies: () => [{ ...sampleMovie, clipCount: 0 }, { ...sampleFinishedMovie, clipCount: sampleFinishedMovie.clips.length }],
-    get_movie: ({ id }) => structuredClone(id === sampleFinishedMovie.id ? sampleFinishedMovie : sampleMovie),
-    get_movie_producer_workspace: ({ id }) => structuredClone(id === sampleFinishedMovie.id ? sampleFinishedWorkspace : sampleWorkspace),
-    get_movie_studio_conversation: ({ projectId }) => structuredClone(projectId === sampleFinishedMovie.id ? sampleFinishedConversation : sampleConversation),
+    list_movies: () => [{ ...sampleFinishedMovie, clipCount: sampleFinishedMovie.clips.length }, { ...sampleMovie, clipCount: 0 }],
+    get_movie: ({ id }) => structuredClone(id === sampleMovie.id ? sampleMovie : sampleFinishedMovie),
+    compile_movie_h3_window: () => structuredClone(sampleH3CompileResult),
+    get_movie_render_state: () => ({ active: false }),
+    inspect_movie_h3_take: ({ projectId, jobId }) => {
+      const job = sampleFinishedMovie.renderJobs.find((j) => j.id === jobId) ?? sampleFinishedMovie.renderJobs[0];
+      return structuredClone({
+        jobId: job.id,
+        projectId,
+        sceneId: job.sceneId,
+        label: job.label,
+        status: job.status,
+        passPreset: job.passPreset,
+        taskMode: job.taskMode,
+        resolvedModel: job.resolvedModel,
+        seed: job.seed,
+        compiledPrompt: job.compiledPrompt,
+        takeMediaPath: job.takeMediaPath,
+        takeSha256: job.takeSha256,
+        geometry: job.geometry,
+        colorDrift: job.colorDrift,
+        quality: job.quality,
+        error: job.error,
+      });
+    },
     list_movie_image_assets: () => structuredClone(sampleImageAssets),
-    get_movie_editor_state: () => ({ schemaVersion: 1, projectId: sampleMovie.id, editHash: "preview", jobs: [] }),
     list_image_projects: () => [{ ...sampleImage, takeCount: 0, activeTakePath: "" }],
     get_image_project: () => structuredClone(sampleImage),
     create_image_project: ({ request }) => ({ ...structuredClone(sampleImage), id: "preview-new-image", title: request.title || "Untitled image", idea: request.idea, highLevelDescription: request.idea, settings: { ...structuredClone(sampleImage.settings), plainPrompt: request.idea } }),

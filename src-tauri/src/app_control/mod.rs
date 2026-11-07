@@ -146,7 +146,7 @@ impl AppControl {
             }
             *self.task_progress.lock().map_err(|e| e.to_string())? = Some((title, detail, now()));
         }
-        if !matches!(event, "studio-prompt-draft" | "movie-studio-chat") {
+        if event != "studio-prompt-draft" {
             return Ok(());
         }
         let Some(id) = value.get("requestId").and_then(Value::as_str) else {

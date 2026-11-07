@@ -676,6 +676,26 @@ impl LocalSpeech {
         })
     }
 
+    /// Resolves a verified Kestrel-generated speech clip (`generated/*.opus`) for read-only
+    /// import into Movie Studio's content-addressed reference library.
+    pub fn generated_clip_path(&self, relative_path: &str) -> Result<PathBuf, SpeechError> {
+        if !safe_relative_path(relative_path)
+            || !relative_path.starts_with("generated/")
+            || !relative_path.ends_with(".opus")
+        {
+            return Err(SpeechError::Invalid(
+                "only Kestrel-generated speech clips (generated/*.opus) can be imported".into(),
+            ));
+        }
+        let path = self.cache_root.join(relative_path);
+        if !valid_cached_audio(&path) {
+            return Err(SpeechError::Unavailable(
+                "That speech clip is missing from the local speech cache. Generate it again before importing.".into(),
+            ));
+        }
+        Ok(path)
+    }
+
     pub async fn transcribe(
         &self,
         comfy_root: &str,

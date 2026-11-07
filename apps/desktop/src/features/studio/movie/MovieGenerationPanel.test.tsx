@@ -1,60 +1,109 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MovieGenerationPanel, parseTimelineSeconds } from "./MovieGenerationPanel";
-import { retainPreview } from "./MovieH3Preview";
+import { useState } from "react";
 import * as api from "../../../platform/api";
-import type { ModelInfo, MovieEditorJob, MovieProject, MovieRenderPreviewEvent } from "../../../contracts/index";
+import { MovieGenerationPanel, parseTimelineSeconds } from "./MovieGenerationPanel";
+import { sampleFinishedMovie, sampleH3CompileResult } from "../../../preview/studioFixtures";
+import type { H3Scene } from "../../../contracts/index";
 
-vi.mock("../../../platform/api", async () => ({
-  ...await vi.importActual<typeof import("../../../platform/api")>("../../../platform/api"),
-  getMovieEditorState: vi.fn(async () => ({ editHash: "saved-hash", jobs: [] })),
-  prepareMovieEditorRange: vi.fn(), startMovieEditorGeneration: vi.fn(async () => "job"),
-  onMovieEditorJob: vi.fn(async () => () => undefined), getMovie: vi.fn(),
-}));
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
-const project = { id: "movie", edit: { clips: [], markers: [], exportTitle: "Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14 } } as unknown as MovieProject;
-const frame = { editId: "edit", clipId: "source", versionId: "original", sourcePath: "source.mp4", sourceSha256: "sha", sourceSeconds: 1, imagePath: "", imageSha256: "image", scenePrompt: "The keeper." };
-const job: MovieEditorJob = { id: "job", projectId: "movie", status: "ready", detail: "Frames ready", createdAt: "", updatedAt: "", editHash: "saved-hash", startSeconds: 16.78, endSeconds: 70.01, durationSeconds: 5, placement: "replaceRange", direction: "Lifts his head", renderPrompt: "", modelId: "", seed: 42, first: frame, last: frame, clipId: "editor-job", resultPath: "", resultSha256: "", rawPath: "", rawSha256: "", placed: false };
-function setup() {
-  vi.mocked(api.getMovie).mockResolvedValue(project);
-  vi.mocked(api.prepareMovieEditorRange).mockResolvedValue(job);
-  render(<MovieGenerationPanel project={project} edit={project.edit} playhead={16.78} duration={120} models={[{ id: "qwen", name: "Qwen local" } as ModelInfo]} modelId="qwen" disabled={false} onProject={vi.fn()} onActive={vi.fn()} onError={vi.fn()} />);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+function PanelHarness({
+  onStartGeneration = vi.fn().mockResolvedValue(undefined),
+  onError = vi.fn(),
+}: {
+  onStartGeneration?: (expandQualityLadder: boolean) => Promise<void>;
+  onError?: (message: string) => void;
+}) {
+  const project = structuredClone(sampleFinishedMovie);
+  const [scene, setScene] = useState<H3Scene>(() => structuredClone(project.scenes[0]));
+  const [selectedShotId, setSelectedShotId] = useState<string>(project.scenes[0].promptSections[0].id);
+  return (
+    <MovieGenerationPanel
+      project={project}
+      scene={scene}
+      selectedShotId={selectedShotId}
+      compileResult={sampleH3CompileResult}
+      rendering={false}
+      onSceneChange={setScene}
+      onSelectShot={setSelectedShotId}
+      onStartGeneration={onStartGeneration}
+      onStopGeneration={vi.fn()}
+      onError={onError}
+    />
+  );
 }
 
-describe("producer endpoint generation", () => {
-  it("accepts decimal commas and time notation without accepting malformed numbers", () => {
-    expect(parseTimelineSeconds("16,78")).toBe(16.78);
-    expect(parseTimelineSeconds("1:10,01")).toBe(70.01);
-    expect(parseTimelineSeconds("2:00:00")).toBe(7200);
-    for (const invalid of ["", "-1", "Infinity", "1e3", "1:80", "1.5:20"]) expect(Number.isNaN(parseTimelineSeconds(invalid))).toBe(true);
+describe("MovieGenerationPanel MiniMax H3", () => {
+  it("parses plain and colon-delimited timeline seconds", () => {
+    expect(parseTimelineSeconds("12.5")).toBe(12.5);
+    expect(parseTimelineSeconds("01:05")).toBe(65);
+    expect(parseTimelineSeconds("01:01:01")).toBe(3661);
+    expect(Number.isNaN(parseTimelineSeconds("01:75"))).toBe(true);
   });
-  it("submits the selected range and placement once, then lets native code run the take", async () => {
-    setup();
-    await waitFor(() => expect(api.getMovieEditorState).toHaveBeenCalled());
-    fireEvent.change(screen.getByLabelText("Generation range start"), { target: { value: "16,78" } });
-    fireEvent.change(screen.getByLabelText("Generation range end"), { target: { value: "70,01" } });
-    fireEvent.change(screen.getByLabelText("New take direction"), { target: { value: "Lifts his head" } });
-    fireEvent.change(screen.getByLabelText("Generated take placement"), { target: { value: "replaceRange" } });
-    fireEvent.click(screen.getByRole("button", { name: "Generate take" }));
-    await waitFor(() => expect(api.startMovieEditorGeneration).toHaveBeenCalledTimes(1));
-    expect(api.prepareMovieEditorRange).toHaveBeenCalledWith({ projectId: "movie", expectedEditHash: "saved-hash", startSeconds: 16.78, endSeconds: 70.01, durationSeconds: 5, direction: "Lifts his head", placement: "replaceRange" }, project.edit);
-    expect(api.startMovieEditorGeneration).toHaveBeenCalledWith({ projectId: "movie", jobId: "job", modelId: "qwen", renderPrompt: "" });
-    const callback = vi.mocked(api.onMovieEditorJob).mock.calls[0][0];
-    await act(async () => callback({ ...job, status: "complete", detail: "Take preserved" }));
-    expect(screen.getByRole("button", { name: "Generate take" })).toBeEnabled();
-    expect(screen.getByText("Take preserved")).toBeInTheDocument();
+
+  it("inserts @Handle tokens into shot action, stages unstaged entities, and authors <d>[Language] ...</d> dialogue", async () => {
+    const stageSpy = vi.spyOn(api, "stageMovieH3Reference").mockResolvedValue({
+      projectId: sampleFinishedMovie.id,
+      sceneId: sampleFinishedMovie.scenes[0].id,
+      laneId: "frog-main-r1",
+      laneName: "R1",
+      itemId: "staged-pond",
+      label: "@Pond",
+      startSec: 0,
+      endSec: 5,
+    });
+
+    render(<PanelHarness />);
+
+    // Click @Pond handle chip to insert @Pond into shot detailed action
+    fireEvent.click(screen.getByTitle(/Insert @Pond into shot action/i));
+    const actionBox = screen.getByLabelText("Shot detailed action") as HTMLTextAreaElement;
+    expect(actionBox.value).toContain("@Pond");
+
+    // @Pond is not in compileResult.ordinals.subjects, so +Stage button is visible
+    fireEvent.click(screen.getByTitle(/Stage @Pond in/i));
+    await waitFor(() =>
+      expect(stageSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: sampleFinishedMovie.id,
+          entityId: "ent-pond",
+          startSec: 0,
+          endSec: 5,
+        }),
+      ),
+    );
+
+    // Add a new vocal line and edit its spoken text
+    fireEvent.click(screen.getByRole("button", { name: /^Line$/i }));
+    const spokenInputs = screen.getAllByLabelText("Vocal spoken text") as HTMLInputElement[];
+    fireEvent.change(spokenInputs[spokenInputs.length - 1], {
+      target: { value: "Count the clouds instead." },
+    });
+    expect(spokenInputs[spokenInputs.length - 1].value).toBe("Count the clouds instead.");
   });
-  it("offers explicit generation of prepared endpoints without automatically starting it", async () => {
-    setup();
-    fireEvent.change(screen.getByLabelText("New take direction"), { target: { value: "Lifts his head" } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview endpoints" }));
-    await screen.findByText("Frames ready");
-    expect(api.startMovieEditorGeneration).not.toHaveBeenCalled();
-    expect(screen.getByText("16.78–70.01s → 5s · Replace saved range")).toBeInTheDocument();
-  });
-  it("retains the latest preview through status events but clears it for a different take", () => {
-    const preview = { jobId: "one", dataUrl: "data:image/png;base64,a", mimeType: "image/png", kind: "frame" } as MovieRenderPreviewEvent;
-    expect(retainPreview(preview, { ...preview, kind: "finished", dataUrl: undefined }).dataUrl).toBe(preview.dataUrl);
-    expect(retainPreview(preview, { ...preview, jobId: "two", kind: "connected", dataUrl: undefined }).dataUrl).toBeUndefined();
+
+  it("queues Sonder's 3-pass quality ladder when toggled and displays compiled 6-channel prompt", async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    render(<PanelHarness onStartGeneration={onStart} />);
+
+    // Switch to Pass & Mode tab and toggle 3-pass quality ladder
+    fireEvent.click(screen.getByRole("button", { name: /Pass & Mode/i }));
+    const ladderCheckbox = screen.getByRole("checkbox", {
+      name: /Run 3-pass Sonder quality ladder/i,
+    });
+    fireEvent.click(ladderCheckbox);
+
+    fireEvent.click(screen.getByRole("button", { name: /Queue 3-Pass Quality Ladder/i }));
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith(true));
+
+    // Switch to Compiler tab and verify bound <Subject> ordinals and compiled 6-channel prompt
+    fireEvent.click(screen.getByRole("button", { name: /Compiler/i }));
+    expect(screen.getByText(/608×352/)).toBeTruthy();
+    expect(screen.getByText(/@Pip → <Subject 1>/)).toBeTruthy();
+    expect(screen.getByText(/Overall Summary: <Subject 1> counts lily pads/)).toBeTruthy();
   });
 });

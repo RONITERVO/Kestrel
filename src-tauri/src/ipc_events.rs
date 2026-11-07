@@ -7,7 +7,6 @@ pub fn emit<E: DesktopEvent>(app: &AppHandle, payload: &E::Payload) -> tauri::Re
         matches!(
             E::NAME,
             "studio-prompt-draft"
-                | "movie-studio-chat"
                 | "research-progress"
                 | "image-generation"
                 | "music-generation"

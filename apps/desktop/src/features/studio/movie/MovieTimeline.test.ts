@@ -1,113 +1,193 @@
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MovieTimeline, appendTimelineSource, formatTimecode, moveTimelineItem, splitTimelineItem, timelineItems } from "./MovieTimeline";
-import type { ClipEdit, MovieEdit, MovieProject } from "../../../contracts/index";
+import {
+  activeMonitorSourceAtPlayhead, clampSceneWindow, formatTimecode,
+  MovieTimeline, snapToFrame, splitH3VideoClip,
+} from "./MovieTimeline";
+import { sampleFinishedMovie, sampleH3CompileResult } from "../../../preview/studioFixtures";
+import type { H3Scene, H3VideoClip, MovieProject } from "../../../contracts/index";
 
-const decision = (id: string, clipId: string, order: number): ClipEdit => ({
-  id, clipId, order, enabled: true, trimStart: 0, trimEnd: 0, audioGain: 1,
-  sourceVersionId: "", speed: 1, fadeIn: 0, fadeOut: 0, audioFadeIn: 0, audioFadeOut: 0, label: "", notes: "",
-});
-
-const project = {
-  id: "project", clips: [
-    { id: "one", index: 0, title: "One", prompt: "", durationSeconds: 10, seed: 1, status: "complete", path: "one.mp4", error: "", versions: [
-      { id: "short", createdAt: "", title: "Short", prompt: "", durationSeconds: 8, seed: 2, path: "short.mp4" },
-    ] },
-    { id: "two", index: 1, title: "Two", prompt: "", durationSeconds: 5, seed: 2, status: "complete", path: "two.mp4", error: "", versions: [] },
-  ],
-} as MovieProject;
-
-const movieEdit = (clips: ClipEdit[]): MovieEdit => ({
-  clips, exportTitle: "Test", exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [],
-});
+vi.mock("./MovieAssetCreator", () => ({
+  GenerateAssetButton: () => null,
+}));
 
 afterEach(cleanup);
 
-describe("movie timeline decisions", () => {
-  it("lets the producer undo a completed native replacement while keeping both masters", () => {
-    const edit = movieEdit([decision("a", "one", 0)]);
-    const current: MovieProject = { ...project, title: "Movie", references: [], settings: {
-      width: 768, height: 448, clipSeconds: 5, steps: 20, maxClips: 4096, seed: 0,
-      temperature: .45, topP: .9, topK: 20, thinkingBudget: 32768,
-      maxOutputTokens: 32768, contextWindow: 0, comfyRoot: "", refImageSize: "match",
-    }, edit };
-    const onChange = vi.fn();
-    const view = render(createElement(MovieTimeline, { project: current, value: edit, disabled: false, onChange }));
-    expect(screen.getByRole("button", { name: "Undo timeline change" })).toBeDisabled();
-    const replacement = movieEdit([decision("generated", "two", 0)]);
-    view.rerender(createElement(MovieTimeline, { project: { ...current, edit: replacement }, value: replacement, disabled: false, onChange }));
-    fireEvent.click(screen.getByRole("button", { name: "Undo timeline change" }));
-    expect(onChange).toHaveBeenLastCalledWith(edit);
-    expect(current.clips.map((clip) => clip.id)).toEqual(["one", "two"]);
+function cloneProject(): { project: MovieProject; scene: H3Scene } {
+  const project = structuredClone(sampleFinishedMovie);
+  const scene = structuredClone(project.scenes[0]);
+  return { project, scene };
+}
+
+function Harness({
+  initialProject,
+  initialScene,
+  onSave,
+}: {
+  initialProject: MovieProject;
+  initialScene: H3Scene;
+  onSave?: (scene: H3Scene) => void;
+}) {
+  const [scene, setScene] = useState(initialScene);
+  const [savedScene, setSavedScene] = useState(initialScene);
+  const [playhead, setPlayhead] = useState(0);
+  return createElement(
+    "div",
+    null,
+    createElement(
+      "button",
+      {
+        type: "button",
+        onClick: () => {
+          const placed: H3VideoClip = {
+            id: "vclip-pass-2",
+            sourceKind: "take",
+            sourceId: "job-frog-2",
+            label: "Pass 2 1MP Detail",
+            timelineStartSec: 5,
+            durationSec: 5,
+            sourceInSec: 0,
+            sourceDurationSec: 5,
+            opacity: 1,
+            audioGain: 1,
+            includeEmbeddedAudio: true,
+            enabled: true,
+          };
+          const next: H3Scene = {
+            ...scene,
+            videoLanes: scene.videoLanes.map((l, idx) =>
+              idx === 0 ? { ...l, clips: [...l.clips, placed] } : l,
+            ),
+          };
+          setScene(next);
+          setSavedScene(next);
+        },
+      },
+      "Simulate Native Take Placement",
+    ),
+    createElement(MovieTimeline, {
+      project: initialProject,
+      scene,
+      savedScene,
+      playheadSec: playhead,
+      compileResult: sampleH3CompileResult,
+      dirty: scene !== savedScene,
+      onSceneChange: setScene,
+      onSaveScene: () => {
+        setSavedScene(scene);
+        onSave?.(scene);
+      },
+      onPlayhead: setPlayhead,
+    }),
+  );
+}
+
+describe("MovieTimeline MiniMax H3 NLE", () => {
+  it("snaps seconds to 24fps frames, formats SMPTE timecodes, and clamps H3 windows to <= 15s", () => {
+    expect(snapToFrame(1.0416667, 24)).toBeCloseTo(25 / 24, 5);
+    expect(formatTimecode(65.5, 24)).toBe("00:01:05:12");
+    expect(formatTimecode(3661 + 1 / 24, 24)).toBe("01:01:01:01");
+
+    const { scene } = cloneProject();
+    const clampedOut = clampSceneWindow({ ...scene.window, inSec: 0, outSec: 5 }, { outSec: 25 }, 30);
+    expect(clampedOut.inSec).toBe(10);
+    expect(clampedOut.outSec).toBe(25);
+    expect(clampedOut.outSec - clampedOut.inSec).toBe(15);
+
+    const clampedIn = clampSceneWindow({ ...scene.window, inSec: 10, outSec: 25 }, { inSec: 2 }, 30);
+    expect(clampedIn.inSec).toBe(2);
+    expect(clampedIn.outSec).toBe(17);
   });
 
-  it("keeps a two-hour timeline bounded while exposing later masters and track edits", () => {
-    const clips = Array.from({ length: 1440 }, (_, index) => ({ ...project.clips[1], id: `clip-${index}`, title: `Scene ${index + 1}`, index }));
-    const edit = movieEdit(clips.map((clip, index) => decision(`edit-${index}`, clip.id, index)));
-    const longProject: MovieProject = { ...project, title: "Two hours", clips, references: [], settings: {
-      width: 768, height: 448, clipSeconds: 5, steps: 20, maxClips: 4096, seed: 0,
-      temperature: .45, topP: .9, topK: 20, thinkingBudget: 32768,
-      maxOutputTokens: 32768, contextWindow: 0, comfyRoot: "", refImageSize: "match",
-    }, edit };
-    const { container } = render(createElement(MovieTimeline, { project: longProject, value: edit, disabled: false, onChange: vi.fn() }));
-    expect(container.querySelectorAll(".editor-media-row")).toHaveLength(80);
-    expect(container.querySelectorAll(".picture .editor-track-canvas > button").length).toBeLessThan(20);
-    expect(container.querySelectorAll(".editor-ruler > span").length).toBeLessThan(40);
-    fireEvent.click(screen.getByRole("button", { name: "Next masters" }));
-    expect(container.querySelector(".editor-media-row strong")).toHaveTextContent("Scene 81");
-    const tracks = screen.getByLabelText("Timeline tracks");
-    fireEvent.scroll(tracks, { target: { scrollLeft: 720 * 5 * 68 } });
-    expect(container.querySelectorAll(".picture .editor-track-canvas > button").length).toBeLessThan(20);
-    expect(container.querySelector(".picture .editor-track-canvas")).toHaveTextContent("Scene 721");
-    expect(edit.clips).toHaveLength(1440);
+  it("splits a placed H3 video clip cleanly with frame-snapped source offsets", () => {
+    const { scene } = cloneProject();
+    const split = splitH3VideoClip(scene, scene.videoLanes[0].id, "vclip-1", 2, "vclip-right");
+    const clips = split.videoLanes[0].clips;
+    expect(clips).toHaveLength(2);
+    expect(clips[0]).toMatchObject({ id: "vclip-1", timelineStartSec: 0, durationSec: 2, sourceInSec: 0 });
+    expect(clips[1]).toMatchObject({ id: "vclip-right", timelineStartSec: 2, durationSec: 3, sourceInSec: 2 });
   });
 
-  it("calculates edited duration from the selected immutable version", () => {
-    const edit = decision("a", "one", 0);
-    edit.sourceVersionId = "short";
-    edit.trimStart = 1;
-    edit.trimEnd = 1;
-    edit.speed = 2;
-    const [item] = timelineItems(project, movieEdit([edit]));
-    expect(item.sourcePath).toBe("short.mp4");
-    expect(item.outputDuration).toBe(3);
-    expect(item.versionLabel).toBe("Version short");
+  it("resolves the active program monitor source at playhead respecting lane solo/mute", () => {
+    const { project, scene } = cloneProject();
+    const hit = activeMonitorSourceAtPlayhead(project, scene, 1.5);
+    expect(hit).toMatchObject({
+      id: "job-frog-1",
+      sourceKind: "renderedTake",
+      timelineStartSec: 0,
+      durationSec: 5,
+    });
+
+    const mutedScene: H3Scene = {
+      ...scene,
+      videoLanes: scene.videoLanes.map((l) => ({ ...l, muted: true })),
+    };
+    expect(activeMonitorSourceAtPlayhead(project, mutedScene, 1.5)).toBeUndefined();
   });
 
-  it("reorders decisions without changing their identities", () => {
-    const edit = movieEdit([decision("a", "one", 0), decision("b", "two", 1)]);
-    const moved = moveTimelineItem(edit, "b", "a");
-    expect(moved.clips.map((item) => [item.id, item.order])).toEqual([["b", 0], ["a", 1]]);
+  it("renders live specificity verdicts (<Subject 1>, winner) and supports undo/redo across native take placements", () => {
+    const { project, scene } = cloneProject();
+    render(createElement(Harness, { initialProject: project, initialScene: scene }));
+
+    // Staged @Pip and @Crow show their compiled <Subject 1> / <Subject 2> tags
+    expect(screen.getByText("<Subject 1>")).toBeTruthy();
+    expect(screen.getByText("<Subject 2>")).toBeTruthy();
+
+    // Mutate scene duration to create an undoable local edit
+    const durInput = screen.getByLabelText("Scene duration seconds") as HTMLInputElement;
+    fireEvent.change(durInput, { target: { value: "24" } });
+    expect(durInput.value).toBe("24");
+
+    // Simulate a native take placement arriving from the H3 queue
+    fireEvent.click(screen.getByRole("button", { name: "Simulate Native Take Placement" }));
+    expect(screen.getByText(/Pass 2 1MP Detail/)).toBeTruthy();
+
+    // Undo and Redo remain available and preserve the native take history
+    const undoBtn = screen.getByRole("button", { name: "Undo timeline change" });
+    expect(undoBtn).not.toBeDisabled();
+    fireEvent.click(undoBtn);
+    const redoBtn = screen.getByRole("button", { name: "Redo timeline change" });
+    expect(redoBtn).not.toBeDisabled();
+    fireEvent.click(redoBtn);
+    expect(screen.getByText(/Pass 2 1MP Detail/)).toBeTruthy();
   });
 
-  it("splits one source into adjacent non-overlapping decisions", () => {
-    const edit = movieEdit([decision("a", "one", 0), decision("b", "two", 1)]);
-    const split = splitTimelineItem(project, edit, "a", 4, "cut-b");
-    expect(split.clips.map((item) => item.id)).toEqual(["a", "cut-b", "b"]);
-    expect(split.clips[0].trimEnd).toBe(6);
-    expect(split.clips[1].trimStart).toBe(4);
-    expect(timelineItems(project, split).slice(0, 2).reduce((sum, item) => sum + item.outputDuration, 0)).toBe(10);
-  });
+  it("windows ruler ticks and clip buttons on a 2-hour scene so the DOM stays bounded", () => {
+    const { project, scene } = cloneProject();
+    const longClips: H3VideoClip[] = Array.from({ length: 1_440 }, (_, idx) => ({
+      id: `clip-${idx + 1}`,
+      sourceKind: "take",
+      sourceId: "job-frog-1",
+      label: `Take ${idx + 1}`,
+      timelineStartSec: idx * 5,
+      durationSec: 5,
+      sourceInSec: 0,
+      sourceDurationSec: 5,
+      opacity: 1,
+      audioGain: 1,
+      includeEmbeddedAudio: true,
+      enabled: true,
+    }));
+    const longScene: H3Scene = {
+      ...scene,
+      durationSec: 7_200,
+      videoLanes: [{ ...scene.videoLanes[0], clips: longClips }],
+    };
 
-  it("keeps only the leading and trailing fades when a clip is split", () => {
-    const original = decision("a", "one", 0);
-    Object.assign(original, { fadeIn: 1, fadeOut: 2, audioFadeIn: .5, audioFadeOut: 1.5 });
-    const split = splitTimelineItem(project, movieEdit([original]), "a", 4, "cut-b");
-    expect(split.clips[0]).toMatchObject({ fadeIn: 1, fadeOut: 0, audioFadeIn: .5, audioFadeOut: 0 });
-    expect(split.clips[1]).toMatchObject({ fadeIn: 0, fadeOut: 2, audioFadeIn: 0, audioFadeOut: 1.5 });
-  });
+    const view = render(
+      createElement(MovieTimeline, {
+        project,
+        scene: longScene,
+        savedScene: longScene,
+        playheadSec: 0,
+        compileResult: sampleH3CompileResult,
+        onSceneChange: () => undefined,
+        onPlayhead: () => undefined,
+      }),
+    );
 
-  it("appends a preserved master as a new non-destructive storyline decision", () => {
-    const appended = appendTimelineSource(movieEdit([decision("a", "one", 0)]), "two", "new-edit");
-    expect(appended.clips.map((item) => [item.id, item.clipId, item.order])).toEqual([
-      ["a", "one", 0], ["new-edit", "two", 1],
-    ]);
-    expect(appended.clips[1]).toMatchObject({ enabled: true, speed: 1, label: "", notes: "" });
-  });
-
-  it("shows familiar 24 fps producer timecode", () => {
-    expect(formatTimecode(65.5)).toBe("00:01:05:12");
-    expect(formatTimecode(3661 + 1 / 24)).toBe("01:01:01:01");
+    expect(view.container.querySelectorAll(".h3-ruler-tick").length).toBeLessThan(40);
+    expect(view.container.querySelectorAll(".h3-clip-block.video").length).toBeLessThanOrEqual(24);
   });
 });

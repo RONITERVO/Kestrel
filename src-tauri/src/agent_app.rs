@@ -25,6 +25,11 @@ pub fn artifact(arguments: &Value, receipt: &Value) -> Option<std::path::PathBuf
         }
         "export_production_bundle" => result.get("manifestPath")?.as_str()?,
         "export_media_composition" => result.get("mediaPath")?.as_str()?,
+        "render_movie_edit" => result
+            .get("destinationCopyPath")
+            .and_then(Value::as_str)
+            .or_else(|| result.pointer("/export/path").and_then(Value::as_str))?,
+        "inspect_movie_h3_take" => result.get("takeMediaPath")?.as_str()?,
         "get_movie" => result.get("finalPath")?.as_str()?,
         "get_music_project" | "get_image_project" => {
             let active = result.get("activeTakeId")?.as_str()?;
@@ -191,16 +196,26 @@ pub async fn execute(
 fn cancel_owned_job(command: &str, args: &Value, state: &AppState) -> Result<(), String> {
     let id = args
         .get("id")
+        .or_else(|| args.pointer("/request/projectId"))
         .or_else(|| args.pointer("/request/requestId"))
         .and_then(Value::as_str);
     if let Some(id) = id {
         let registry = match command {
             "start_image_generation" => &state.image_generation_jobs,
             "start_music_generation" => &state.music_jobs,
-            "render_movie_scenes" | "start_movie_editor_generation" => &state.movie_jobs,
+            "start_movie_h3_generation" => &state.movie_jobs,
             _ => &state.interactive_jobs,
         };
         if let Some(token) = registry.lock().map_err(|e| e.to_string())?.get(id) {
+            token.cancel();
+        }
+    } else if command == "install_movie_h3_turbo_loras" {
+        if let Some(token) = state
+            .movie_jobs
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get("turbo-loras")
+        {
             token.cancel();
         }
     }

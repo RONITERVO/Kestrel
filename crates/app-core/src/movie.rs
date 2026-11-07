@@ -1,8 +1,22 @@
 // Rust-owned wire and durable data. Native services retain execution authority.
-use crate::{GeneratedImageProvenance, ResearchSettings};
+use crate::{
+    GeneratedImageProvenance, H3ReferenceEntity, H3RenderJobStatus, H3RenderQueueJob, H3Scene,
+    MovieStoryRevision, ResearchSettings,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct MovieSceneReferenceSelection {
+    pub asset_id: String,
+    pub use_visual: bool,
+    pub use_audio: bool,
+    #[serde(default)]
+    pub guidance: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -272,7 +286,7 @@ pub struct TimelineMarker {
     pub completed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct MovieExport {
@@ -325,6 +339,22 @@ pub struct MovieProject {
     pub producer_review_required: bool,
     #[serde(default)]
     pub producer_approved_at: String,
+    /// Story brief and revision ledger for MiniMax H3 Studio productions (schema v9+).
+    #[serde(default)]
+    pub story_markdown: String,
+    #[serde(default)]
+    pub story_revisions: Vec<MovieStoryRevision>,
+    /// Reusable `@handle` entities (characters, locations, props, outfits, voices, sounds).
+    #[serde(default)]
+    pub entities: Vec<H3ReferenceEntity>,
+    /// Multi-scene H3 NLE workspaces (Standard, Audition, 64x32 Soundtrack).
+    #[serde(default)]
+    pub scenes: Vec<H3Scene>,
+    #[serde(default)]
+    pub active_scene_id: String,
+    /// Durable H3 window render queue, provenance receipts, and quality telemetry.
+    #[serde(default)]
+    pub render_jobs: Vec<H3RenderQueueJob>,
     /// Compatibility payloads are retained so saving a legacy project is non-destructive.
     #[serde(
         default,
@@ -448,13 +478,18 @@ impl Default for MovieSettings {
 
 impl From<&MovieProject> for MovieSummary {
     fn from(project: &MovieProject) -> Self {
+        let completed_h3 = project
+            .render_jobs
+            .iter()
+            .filter(|job| job.status == H3RenderJobStatus::Complete)
+            .count();
         Self {
             id: project.id.clone(),
             title: project.title.clone(),
             status: project.status.clone(),
             phase: project.phase.clone(),
             updated_at: project.updated_at.clone(),
-            clip_count: project.clips.len(),
+            clip_count: project.clips.len().max(completed_h3),
             final_path: project.final_path.clone(),
         }
     }
