@@ -141,6 +141,7 @@ export type { MovieEdit } from "./MovieEdit.js";
 export type { MovieExport } from "./MovieExport.js";
 export type { MovieExportReceipt } from "./MovieExportReceipt.js";
 export type { MovieH3Defaults } from "./MovieH3Defaults.js";
+export type { MovieH3TakeFile } from "./MovieH3TakeFile.js";
 export type { MovieImageAssetCandidate } from "./MovieImageAssetCandidate.js";
 export type { MovieImageAssetGeneration } from "./MovieImageAssetGeneration.js";
 export type { MoviePlan } from "./MoviePlan.js";

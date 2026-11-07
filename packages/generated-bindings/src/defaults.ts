@@ -5,13 +5,13 @@ import type { RuntimePolicyCatalog } from "./RuntimePolicyCatalog.js";
 import type { ExternalCollaborationFormat } from "./ExternalCollaborationFormat.js";
 export const movieH3Defaults: MovieH3Defaults = {
   "defaultSampler": "er_sde",
-  "defaultSceneHeight": 1088,
-  "defaultSceneWidth": 1920,
+  "defaultSceneHeight": 448,
+  "defaultSceneWidth": 768,
   "defaultScheduler": "sgm_uniform",
   "detailHeight": 768,
   "detailWidth": 1344,
-  "draftHeight": 352,
-  "draftWidth": 608,
+  "draftHeight": 448,
+  "draftWidth": 768,
   "fps": 24,
   "frameOffset": 5,
   "frameStep": 17,

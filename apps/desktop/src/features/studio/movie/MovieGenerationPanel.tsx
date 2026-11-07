@@ -22,7 +22,7 @@ export function parseTimelineSeconds(text: string): number {
 }
 
 const PASS_PRESETS: { value: H3PassPreset; label: string; hint: string }[] = [
-  { value: "draft02Mp", label: "Pass 1 · 0.2 MP Draft (608×352)", hint: "10 steps · Turbo LoRA 0.8 · Fast blocking & sync" },
+  { value: "draft02Mp", label: "Pass 1 · 0.34 MP Draft (768×448)", hint: "10 steps · Turbo LoRA 0.8 · Fast blocking & sync" },
   { value: "detail1Mp", label: "Pass 2 · 1 MP Detail (1344×768)", hint: "12 steps · Denoise 0.75 · Turbo LoRA 0.5 · Refine texture" },
   { value: "upscale1080p", label: "Pass 3 · 1080p Upscale (1920×1088)", hint: "4 steps · Denoise 0.40 · Turbo LoRA 0.5 · Crisp master" },
   { value: "custom", label: "Custom Resolution / Steps", hint: "Explicit canvas, steps, and denoise" },

@@ -183,7 +183,7 @@
   ],
   "create_movie_h3_scene": [
     "write",
-    "Create a new H3 scene workspace: standard (1920x1088 main cut), audition (960x544 voice/character tests), or soundtrack (64x32 minimal-video music/ambience generation)."
+    "Create a new H3 scene workspace: standard (768x448 main cut default), audition (768x448 voice/character tests), or soundtrack (64x32 minimal-video music/ambience generation)."
   ],
   "save_movie_h3_scene": [
     "write",
@@ -207,11 +207,11 @@
   ],
   "start_movie_h3_generation": [
     "write",
-    "Render one or more H3 scene windows in ComfyUI after releasing the local LLM VRAM lease. Set expandQualityLadder=true to automatically run Sonder's 3-pass quality ladder (Pass 1: draft02Mp @ 10 steps -> Pass 2: detail1Mp @ 12 steps denoise 0.75 -> Pass 3: upscale1080p @ 4 steps denoise 0.40), placing each pass cleanly onto the timeline with ridge-affine color-drift cancellation."
+    "Render one or more H3 scene windows in ComfyUI after releasing the local LLM VRAM lease. Defaults to draft02Mp (768x448, expandQualityLadder=false) for fast ~1 min per 2s rendering; pass windows=[] to automatically queue all uncovered prompt sections in order with 23-frame (~0.96s) preContextSec continuity bridging. Only set expandQualityLadder=true (1MP -> 1080p) when slow high-resolution upscaling is explicitly requested."
   ],
   "place_movie_h3_take": [
     "write",
-    "Non-destructively place a completed H3 take (jobId) or Reference Library asset (assetId) onto a scene's video (targetVideoLaneId), audio (targetAudioLaneId), or pose/motion driver (targetDriverLaneId) lane using authored_v1 trim geometry (placementMode: trimmed, untrimmed, or assetOnly)."
+    "Non-destructively place a completed H3 take (jobId) or Reference Library asset (assetId) onto a scene's video (targetVideoLaneId), audio (targetAudioLaneId), or pose/motion driver (targetDriverLaneId) lane using authored_v1 trim geometry (placementMode: trimmed, untrimmed, or assetOnly). Optional gain (0.0-2.0; audio clip gain, or embedded audio gain for video clips) and fadeInSec/fadeOutSec (audio clips) set the mix in the same action, e.g. a quieter A2 score under dialogue."
   ],
   "inspect_movie_h3_take": [
     "read",
@@ -640,7 +640,7 @@
   ],
   "export_production_bundle": [
     "write",
-    "Deliver any selected artifacts and producer-authored text/code as a new folder with a manifest. No output type or platform is required. Artifacts use shared ProductionArtifact handles: image/music takes, movie clips/edits, speech, compositions, imported attachments, or immutable research HTML/JSON/evidence/provenance. Original copies keep their extensions; jpegImage converts image options to explicit dimensions/fit. filenames are safe relative paths; roles are producer-defined. files contains exact authored text/code, which is saved but never executed. No uploads occur. Discover export_media_composition separately when timing/mixing is needed."
+    "Deliver any selected artifacts and producer-authored text/code as a new folder with a manifest. No output type or platform is required. Artifacts use shared ProductionArtifact handles: image/music takes, movie clips/edits, MiniMax H3 takes (movieH3Take with projectId, jobId and file: video, contactStart, contactMid or contactEnd for continuity stills), speech, compositions, imported attachments, or immutable research HTML/JSON/evidence/provenance. Original copies keep their extensions; jpegImage converts image options to explicit dimensions/fit. filenames are safe relative paths; roles are producer-defined. files contains exact authored text/code, which is saved but never executed. No uploads occur. Discover export_media_composition separately when timing/mixing is needed."
   ],
   "cancel_production_job": [
     "write",

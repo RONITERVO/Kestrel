@@ -13,7 +13,7 @@ pub const H3_MIN_FRAMES: u32 = 5;
 pub const H3_MAX_FRAMES: u32 = 362; // 17 * 21 + 5 = 362 frames (~15.08s @ 24 fps)
 pub const TAKE_PLACEMENT_POLICY: &str = "authored_v1";
 
-const DRAFT_TARGET_AREA: f64 = (608 * 352) as f64;
+const DRAFT_TARGET_AREA: f64 = (768 * 448) as f64;
 const DETAIL_TARGET_AREA: f64 = (1344 * 768) as f64;
 const UPSCALE_TARGET_AREA: f64 = (1920 * 1088) as f64;
 
@@ -128,8 +128,8 @@ pub fn resolve_h3_audio_mask_span(
 
 pub fn default_scene_dimensions(kind: H3SceneKind) -> (u32, u32) {
     match kind {
-        H3SceneKind::Standard => (1920, 1088),
-        H3SceneKind::Audition => (960, 544),
+        H3SceneKind::Standard => (768, 448),
+        H3SceneKind::Audition => (768, 448),
         H3SceneKind::Soundtrack => (64, 32),
     }
 }
@@ -196,12 +196,29 @@ pub fn adapt_pass_canvas(
     let base_w = scene_width.max(64) as f64;
     let base_h = scene_height.max(32) as f64;
     let aspect = base_w / base_h;
+    let is_widescreen_16_9 = (aspect - (16.0 / 9.0)).abs() < 0.08;
     let max_edge = if advanced { 2_048 } else { 1_920 };
     match preset {
-        H3PassPreset::Draft02Mp => Ok(snap_aspect_to_area(aspect, DRAFT_TARGET_AREA, max_edge)),
-        H3PassPreset::Detail1Mp => Ok(snap_aspect_to_area(aspect, DETAIL_TARGET_AREA, max_edge)),
+        H3PassPreset::Draft02Mp => {
+            if is_widescreen_16_9 {
+                Ok((768, 448))
+            } else {
+                Ok(snap_aspect_to_area(aspect, DRAFT_TARGET_AREA, max_edge))
+            }
+        }
+        H3PassPreset::Detail1Mp => {
+            if is_widescreen_16_9 {
+                Ok((1344, 768))
+            } else {
+                Ok(snap_aspect_to_area(aspect, DETAIL_TARGET_AREA, max_edge))
+            }
+        }
         H3PassPreset::Upscale1080p => {
-            Ok(snap_aspect_to_area(aspect, UPSCALE_TARGET_AREA, max_edge))
+            if is_widescreen_16_9 {
+                Ok((1920, 1088))
+            } else {
+                Ok(snap_aspect_to_area(aspect, UPSCALE_TARGET_AREA, max_edge))
+            }
         }
         H3PassPreset::Custom => validate_canvas_dimensions(
             custom_width,
@@ -431,14 +448,14 @@ mod tests {
                 false
             )
             .unwrap(),
-            (608, 352)
+            (768, 448)
         );
         assert_eq!(
             adapt_pass_canvas(
-                (1920, 1088, H3SceneKind::Standard),
+                (768, 448, H3SceneKind::Standard),
                 H3PassPreset::Detail1Mp,
                 H3TaskMode::Standard,
-                (1920, 1088),
+                (768, 448),
                 false
             )
             .unwrap(),

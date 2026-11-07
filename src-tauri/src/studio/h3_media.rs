@@ -540,6 +540,14 @@ where
             let mut chain = format!(
                 "[{idx}:v]trim=start={src_ss:.5}:duration={seg_dur:.5},setpts=PTS-STARTPTS+{dst_offset:.5}/TB,scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={H3_FPS}"
             );
+            let hold_after_sec = (win_end - clip_end).max(0.0);
+            if hold_after_sec > 1e-3 && slice.opacity >= 0.999 {
+                // Hold the last frame across any uncovered generation span so the 3D causal
+                // Video VAE never encodes an artificial cut-to-black at the pre-context boundary.
+                chain.push_str(&format!(
+                    ",tpad=stop_mode=clone:stop_duration={hold_after_sec:.5}"
+                ));
+            }
             if slice.opacity < 0.999 {
                 chain.push_str(&format!(
                     ",format=rgba,colorchannelmixer=aa={:.4}",
@@ -805,12 +813,29 @@ pub async fn apply_context_color_drift_correction(
     width: u32,
     height: u32,
 ) -> Result<H3ColorDriftReport, StudioError> {
-    let pre_count = geometry
-        .mask_start_frame
-        .min(geometry.unpadded_frames) as usize;
-    let post_start = geometry
-        .mask_end_frame
-        .min(geometry.unpadded_frames) as usize;
+    let edges = super::h3_geometry::h3_video_token_edges(geometry.padded_frames);
+    let frozen_pre = if geometry.video_mask_token_lo > 0 {
+        edges
+            .get(geometry.video_mask_token_lo as usize)
+            .copied()
+            .unwrap_or(geometry.mask_start_frame)
+            .min(geometry.mask_start_frame)
+    } else {
+        geometry.mask_start_frame
+    };
+    let frozen_post_start = if geometry.video_mask_token_hi > 0
+        && geometry.video_mask_token_hi < geometry.video_latent_tokens
+    {
+        edges
+            .get(geometry.video_mask_token_hi as usize)
+            .copied()
+            .unwrap_or(geometry.mask_end_frame)
+            .max(geometry.mask_end_frame)
+    } else {
+        geometry.mask_end_frame
+    };
+    let pre_count = frozen_pre.min(geometry.unpadded_frames) as usize;
+    let post_start = frozen_post_start.min(geometry.unpadded_frames) as usize;
     let unpadded = geometry.unpadded_frames as usize;
     let post_count = unpadded.saturating_sub(post_start);
     let total_context = pre_count + post_count;
@@ -1081,6 +1106,7 @@ pub async fn analyze_take_quality(
     expected_width: u32,
     expected_height: u32,
     expect_audio: bool,
+    geometry: Option<&H3TakePlacementGeometry>,
 ) -> Result<H3TakeQualityReport, StudioError> {
     let probe_out = tokio::process::Command::new(media_program("ffprobe"))
         .kill_on_drop(true)
@@ -1161,10 +1187,22 @@ pub async fn analyze_take_quality(
     fs::create_dir_all(contact_dir)?;
     let mut contact_sheet_paths = Vec::new();
     if width >= 64 && height >= 32 && duration_sec > 0.05 {
+        let (sel_start, sel_dur) = if let Some(geom) = geometry {
+            let s = geom.trimmed_source_in_sec.clamp(0.0, (duration_sec - 0.1).max(0.0));
+            let d = geom
+                .trimmed_duration_sec
+                .clamp(0.1, (duration_sec - s).max(0.1));
+            (s, d)
+        } else {
+            (0.0, duration_sec)
+        };
         let times = [
-            ("contact-start.png", (duration_sec * 0.08).min(0.25)),
-            ("contact-mid.png", duration_sec * 0.50),
-            ("contact-end.png", (duration_sec - 0.12).max(0.0)),
+            ("contact-start.png", sel_start + (sel_dur * 0.12).min(0.35)),
+            ("contact-mid.png", sel_start + sel_dur * 0.50),
+            (
+                "contact-end.png",
+                (sel_start + (sel_dur * 0.88).max(0.08)).min((duration_sec - 0.08).max(0.0)),
+            ),
         ];
         for (name, t) in times {
             let dst = contact_dir.join(name);

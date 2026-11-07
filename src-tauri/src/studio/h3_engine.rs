@@ -1181,10 +1181,11 @@ impl MovieStudio {
                     .map(|e| e.id.clone())
             });
 
+        let target_scene_id = resolve_target_scene_id(&project, &request.scene_id)?;
         let scene = project
             .scenes
             .iter_mut()
-            .find(|s| s.id == request.scene_id)
+            .find(|s| s.id == target_scene_id)
             .ok_or_else(|| StudioError::NotFound(format!("Scene {} not found.", request.scene_id)))?;
 
         let item_id = format!("sref-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
@@ -1258,10 +1259,11 @@ impl MovieStudio {
         let lock = self.project_lock(&request.project_id)?;
         let _guard = lock.lock().await;
         let mut project = self.get(&request.project_id)?;
+        let target_scene_id = resolve_target_scene_id(&project, &request.scene_id)?;
         let scene = project
             .scenes
             .iter_mut()
-            .find(|s| s.id == request.scene_id)
+            .find(|s| s.id == target_scene_id)
             .ok_or_else(|| StudioError::NotFound(format!("Scene {} not found.", request.scene_id)))?;
 
         if let Some(gp) = request.global_prompt {
@@ -1287,6 +1289,7 @@ impl MovieStudio {
                 .partial_cmp(&b.timeline_start_sec)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        sync_scene_window_to_next_uncovered_shot(scene);
         let shot_count = scene.prompt_sections.len();
         let scene_id = scene.id.clone();
         scene.updated_at = Utc::now().to_rfc3339();
@@ -1355,10 +1358,11 @@ impl MovieStudio {
         self.ensure_project_reference_copy(&mut project, &asset, &chosen_label)?;
 
         if let Some(guide_sec) = request.add_guide_at_sec {
+            let target_scene_id = resolve_target_scene_id(&project, &request.scene_id)?;
             let scene = project
                 .scenes
                 .iter_mut()
-                .find(|s| s.id == request.scene_id)
+                .find(|s| s.id == target_scene_id)
                 .ok_or_else(|| {
                     StudioError::NotFound(format!("Scene {} not found.", request.scene_id))
                 })?;
@@ -1387,10 +1391,11 @@ impl MovieStudio {
         advanced: bool,
     ) -> Result<H3WindowCompileResult, StudioError> {
         let project = self.get(&request.project_id)?;
+        let target_scene_id = resolve_target_scene_id(&project, &request.scene_id)?;
         let scene = project
             .scenes
             .iter()
-            .find(|s| s.id == request.scene_id)
+            .find(|s| s.id == target_scene_id)
             .ok_or_else(|| StudioError::NotFound(format!("Scene {} not found.", request.scene_id)))?;
         let env = self.environment_snapshot(comfy_root);
         let mut res = compile_h3_window(
@@ -1435,21 +1440,23 @@ impl MovieStudio {
         project.settings.comfy_root = comfy_root.to_string();
 
         let requested_windows: Vec<H3QueuedWindowSpec> = if request.windows.is_empty() {
-            let sid = if !project.active_scene_id.is_empty() {
-                project.active_scene_id.clone()
+            let sid = resolve_target_scene_id(&project, "")?;
+            let scene = project
+                .scenes
+                .iter()
+                .find(|s| s.id == sid)
+                .ok_or_else(|| StudioError::Invalid("Project has no scenes.".into()))?;
+            let auto_specs = build_uncovered_window_specs(scene);
+            if auto_specs.is_empty() {
+                vec![H3QueuedWindowSpec {
+                    scene_id: sid,
+                    label: String::new(),
+                    window_override: None,
+                    generation_override: None,
+                }]
             } else {
-                project
-                    .scenes
-                    .first()
-                    .map(|s| s.id.clone())
-                    .ok_or_else(|| StudioError::Invalid("Project has no scenes.".into()))?
-            };
-            vec![H3QueuedWindowSpec {
-                scene_id: sid,
-                label: String::new(),
-                window_override: None,
-                generation_override: None,
-            }]
+                auto_specs
+            }
         } else {
             request.windows
         };
@@ -1465,16 +1472,17 @@ impl MovieStudio {
         let mut base_seed = Utc::now().timestamp_nanos_opt().unwrap_or(1) as u64;
 
         for (w_idx, spec) in requested_windows.iter().enumerate() {
+            let target_scene_id = resolve_target_scene_id(&project, &spec.scene_id)?;
             let scene = project
                 .scenes
                 .iter()
-                .find(|s| s.id == spec.scene_id)
+                .find(|s| s.id == target_scene_id)
                 .ok_or_else(|| {
                     StudioError::NotFound(format!("Scene {} not found.", spec.scene_id))
                 })?
                 .clone();
 
-            let win_cfg = spec
+            let mut win_cfg = spec
                 .window_override
                 .clone()
                 .unwrap_or_else(|| scene.window.clone());
@@ -1482,6 +1490,34 @@ impl MovieStudio {
                 .generation_override
                 .clone()
                 .unwrap_or_else(|| scene.generation.clone());
+
+            // When queueing sequential windows in one batch (or after an existing V1 clip) and
+            // pre_context_sec was omitted (0.0), automatically bridge 23 frames (~0.958s, exact
+            // H3 Video VAE latent token 8 edge) so multi-window continuous takes stay seamless.
+            if win_cfg.in_sec >= 0.5
+                && win_cfg.pre_context_sec == 0.0
+                && base_gen.task_mode == H3TaskMode::Standard
+                && scene.kind != H3SceneKind::Soundtrack
+                && !scene
+                    .guides
+                    .iter()
+                    .any(|g| g.enabled && (g.timeline_sec - win_cfg.in_sec).abs() < 0.1)
+            {
+                let prev_in_batch = requested_windows[..w_idx].iter().any(|prev| {
+                    let pw = prev
+                        .window_override
+                        .as_ref()
+                        .unwrap_or(&scene.window);
+                    (pw.out_sec - win_cfg.in_sec).abs() < 0.25
+                });
+                let prev_on_v1 = scene_has_v1_clip_covering(&scene, win_cfg.in_sec - 0.05);
+                if prev_in_batch || prev_on_v1 {
+                    let sel_dur = (win_cfg.out_sec - win_cfg.in_sec).max(0.2);
+                    if sel_dur + 1.0 <= 14.8 {
+                        win_cfg.pre_context_sec = (23.0_f64 / 24.0_f64).min(win_cfg.in_sec);
+                    }
+                }
+            }
 
             let passes: Vec<H3GenerationSettings> = if request.expand_quality_ladder
                 && !matches!(
@@ -1851,135 +1887,189 @@ impl MovieStudio {
                 on_progress(project.detail.clone());
                 self.persist_emit(&mut project, app)?;
 
-                let client_id = format!("kestrel-h3-{}", uuid::Uuid::new_v4().simple());
-                let preview_target = PreviewTarget::movie_clip(
-                    job_id.clone(),
-                    project_id,
-                    &scene.id,
-                    idx,
-                );
-                let preview = if preview_available
-                    && compiled.resolved_width >= 256
-                    && compiled.resolved_height >= 256
-                {
-                    LivePreviewSession::connect(
-                        app,
-                        &client_id,
-                        preview_target,
-                        &self.live_previews,
-                    )
-                    .await
-                } else {
-                    emit_preview_unavailable(app, &self.live_previews, preview_target);
-                    None
-                };
-
-                let resp = self
-                    .http
-                    .post(format!("{COMFY_BASE}/prompt"))
-                    .json(&json!({ "prompt": graph, "client_id": client_id }))
-                    .send()
-                    .await?;
-                let status = resp.status();
-                let sub_val: Value = resp.json().await?;
-                write_json_atomic(&take_dir.join("submission.json"), &sub_val)?;
-                if !status.is_success() {
-                    return Err(StudioError::Render(format!(
-                        "ComfyUI rejected H3 graph: {}",
-                        truncate(&sub_val.to_string(), 700)
-                    )));
-                }
-                let prompt_id = sub_val
-                    .get("prompt_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        StudioError::Render(format!("ComfyUI returned no prompt_id: {sub_val}"))
-                    })?;
-
                 let raw_mp4 = take_dir.join("comfy-raw.mp4");
-                let deadline = tokio::time::Instant::now() + COMFY_RENDER_TIMEOUT;
-                loop {
-                    if cancel.is_cancelled() {
-                        let _ = self
-                            .http
-                            .post(format!("{COMFY_BASE}/interrupt"))
-                            .send()
-                            .await;
-                        return Err(StudioError::Cancelled);
-                    }
-                    if tokio::time::Instant::now() >= deadline {
+                let recoverable_prior = project
+                    .render_jobs
+                    .iter()
+                    .rev()
+                    .find_map(|prior| {
+                        let matches = prior.id != *job_id
+                            && matches!(
+                                prior.status,
+                                H3RenderJobStatus::Failed | H3RenderJobStatus::Cancelled
+                            )
+                            && prior.take_media_path.is_empty()
+                            && prior.scene_id == scene.id
+                            && prior.pass_preset == eff_gen.pass_preset
+                            && (prior.geometry.selection_in_sec
+                                - compiled.geometry.selection_in_sec)
+                                .abs()
+                                < 0.05
+                            && (prior.geometry.selection_out_sec
+                                - compiled.geometry.selection_out_sec)
+                                .abs()
+                                < 0.05;
+                        if !matches {
+                            return None;
+                        }
+                        let candidate = comfy_path
+                            .join("output")
+                            .join("kestrel_h3")
+                            .join(project_id)
+                            .join(format!("{}_00001_.mp4", prior.id));
+                        if candidate
+                            .metadata()
+                            .is_ok_and(|meta| meta.is_file() && meta.len() > 1024)
+                        {
+                            Some((prior.id.clone(), candidate))
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some((prior_id, existing_comfy_out)) = recoverable_prior {
+                    tokio::fs::copy(&existing_comfy_out, &raw_mp4).await?;
+                    write_json_atomic(
+                        &take_dir.join("result.json"),
+                        &json!({
+                            "recoveredFromJobId": prior_id,
+                            "comfyOutput": existing_comfy_out,
+                        }),
+                    )?;
+                    let raw_str = raw_mp4.to_string_lossy().into_owned();
+                    self.update_job_state(&mut project, &prior_id, |j| {
+                        j.take_media_path = raw_str;
+                    });
+                } else {
+                    let client_id = format!("kestrel-h3-{}", uuid::Uuid::new_v4().simple());
+                    let preview_target = PreviewTarget::movie_clip(
+                        job_id.clone(),
+                        project_id,
+                        &scene.id,
+                        idx,
+                    );
+                    let preview = if preview_available
+                        && compiled.resolved_width >= 256
+                        && compiled.resolved_height >= 256
+                    {
+                        LivePreviewSession::connect(
+                            app,
+                            &client_id,
+                            preview_target,
+                            &self.live_previews,
+                        )
+                        .await
+                    } else {
+                        emit_preview_unavailable(app, &self.live_previews, preview_target);
+                        None
+                    };
+
+                    let resp = self
+                        .http
+                        .post(format!("{COMFY_BASE}/prompt"))
+                        .json(&json!({ "prompt": graph, "client_id": client_id }))
+                        .send()
+                        .await?;
+                    let status = resp.status();
+                    let sub_val: Value = resp.json().await?;
+                    write_json_atomic(&take_dir.join("submission.json"), &sub_val)?;
+                    if !status.is_success() {
                         return Err(StudioError::Render(format!(
-                            "ComfyUI timed out waiting for H3 prompt {prompt_id}."
+                            "ComfyUI rejected H3 graph: {}",
+                            truncate(&sub_val.to_string(), 700)
                         )));
                     }
-                    let history: Value = self
-                        .http
-                        .get(format!("{COMFY_BASE}/history/{prompt_id}"))
-                        .send()
-                        .await?
-                        .json()
-                        .await?;
-                    if let Some(entry) = history.get(prompt_id) {
-                        if entry.pointer("/status/status_str").and_then(Value::as_str)
-                            == Some("error")
-                        {
-                            let detail = comfy_execution_error(entry).unwrap_or_else(|| {
-                                truncate(&entry.to_string(), 900)
-                            });
-                            return Err(StudioError::Render(format!("ComfyUI {detail}")));
+                    let prompt_id = sub_val
+                        .get("prompt_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            StudioError::Render(format!("ComfyUI returned no prompt_id: {sub_val}"))
+                        })?;
+
+                    let deadline = tokio::time::Instant::now() + COMFY_RENDER_TIMEOUT;
+                    loop {
+                        if cancel.is_cancelled() {
+                            let _ = self
+                                .http
+                                .post(format!("{COMFY_BASE}/interrupt"))
+                                .send()
+                                .await;
+                            return Err(StudioError::Cancelled);
                         }
-                        if entry.pointer("/status/completed").and_then(Value::as_bool)
-                            == Some(true)
-                        {
-                            if let Some(p) = &preview {
-                                p.finish();
-                            }
-                            let media = find_output_media(entry, "videos").ok_or_else(|| {
-                                StudioError::Render(
-                                    "ComfyUI completed H3 prompt without saving a video output."
-                                        .into(),
-                                )
-                            })?;
-                            let valid_name = super::validate_comfy_filename(&media.0)?;
-                            let sub_path = Path::new(&media.1);
-                            if sub_path.is_absolute()
-                                || sub_path.components().any(|c| {
-                                    matches!(
-                                        c,
-                                        std::path::Component::ParentDir
-                                            | std::path::Component::RootDir
-                                            | std::path::Component::Prefix(_)
-                                    )
-                                })
+                        if tokio::time::Instant::now() >= deadline {
+                            return Err(StudioError::Render(format!(
+                                "ComfyUI timed out waiting for H3 prompt {prompt_id}."
+                            )));
+                        }
+                        let history: Value = self
+                            .http
+                            .get(format!("{COMFY_BASE}/history/{prompt_id}"))
+                            .send()
+                            .await?
+                            .json()
+                            .await?;
+                        if let Some(entry) = history.get(prompt_id) {
+                            if entry.pointer("/status/status_str").and_then(Value::as_str)
+                                == Some("error")
                             {
-                                return Err(StudioError::Invalid(format!(
-                                    "Rejected unsafe ComfyUI output subfolder '{}'.",
-                                    media.1
-                                )));
+                                let detail = comfy_execution_error(entry).unwrap_or_else(|| {
+                                    truncate(&entry.to_string(), 900)
+                                });
+                                return Err(StudioError::Render(format!("ComfyUI {detail}")));
                             }
-                            let output_root = comfy_path.join("output");
-                            let comfy_out = output_root.join(sub_path).join(&valid_name);
-                            if let (Ok(canon_root), Ok(canon_out)) =
-                                (output_root.canonicalize(), comfy_out.canonicalize())
+                            if entry.pointer("/status/completed").and_then(Value::as_bool)
+                                == Some(true)
                             {
-                                if !canon_out.starts_with(&canon_root) {
-                                    return Err(StudioError::Invalid(
-                                        "ComfyUI output path escaped output directory.".into(),
-                                    ));
+                                if let Some(p) = &preview {
+                                    p.finish();
                                 }
+                                let media = find_output_media(entry, "videos").ok_or_else(|| {
+                                    StudioError::Render(
+                                        "ComfyUI completed H3 prompt without saving a video output."
+                                            .into(),
+                                    )
+                                })?;
+                                let valid_name = super::validate_comfy_filename(&media.0)?;
+                                let sub_path = Path::new(&media.1);
+                                if sub_path.is_absolute()
+                                    || sub_path.components().any(|c| {
+                                        matches!(
+                                            c,
+                                            std::path::Component::ParentDir
+                                                | std::path::Component::RootDir
+                                                | std::path::Component::Prefix(_)
+                                        )
+                                    })
+                                {
+                                    return Err(StudioError::Invalid(format!(
+                                        "Rejected unsafe ComfyUI output subfolder '{}'.",
+                                        media.1
+                                    )));
+                                }
+                                let output_root = comfy_path.join("output");
+                                let comfy_out = output_root.join(sub_path).join(&valid_name);
+                                if let (Ok(canon_root), Ok(canon_out)) =
+                                    (output_root.canonicalize(), comfy_out.canonicalize())
+                                {
+                                    if !canon_out.starts_with(&canon_root) {
+                                        return Err(StudioError::Invalid(
+                                            "ComfyUI output path escaped output directory.".into(),
+                                        ));
+                                    }
+                                }
+                                tokio::fs::copy(&comfy_out, &raw_mp4).await?;
+                                write_json_atomic(
+                                    &take_dir.join("result.json"),
+                                    &json!({
+                                        "promptId": prompt_id,
+                                        "comfyOutput": comfy_out,
+                                    }),
+                                )?;
+                                break;
                             }
-                            tokio::fs::copy(&comfy_out, &raw_mp4).await?;
-                            write_json_atomic(
-                                &take_dir.join("result.json"),
-                                &json!({
-                                    "promptId": prompt_id,
-                                    "comfyOutput": comfy_out,
-                                }),
-                            )?;
-                            break;
                         }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
 
                 // 5. Post-process: optional 3x4 ridge color-drift cancellation + quality analysis
@@ -2024,6 +2114,7 @@ impl MovieStudio {
                     compiled.resolved_width,
                     compiled.resolved_height,
                     true,
+                    Some(&compiled.geometry),
                 )
                 .await?;
                 let take_path_str = final_take_mp4.to_string_lossy().into_owned();
@@ -2044,6 +2135,9 @@ impl MovieStudio {
                     None,
                     None,
                 )?;
+                if let Some(sc) = project.scenes.iter_mut().find(|s| s.id == scene.id) {
+                    sync_scene_window_to_next_uncovered_shot(sc);
+                }
                 sync_rendered_clip_entry(
                     &mut project,
                     job_id,
@@ -2122,12 +2216,13 @@ impl MovieStudio {
 
     pub async fn place_h3_take(
         &self,
-        request: PlaceMovieH3TakeRequest,
+        mut request: PlaceMovieH3TakeRequest,
         app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
         let lock = self.project_lock(&request.project_id)?;
         let _guard = lock.lock().await;
         let mut project = self.get(&request.project_id)?;
+        request.target_scene_id = resolve_target_scene_id(&project, &request.target_scene_id)?;
 
         if let Some(asset_id) = request
             .asset_id
@@ -2137,7 +2232,9 @@ impl MovieStudio {
         {
             let asset = self.resolve_reference_asset(asset_id)?;
             self.ensure_project_reference_copy(&mut project, &asset, &asset.name)?;
-            let _ = place_reference_asset_on_scene(&mut project, &request, &asset)?;
+            if let Some(clip_id) = place_reference_asset_on_scene(&mut project, &request, &asset)? {
+                apply_placement_mix(&mut project, &request, &clip_id)?;
+            }
             project.detail = format!("Placed asset '{}' onto scene timeline.", asset.name);
             self.persist_emit(&mut project, app)?;
             return Ok(project);
@@ -2196,6 +2293,9 @@ impl MovieStudio {
             request.target_audio_lane_id.as_deref(),
             request.timeline_start_override_sec,
         )?;
+        if let Some(clip_id) = clip_id.as_deref() {
+            apply_placement_mix(&mut project, &request, clip_id)?;
+        }
         self.update_job_state(&mut project, &job.id, |j| {
             if clip_id.is_some() {
                 j.output_clip_id = clip_id;
@@ -2809,6 +2909,120 @@ fn select_driver_lane_index(
     ))
 }
 
+fn resolve_target_scene_id(
+    project: &MovieProject,
+    requested_scene_id: &str,
+) -> Result<String, StudioError> {
+    let trimmed = requested_scene_id.trim();
+    if !trimmed.is_empty() {
+        if let Some(found) = project
+            .scenes
+            .iter()
+            .find(|s| s.id == trimmed || s.name.eq_ignore_ascii_case(trimmed))
+        {
+            return Ok(found.id.clone());
+        }
+    }
+    if trimmed.is_empty()
+        || matches!(
+            trimmed.to_ascii_lowercase().as_str(),
+            "active" | "default" | "main" | "scene-1" | "sc-1"
+        )
+    {
+        if !project.active_scene_id.is_empty() {
+            if let Some(active) = project
+                .scenes
+                .iter()
+                .find(|s| s.id == project.active_scene_id)
+            {
+                return Ok(active.id.clone());
+            }
+        }
+        if let Some(first) = project.scenes.first() {
+            return Ok(first.id.clone());
+        }
+        return Err(StudioError::Invalid("Project has no scenes.".into()));
+    }
+    Err(StudioError::NotFound(format!(
+        "Scene {requested_scene_id} not found."
+    )))
+}
+
+fn scene_has_v1_clip_covering(scene: &H3Scene, time_sec: f64) -> bool {
+    scene.video_lanes.iter().any(|lane| {
+        !lane.muted
+            && lane.clips.iter().any(|clip| {
+                clip.enabled
+                    && clip.timeline_start_sec <= time_sec
+                    && clip.timeline_start_sec + clip.duration_sec >= time_sec
+            })
+    })
+}
+
+fn section_is_covered_on_v1(scene: &H3Scene, sec: &H3PromptSection) -> bool {
+    let mid = sec.timeline_start_sec + (sec.duration_sec * 0.5).max(0.1);
+    scene_has_v1_clip_covering(scene, mid)
+}
+
+fn sync_scene_window_to_next_uncovered_shot(scene: &mut H3Scene) {
+    if let Some(next_sec) = scene
+        .prompt_sections
+        .iter()
+        .find(|sec| sec.enabled && !section_is_covered_on_v1(scene, sec))
+    {
+        let start = next_sec.timeline_start_sec.max(0.0);
+        let dur = next_sec.duration_sec.clamp(0.5, 8.0);
+        scene.window.in_sec = start;
+        scene.window.out_sec = start + dur;
+        if start < 0.5 {
+            scene.window.pre_context_sec = 0.0;
+        }
+    }
+}
+
+fn build_uncovered_window_specs(scene: &H3Scene) -> Vec<H3QueuedWindowSpec> {
+    let mut specs = Vec::new();
+    for sec in scene.prompt_sections.iter().filter(|s| s.enabled) {
+        if section_is_covered_on_v1(scene, sec) {
+            continue;
+        }
+        let sec_start = sec.timeline_start_sec.max(0.0);
+        let sec_end = sec_start + sec.duration_sec.max(0.5);
+        // Split any overly long prompt section (> 10s) into <= 6s windows so H3 stays in its sweet spot.
+        let mut cur = sec_start;
+        let mut part = 1usize;
+        while cur + 0.25 < sec_end && specs.len() < MAX_QUEUED_WINDOWS_PER_CALL {
+            let rem = sec_end - cur;
+            let win_dur = if rem > 10.0 { 6.0 } else { rem };
+            let out = (cur + win_dur).min(sec_end);
+            let mut win = scene.window.clone();
+            win.in_sec = cur;
+            win.out_sec = out;
+            win.pre_context_sec = if cur >= 0.5 && scene.kind == H3SceneKind::Standard {
+                (23.0_f64 / 24.0_f64).min(cur)
+            } else {
+                0.0
+            };
+            let base_label = if sec.label.trim().is_empty() {
+                format!("Shot {:.1}s–{:.1}s", cur, out)
+            } else if rem > 10.0 || part > 1 {
+                format!("{} (Part {part})", sec.label.trim())
+            } else {
+                sec.label.trim().to_string()
+            };
+            specs.push(H3QueuedWindowSpec {
+                scene_id: scene.id.clone(),
+                label: base_label,
+                window_override: Some(win),
+                generation_override: None,
+            });
+            cur = out;
+            part += 1;
+        }
+    }
+    specs
+}
+
 fn place_take_on_driver_lane(
     project: &mut MovieProject,
     scene_id: &str,
@@ -2869,6 +3083,72 @@ fn place_take_on_driver_lane(
     });
     scene.updated_at = Utc::now().to_rfc3339();
     Ok(clip_id)
+}
+
+/// Applies optional mix settings from a placement request to the clip it just created, so a
+/// producer can set score gain and fades in the same action instead of rewriting the scene.
+fn apply_placement_mix(
+    project: &mut MovieProject,
+    request: &PlaceMovieH3TakeRequest,
+    clip_id: &str,
+) -> Result<(), StudioError> {
+    if let Some(gain) = request.gain {
+        if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+            return Err(StudioError::Invalid(format!(
+                "gain must be between 0.0 and 2.0 (got {gain}); 1.0 keeps the source level."
+            )));
+        }
+    }
+    for (name, value) in [
+        ("fadeInSec", request.fade_in_sec),
+        ("fadeOutSec", request.fade_out_sec),
+    ] {
+        if let Some(value) = value {
+            if !value.is_finite() || value < 0.0 {
+                return Err(StudioError::Invalid(format!(
+                    "{name} must be zero or more seconds (got {value})."
+                )));
+            }
+        }
+    }
+    let scene = project
+        .scenes
+        .iter_mut()
+        .find(|s| s.id == request.target_scene_id)
+        .ok_or_else(|| {
+            StudioError::NotFound(format!("Scene {} not found.", request.target_scene_id))
+        })?;
+    if let Some(clip) = scene
+        .audio_lanes
+        .iter_mut()
+        .flat_map(|lane| lane.clips.iter_mut())
+        .find(|clip| clip.id == clip_id)
+    {
+        let fade_in = request.fade_in_sec.unwrap_or(clip.fade_in_sec);
+        let fade_out = request.fade_out_sec.unwrap_or(clip.fade_out_sec);
+        if fade_in + fade_out > clip.duration_sec + 1e-6 {
+            return Err(StudioError::Invalid(format!(
+                "fadeInSec + fadeOutSec ({:.2}s) cannot exceed the placed clip duration ({:.2}s).",
+                fade_in + fade_out,
+                clip.duration_sec
+            )));
+        }
+        if let Some(gain) = request.gain {
+            clip.gain = gain;
+        }
+        clip.fade_in_sec = fade_in;
+        clip.fade_out_sec = fade_out;
+    } else if let Some(clip) = scene
+        .video_lanes
+        .iter_mut()
+        .flat_map(|lane| lane.clips.iter_mut())
+        .find(|clip| clip.id == clip_id)
+    {
+        if let Some(gain) = request.gain {
+            clip.audio_gain = gain;
+        }
+    }
+    Ok(())
 }
 
 fn place_reference_asset_on_scene(
@@ -3405,5 +3685,72 @@ mod tests {
             reloaded.render_jobs[2].pass_preset,
             H3PassPreset::Upscale1080p
         );
+    }
+
+    #[test]
+    fn placement_mix_sets_score_gain_and_fades_and_rejects_bad_values() {
+        let root = tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let mut project = studio
+            .create_h3_project(
+                CreateMovieH3ProjectRequest {
+                    title: "Mix".into(),
+                    story_markdown: String::new(),
+                    width: None,
+                    height: None,
+                    duration_sec: Some(12.0),
+                },
+                "",
+                false,
+                None,
+            )
+            .unwrap();
+        let scene_id = project.active_scene_id.clone();
+        let scene = project.scenes.iter_mut().find(|s| s.id == scene_id).unwrap();
+        scene.audio_lanes = vec![H3AudioLane {
+            id: "aud-lane-2".into(),
+            name: "A2".into(),
+            muted: false,
+            solo: false,
+            locked: false,
+            clips: vec![H3AudioClip {
+                id: "clip-score".into(),
+                source_kind: H3ClipSourceKind::ReferenceAsset,
+                source_id: "asset".into(),
+                label: "Score".into(),
+                timeline_start_sec: 0.0,
+                duration_sec: 10.0,
+                source_in_sec: 0.0,
+                source_duration_sec: 10.0,
+                gain: 0.65,
+                fade_in_sec: 0.0,
+                fade_out_sec: 0.0,
+                enabled: true,
+            }],
+        }];
+        let request = |extra: serde_json::Value| -> PlaceMovieH3TakeRequest {
+            let mut base = json!({"projectId": project.id, "targetSceneId": scene_id});
+            base.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(base).unwrap()
+        };
+        let mut mixed = project.clone();
+        apply_placement_mix(
+            &mut mixed,
+            &request(json!({"gain": 0.32, "fadeInSec": 1.5, "fadeOutSec": 2.0})),
+            "clip-score",
+        )
+        .unwrap();
+        let clip = &mixed.scenes.iter().find(|s| s.id == scene_id).unwrap().audio_lanes[0].clips[0];
+        assert_eq!((clip.gain, clip.fade_in_sec, clip.fade_out_sec), (0.32, 1.5, 2.0));
+        for bad in [
+            json!({"gain": 2.5}),
+            json!({"gain": -0.1}),
+            json!({"fadeInSec": -1.0}),
+            json!({"fadeInSec": 6.0, "fadeOutSec": 6.0}),
+        ] {
+            assert!(apply_placement_mix(&mut project.clone(), &request(bad), "clip-score").is_err());
+        }
     }
 }

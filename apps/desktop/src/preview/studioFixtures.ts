@@ -347,8 +347,8 @@ export const sampleH3Environment: H3EnvironmentSnapshot = {
 export const sampleH3CompileResult: H3WindowCompileResult = {
   sceneId: "frog-main",
   sceneName: "Main Scene",
-  resolvedWidth: 608,
-  resolvedHeight: 352,
+  resolvedWidth: 768,
+  resolvedHeight: 448,
   resolvedModel: "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
   resolvedSteps: 10,
   resolvedDenoise: 1,

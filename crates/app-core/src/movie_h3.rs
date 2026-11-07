@@ -41,10 +41,10 @@ impl Default for MovieH3Defaults {
             frame_offset: 5,
             min_frames: 5,
             max_frames: 362,
-            default_scene_width: 1920,
-            default_scene_height: 1088,
-            draft_width: 608,
-            draft_height: 352,
+            default_scene_width: 768,
+            default_scene_height: 448,
+            draft_width: 768,
+            draft_height: 448,
             detail_width: 1344,
             detail_height: 768,
             upscale_width: 1920,
@@ -69,9 +69,13 @@ impl Default for MovieH3Defaults {
 #[ts(export)]
 pub enum H3PromptFormat {
     #[default]
+    #[serde(alias = "h3_full_reference", alias = "fullReference", alias = "structured")]
     H3FullReference,
+    #[serde(alias = "h3_base", alias = "base", alias = "prose")]
     H3Base,
+    #[serde(alias = "character_swap")]
     CharacterSwap,
+    #[serde(alias = "head_swap")]
     HeadSwap,
 }
 
@@ -80,11 +84,17 @@ pub enum H3PromptFormat {
 #[ts(export)]
 pub enum H3TaskMode {
     #[default]
+    #[serde(alias = "Standard", alias = "default", alias = "video_and_audio")]
     Standard,
+    #[serde(alias = "keep_existing_audio", alias = "freeze_audio", alias = "lip_sync")]
     KeepExistingAudio,
+    #[serde(alias = "audio_over_existing_video", alias = "freeze_video", alias = "foley")]
     AudioOverExistingVideo,
+    #[serde(alias = "soundtrack_pass", alias = "soundtrack")]
     SoundtrackPass,
+    #[serde(alias = "character_swap")]
     CharacterSwap,
+    #[serde(alias = "head_swap")]
     HeadSwap,
 }
 
@@ -93,9 +103,13 @@ pub enum H3TaskMode {
 #[ts(export)]
 pub enum H3PassPreset {
     #[default]
+    #[serde(alias = "draft_02_mp", alias = "draft", alias = "0.2mp", alias = "768x448", alias = "low", alias = "fast")]
     Draft02Mp,
+    #[serde(alias = "detail_1_mp", alias = "detail", alias = "1mp", alias = "medium")]
     Detail1Mp,
+    #[serde(alias = "upscale_1080p", alias = "upscale", alias = "1080p", alias = "high")]
     Upscale1080p,
+    #[serde(alias = "Custom")]
     Custom,
 }
 
@@ -104,9 +118,13 @@ pub enum H3PassPreset {
 #[ts(export)]
 pub enum H3ModelChoice {
     #[default]
+    #[serde(alias = "Auto")]
     Auto,
+    #[serde(alias = "Ref2VA", alias = "ref2v")]
     Ref2va,
+    #[serde(alias = "FL2VA", alias = "fl2v")]
     Fl2va,
+    #[serde(alias = "ref2va_cond_with_fl2va_model")]
     Ref2vaCondWithFl2vaModel,
 }
 
@@ -115,8 +133,11 @@ pub enum H3ModelChoice {
 #[ts(export)]
 pub enum H3TakePlacementMode {
     #[default]
+    #[serde(alias = "Trimmed", alias = "trim", alias = "default")]
     Trimmed,
+    #[serde(alias = "Untrimmed", alias = "full")]
     Untrimmed,
+    #[serde(alias = "asset_only", alias = "none")]
     AssetOnly,
 }
 
@@ -125,8 +146,11 @@ pub enum H3TakePlacementMode {
 #[ts(export)]
 pub enum H3SceneKind {
     #[default]
+    #[serde(alias = "Standard", alias = "main", alias = "video")]
     Standard,
+    #[serde(alias = "Audition", alias = "test")]
     Audition,
+    #[serde(alias = "Soundtrack", alias = "audio", alias = "score")]
     Soundtrack,
 }
 
@@ -135,12 +159,19 @@ pub enum H3SceneKind {
 #[ts(export)]
 pub enum H3EntityKind {
     #[default]
+    #[serde(alias = "Character", alias = "person", alias = "actor", alias = "subject")]
     Character,
+    #[serde(alias = "Location", alias = "scene", alias = "background", alias = "environment", alias = "setting")]
     Location,
+    #[serde(alias = "Prop", alias = "object", alias = "item")]
     Prop,
+    #[serde(alias = "Outfit", alias = "clothing", alias = "wardrobe", alias = "costume")]
     Outfit,
+    #[serde(alias = "Voice", alias = "speaker", alias = "vocal")]
     Voice,
+    #[serde(alias = "Sound", alias = "audio", alias = "sfx", alias = "music")]
     Sound,
+    #[serde(alias = "Other", alias = "general")]
     Other,
 }
 
@@ -149,8 +180,11 @@ pub enum H3EntityKind {
 #[ts(export)]
 pub enum H3ReferencePopulation {
     #[default]
+    #[serde(alias = "Pictures", alias = "picture", alias = "image", alias = "images")]
     Pictures,
+    #[serde(alias = "Videos", alias = "video")]
     Videos,
+    #[serde(alias = "standalone_audios", alias = "standaloneAudio", alias = "audio", alias = "audios", alias = "StandaloneAudios")]
     StandaloneAudios,
 }
 
@@ -159,13 +193,21 @@ pub enum H3ReferencePopulation {
 #[ts(export)]
 pub enum H3ReferenceRole {
     #[default]
+    #[serde(alias = "Subject", alias = "character", alias = "identity", alias = "face")]
     Subject,
+    #[serde(alias = "Outfit", alias = "wardrobe", alias = "clothing")]
     Outfit,
+    #[serde(alias = "Scene", alias = "location", alias = "background", alias = "environment")]
     Scene,
+    #[serde(alias = "Motion", alias = "pose", alias = "action")]
     Motion,
+    #[serde(alias = "Camera", alias = "cinematography")]
     Camera,
+    #[serde(alias = "Voice", alias = "speaker", alias = "speech", alias = "vocal")]
     Voice,
+    #[serde(alias = "Sound", alias = "sfx", alias = "music", alias = "ambience", alias = "audio")]
     Sound,
+    #[serde(alias = "General", alias = "prop", alias = "object", alias = "other")]
     General,
 }
 
@@ -174,11 +216,17 @@ pub enum H3ReferenceRole {
 #[ts(export)]
 pub enum H3RetentionLevel {
     #[default]
+    #[serde(alias = "fully_preserved", alias = "strict", alias = "high")]
     FullyPreserved,
+    #[serde(alias = "partially_preserved", alias = "mostlyPreserved", alias = "mostly_preserved", alias = "medium")]
     PartiallyPreserved,
+    #[serde(alias = "attribute_transfer", alias = "transfer")]
     AttributeTransfer,
+    #[serde(alias = "weak_reference", alias = "looselyInspired", alias = "loosely_inspired", alias = "weak", alias = "low")]
     WeakReference,
+    #[serde(alias = "standard")]
     Reference,
+    #[serde(alias = "fully_copy", alias = "copy", alias = "exact")]
     FullyCopy,
 }
 
@@ -200,9 +248,44 @@ impl H3RetentionLevel {
 #[ts(export)]
 pub enum H3VisualIntent {
     #[default]
+    #[serde(
+        alias = "Preserve",
+        alias = "subject",
+        alias = "Subject",
+        alias = "character",
+        alias = "identity",
+        alias = "face",
+        alias = "appearance",
+        alias = "keep",
+        alias = "strict",
+        alias = "exact"
+    )]
     Preserve,
+    #[serde(
+        alias = "Adapt",
+        alias = "style",
+        alias = "outfit",
+        alias = "wardrobe",
+        alias = "partial"
+    )]
     Adapt,
+    #[serde(
+        alias = "Transfer",
+        alias = "motion",
+        alias = "pose",
+        alias = "camera",
+        alias = "action"
+    )]
     Transfer,
+    #[serde(
+        alias = "Context",
+        alias = "scene",
+        alias = "location",
+        alias = "background",
+        alias = "environment",
+        alias = "prop",
+        alias = "general"
+    )]
     Context,
 }
 
@@ -211,9 +294,37 @@ pub enum H3VisualIntent {
 #[ts(export)]
 pub enum H3AudioIntent {
     #[default]
+    #[serde(
+        alias = "VoiceIdentity",
+        alias = "voice_identity",
+        alias = "voice",
+        alias = "Voice",
+        alias = "speaker",
+        alias = "vocal",
+        alias = "speech",
+        alias = "dialogue"
+    )]
     VoiceIdentity,
+    #[serde(
+        alias = "SoundTexture",
+        alias = "sound_texture",
+        alias = "sound",
+        alias = "Sound",
+        alias = "sfx",
+        alias = "music",
+        alias = "ambience",
+        alias = "audio"
+    )]
     SoundTexture,
+    #[serde(alias = "UseEmbedded", alias = "use_embedded", alias = "embedded")]
     UseEmbedded,
+    #[serde(
+        alias = "IgnoreEmbedded",
+        alias = "ignore_embedded",
+        alias = "ignore",
+        alias = "mute",
+        alias = "none"
+    )]
     IgnoreEmbedded,
 }
 
@@ -234,10 +345,15 @@ pub enum H3ReferenceVerdictKind {
 #[ts(export)]
 pub enum H3VocalEventType {
     #[default]
+    #[serde(alias = "Dialogue", alias = "speech", alias = "speaking", alias = "talk")]
     Dialogue,
+    #[serde(alias = "Narration", alias = "voiceover", alias = "vo")]
     Narration,
+    #[serde(alias = "Singing", alias = "song", alias = "vocal")]
     Singing,
+    #[serde(alias = "Shout", alias = "yell", alias = "scream")]
     Shout,
+    #[serde(alias = "Whisper", alias = "murmur")]
     Whisper,
 }
 
@@ -264,7 +380,9 @@ pub struct H3CropRect {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct H3ReferenceMember {
+    #[serde(default)]
     pub id: String,
+    #[serde(alias = "asset_id")]
     pub asset_id: String,
     #[serde(default)]
     pub label: String,
@@ -275,13 +393,13 @@ pub struct H3ReferenceMember {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub crop: Option<H3CropRect>,
-    #[serde(default)]
+    #[serde(default, alias = "source_start_sec")]
     pub source_start_sec: f64,
-    #[serde(default)]
+    #[serde(default, alias = "source_end_sec")]
     pub source_end_sec: f64,
-    #[serde(default)]
+    #[serde(default, alias = "use_embedded_audio")]
     pub use_embedded_audio: bool,
-    #[serde(default)]
+    #[serde(default, alias = "description_override", alias = "description")]
     pub description_override: String,
 }
 
@@ -289,20 +407,22 @@ pub struct H3ReferenceMember {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct H3ReferenceEntity {
+    #[serde(default)]
     pub id: String,
     /// Canonical handle token without leading `@` (e.g. `"Cowboy"`, written `@Cowboy` in prompts).
+    #[serde(alias = "name")]
     pub handle: String,
-    #[serde(default)]
+    #[serde(default, alias = "display_name")]
     pub display_name: String,
     #[serde(default)]
     pub kind: H3EntityKind,
-    #[serde(default)]
+    #[serde(default, alias = "subject_description", alias = "description")]
     pub subject_description: String,
-    #[serde(default)]
+    #[serde(default, alias = "retention_level", alias = "retention")]
     pub retention_level: H3RetentionLevel,
-    #[serde(default)]
+    #[serde(default, alias = "default_visual_intent")]
     pub default_visual_intent: H3VisualIntent,
-    #[serde(default)]
+    #[serde(default, alias = "default_audio_intent")]
     pub default_audio_intent: H3AudioIntent,
     #[serde(default)]
     pub members: Vec<H3ReferenceMember>,
@@ -451,11 +571,11 @@ pub struct H3GenerationSettings {
 }
 
 fn default_custom_width() -> u32 {
-    1920
+    768
 }
 
 fn default_custom_height() -> u32 {
-    1088
+    448
 }
 
 impl Default for H3GenerationSettings {
@@ -466,8 +586,8 @@ impl Default for H3GenerationSettings {
             prompt_format: H3PromptFormat::H3FullReference,
             model_choice: H3ModelChoice::Auto,
             placement_mode: H3TakePlacementMode::Trimmed,
-            custom_width: 1920,
-            custom_height: 1088,
+            custom_width: 768,
+            custom_height: 448,
             steps: 10,
             cfg: 1.0,
             denoise: 1.0,
@@ -671,14 +791,17 @@ pub struct H3GuideItem {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct H3VocalEvent {
-    pub id: String,
-    pub speaker_handle: String,
     #[serde(default)]
+    pub id: String,
+    #[serde(default, alias = "speaker_handle", alias = "speaker", alias = "handle")]
+    pub speaker_handle: String,
+    #[serde(default, alias = "event_type", alias = "kind", alias = "type")]
     pub event_type: H3VocalEventType,
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(default)]
     pub delivery: String,
+    #[serde(default, alias = "line", alias = "dialogue")]
     pub text: String,
 }
 
@@ -690,11 +813,13 @@ fn default_language() -> String {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct H3SwapPromptFields {
+    #[serde(default, alias = "target_subject")]
     pub target_subject: String,
+    #[serde(default, alias = "replacement_handle")]
     pub replacement_handle: String,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", alias = "keep_pose_and_lighting")]
     pub keep_pose_and_lighting: bool,
-    #[serde(default)]
+    #[serde(default, alias = "extra_instruction")]
     pub extra_instruction: String,
 }
 
@@ -702,15 +827,15 @@ pub struct H3SwapPromptFields {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct H3GlobalPrompt {
-    #[serde(default)]
+    #[serde(default, alias = "summary_lead", alias = "summary")]
     pub summary_lead: String,
-    #[serde(default)]
+    #[serde(default, alias = "detailed_lead", alias = "style")]
     pub detailed_lead: String,
-    #[serde(default)]
+    #[serde(default, alias = "overall_soundscape", alias = "soundscape")]
     pub overall_soundscape: String,
-    #[serde(default)]
+    #[serde(default, alias = "non_diegetic_music", alias = "music")]
     pub non_diegetic_music: String,
-    #[serde(default)]
+    #[serde(default, alias = "negative_prompt", alias = "negative")]
     pub negative_prompt: String,
 }
 
@@ -718,26 +843,45 @@ pub struct H3GlobalPrompt {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct H3PromptSection {
+    #[serde(default)]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, alias = "title", alias = "name")]
     pub label: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "timeline_start_sec",
+        alias = "startSec",
+        alias = "start_sec",
+        alias = "inSec",
+        alias = "in_sec"
+    )]
     pub timeline_start_sec: f64,
-    #[serde(default = "default_out_sec")]
+    #[serde(
+        default = "default_out_sec",
+        alias = "duration_sec",
+        alias = "duration",
+        alias = "durationSeconds"
+    )]
     pub duration_sec: f64,
-    #[serde(default)]
+    #[serde(default, alias = "summary_beat", alias = "summary", alias = "purpose")]
     pub summary_beat: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "detailed_action",
+        alias = "action",
+        alias = "prompt",
+        alias = "description"
+    )]
     pub detailed_action: String,
-    #[serde(default)]
+    #[serde(default, alias = "camera_and_lighting", alias = "camera", alias = "lighting")]
     pub camera_and_lighting: String,
-    #[serde(default)]
+    #[serde(default, alias = "soundscape_override", alias = "soundscape", alias = "sfx")]
     pub soundscape_override: String,
-    #[serde(default)]
+    #[serde(default, alias = "music_override", alias = "music")]
     pub music_override: String,
-    #[serde(default)]
+    #[serde(default, alias = "vocal_events", alias = "vocals", alias = "dialogue")]
     pub vocal_events: Vec<H3VocalEvent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "swap_fields")]
     #[ts(optional)]
     pub swap_fields: Option<H3SwapPromptFields>,
     #[serde(default = "default_true")]
@@ -1272,27 +1416,40 @@ pub struct SaveMovieH3SceneRequest {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct StageMovieH3ReferenceRequest {
+    #[serde(alias = "project_id")]
     pub project_id: String,
+    #[serde(default, alias = "scene_id")]
     pub scene_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "entity_id",
+        alias = "handle"
+    )]
     #[ts(optional = nullable)]
     pub entity_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "member_id")]
     #[ts(optional = nullable)]
     pub member_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "asset_id")]
     #[ts(optional = nullable)]
     pub asset_id: Option<String>,
+    #[serde(default, alias = "start_sec", alias = "timelineStartSec", alias = "inSec")]
     pub start_sec: f64,
+    #[serde(
+        default = "default_scene_duration_sec",
+        alias = "end_sec",
+        alias = "outSec"
+    )]
     pub end_sec: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "role_override")]
     #[ts(optional = nullable)]
     pub role_override: Option<H3ReferenceRole>,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", alias = "use_visual")]
     pub use_visual: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", alias = "use_audio")]
     pub use_audio: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "lane_id")]
     #[ts(optional = nullable)]
     pub lane_id: Option<String>,
 }
@@ -1315,10 +1472,13 @@ pub struct H3StageReferenceReceipt {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct UpsertMovieH3PromptSectionRequest {
+    #[serde(alias = "project_id")]
     pub project_id: String,
+    #[serde(default, alias = "scene_id")]
     pub scene_id: String,
+    #[serde(alias = "shot")]
     pub section: H3PromptSection,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "global_prompt")]
     #[ts(optional = nullable)]
     pub global_prompt: Option<H3GlobalPrompt>,
 }
@@ -1337,16 +1497,19 @@ pub struct H3UpsertPromptSectionReceipt {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct CaptureMovieH3FrameRequest {
+    #[serde(alias = "project_id")]
     pub project_id: String,
+    #[serde(default, alias = "scene_id")]
     pub scene_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "source_job_id")]
     #[ts(optional = nullable)]
     pub source_job_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "source_asset_id")]
     #[ts(optional = nullable)]
     pub source_asset_id: Option<String>,
+    #[serde(default, alias = "time_sec")]
     pub time_sec: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "add_guide_at_sec")]
     #[ts(optional = nullable)]
     pub add_guide_at_sec: Option<f64>,
     #[serde(default)]
@@ -1357,12 +1520,25 @@ pub struct CaptureMovieH3FrameRequest {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct CompileMovieH3WindowRequest {
+    #[serde(alias = "project_id")]
     pub project_id: String,
+    #[serde(default, alias = "scene_id")]
     pub scene_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "window_override",
+        alias = "window"
+    )]
     #[ts(optional = nullable)]
     pub window_override: Option<H3WindowConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "generation_override",
+        alias = "generation",
+        alias = "settings"
+    )]
     #[ts(optional = nullable)]
     pub generation_override: Option<H3GenerationSettings>,
 }
@@ -1371,13 +1547,25 @@ pub struct CompileMovieH3WindowRequest {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct H3QueuedWindowSpec {
+    #[serde(default, alias = "scene_id")]
     pub scene_id: String,
     #[serde(default)]
     pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "window_override",
+        alias = "window"
+    )]
     #[ts(optional = nullable)]
     pub window_override: Option<H3WindowConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "generation_override",
+        alias = "generation",
+        alias = "settings"
+    )]
     #[ts(optional = nullable)]
     pub generation_override: Option<H3GenerationSettings>,
 }
@@ -1386,13 +1574,14 @@ pub struct H3QueuedWindowSpec {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct H3StartGenerationRequest {
+    #[serde(alias = "project_id")]
     pub project_id: String,
     #[serde(default)]
     pub windows: Vec<H3QueuedWindowSpec>,
     /// When true, expands each requested window into Sonder's 3-pass ladder:
     /// Pass 1 (`Draft02Mp`, `denoise = 1.0`) -> Pass 2 (`Detail1Mp`, `denoise = 0.75`) -> Pass 3 (`Upscale1080p`, `denoise = 0.40`),
     /// placing each pass onto the timeline before the next pass refines it.
-    #[serde(default)]
+    #[serde(default, alias = "expand_quality_ladder")]
     pub expand_quality_ladder: bool,
 }
 
@@ -1410,30 +1599,67 @@ pub struct H3GenerationStartReceipt {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct PlaceMovieH3TakeRequest {
+    #[serde(alias = "project_id")]
     pub project_id: String,
-    #[serde(default)]
+    #[serde(default, alias = "job_id")]
     pub job_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "asset_id")]
     #[ts(optional = nullable)]
     pub asset_id: Option<String>,
+    #[serde(default, alias = "target_scene_id", alias = "sceneId", alias = "scene_id")]
     pub target_scene_id: String,
-    #[serde(default)]
+    #[serde(default, alias = "placement_mode")]
     pub placement_mode: H3TakePlacementMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "target_video_lane_id"
+    )]
     #[ts(optional = nullable)]
     pub target_video_lane_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "target_audio_lane_id"
+    )]
     #[ts(optional = nullable)]
     pub target_audio_lane_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "target_driver_lane_id"
+    )]
     #[ts(optional = nullable)]
     pub target_driver_lane_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "timeline_start_override_sec",
+        alias = "startSec"
+    )]
     #[ts(optional = nullable)]
     pub timeline_start_override_sec: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "duration_override_sec",
+        alias = "durationSec"
+    )]
     #[ts(optional = nullable)]
     pub duration_override_sec: Option<f64>,
+    /// Mix gain for the placed clip (0.0–2.0). Audio clips use it as clip gain; video clips use
+    /// it for their embedded audio. Omit for the defaults (1.0, or 0.65 for score lane A2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub gain: Option<f32>,
+    /// Audio fade-in seconds for a placed audio clip; ignored for video clips.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "fade_in_sec")]
+    #[ts(optional = nullable)]
+    pub fade_in_sec: Option<f64>,
+    /// Audio fade-out seconds for a placed audio clip; ignored for video clips.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "fade_out_sec")]
+    #[ts(optional = nullable)]
+    pub fade_out_sec: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]

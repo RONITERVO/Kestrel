@@ -906,6 +906,13 @@ pub(crate) fn find_output_media(entry: &Value, category: &str) -> Option<(String
         for output in outputs.values() {
             if let Some(media_list) = output.get(*cat).and_then(Value::as_array) {
                 for media in media_list {
+                    if media
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| !t.eq_ignore_ascii_case("output"))
+                    {
+                        continue;
+                    }
                     if let Some(filename) = media.get("filename").and_then(Value::as_str) {
                         let matches_cat = match category {
                             "videos" => {
@@ -1338,5 +1345,37 @@ mod tests {
         let saved = serde_json::to_value(loaded).unwrap();
         assert_eq!(saved["producerFeedback"][0]["feedback"], "preserved note");
         assert_eq!(saved["copilotHistory"][0]["response"], "preserved response");
+    }
+
+    #[test]
+    fn find_output_media_ignores_input_load_video_nodes_and_returns_saved_output_video() {
+        let entry = json!({
+            "outputs": {
+                "105": {
+                    "images": [
+                        {
+                            "filename": "window-source.mp4",
+                            "subfolder": "kestrel/proj-1/job-2",
+                            "type": "input"
+                        }
+                    ],
+                    "animated": [true]
+                },
+                "14": {
+                    "images": [
+                        {
+                            "filename": "job-2_00001_.mp4",
+                            "subfolder": "kestrel_h3/proj-1",
+                            "type": "output"
+                        }
+                    ],
+                    "animated": [true]
+                }
+            }
+        });
+        assert_eq!(
+            find_output_media(&entry, "videos"),
+            Some(("job-2_00001_.mp4".into(), "kestrel_h3/proj-1".into()))
+        );
     }
 }

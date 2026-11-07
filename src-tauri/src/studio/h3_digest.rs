@@ -3,9 +3,8 @@
 
 use super::{h3_prompt::compile_h3_window, MovieProject, MovieReferenceAsset, StudioError};
 use kestrel_app_core::{
-    H3AdvisorySeverity, H3EntityDigest, H3EnvironmentSnapshot, H3JobDigest, H3PassPreset,
-    H3ProductionDigest, H3ReferencePopulation, H3RenderJobStatus, H3Scene, H3SceneDigest,
-    H3SceneKind, H3TimeSpan,
+    H3AdvisorySeverity, H3EntityDigest, H3EnvironmentSnapshot, H3JobDigest, H3ProductionDigest,
+    H3ReferencePopulation, H3Scene, H3SceneDigest, H3SceneKind, H3TimeSpan,
 };
 
 const MAX_STORY_EXCERPT_CHARS: usize = 360;
@@ -101,8 +100,8 @@ where
         .iter()
         .take(16)
         .map(|ent| H3EntityDigest {
-            id: truncate_chars(&ent.id, 32),
-            handle: format!("@{}", truncate_chars(&ent.handle, 24)),
+            id: ent.id.clone(),
+            handle: format!("@{}", ent.handle),
             kind: ent.kind,
             picture_count: ent
                 .members
@@ -159,7 +158,7 @@ where
         let staged_reference_count: usize = sc.reference_lanes.iter().map(|l| l.items.len()).sum();
 
         scenes.push(H3SceneDigest {
-            id: truncate_chars(&sc.id, 32),
+            id: sc.id.clone(),
             name: truncate_chars(&sc.name, 48),
             kind: sc.kind,
             width: sc.width,
@@ -187,8 +186,8 @@ where
         .rev()
         .take(MAX_RECENT_JOBS)
         .map(|job| H3JobDigest {
-            id: truncate_chars(&job.id, 32),
-            scene_id: truncate_chars(&job.scene_id, 32),
+            id: job.id.clone(),
+            scene_id: job.scene_id.clone(),
             label: truncate_chars(&job.label, 40),
             status: job.status,
             pass_preset: job.pass_preset,
@@ -240,26 +239,17 @@ where
         if let Some(first_gap) = sc.uncovered_video_gaps.first() {
             let gap_end = (first_gap.start_sec + 6.0).min(first_gap.end_sec);
             next_actions.push(format!(
-                "Compile & render uncovered span [{:.2}s..{:.2}s] in scene '{}' ({}) using compile_movie_h3_window then start_movie_h3_generation (set expandQualityLadder: true for 0.2MP -> 1MP -> 1080p).",
+                "Compile & render uncovered span [{:.2}s..{:.2}s] in scene '{}' ({}) using compile_movie_h3_window then start_movie_h3_generation (keep default draft02Mp 768x448 / expandQualityLadder: false unless slow 1080p upscaling was explicitly requested).",
                 first_gap.start_sec, gap_end, sc.name, sc.id
             ));
-        } else if sc.kind == H3SceneKind::Standard {
-            let has_hi_res = project.render_jobs.iter().any(|j| {
-                j.scene_id == sc.id
-                    && j.status == H3RenderJobStatus::Complete
-                    && matches!(j.pass_preset, H3PassPreset::Detail1Mp | H3PassPreset::Upscale1080p)
-            });
-            if !has_hi_res && sc.video_clip_count > 0 {
-                next_actions.push(format!(
-                    "Draft coverage is complete for '{}'; refine windows with detail1Mp (denoise 0.75) -> upscale1080p (denoise 0.40) and layer a separate 64x32 Soundtrack or Music Studio score on A2.",
-                    sc.name
-                ));
-            } else if project.exports.is_empty() {
-                next_actions.push(format!(
-                    "All spans in '{}' are covered; inspect takes with inspect_movie_h3_take and export final MP4 via render_movie_edit.",
-                    sc.name
-                ));
-            }
+        } else if sc.kind == H3SceneKind::Standard
+            && sc.video_clip_count > 0
+            && project.exports.is_empty()
+        {
+            next_actions.push(format!(
+                "All spans in '{}' are covered; inspect takes with inspect_movie_h3_take, optionally place a Music Studio / Soundtrack score on A2 via place_movie_h3_take (optional gain/fadeInSec/fadeOutSec), and export final MP4 via render_movie_edit.",
+                sc.name
+            ));
         }
     }
     next_actions.truncate(4);
@@ -352,9 +342,10 @@ fn truncate_chars(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use kestrel_app_core::{
-        H3AudioIntent, H3EntityKind, H3GenerationSettings, H3GlobalPrompt, H3ReferenceEntity,
-        H3RenderQueueJob, H3RetentionLevel, H3TakePlacementMode, H3TaskMode, H3VideoClip,
-        H3VideoLane, H3VisualIntent, H3WindowConfig, MovieEdit, MovieSettings,
+        H3AudioIntent, H3EntityKind, H3GenerationSettings, H3GlobalPrompt, H3PassPreset,
+        H3ReferenceEntity, H3RenderJobStatus, H3RenderQueueJob, H3RetentionLevel,
+        H3TakePlacementMode, H3TaskMode, H3VideoClip, H3VideoLane, H3VisualIntent, H3WindowConfig,
+        MovieEdit, MovieSettings,
     };
     use serde_json::Value;
 

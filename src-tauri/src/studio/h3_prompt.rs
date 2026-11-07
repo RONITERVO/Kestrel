@@ -10,7 +10,7 @@ use kestrel_app_core::{
     H3AdvisorySeverity, H3CompileAdvisory, H3CompiledPromptChannels, H3EnvironmentSnapshot,
     H3GenerationSettings, H3LoraSpec, H3ModelChoice, H3OrdinalManifest, H3PassPreset,
     H3PromptFormat, H3PromptSection, H3ReferencePopulation, H3ReferenceRole, H3ResolvedGuide,
-    H3RetentionLevel, H3Scene, H3SubjectBinding, H3TakePlacementGeometry, H3TaskMode,
+    H3RetentionLevel, H3Scene, H3SceneKind, H3SubjectBinding, H3TakePlacementGeometry, H3TaskMode,
     H3VocalEvent, H3VocalEventType, H3WindowCompileResult, H3WindowConfig, MovieH3Defaults,
 };
 use std::collections::HashMap;
@@ -150,8 +150,52 @@ where
     F: Fn(&str) -> Result<MovieReferenceAsset, StudioError>,
 {
     let defaults = MovieH3Defaults::default();
-    let window = window_override.unwrap_or(&scene.window);
+    let raw_window = window_override.unwrap_or(&scene.window);
     let gen = generation_override.unwrap_or(&scene.generation);
+
+    // When a continuation window (in_sec >= 0.5) follows an already-placed V1 clip or an adjacent
+    // earlier prompt section and the caller omitted pre_context_sec (0.0), automatically bridge
+    // 23 frames (~0.958s, exact H3 Video VAE latent token 8 edge) so multi-window continuous takes
+    // stay visually and acoustically seamless.
+    let mut eff_window = raw_window.clone();
+    let has_preceding_v1_video =
+        scene_has_video_in_span(scene, (eff_window.in_sec - 0.5).max(0.0), eff_window.in_sec);
+    let has_preceding_prompt_section = scene.prompt_sections.iter().any(|ps| {
+        ps.enabled
+            && ps.timeline_start_sec < eff_window.in_sec - 0.1
+            && ps.timeline_start_sec + ps.duration_sec >= eff_window.in_sec - 0.25
+    });
+    let mut auto_pre_context_from_prompt_only = false;
+    if eff_window.in_sec >= 0.5
+        && eff_window.pre_context_sec == 0.0
+        && gen.task_mode == H3TaskMode::Standard
+        && scene.kind != H3SceneKind::Soundtrack
+        && !scene
+            .guides
+            .iter()
+            .any(|g| g.enabled && (g.timeline_sec - eff_window.in_sec).abs() < 0.1)
+        && (has_preceding_v1_video || has_preceding_prompt_section)
+    {
+        let sel_dur = (eff_window.out_sec - eff_window.in_sec).max(0.2);
+        if sel_dur + 1.0 <= 14.8 {
+            let target_pre = (23.0_f64 / 24.0_f64).min(eff_window.in_sec);
+            if !has_preceding_v1_video
+                || scene_has_video_in_span(
+                    scene,
+                    (eff_window.in_sec - target_pre).max(0.0),
+                    eff_window.in_sec,
+                )
+            {
+                eff_window.pre_context_sec = target_pre;
+            } else {
+                eff_window.pre_context_sec = (10.0_f64 / 24.0_f64).min(eff_window.in_sec);
+            }
+            if !has_preceding_v1_video {
+                auto_pre_context_from_prompt_only = true;
+            }
+        }
+    }
+    let window = &eff_window;
 
     let mut geometry = calculate_take_placement(window, scene.fps)?;
     let (resolved_width, resolved_height) = adapt_pass_canvas(
@@ -374,11 +418,22 @@ where
         );
 
     if has_context_frames && !has_source_video && !has_source_audio {
-        advisories.push(H3CompileAdvisory {
-            severity: H3AdvisorySeverity::Warning,
-            code: "context_without_source_media".into(),
-            message: "Pre/post context is configured, but no existing video or audio clip overlaps the context span yet.".into(),
-        });
+        if auto_pre_context_from_prompt_only {
+            advisories.push(H3CompileAdvisory {
+                severity: H3AdvisorySeverity::Info,
+                code: "auto_pre_context_armed".into(),
+                message: format!(
+                    "Automatic {:.2}s (23-frame) pre-context bridge is armed for continuity; render the preceding window first so V1 supplies the frozen lead-in frames.",
+                    window.pre_context_sec
+                ),
+            });
+        } else {
+            advisories.push(H3CompileAdvisory {
+                severity: H3AdvisorySeverity::Warning,
+                code: "context_without_source_media".into(),
+                message: "Pre/post context is configured, but no existing video or audio clip overlaps the context span yet.".into(),
+            });
+        }
     }
 
     let partial_video_tokens = geometry.video_mask_token_lo > 0
@@ -522,6 +577,24 @@ where
         })
         .collect();
 
+    let staged_elsewhere_handles: std::collections::HashSet<String> = scene
+        .reference_lanes
+        .iter()
+        .filter(|lane| !lane.muted)
+        .flat_map(|lane| lane.items.iter())
+        .filter(|item| item.enabled)
+        .filter_map(|item| {
+            item.entity_id.as_deref().and_then(|eid| {
+                project
+                    .entities
+                    .iter()
+                    .find(|e| e.id == eid)
+                    .map(|e| e.handle.to_ascii_lowercase())
+            })
+        })
+        .filter(|lower| !expansion_map.contains_key(lower))
+        .collect();
+
     let mut warned_unstaged = std::collections::HashSet::new();
     let check_prose = |text: &str,
                        shot_idx: Option<u32>,
@@ -549,7 +622,9 @@ where
                         }
                     }
                 }
-            } else if warned_unstaged.insert(lower.clone()) {
+            } else if !(shot_idx.is_none() && staged_elsewhere_handles.contains(&lower))
+                && warned_unstaged.insert(lower.clone())
+            {
                 if fallback_names.contains_key(&lower) {
                     advisories.push(H3CompileAdvisory {
                         severity: H3AdvisorySeverity::Warning,
@@ -572,15 +647,28 @@ where
         }
     };
 
-    check_prose(
+    let filtered_summary_lead = filter_global_lead_for_window(
         &scene.global_prompt.summary_lead,
+        &expansion_map,
+        &staged_elsewhere_handles,
+        &fallback_names,
+    );
+    let filtered_detailed_lead = filter_global_lead_for_window(
+        &scene.global_prompt.detailed_lead,
+        &expansion_map,
+        &staged_elsewhere_handles,
+        &fallback_names,
+    );
+
+    check_prose(
+        &filtered_summary_lead,
         None,
         &mut ordinals,
         &mut advisories,
         &mut warned_unstaged,
     );
     check_prose(
-        &scene.global_prompt.detailed_lead,
+        &filtered_detailed_lead,
         None,
         &mut ordinals,
         &mut advisories,
@@ -723,6 +811,7 @@ where
         &overlapping_sections,
         &ordinals,
         &expansion_map,
+        &staged_elsewhere_handles,
         &fallback_names,
         &geometry,
         gen.task_mode,
@@ -806,11 +895,13 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_prompt_channels(
     scene: &H3Scene,
     sections: &[&H3PromptSection],
     ordinals: &H3OrdinalManifest,
     expansion_map: &HashMap<String, String>,
+    staged_elsewhere: &std::collections::HashSet<String>,
     fallback_names: &HashMap<String, String>,
     geometry: &H3TakePlacementGeometry,
     task_mode: H3TaskMode,
@@ -914,9 +1005,15 @@ fn build_prompt_channels(
         format!("[{}] ", task_parts.join(" + "))
     };
     let mut summary_sentences = Vec::new();
-    if !scene.global_prompt.summary_lead.trim().is_empty() {
+    let window_summary_lead = filter_global_lead_for_window(
+        &scene.global_prompt.summary_lead,
+        expansion_map,
+        staged_elsewhere,
+        fallback_names,
+    );
+    if !window_summary_lead.trim().is_empty() {
         summary_sentences.push(ensure_sentence(&expand_handles_in_text(
-            &scene.global_prompt.summary_lead,
+            &window_summary_lead,
             expansion_map,
             fallback_names,
         )));
@@ -999,9 +1096,15 @@ fn build_prompt_channels(
 
     // 4. Detailed Description
     let mut detailed_blocks = Vec::new();
-    if !scene.global_prompt.detailed_lead.trim().is_empty() {
+    let window_detailed_lead = filter_global_lead_for_window(
+        &scene.global_prompt.detailed_lead,
+        expansion_map,
+        staged_elsewhere,
+        fallback_names,
+    );
+    if !window_detailed_lead.trim().is_empty() {
         detailed_blocks.push(ensure_sentence(&expand_handles_in_text(
-            &scene.global_prompt.detailed_lead,
+            &window_detailed_lead,
             expansion_map,
             fallback_names,
         )));
@@ -1124,6 +1227,69 @@ fn build_prompt_channels(
         detailed_description,
         overall_soundscape,
         non_diegetic_music,
+    }
+}
+
+fn filter_global_lead_for_window(
+    lead: &str,
+    expansion_map: &HashMap<String, String>,
+    staged_elsewhere: &std::collections::HashSet<String>,
+    fallback_names: &HashMap<String, String>,
+) -> String {
+    if staged_elsewhere.is_empty() || lead.trim().is_empty() {
+        return lead.to_string();
+    }
+    let mentions_set = |clause: &str, set: &std::collections::HashSet<String>| -> bool {
+        let handles = extract_handles(clause);
+        if handles
+            .iter()
+            .any(|h| set.contains(&h.to_ascii_lowercase()))
+        {
+            return true;
+        }
+        let lower_clause = clause.to_ascii_lowercase();
+        let words: Vec<&str> = lower_clause
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|w| !w.is_empty())
+            .collect();
+        set.iter().any(|h| {
+            words.contains(&h.as_str())
+                || fallback_names
+                    .get(h)
+                    .map(|dn| dn.to_ascii_lowercase())
+                    .is_some_and(|dn| words.contains(&dn.as_str()))
+        })
+    };
+    let active_handles: std::collections::HashSet<String> =
+        expansion_map.keys().cloned().collect();
+
+    let mut kept_sentences = Vec::new();
+    for raw_sent in lead.split(". ") {
+        let trimmed_sent = raw_sent.trim().trim_end_matches('.');
+        if trimmed_sent.is_empty() {
+            continue;
+        }
+        let mut kept_clauses = Vec::new();
+        for clause in trimmed_sent.split("; ") {
+            let c = clause.trim();
+            if c.is_empty() {
+                continue;
+            }
+            let has_elsewhere = mentions_set(c, staged_elsewhere);
+            let has_active = mentions_set(c, &active_handles);
+            if has_elsewhere && !has_active {
+                continue;
+            }
+            kept_clauses.push(c);
+        }
+        if !kept_clauses.is_empty() {
+            kept_sentences.push(format!("{}.", kept_clauses.join("; ")));
+        }
+    }
+    if kept_sentences.is_empty() {
+        lead.to_string()
+    } else {
+        kept_sentences.join(" ")
     }
 }
 
@@ -1577,8 +1743,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(res.prompt_format, H3PromptFormat::H3FullReference);
-        assert_eq!(res.resolved_width, 608);
-        assert_eq!(res.resolved_height, 352);
+        assert_eq!(res.resolved_width, 768);
+        assert_eq!(res.resolved_height, 448);
         assert_eq!(res.resolved_steps, 10);
         assert_eq!(res.resolved_loras.len(), 1);
         assert!((res.resolved_loras[0].strength_model - 0.8).abs() < 1e-4);

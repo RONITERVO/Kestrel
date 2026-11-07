@@ -102,7 +102,7 @@ describe("MovieGenerationPanel MiniMax H3", () => {
 
     // Switch to Compiler tab and verify bound <Subject> ordinals and compiled 6-channel prompt
     fireEvent.click(screen.getByRole("button", { name: /Compiler/i }));
-    expect(screen.getByText(/608×352/)).toBeTruthy();
+    expect(screen.getByText(/768×448/)).toBeTruthy();
     expect(screen.getByText(/@Pip → <Subject 1>/)).toBeTruthy();
     expect(screen.getByText(/Overall Summary: <Subject 1> counts lily pads/)).toBeTruthy();
   });

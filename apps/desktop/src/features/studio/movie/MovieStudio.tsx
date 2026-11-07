@@ -50,8 +50,9 @@ interface CollaboratorDraftSession {
 }
 
 const CANVAS_PRESETS: { key: string; label: string; width: number; height: number }[] = [
-  { key: "1920x1088", label: "1920×1088 · Standard 16:9 Cinema", width: 1920, height: 1088 },
-  { key: "960x544", label: "960×544 · Fast Half-Res Audition", width: 960, height: 544 },
+  { key: "768x448", label: "768×448 · Fast 16:9 Cinema (Default)", width: 768, height: 448 },
+  { key: "1920x1088", label: "1920×1088 · Full 1080p 16:9 Cinema", width: 1920, height: 1088 },
+  { key: "960x544", label: "960×544 · Half-Res Audition", width: 960, height: 544 },
   { key: "1088x1920", label: "1088×1920 · Vertical 9:16", width: 1088, height: 1920 },
   { key: "1440x1088", label: "1440×1088 · Academy 4:3", width: 1440, height: 1088 },
 ];
@@ -111,7 +112,7 @@ export function MovieStudio({
   // New production form
   const [newTitle, setNewTitle] = useState("");
   const [newStory, setNewStory] = useState("");
-  const [newCanvasKey, setNewCanvasKey] = useState("1920x1088");
+  const [newCanvasKey, setNewCanvasKey] = useState("768x448");
   const [newDurationSec, setNewDurationSec] = useState(15);
 
   // Playback & timeline selection
@@ -549,10 +550,10 @@ export function MovieStudio({
       const count = project.scenes.filter((s) => s.kind === kind).length + 1;
       const spec =
         kind === "audition"
-          ? { name: `Audition ${count}`, width: 960, height: 544, durationSec: 10 }
+          ? { name: `Audition ${count}`, width: 768, height: 448, durationSec: 10 }
           : kind === "soundtrack"
             ? { name: `Soundtrack ${count}`, width: 64, height: 32, durationSec: 15 }
-            : { name: `Scene ${project.scenes.length + 1}`, width: 1920, height: 1088, durationSec: 15 };
+            : { name: `Scene ${project.scenes.length + 1}`, width: 768, height: 448, durationSec: 15 };
       const updated = await createMovieH3Scene({
         projectId: project.id,
         name: spec.name,

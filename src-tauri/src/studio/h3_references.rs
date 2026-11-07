@@ -993,24 +993,46 @@ pub fn auto_stage_reference(
         })
     };
 
-    if let Some(pref) = preferred_lane_id.filter(|id| !id.trim().is_empty()) {
-        let lane = scene
+    if let Some(pref) = preferred_lane_id.map(str::trim).filter(|id| !id.is_empty()) {
+        if let Some(lane) = scene
             .reference_lanes
             .iter_mut()
-            .find(|l| l.id == pref)
-            .ok_or_else(|| {
-                StudioError::Invalid(format!("Reference lane {pref} does not exist in scene."))
-            })?;
-        if lane.locked {
+            .find(|l| l.id.eq_ignore_ascii_case(pref) || l.name.eq_ignore_ascii_case(pref))
+        {
+            if lane.locked {
+                return Err(StudioError::Invalid(format!(
+                    "Reference lane {} is locked.",
+                    lane.name
+                )));
+            }
+            if !collides(lane) {
+                let lane_id = lane.id.clone();
+                let lane_name = lane.name.clone();
+                lane.items.push(item);
+                return Ok((lane_id, lane_name));
+            }
+        } else if let Some(num) = pref
+            .strip_prefix('R')
+            .or_else(|| pref.strip_prefix('r'))
+            .or_else(|| pref.strip_prefix("ref-lane-"))
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|&n| (1..=32).contains(&n))
+        {
+            let lane_id = format!("ref-lane-{num}");
+            let lane_name = format!("R{num}");
+            scene.reference_lanes.push(H3ReferenceLane {
+                id: lane_id.clone(),
+                name: lane_name.clone(),
+                muted: false,
+                locked: false,
+                items: vec![item],
+            });
+            return Ok((lane_id, lane_name));
+        } else {
             return Err(StudioError::Invalid(format!(
-                "Reference lane {} is locked.",
-                lane.name
+                "Reference lane {pref} does not exist in scene."
             )));
         }
-        let lane_id = lane.id.clone();
-        let lane_name = lane.name.clone();
-        lane.items.push(item);
-        return Ok((lane_id, lane_name));
     }
 
     if let Some(lane) = scene

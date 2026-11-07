@@ -123,7 +123,9 @@ pub async fn execute(
             ) {
                 return Err("A Computer Task cannot recursively start tasks/chat or change the producer's selected runtime. Use Studio drafting actions for local collaboration.".into());
             }
-            let arguments = args.get("args").cloned().ok_or("args is required")?;
+            let arguments = app_control::coerce_stringified_object(
+                args.get("args").cloned().ok_or("args is required")?,
+            );
             let configured = app
                 .state::<AppState>()
                 .research_settings
@@ -284,6 +286,14 @@ fn compact_movie_receipt_for_agent(
             .map(str::to_string)
         {
             if let Ok(digest) = state.studio.production_digest(&proj_id, comfy_root, advanced) {
+                if matches!(digest.status.as_str(), "failed" | "cancelled") {
+                    receipt.status = digest.status.clone();
+                    if let Ok(proj) = state.studio.get(&proj_id) {
+                        if !proj.error.is_empty() {
+                            receipt.error = Some(proj.error);
+                        }
+                    }
+                }
                 if let (Some(res_obj), Ok(digest_val)) = (
                     receipt.result.as_mut().and_then(Value::as_object_mut),
                     serde_json::to_value(digest),
