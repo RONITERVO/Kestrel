@@ -58,7 +58,22 @@ export function setupPreview(studioSamples = true): void {
     get_chat_session: ({ id }) => ({ ...structuredClone(sampleChatSession), id, title: sampleSessions.find((session) => session.id === id)?.title ?? sampleChatSession.title }),
     list_computer_tasks: () => [{ id: sampleComputerTask.id, objective: sampleComputerTask.objective, modelId: sampleComputerTask.modelId, access: sampleComputerTask.access, status: sampleComputerTask.status, updatedAt: sampleComputerTask.updatedAt, eventCount: sampleComputerTask.events.length, artifactCount: 0 }],
     get_computer_task: () => structuredClone(sampleComputerTask),
-    list_movies: () => [{ ...sampleFinishedMovie, clipCount: sampleFinishedMovie.clips.length }, { ...sampleMovie, clipCount: 0 }],
+    list_movies: () => [
+      {
+        ...sampleFinishedMovie,
+        clipCount: sampleFinishedMovie.clips.length,
+        sceneCount: sampleFinishedMovie.scenes.length,
+        entityCount: sampleFinishedMovie.entities.length,
+        renderJobCount: sampleFinishedMovie.renderJobs.length,
+      },
+      {
+        ...sampleMovie,
+        clipCount: 0,
+        sceneCount: sampleMovie.scenes.length,
+        entityCount: sampleMovie.entities.length,
+        renderJobCount: sampleMovie.renderJobs.length,
+      },
+    ],
     get_movie: ({ id }) => structuredClone(id === sampleMovie.id ? sampleMovie : sampleFinishedMovie),
     compile_movie_h3_window: () => structuredClone(sampleH3CompileResult),
     get_movie_render_state: () => ({ active: false }),

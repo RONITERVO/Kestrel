@@ -186,12 +186,26 @@ where
             .ok_or_else(|| StudioError::Render("export folder is missing".into()))?,
     )?;
 
-    let chunk_count = ((total_dur / H3_EXPORT_CHUNK_SEC).ceil() as usize).max(1);
     let mut manifest = String::new();
+    let mut chunk_idx = 0_usize;
+    let mut c_start = 0.0_f64;
 
-    for chunk_idx in 0..chunk_count {
-        let c_start = (chunk_idx as f64) * H3_EXPORT_CHUNK_SEC;
-        let c_end = ((chunk_idx + 1) as f64 * H3_EXPORT_CHUNK_SEC).min(total_dur);
+    while c_start < total_dur - 1e-4 || chunk_idx == 0 {
+        let mut c_end = (c_start + H3_EXPORT_CHUNK_SEC).min(total_dur);
+        while c_end - c_start > 1.0 {
+            let v_cnt = v_items
+                .iter()
+                .filter(|i| i.start + i.dur > c_start + 1e-4 && i.start < c_end - 1e-4)
+                .count();
+            let a_cnt = a_items
+                .iter()
+                .filter(|i| i.start + i.dur > c_start + 1e-4 && i.start < c_end - 1e-4)
+                .count();
+            if v_cnt <= 24 && a_cnt <= 24 {
+                break;
+            }
+            c_end = c_start + ((c_end - c_start) * 0.5).max(1.0);
+        }
         let c_dur = (c_end - c_start).max(1.0 / fps as f64);
 
         let seg_ext = if audio_only { "wav" } else { "mkv" };
@@ -202,12 +216,12 @@ where
         let chunk_v: Vec<_> = v_items
             .iter()
             .filter(|i| i.start + i.dur > c_start + 1e-4 && i.start < c_end - 1e-4)
-            .take(24)
+            .take(48)
             .collect();
         let chunk_a: Vec<_> = a_items
             .iter()
             .filter(|i| i.start + i.dur > c_start + 1e-4 && i.start < c_end - 1e-4)
-            .take(24)
+            .take(48)
             .collect();
 
         let mut cmd = tokio::process::Command::new(media_program("ffmpeg"));
@@ -225,15 +239,40 @@ where
                 let s0 = item.start.max(c_start);
                 let s1 = (item.start + item.dur).min(c_end);
                 let dur = (s1 - s0).max(1.0 / fps as f64);
-                let ss = item.src_in + (s0 - item.start).max(0.0);
+                let is_still = matches!(
+                    item.path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_ascii_lowercase())
+                        .as_deref(),
+                    Some("png" | "jpg" | "jpeg" | "webp" | "bmp")
+                );
+                let ss = if is_still {
+                    0.0
+                } else {
+                    item.src_in + (s0 - item.start).max(0.0)
+                };
                 let offset = (s0 - c_start).max(0.0);
 
-                cmd.arg("-i").arg(&item.path);
+                if is_still {
+                    cmd.args([
+                        "-loop",
+                        "1",
+                        "-framerate",
+                        &fps.to_string(),
+                        "-t",
+                        &format!("{dur:.5}"),
+                        "-i",
+                    ])
+                    .arg(&item.path);
+                } else {
+                    cmd.arg("-i").arg(&item.path);
+                }
                 let idx = input_idx;
                 input_idx += 1;
 
                 let mut vchain = format!(
-                    "[{idx}:v]trim=start={ss:.5}:duration={dur:.5},setpts=PTS-STARTPTS+{offset:.5}/TB,scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}"
+                    "[{idx}:v]trim=start={ss:.5}:duration={dur:.5},setpts=PTS-STARTPTS+{offset:.5}/TB,scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},setsar=1,fps={fps}"
                 );
                 if item.opacity < 0.999 {
                     vchain.push_str(&format!(
@@ -369,8 +408,13 @@ where
             }
         }
         cmd.args(["-map_metadata", "-1"]).arg(&seg_path);
-        run(&mut cmd, &format!("export chunk {} of {chunk_count}", chunk_idx + 1)).await?;
+        run(&mut cmd, &format!("export chunk {}", chunk_idx + 1)).await?;
         manifest.push_str(&format!("file '{seg_name}'\n"));
+        c_start = c_end;
+        chunk_idx += 1;
+        if c_start >= total_dur - 1e-4 {
+            break;
+        }
     }
 
     let manifest_path = scratch.file("chunks.txt");
@@ -726,6 +770,7 @@ mod tests {
                 },
                 "/tmp/comfy",
                 false,
+                None,
             )
             .unwrap();
         project.settings.width = 320;
@@ -789,14 +834,17 @@ mod tests {
         project.edit.clips = edits;
         studio.save(&project).unwrap();
         let receipt = studio
-            .render_h3_export(kestrel_app_core::RenderMovieExportRequest {
-                project_id: project.id.clone(),
-                scene_id: None,
-                preset: "review".into(),
-                title: Some("Export Test".into()),
-                peak_headroom_db: Some(-1.0),
-                destination_path: None,
-            })
+            .render_h3_export(
+                kestrel_app_core::RenderMovieExportRequest {
+                    project_id: project.id.clone(),
+                    scene_id: None,
+                    preset: "review".into(),
+                    title: Some("Export Test".into()),
+                    peak_headroom_db: Some(-1.0),
+                    destination_path: None,
+                },
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(receipt.export.clip_count, 17);

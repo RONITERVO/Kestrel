@@ -160,8 +160,16 @@ pub fn validate_canvas_dimensions(
 
 fn snap_aspect_to_area(aspect: f64, target_area: f64, max_edge: u32) -> (u32, u32) {
     let clamped_aspect = aspect.clamp(0.25, 4.0);
-    let raw_w = (target_area * clamped_aspect).sqrt();
-    let raw_h = target_area / raw_w;
+    let mut raw_w = (target_area * clamped_aspect).sqrt();
+    let mut raw_h = target_area / raw_w;
+    if raw_w > max_edge as f64 {
+        raw_w = max_edge as f64;
+        raw_h = raw_w / clamped_aspect;
+    }
+    if raw_h > max_edge as f64 {
+        raw_h = max_edge as f64;
+        raw_w = raw_h * clamped_aspect;
+    }
     let snap = |v: f64| -> u32 {
         let rounded = ((v / 32.0).round() as u32).saturating_mul(32);
         rounded.clamp(256, max_edge)
@@ -179,7 +187,10 @@ pub fn adapt_pass_canvas(
 ) -> Result<(u32, u32), StudioError> {
     let (scene_width, scene_height, scene_kind) = scene_canvas;
     let (custom_width, custom_height) = custom_canvas;
-    if task_mode == H3TaskMode::SoundtrackPass || scene_kind == H3SceneKind::Soundtrack {
+    if task_mode == H3TaskMode::SoundtrackPass
+        || scene_kind == H3SceneKind::Soundtrack
+        || (scene_width == 64 && scene_height == 32 && preset != H3PassPreset::Custom)
+    {
         return Ok((64, 32));
     }
     let base_w = scene_width.max(64) as f64;
@@ -195,7 +206,7 @@ pub fn adapt_pass_canvas(
         H3PassPreset::Custom => validate_canvas_dimensions(
             custom_width,
             custom_height,
-            task_mode == H3TaskMode::SoundtrackPass,
+            task_mode == H3TaskMode::SoundtrackPass || (custom_width == 64 && custom_height == 32),
             advanced,
         ),
     }
@@ -263,9 +274,9 @@ pub fn calculate_take_placement(
             "H3 render window values must be finite numbers.".into(),
         ));
     }
-    if window.in_sec < 0.0 {
+    if window.in_sec < 0.0 || window.out_sec > 86_400.0 {
         return Err(StudioError::Invalid(
-            "H3 window In point cannot be negative.".into(),
+            "H3 window In/Out points must stay within [0, 86400] seconds.".into(),
         ));
     }
     if window.out_sec <= window.in_sec + 0.15 {
@@ -273,9 +284,15 @@ pub fn calculate_take_placement(
             "H3 window Out point must be at least 0.2s after In.".into(),
         ));
     }
-    if window.pre_context_sec < 0.0 || window.post_context_sec < 0.0 {
+    if window.pre_context_sec < 0.0
+        || window.post_context_sec < 0.0
+        || window.pre_context_sec > 600.0
+        || window.post_context_sec > 600.0
+        || window.mask_start_offset_sec.abs() > 600.0
+        || window.mask_end_offset_sec.abs() > 600.0
+    {
         return Err(StudioError::Invalid(
-            "H3 pre/post context durations cannot be negative.".into(),
+            "H3 pre/post context and mask offsets must stay within valid bounds.".into(),
         ));
     }
     if let Some(rect) = &window.spatial_mask_rect {
@@ -285,7 +302,9 @@ pub fn calculate_take_placement(
     let fps_f = fps as f64;
     // Snap selection and render bounds to exact 1/24s frame boundaries.
     let in_frame = (window.in_sec * fps_f).round().max(0.0) as u32;
-    let out_frame = (window.out_sec * fps_f).round().max((in_frame + 5) as f64) as u32;
+    let out_frame = (window.out_sec * fps_f)
+        .round()
+        .max(in_frame.saturating_add(5) as f64) as u32;
     let pre_frames = (window.pre_context_sec * fps_f).round().max(0.0) as u32;
     let post_frames = (window.post_context_sec * fps_f).round().max(0.0) as u32;
 
@@ -308,7 +327,7 @@ pub fn calculate_take_placement(
     let frame_count_padding = padded_frames - unpadded_frames;
 
     let raw_mask_start = (actual_pre_frames as i64)
-        + (window.mask_start_offset_sec * fps_f).round() as i64;
+        .saturating_add((window.mask_start_offset_sec * fps_f).round() as i64);
     let mask_start_frame = raw_mask_start.clamp(0, padded_frames as i64) as u32;
 
     let mask_end_frame = if post_frames == 0 && window.mask_end_offset_sec >= -1e-6 {
@@ -317,9 +336,9 @@ pub fn calculate_take_placement(
         padded_frames
     } else {
         let local_selection_end = (out_frame - render_start_frame) as i64;
-        let raw_mask_end =
-            local_selection_end + (window.mask_end_offset_sec * fps_f).round() as i64;
-        raw_mask_end.clamp(mask_start_frame as i64, unpadded_frames as i64) as u32
+        let raw_mask_end = local_selection_end
+            .saturating_add((window.mask_end_offset_sec * fps_f).round() as i64);
+        raw_mask_end.clamp(0, unpadded_frames as i64) as u32
     };
 
     if mask_end_frame <= mask_start_frame {

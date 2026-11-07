@@ -718,6 +718,20 @@ pub async fn run(
                     Some(json!({"path": path.to_string_lossy()})),
                 )?;
             }
+            if name.starts_with("app_") {
+                for extra in crate::agent_app::extra_artifacts(&arguments, output.data.as_ref()) {
+                    event(
+                        &app,
+                        &store,
+                        &run_id,
+                        step,
+                        "artifact",
+                        "Artifact ready",
+                        &extra.to_string_lossy(),
+                        Some(json!({"path": extra.to_string_lossy()})),
+                    )?;
+                }
+            }
             messages.push(json!({"role":"tool","tool_call_id":call_id,"content":memory::preview(&output.text, result_sequence)}));
         }
     }

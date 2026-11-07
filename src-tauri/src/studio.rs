@@ -1174,6 +1174,21 @@ fn validate_id(id: &str) -> Result<(), StudioError> {
     }
 }
 
+pub(super) fn validate_comfy_filename(name: &str) -> Result<String, StudioError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 240
+        || trimmed.contains("..")
+        || trimmed.contains(['\\', ':', '*', '?', '"', '<', '>', '|'])
+        || trimmed.starts_with('/')
+    {
+        return Err(StudioError::Invalid(format!(
+            "Unsafe ComfyUI filename '{name}': must be a relative filename without '..' or path separators."
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), StudioError> {
     let bytes = serde_json::to_vec_pretty(value)?;
     let temporary = path.with_extension("json.tmp");
@@ -1281,6 +1296,7 @@ mod tests {
                 },
                 &root.path().to_string_lossy(),
                 false,
+                None,
             )
             .unwrap();
         project.detail = "second durable state".into();
@@ -1309,6 +1325,7 @@ mod tests {
                 },
                 &root.path().to_string_lossy(),
                 false,
+                None,
             )
             .unwrap();
         let mut value = serde_json::to_value(project).unwrap();

@@ -507,10 +507,36 @@ where
             let clip_start = slice.timeline_start.max(win_start);
             let clip_end = (slice.timeline_start + slice.duration).min(win_end);
             let seg_dur = (clip_end - clip_start).max(1.0 / H3_FPS as f64);
-            let src_ss = slice.source_in + (clip_start - slice.timeline_start).max(0.0);
+            let is_still = matches!(
+                slice
+                    .path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_ascii_lowercase())
+                    .as_deref(),
+                Some("png" | "jpg" | "jpeg" | "webp" | "bmp")
+            );
+            let src_ss = if is_still {
+                0.0
+            } else {
+                slice.source_in + (clip_start - slice.timeline_start).max(0.0)
+            };
             let dst_offset = (clip_start - win_start).max(0.0);
 
-            cmd.arg("-i").arg(&slice.path);
+            if is_still {
+                cmd.args([
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    &H3_FPS.to_string(),
+                    "-t",
+                    &format!("{seg_dur:.5}"),
+                    "-i",
+                ])
+                .arg(&slice.path);
+            } else {
+                cmd.arg("-i").arg(&slice.path);
+            }
             let mut chain = format!(
                 "[{idx}:v]trim=start={src_ss:.5}:duration={seg_dur:.5},setpts=PTS-STARTPTS+{dst_offset:.5}/TB,scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={H3_FPS}"
             );
@@ -856,22 +882,33 @@ pub async fn apply_context_color_drift_correction(
         });
     }
 
-    // Decode full-res raw frames from ComfyUI output, apply interpolated 3x4 affine per frame,
-    // and encode into output_mp4 while copying H3 stereo audio untouched.
-    let full_frames =
-        decode_rgb24_frames(raw_comfy_mp4, width, height, geometry.padded_frames).await?;
+    // Stream full-res raw frames one frame at a time from ComfyUI output, apply interpolated 3x4
+    // affine per frame, and encode into output_mp4 with explicit BT.709 color signaling.
     let full_frame_bytes = (width * height * 3) as usize;
-    let total_decoded = full_frames.len() / full_frame_bytes;
-    if total_decoded == 0 {
-        tokio::fs::copy(raw_comfy_mp4, output_mp4).await?;
-        return Ok(H3ColorDriftReport {
-            applied: false,
-            matched_context_frames: 0,
-            max_bias_abs,
-            max_matrix_deviation,
-            summary: "Fallback to raw take (empty decoded buffer).".into(),
-        });
-    }
+    let mut dec = tokio::process::Command::new(media_program("ffmpeg"));
+    dec.kill_on_drop(true)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(raw_comfy_mp4)
+        .args([
+            "-vf",
+            &format!("scale={width}:{height}:flags=bilinear"),
+            "-frames:v",
+            &geometry.padded_frames.to_string(),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut dec_child = dec.spawn()?;
+    let mut dec_stdout = dec_child
+        .stdout
+        .take()
+        .ok_or_else(|| StudioError::Render("failed to open FFmpeg decoder stdout pipe".into()))?;
 
     let mut enc = tokio::process::Command::new(media_program("ffmpeg"));
     enc.kill_on_drop(true)
@@ -898,6 +935,8 @@ pub async fn apply_context_color_drift_correction(
             "0:v:0",
             "-map",
             "1:a?",
+            "-vf",
+            "scale=out_color_matrix=bt709",
             "-c:v",
             "libx264",
             "-preset",
@@ -906,6 +945,12 @@ pub async fn apply_context_color_drift_correction(
             "15",
             "-pix_fmt",
             "yuv420p",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
             "-c:a",
             "copy",
             "-movflags",
@@ -924,8 +969,17 @@ pub async fn apply_context_color_drift_correction(
 
     let span_start = pre_n as f32;
     let span_end = (post_start.max(pre_n + 1)) as f32;
+    let mut src_frame = vec![0_u8; full_frame_bytes];
     let mut row_buf = vec![0_u8; full_frame_bytes];
-    for f_idx in 0..total_decoded {
+    let mut f_idx = 0_usize;
+
+    while f_idx < geometry.padded_frames as usize {
+        use tokio::io::AsyncReadExt;
+        match dec_stdout.read_exact(&mut src_frame).await {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(err) => return Err(StudioError::Io(err)),
+        }
         let t = if post_count > 0 && pre_n > 0 {
             ((f_idx as f32 - span_start) / (span_end - span_start)).clamp(0.0, 1.0)
         } else {
@@ -937,11 +991,10 @@ pub async fn apply_context_color_drift_correction(
                 m[r][c] = pre_m[r][c] * (1.0 - t) + post_m[r][c] * t;
             }
         }
-        let src_slice = &full_frames[f_idx * full_frame_bytes..(f_idx + 1) * full_frame_bytes];
         for px in (0..full_frame_bytes).step_by(3) {
-            let r = src_slice[px] as f32;
-            let g = src_slice[px + 1] as f32;
-            let b = src_slice[px + 2] as f32;
+            let r = src_frame[px] as f32;
+            let g = src_frame[px + 1] as f32;
+            let b = src_frame[px + 2] as f32;
             row_buf[px] = (m[0][0] * r + m[0][1] * g + m[0][2] * b + m[0][3])
                 .round()
                 .clamp(0.0, 255.0) as u8;
@@ -953,9 +1006,21 @@ pub async fn apply_context_color_drift_correction(
                 .clamp(0.0, 255.0) as u8;
         }
         stdin.write_all(&row_buf).await?;
+        f_idx += 1;
     }
     drop(stdin);
+    let _ = dec_child.wait().await;
     let out = child.wait_with_output().await?;
+    if f_idx == 0 {
+        tokio::fs::copy(raw_comfy_mp4, output_mp4).await?;
+        return Ok(H3ColorDriftReport {
+            applied: false,
+            matched_context_frames: 0,
+            max_bias_abs,
+            max_matrix_deviation,
+            summary: "Fallback to raw take (empty decoded buffer).".into(),
+        });
+    }
     if !out.status.success() {
         return Err(StudioError::Render(format!(
             "color-drift encode failed: {}",

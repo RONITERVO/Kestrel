@@ -313,10 +313,12 @@ pub struct H3ReferenceEntity {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 #[ts(export)]
 pub struct H3WindowConfig {
+    #[serde(default)]
     pub in_sec: f64,
+    #[serde(default = "default_out_sec")]
     pub out_sec: f64,
     #[serde(default)]
     pub pre_context_sec: f64,
@@ -331,6 +333,14 @@ pub struct H3WindowConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub spatial_mask_rect: Option<H3CropRect>,
+}
+
+fn default_out_sec() -> f64 {
+    5.0
+}
+
+fn default_scene_duration_sec() -> f64 {
+    15.0
 }
 
 fn default_overlap_ratio() -> f64 {
@@ -711,7 +721,9 @@ pub struct H3PromptSection {
     pub id: String,
     #[serde(default)]
     pub label: String,
+    #[serde(default)]
     pub timeline_start_sec: f64,
+    #[serde(default = "default_out_sec")]
     pub duration_sec: f64,
     #[serde(default)]
     pub summary_beat: String,
@@ -737,13 +749,17 @@ pub struct H3PromptSection {
 #[ts(export)]
 pub struct H3Scene {
     pub id: String,
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub kind: H3SceneKind,
+    #[serde(default = "default_custom_width")]
     pub width: u32,
+    #[serde(default = "default_custom_height")]
     pub height: u32,
     #[serde(default = "default_fps")]
     pub fps: u32,
+    #[serde(default = "default_scene_duration_sec")]
     pub duration_sec: f64,
     #[serde(default)]
     pub window: H3WindowConfig,
@@ -1248,6 +1264,8 @@ pub struct SaveMovieH3SceneRequest {
     pub scene: H3Scene,
     #[serde(default = "default_true")]
     pub set_active: bool,
+    #[serde(default)]
+    pub replace_empty_collections: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -1393,7 +1411,11 @@ pub struct H3GenerationStartReceipt {
 #[ts(export)]
 pub struct PlaceMovieH3TakeRequest {
     pub project_id: String,
+    #[serde(default)]
     pub job_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub asset_id: Option<String>,
     pub target_scene_id: String,
     #[serde(default)]
     pub placement_mode: H3TakePlacementMode,
@@ -1405,7 +1427,13 @@ pub struct PlaceMovieH3TakeRequest {
     pub target_audio_lane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
+    pub target_driver_lane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub timeline_start_override_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub duration_override_sec: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]

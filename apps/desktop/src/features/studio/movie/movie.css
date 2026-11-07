@@ -549,14 +549,21 @@
   }
 }
 
-.h3-handle-palette {
+.h3-handle-palette,
+.h3-handle-bar {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 6px;
   padding: var(--space-2);
   background: var(--paper-sunk);
   border: var(--stroke-soft);
   border-radius: var(--radius-sketch);
+}
+
+.h3-handle-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .h3-handle-chip {
@@ -641,12 +648,24 @@
   border-radius: var(--radius-sketch);
 }
 
-.h3-ladder-callout {
+.h3-ladder-callout,
+.h3-ladder-box {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start;
+  gap: var(--space-2) !important;
   padding: var(--space-2);
   background: var(--act-wash);
   border: var(--stroke-soft);
   border-color: var(--act);
   border-radius: var(--radius-sketch);
+  cursor: pointer;
+}
+
+.h3-ladder-box > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .checkbox-inline {
@@ -665,11 +684,19 @@
   border-top: var(--stroke-soft);
 }
 
+.h3-advisories {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.h3-advisory,
 .h3-advisory-box,
 .h3-warning-list li {
   display: flex;
   align-items: flex-start;
   gap: 6px;
+  margin: 0;
   padding: 6px 8px;
   background: var(--wait-wash);
   border: var(--stroke-soft);
@@ -677,6 +704,18 @@
   border-radius: var(--radius-sketch);
   color: var(--wait-ink);
   font-size: var(--text-xs);
+}
+
+.h3-advisory.ok {
+  background: var(--ok-wash);
+  border-color: var(--ok);
+  color: var(--ok-ink);
+}
+
+.h3-advisory.error {
+  background: var(--stop-wash);
+  border-color: var(--stop);
+  color: var(--stop-ink);
 }
 
 .h3-compiled-pre {
@@ -930,13 +969,16 @@
 }
 
 .h3-clip-block.ref.verdict-superseded,
-.h3-clip-block.ref.verdict-droppedByCap {
+.h3-clip-block.ref.verdict-droppedByCap,
+.h3-clip-block.ref.verdict-capExceeded,
+.h3-clip-block.ref.verdict-belowThreshold {
   background: var(--wait-wash);
   border-color: var(--wait);
   color: var(--wait-ink);
 }
 
-.h3-clip-block.ref.verdict-outside {
+.h3-clip-block.ref.verdict-outside,
+.h3-clip-block.ref.verdict-muted {
   background: var(--paper-sunk);
   color: var(--ink-3);
 }
@@ -1037,7 +1079,8 @@
 
 .h3-entity-sidebar,
 .h3-entity-editor,
-.h3-vault-panel {
+.h3-vault-panel,
+.h3-asset-vault {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -1050,6 +1093,7 @@
 .h3-entity-list,
 .h3-member-list,
 .h3-vault-list,
+.h3-vault-items,
 .h3-job-list,
 .h3-revision-list,
 .h3-export-list,
@@ -1063,28 +1107,63 @@
 }
 
 .h3-entity-item,
+.h3-entity-card,
 .h3-job-card {
   width: 100%;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 3px;
+  gap: 4px;
   padding: var(--space-2);
   background: var(--paper-sunk);
   border: var(--stroke-soft);
   border-radius: var(--radius-sketch);
   text-align: left;
+}
+
+.h3-entity-select {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  text-align: left;
   cursor: pointer;
 }
 
+.h3-entity-card-actions,
+.h3-vault-row-actions,
+.h3-vault-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .h3-entity-item.active,
+.h3-entity-card.active,
 .h3-job-card.active {
   background: var(--act-wash);
   border-color: var(--act);
 }
 
+.h3-entity-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.h3-entity-form-grid > label.wide {
+  grid-column: 1 / -1;
+}
+
 .h3-member-card,
-.h3-vault-item {
+.h3-vault-item,
+.h3-vault-row {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -1092,6 +1171,41 @@
   background: var(--paper-sunk);
   border: var(--stroke-soft);
   border-radius: var(--radius-sketch);
+}
+
+.h3-vault-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding-bottom: var(--space-2);
+  border-bottom: var(--stroke-soft);
+}
+
+.h3-vault-tabs button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--paper-sunk);
+  border: var(--stroke-soft);
+  border-radius: var(--radius-sketch);
+  color: var(--ink-2);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.h3-vault-tabs button.active {
+  background: var(--act-wash);
+  border-color: var(--act);
+  color: var(--act-ink);
+  font-weight: 600;
+}
+
+.h3-vault-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 /* Story, Takes & Deliver Rooms */
@@ -1246,13 +1360,15 @@
   gap: var(--space-2);
 }
 
-.movie-asset-grid {
+.movie-asset-grid,
+.movie-asset-candidates {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: var(--space-2);
 }
 
-.movie-asset-choice {
+.movie-asset-choice,
+.movie-asset-candidates button {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1260,9 +1376,12 @@
   background: var(--paper-sunk);
   border: var(--stroke-soft);
   border-radius: var(--radius-sketch);
+  text-align: left;
+  cursor: pointer;
 }
 
-.movie-asset-choice img {
+.movie-asset-choice img,
+.movie-asset-candidates button img {
   width: 100%;
   aspect-ratio: 16 / 9;
   object-fit: cover;

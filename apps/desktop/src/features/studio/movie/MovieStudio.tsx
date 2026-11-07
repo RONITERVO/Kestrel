@@ -126,6 +126,7 @@ export function MovieStudio({
   const [placeSceneId, setPlaceSceneId] = useState("");
   const [placeVideoLaneId, setPlaceVideoLaneId] = useState("");
   const [placeAudioLaneId, setPlaceAudioLaneId] = useState("");
+  const [placeDriverLaneId, setPlaceDriverLaneId] = useState("");
 
   // Deliver / Export room state
   const [exportSceneId, setExportSceneId] = useState("");
@@ -232,8 +233,12 @@ export function MovieStudio({
     void onMovieProject((next) => {
       if (disposed) return;
       void listMovies().then((items) => { if (!disposed) setSummaries(items); }).catch(() => undefined);
+      void listMovieReferenceAssets().then((assets) => { if (!disposed) setReferenceAssets(assets); }).catch(() => undefined);
       if (next.id === activeProjectIdRef.current) {
         applyLoadedProject(next, true);
+      } else if (!activeProjectIdRef.current) {
+        applyLoadedProject(next, false);
+        setCreating(false);
       }
     }).then((dispose) => (disposed ? dispose() : cleanups.push(dispose)));
 
@@ -445,6 +450,7 @@ export function MovieStudio({
         projectId: project.id,
         scene: sceneDraft,
         setActive: true,
+        replaceEmptyCollections: true,
       });
       applyLoadedProject(updated, false);
       const refreshed = updated.scenes.find((s) => s.id === sceneDraft.id) ?? updated.scenes[0];
@@ -517,6 +523,7 @@ export function MovieStudio({
           projectId: project.id,
           scene: sceneDraft,
           setActive: false,
+          replaceEmptyCollections: true,
         });
       }
       const target = currentProject.scenes.find((s) => s.id === targetSceneId);
@@ -525,6 +532,7 @@ export function MovieStudio({
         projectId: currentProject.id,
         scene: target,
         setActive: true,
+        replaceEmptyCollections: true,
       });
       applyLoadedProject(updated, false);
       setPlayheadSec(snapToFrame(target.window.inSec));
@@ -674,11 +682,14 @@ export function MovieStudio({
       const updated = await placeMovieH3Take({
         projectId: project.id,
         jobId: selectedTakeJobId,
+        assetId: null,
         targetSceneId: targetScene.id,
         placementMode: placeMode,
-        targetVideoLaneId: placeVideoLaneId || null,
-        targetAudioLaneId: placeAudioLaneId || null,
+        targetVideoLaneId: placeDriverLaneId ? null : placeVideoLaneId || null,
+        targetAudioLaneId: placeDriverLaneId ? null : placeAudioLaneId || null,
+        targetDriverLaneId: placeDriverLaneId || null,
         timelineStartOverrideSec: null,
+        durationOverrideSec: null,
       });
       applyLoadedProject(updated, false);
       setNotice(`Placed take onto "${targetScene.name}" (${placeMode}).`);
@@ -1116,6 +1127,7 @@ export function MovieStudio({
                     <MovieGenerationPanel
                       project={project}
                       scene={sceneDraft}
+                      environment={environment}
                       selectedShotId={selectedShotId}
                       compileResult={compileResult}
                       rendering={rendering}
@@ -1127,6 +1139,9 @@ export function MovieStudio({
                       onDraftDirection={(currentText, shotLabel, apply) =>
                         void startLocalDraft("imageAsset", `Shot Action · ${shotLabel}`, currentText, shotLabel, "shot", apply)
                       }
+                      onPersistSceneIfNeeded={async () => {
+                        await persistSceneIfNeeded(false);
+                      }}
                       onProjectRefresh={async () => {
                         const reloaded = await getMovie(project.id);
                         applyLoadedProject(reloaded, false);
@@ -1137,6 +1152,7 @@ export function MovieStudio({
                   </div>
 
                   <MovieTimeline
+                    key={`${project.id}:${sceneDraft.id}`}
                     project={project}
                     scene={sceneDraft}
                     savedScene={savedScene}
@@ -1159,6 +1175,9 @@ export function MovieStudio({
                   project={project}
                   scene={sceneDraft}
                   disabled={rendering}
+                  onPersistSceneIfNeeded={async () => {
+                    await persistSceneIfNeeded(false);
+                  }}
                   onProject={(next) => {
                     applyLoadedProject(next, false);
                     void refreshSummariesAndAssets();
@@ -1517,10 +1536,22 @@ export function MovieStudio({
                                 <select
                                   aria-label="Place take audio lane"
                                   value={placeAudioLaneId}
+                                  disabled={Boolean(placeDriverLaneId)}
                                   onChange={(e) => setPlaceAudioLaneId(e.target.value)}
                                 >
                                   <option value="">Top Audio Lane (Default)</option>
                                   {placeTargetScene?.audioLanes.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                                </select>
+                              </label>
+                              <label>
+                                Driver Lane (D1..Dn)
+                                <select
+                                  aria-label="Place take driver lane"
+                                  value={placeDriverLaneId}
+                                  onChange={(e) => setPlaceDriverLaneId(e.target.value)}
+                                >
+                                  <option value="">None (Use Video/Audio)</option>
+                                  {placeTargetScene?.driverLanes.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
                                 </select>
                               </label>
                             </div>

@@ -158,8 +158,8 @@
     "Inspect installed MiniMax H3 weights (ref2va, fl2va, Qwen3-VL 32B, video/audio VAEs, taeh3 preview) and discovered H3 LoRAs in ComfyUI."
   ],
   "install_movie_h3_turbo_loras": [
-    "write",
-    "Download and SHA-256 verify the official Comfy-Org MiniMax H3 Ref2V & FL2V Turbo LoRAs into ComfyUI models/loras/ so 0.2MP/1MP/1080p quality-ladder passes run in 10/12/4 steps."
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
   ],
   "list_movie_reference_assets": [
     "read",
@@ -175,7 +175,7 @@
   ],
   "upsert_movie_h3_entity": [
     "write",
-    "Create or update a reusable @Handle entity (Character, Location, Prop, Outfit, Voice, Sound, Other) with subjectDescription, retention, and cropped/trimmed picture, video, or audio members. Mention @Handle in prompt sections to auto-bind <Subject N>, <Picture N>, <Video N>, <Audio N>, and (Sn) speaker codes."
+    "Create or update a reusable @Handle entity (character, location, prop, outfit, voice, sound, other) with subjectDescription, retentionLevel (fullyPreserved, mostlyPreserved, looselyInspired), and cropped/trimmed pictures, videos, or standaloneAudios members. Mention @Handle in prompt sections to auto-bind <Subject N>, <Picture N>, <Video N>, <Audio N>, and (Sn) speaker codes."
   ],
   "delete_movie_h3_entity": [
     "write",
@@ -187,7 +187,7 @@
   ],
   "save_movie_h3_scene": [
     "write",
-    "Save complete edits to an H3Scene (window [In..Out] & pre/post context frames, generation settings, globalPrompt, promptSections, guides, referenceLanes, videoLanes, driverLanes, audioLanes)."
+    "Save edits to an H3Scene (window [inSec..outSec] & pre/post context frames, generation settings, globalPrompt, promptSections, guides, referenceLanes, videoLanes, driverLanes, audioLanes). Omitted lane/section/guide arrays are preserved by default unless replaceEmptyCollections=true."
   ],
   "stage_movie_h3_reference": [
     "write",
@@ -199,23 +199,23 @@
   ],
   "capture_movie_h3_frame_guide": [
     "write",
-    "Extract an exact PNG frame at timeSec from a completed take (sourceJobId) or video reference (sourceAssetId) into the Reference Library, optionally pinning it on the scene's Guides track (addGuideAtSec) for MiniMaxH3AddGuide conditioning."
+    "Extract an exact PNG frame at timeSec from a completed take (sourceJobId) or video reference (sourceAssetId) into the Reference Library, optionally pinning it on the scene's Guides track (addGuideAtSec) for FL2V first/last-frame or Ref2V keyframe conditioning."
   ],
   "compile_movie_h3_window": [
     "read",
-    "Dry-run the native H3 compiler on a scene window before rendering. Returns exact 17k+5 frame geometry, Winner/Superseded/CapExceeded reference verdicts, <Subject>/<Picture>/<Video>/<Audio> bindings, compiled 6-channel prompt text, resolved model + LoRAs, and advisories."
+    "Dry-run the native H3 compiler on a scene window before rendering. Returns exact 17k+5 frame geometry, winner/superseded/capExceeded/belowThreshold/muted/outsideSpan reference verdicts, <Subject>/<Picture>/<Video>/<Audio> bindings, compiled 6-channel prompt text, resolved model + LoRAs, and advisories."
   ],
   "start_movie_h3_generation": [
     "write",
-    "Render one or more H3 scene windows in ComfyUI after releasing the local LLM VRAM lease. Set expandQualityLadder=true to automatically run Sonder's 3-pass quality ladder (Pass 1: 0.2MP draft @ 10 steps -> Pass 2: 1MP detail @ 12 steps denoise 0.75 -> Pass 3: 1080p upscale @ 4 steps denoise 0.40), placing each pass cleanly onto the timeline with ridge-affine color-drift cancellation."
+    "Render one or more H3 scene windows in ComfyUI after releasing the local LLM VRAM lease. Set expandQualityLadder=true to automatically run Sonder's 3-pass quality ladder (Pass 1: draft02Mp @ 10 steps -> Pass 2: detail1Mp @ 12 steps denoise 0.75 -> Pass 3: upscale1080p @ 4 steps denoise 0.40), placing each pass cleanly onto the timeline with ridge-affine color-drift cancellation."
   ],
   "place_movie_h3_take": [
     "write",
-    "Non-destructively place or re-place a completed H3 take onto a scene's video/audio lanes using authored_v1 trim geometry (both, videoOnly, audioOnly, or none)."
+    "Non-destructively place a completed H3 take (jobId) or Reference Library asset (assetId) onto a scene's video (targetVideoLaneId), audio (targetAudioLaneId), or pose/motion driver (targetDriverLaneId) lane using authored_v1 trim geometry (placementMode: trimmed, untrimmed, or assetOnly)."
   ],
   "inspect_movie_h3_take": [
     "read",
-    "Inspect a render job's exact compiled prompt, SHA-256 take media path, ridge color-drift report, and native quality telemetry (FFprobe streams, measured peak/RMS dBFS, silence check, and 3 extracted contact-sheet PNG paths you can view visually)."
+    "Inspect a render job's exact compiled prompt, SHA-256 take media path, ridge color-drift report, and native quality telemetry (FFprobe streams, verified boolean, measured audioPeakDbfs/audioMeanDbfs, hasAudio, and 3 extracted contactSheetPaths PNGs)."
   ],
   "start_studio_prompt_draft": [
     "write",

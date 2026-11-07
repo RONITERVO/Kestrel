@@ -43,16 +43,7 @@ pub fn expand_handles_in_text(
     while i < chars.len() {
         let (_, ch) = chars[i];
         let prev = if i > 0 { Some(chars[i - 1].1) } else { None };
-        let boundary = match prev {
-            None => true,
-            Some(c) => {
-                c.is_whitespace()
-                    || matches!(
-                        c,
-                        '(' | '[' | '{' | '<' | '"' | '\'' | ',' | '.' | ';' | ':' | '!' | '?' | '/' | '-'
-                    )
-            }
-        };
+        let boundary = super::h3_references::is_handle_boundary_before(prev);
         if ch == '@' && boundary && i + 1 < chars.len() && chars[i + 1].1.is_ascii_alphabetic() {
             let start_byte = chars[i + 1].0;
             let mut end_idx = i + 2;
@@ -162,7 +153,7 @@ where
     let window = window_override.unwrap_or(&scene.window);
     let gen = generation_override.unwrap_or(&scene.generation);
 
-    let geometry = calculate_take_placement(window, scene.fps)?;
+    let mut geometry = calculate_take_placement(window, scene.fps)?;
     let (resolved_width, resolved_height) = adapt_pass_canvas(
         (scene.width, scene.height, scene.kind),
         gen.pass_preset,
@@ -327,11 +318,22 @@ where
             && !custom_lora.file_name.trim().is_empty()
             && custom_lora.strength_model.abs() > 1e-4
         {
-            resolved_loras.push(H3LoraSpec {
-                file_name: custom_lora.file_name.trim().to_string(),
-                strength_model: custom_lora.strength_model.clamp(-2.0, 2.0),
-                enabled: true,
-            });
+            match super::validate_comfy_filename(custom_lora.file_name.trim()) {
+                Ok(valid_name) => {
+                    resolved_loras.push(H3LoraSpec {
+                        file_name: valid_name,
+                        strength_model: custom_lora.strength_model.clamp(-2.0, 2.0),
+                        enabled: true,
+                    });
+                }
+                Err(err) => {
+                    advisories.push(H3CompileAdvisory {
+                        severity: H3AdvisorySeverity::Error,
+                        code: "invalid_lora_filename".into(),
+                        message: format!("Rejected LoRA filename '{}': {err}", custom_lora.file_name),
+                    });
+                }
+            }
         }
     }
 
@@ -415,6 +417,11 @@ where
     ) && has_source_audio
         && ordinals.audios.is_empty()
         && !has_vocal_events;
+
+    if gen.task_mode == H3TaskMode::KeepExistingAudio || freeze_swap_audio {
+        geometry.audio_mask_token_lo = 0;
+        geometry.audio_mask_token_hi = 0;
+    }
 
     let uses_audio_noise_mask = uses_source_av_latent
         && (gen.task_mode == H3TaskMode::KeepExistingAudio
@@ -631,6 +638,37 @@ where
             &mut advisories,
             &mut warned_unstaged,
         );
+        if let Some(sw) = &sec.swap_fields {
+            let rep = sw.replacement_handle.trim();
+            if !rep.is_empty() {
+                let with_at = if rep.starts_with('@') {
+                    rep.to_string()
+                } else {
+                    format!("@{rep}")
+                };
+                check_prose(
+                    &with_at,
+                    Some(shot_no),
+                    &mut ordinals,
+                    &mut advisories,
+                    &mut warned_unstaged,
+                );
+            }
+            check_prose(
+                &sw.target_subject,
+                Some(shot_no),
+                &mut ordinals,
+                &mut advisories,
+                &mut warned_unstaged,
+            );
+            check_prose(
+                &sw.extra_instruction,
+                Some(shot_no),
+                &mut ordinals,
+                &mut advisories,
+                &mut warned_unstaged,
+            );
+        }
         for vocal in &sec.vocal_events {
             if let Ok(speaker) = normalize_handle(&vocal.speaker_handle) {
                 let lower = speaker.to_ascii_lowercase();
@@ -706,14 +744,23 @@ where
             channels.overall_soundscape,
             channels.non_diegetic_music
         ),
-        H3PromptFormat::CharacterSwap | H3PromptFormat::HeadSwap => build_swap_prompt(
-            effective_format,
-            &overlapping_sections,
-            &ordinals,
-            &expansion_map,
-            &fallback_names,
-            &channels,
-        ),
+        H3PromptFormat::CharacterSwap | H3PromptFormat::HeadSwap => {
+            if ordinals.subjects.is_empty() && ordinals.pictures.is_empty() {
+                advisories.push(H3CompileAdvisory {
+                    severity: H3AdvisorySeverity::Warning,
+                    code: "swap_missing_reference".into(),
+                    message: "CharacterSwap / HeadSwap has no staged <Subject> or <Picture> reference in this window.".into(),
+                });
+            }
+            build_swap_prompt(
+                effective_format,
+                &overlapping_sections,
+                &ordinals,
+                &expansion_map,
+                &fallback_names,
+                &channels,
+            )
+        }
     };
 
     if compiled_prompt.trim().is_empty()
@@ -1157,6 +1204,8 @@ fn build_swap_prompt(
             } else {
                 format!("{} ({})", subj.subject_tag, subj.visual_tags.join(", "))
             }
+        } else if let Some(mapped) = expansion_map.get(&rep_norm.to_ascii_lowercase()) {
+            mapped.clone()
         } else if let Some(pic) = ordinals.pictures.first() {
             pic.tag.clone()
         } else {
@@ -1185,7 +1234,7 @@ fn build_swap_prompt(
         .map(|s| format!(" {}", ensure_sentence(&s)))
         .unwrap_or_default();
 
-    let body = if format == H3PromptFormat::HeadSwap {
+    let mut body = if format == H3PromptFormat::HeadSwap {
         format!(
             "{prefix}: Replace the head and facial identity of {target} with {replacement}.{keep_clause}{extra}"
         )
@@ -1194,6 +1243,10 @@ fn build_swap_prompt(
             "{prefix}: Replace {target} with {replacement}.{keep_clause}{extra}"
         )
     };
+    if !channels.detailed_description.trim().is_empty() {
+        body.push_str("\n\n");
+        body.push_str(channels.detailed_description.trim());
+    }
 
     format!(
         "Subject Definitions:\n{}\n\nDetailed Description:\n{}\n\nOverall Soundscape:\n{}\n\nNon-Diegetic Music:\n{}",

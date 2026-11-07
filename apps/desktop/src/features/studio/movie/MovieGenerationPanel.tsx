@@ -4,9 +4,9 @@ import {
   Plus, Sliders, Sparkles, Trash2, Wand2,
 } from "lucide-react";
 import type {
-  H3GenerationSettings, H3ModelChoice, H3PassPreset, H3PromptSection,
-  H3Scene, H3TakePlacementMode, H3TaskMode, H3VocalEvent, H3WindowCompileResult,
-  MovieProject,
+  H3EnvironmentSnapshot, H3GenerationSettings, H3LoraSpec, H3ModelChoice,
+  H3PassPreset, H3PromptFormat, H3PromptSection, H3Scene, H3TakePlacementMode,
+  H3TaskMode, H3VocalEvent, H3VocalEventType, H3WindowCompileResult, MovieProject,
 } from "../../../contracts/index";
 import { stageMovieH3Reference } from "../../../platform/api";
 import { ExternalCollaborationExchange } from "../../../shared/collaboration/ExternalCollaborationExchange";
@@ -39,6 +39,21 @@ const TASK_MODES: { value: H3TaskMode; label: string }[] = [
 
 const LANGUAGES = ["English", "Chinese", "Japanese", "Spanish", "French", "German", "Korean", "Italian", "Portuguese"];
 
+const VOCAL_EVENT_TYPES: { value: H3VocalEventType; label: string }[] = [
+  { value: "dialogue", label: "Dialogue" },
+  { value: "narration", label: "Narration" },
+  { value: "singing", label: "Singing" },
+  { value: "shout", label: "Shout" },
+  { value: "whisper", label: "Whisper" },
+];
+
+const PROMPT_FORMATS: { value: H3PromptFormat; label: string }[] = [
+  { value: "h3FullReference", label: "6-Channel H3 Structured Reference" },
+  { value: "h3Base", label: "H3 Base Prose (@Handles Expanded)" },
+  { value: "characterSwap", label: "3-Channel Character Swap" },
+  { value: "headSwap", label: "3-Channel Head Swap" },
+];
+
 function makeId(prefix: string): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? `${prefix}-${crypto.randomUUID().slice(0, 8)}`
@@ -48,6 +63,7 @@ function makeId(prefix: string): string {
 export function MovieGenerationPanel({
   project,
   scene,
+  environment,
   selectedShotId,
   compileResult,
   rendering,
@@ -57,12 +73,14 @@ export function MovieGenerationPanel({
   onStartGeneration,
   onStopGeneration,
   onDraftDirection,
+  onPersistSceneIfNeeded,
   onProjectRefresh,
   onError,
   onNotice,
 }: {
   project: MovieProject;
   scene: H3Scene;
+  environment?: H3EnvironmentSnapshot;
   selectedShotId?: string;
   compileResult?: H3WindowCompileResult | null;
   rendering: boolean;
@@ -72,6 +90,7 @@ export function MovieGenerationPanel({
   onStartGeneration: (expandQualityLadder: boolean) => Promise<void>;
   onStopGeneration: () => void;
   onDraftDirection?: (currentText: string, shotLabel: string, apply: (text: string) => void) => void;
+  onPersistSceneIfNeeded?: () => Promise<void>;
   onProjectRefresh?: () => Promise<void>;
   onError: (message: string) => void;
   onNotice?: (message: string) => void;
@@ -105,9 +124,15 @@ export function MovieGenerationPanel({
     });
   };
 
-  const ensureActiveShot = (): H3PromptSection => {
-    if (activeShot) return activeShot;
-    const created: H3PromptSection = {
+  const upsertActiveShot = (
+    patchOrFn: Partial<H3PromptSection> | ((shot: H3PromptSection) => Partial<H3PromptSection>),
+  ) => {
+    if (activeShot) {
+      const patch = typeof patchOrFn === "function" ? patchOrFn(activeShot) : patchOrFn;
+      updateShot(activeShot.id, patch);
+      return;
+    }
+    const base: H3PromptSection = {
       id: makeId("shot"),
       label: `Shot ${scene.promptSections.length + 1}`,
       timelineStartSec: scene.window.inSec,
@@ -120,23 +145,18 @@ export function MovieGenerationPanel({
       vocalEvents: [],
       enabled: true,
     };
+    const patch = typeof patchOrFn === "function" ? patchOrFn(base) : patchOrFn;
+    const created: H3PromptSection = { ...base, ...patch };
     onSceneChange({ ...scene, promptSections: [...scene.promptSections, created] });
     onSelectShot(created.id);
-    return created;
   };
 
   const insertHandleIntoShot = (handle: string) => {
     const token = `@${handle}`;
-    if (activeShot) {
-      const sep = activeShot.detailedAction && !activeShot.detailedAction.endsWith(" ") ? " " : "";
-      updateShot(activeShot.id, { detailedAction: `${activeShot.detailedAction}${sep}${token} ` });
-    } else {
-      const created = ensureActiveShot();
-      onSceneChange({
-        ...scene,
-        promptSections: [...scene.promptSections, { ...created, detailedAction: `${token} ` }],
-      });
-    }
+    upsertActiveShot((shot) => {
+      const sep = shot.detailedAction && !shot.detailedAction.endsWith(" ") ? " " : "";
+      return { detailedAction: `${shot.detailedAction}${sep}${token} ` };
+    });
   };
 
   const stagedHandles = new Set(
@@ -147,6 +167,7 @@ export function MovieGenerationPanel({
     const ent = project.entities.find((e) => e.handle.toLowerCase() === handle.toLowerCase());
     if (!ent) return;
     try {
+      await onPersistSceneIfNeeded?.();
       const receipt = await stageMovieH3Reference({
         projectId: project.id,
         sceneId: scene.id,
@@ -164,7 +185,6 @@ export function MovieGenerationPanel({
   };
 
   const addVocalEvent = () => {
-    const target = activeShot ?? ensureActiveShot();
     const defaultSpeaker = project.entities.find((e) => e.kind === "character" || e.kind === "voice")?.handle ?? "";
     const ev: H3VocalEvent = {
       id: makeId("vocal"),
@@ -174,14 +194,7 @@ export function MovieGenerationPanel({
       delivery: "calm, close-mic",
       text: "",
     };
-    if (activeShot) {
-      updateShot(target.id, { vocalEvents: [...target.vocalEvents, ev] });
-    } else {
-      onSceneChange({
-        ...scene,
-        promptSections: [...scene.promptSections, { ...target, vocalEvents: [ev] }],
-      });
-    }
+    upsertActiveShot((shot) => ({ vocalEvents: [...shot.vocalEvents, ev] }));
   };
 
   const updateVocalEvent = (shot: H3PromptSection, evId: string, patch: Partial<H3VocalEvent>) => {
@@ -259,9 +272,11 @@ export function MovieGenerationPanel({
                     aria-label="Swap target description"
                     value={activeShot?.swapFields?.targetSubject ?? ""}
                     onChange={(e) => {
-                      const shot = activeShot ?? ensureActiveShot();
-                      const prev = shot.swapFields ?? { targetSubject: "", replacementHandle: "", keepPoseAndLighting: true, extraInstruction: "" };
-                      updateShot(shot.id, { swapFields: { ...prev, targetSubject: e.target.value } });
+                      const val = e.target.value;
+                      upsertActiveShot((shot) => {
+                        const prev = shot.swapFields ?? { targetSubject: "", replacementHandle: "", keepPoseAndLighting: true, extraInstruction: "" };
+                        return { swapFields: { ...prev, targetSubject: val } };
+                      });
                     }}
                     placeholder="the rider on the left in the driver video"
                   />
@@ -272,9 +287,11 @@ export function MovieGenerationPanel({
                     aria-label="Swap replacement description"
                     value={activeShot?.swapFields?.replacementHandle ?? ""}
                     onChange={(e) => {
-                      const shot = activeShot ?? ensureActiveShot();
-                      const prev = shot.swapFields ?? { targetSubject: "", replacementHandle: "", keepPoseAndLighting: true, extraInstruction: "" };
-                      updateShot(shot.id, { swapFields: { ...prev, replacementHandle: e.target.value } });
+                      const val = e.target.value;
+                      upsertActiveShot((shot) => {
+                        const prev = shot.swapFields ?? { targetSubject: "", replacementHandle: "", keepPoseAndLighting: true, extraInstruction: "" };
+                        return { swapFields: { ...prev, replacementHandle: val } };
+                      });
                     }}
                     placeholder="@Cowboy wearing a weathered tan duster"
                   />
@@ -286,12 +303,28 @@ export function MovieGenerationPanel({
                     rows={3}
                     value={activeShot?.swapFields?.extraInstruction ?? ""}
                     onChange={(e) => {
-                      const shot = activeShot ?? ensureActiveShot();
-                      const prev = shot.swapFields ?? { targetSubject: "", replacementHandle: "", keepPoseAndLighting: true, extraInstruction: "" };
-                      updateShot(shot.id, { swapFields: { ...prev, extraInstruction: e.target.value } });
+                      const val = e.target.value;
+                      upsertActiveShot((shot) => {
+                        const prev = shot.swapFields ?? { targetSubject: "", replacementHandle: "", keepPoseAndLighting: true, extraInstruction: "" };
+                        return { swapFields: { ...prev, extraInstruction: val } };
+                      });
                     }}
                     placeholder="Keep the desert canyon sunset lighting, camera shake, and dust haze unchanged."
                   />
+                </label>
+                <label className="checkbox-inline">
+                  <input
+                    type="checkbox"
+                    checked={activeShot?.swapFields?.keepPoseAndLighting ?? true}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      upsertActiveShot((shot) => {
+                        const prev = shot.swapFields ?? { targetSubject: "", replacementHandle: "", keepPoseAndLighting: true, extraInstruction: "" };
+                        return { swapFields: { ...prev, keepPoseAndLighting: checked } };
+                      });
+                    }}
+                  />
+                  Preserve Driver Pose, Camera &amp; Scene Lighting
                 </label>
               </div>
             ) : (
@@ -307,11 +340,22 @@ export function MovieGenerationPanel({
                       {scene.promptSections.length === 0 && <option value="">No shots yet — click + Shot</option>}
                       {scene.promptSections.map((s, idx) => (
                         <option key={s.id} value={s.id}>
-                          [Shot {idx + 1}] {s.label} ({s.timelineStartSec.toFixed(1)}s–{(s.timelineStartSec + s.durationSec).toFixed(1)}s)
+                          [Shot {idx + 1}] {s.label} ({s.timelineStartSec.toFixed(1)}s–{(s.timelineStartSec + s.durationSec).toFixed(1)}s){s.enabled ? "" : " [Muted]"}
                         </option>
                       ))}
                     </select>
                   </label>
+                  {activeShot && (
+                    <label className="checkbox-inline" title="Enable or mute this shot beat">
+                      <input
+                        type="checkbox"
+                        aria-label="Enable active shot"
+                        checked={activeShot.enabled}
+                        onChange={(e) => updateShot(activeShot.id, { enabled: e.target.checked })}
+                      />
+                      On
+                    </label>
+                  )}
                   <button
                     type="button"
                     disabled={disabled || rendering}
@@ -338,6 +382,21 @@ export function MovieGenerationPanel({
                   >
                     <Plus size={12} /> Shot
                   </button>
+                  {activeShot && (
+                    <button
+                      type="button"
+                      className="danger-icon"
+                      aria-label="Delete active shot"
+                      disabled={disabled || rendering}
+                      onClick={() => {
+                        const remaining = scene.promptSections.filter((s) => s.id !== activeShot.id);
+                        onSceneChange({ ...scene, promptSections: remaining });
+                        onSelectShot(remaining[0]?.id ?? "");
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
                 </div>
 
                 {activeShot ? (
@@ -416,13 +475,20 @@ export function MovieGenerationPanel({
                       </header>
                       {activeShot.vocalEvents.map((v) => (
                         <div key={v.id} className="h3-vocal-row">
-                          <div className="h3-row-3">
+                          <div className="h3-row-4">
                             <input
                               aria-label="Vocal speaker handle"
                               value={v.speakerHandle}
                               onChange={(e) => updateVocalEvent(activeShot, v.id, { speakerHandle: e.target.value.replace(/^@/, "") })}
                               placeholder="@Speaker"
                             />
+                            <select
+                              aria-label="Vocal event type"
+                              value={v.eventType}
+                              onChange={(e) => updateVocalEvent(activeShot, v.id, { eventType: e.target.value as H3VocalEventType })}
+                            >
+                              {VOCAL_EVENT_TYPES.map((vt) => <option key={vt.value} value={vt.value}>{vt.label}</option>)}
+                            </select>
                             <select
                               aria-label="Vocal language"
                               value={v.language}
@@ -506,10 +572,10 @@ export function MovieGenerationPanel({
                 )}
 
                 <details className="h3-global-details" open={showGlobal} onToggle={(e) => setShowGlobal(e.currentTarget.open)}>
-                  <summary>Scene Global Lead, Foley &amp; Score (Channels 1, 4, 6)</summary>
+                  <summary>Scene Global Lead, Foley &amp; Score (Channels 1, 3, 4, 6 &amp; Negative)</summary>
                   <div className="h3-field-stack">
                     <label>
-                      Global Summary Lead
+                      Global Summary Lead (Channel 1)
                       <input
                         value={scene.globalPrompt.summaryLead}
                         onChange={(e) =>
@@ -519,6 +585,19 @@ export function MovieGenerationPanel({
                           })
                         }
                         placeholder="Cinematic 35mm neo-western sequence at dusk."
+                      />
+                    </label>
+                    <label>
+                      Global Detailed Lead (Channel 3 Visual Prefix)
+                      <input
+                        value={scene.globalPrompt.detailedLead}
+                        onChange={(e) =>
+                          onSceneChange({
+                            ...scene,
+                            globalPrompt: { ...scene.globalPrompt, detailedLead: e.target.value },
+                          })
+                        }
+                        placeholder="Warm anamorphic lens flare, subtle film grain, natural skin texture."
                       />
                     </label>
                     <label>
@@ -545,6 +624,19 @@ export function MovieGenerationPanel({
                           })
                         }
                         placeholder="None (or sparse solo cello drone)"
+                      />
+                    </label>
+                    <label>
+                      Negative Prompt
+                      <input
+                        value={scene.globalPrompt.negativePrompt}
+                        onChange={(e) =>
+                          onSceneChange({
+                            ...scene,
+                            globalPrompt: { ...scene.globalPrompt, negativePrompt: e.target.value },
+                          })
+                        }
+                        placeholder="worst quality, watermark, text subtitles, distorted hands"
                       />
                     </label>
                   </div>
@@ -646,6 +738,19 @@ export function MovieGenerationPanel({
                 </select>
               </label>
               <label>
+                Prompt Format
+                <select
+                  aria-label="H3 prompt format"
+                  value={scene.generation.promptFormat}
+                  onChange={(e) => updateGen({ promptFormat: e.target.value as H3PromptFormat })}
+                >
+                  {PROMPT_FORMATS.map((pf) => <option key={pf.value} value={pf.value}>{pf.label}</option>)}
+                </select>
+              </label>
+            </div>
+
+            <div className="h3-row-2">
+              <label>
                 Placement
                 <select
                   aria-label="Take placement mode"
@@ -654,11 +759,9 @@ export function MovieGenerationPanel({
                 >
                   <option value="trimmed">Trimmed to [In, Out]</option>
                   <option value="untrimmed">Untrimmed (Include Context)</option>
+                  <option value="assetOnly">Save to Vault Only (No Clip Placed)</option>
                 </select>
               </label>
-            </div>
-
-            <div className="h3-row-2">
               <label>
                 Denoise (0.05–1.0)
                 <input
@@ -670,6 +773,9 @@ export function MovieGenerationPanel({
                   onChange={(e) => updateGen({ denoise: Number(e.target.value) })}
                 />
               </label>
+            </div>
+
+            <div className="h3-row-2">
               <label>
                 Seed (0 = random)
                 <input
@@ -679,10 +785,23 @@ export function MovieGenerationPanel({
                     const raw = e.target.value.trim();
                     if (/^\d+$/.test(raw)) {
                       const num = Number(raw);
-                      updateGen({ seed: Number.isSafeInteger(num) ? num : raw });
+                      const isZero = raw === "0";
+                      updateGen({
+                        seed: Number.isSafeInteger(num) ? num : raw,
+                        randomizeSeed: isZero,
+                      });
                     }
                   }}
                 />
+              </label>
+              <label className="checkbox-inline" style={{ alignSelf: "end", paddingBottom: "6px" }}>
+                <input
+                  type="checkbox"
+                  aria-label="Randomize H3 seed"
+                  checked={scene.generation.randomizeSeed}
+                  onChange={(e) => updateGen({ randomizeSeed: e.target.checked })}
+                />
+                Randomize Seed Each Take
               </label>
             </div>
 
@@ -694,6 +813,90 @@ export function MovieGenerationPanel({
               />
               Ridge-Affine Color-Drift Cancellation on Frozen Pre/Post Context
             </label>
+
+            {/* Additional LoRA Stack */}
+            <div className="h3-vocals-box">
+              <header>
+                <strong>Additional H3 LoRAs ({scene.generation.loras.length})</strong>
+                <button
+                  type="button"
+                  className="quiet-button compact"
+                  onClick={() => {
+                    const defaultLora = environment?.discoveredLoras[0];
+                    const nextLora: H3LoraSpec = {
+                      fileName: defaultLora?.fileName ?? "",
+                      strengthModel: defaultLora?.defaultStrength ?? 0.6,
+                      enabled: true,
+                    };
+                    updateGen({ loras: [...scene.generation.loras, nextLora] });
+                  }}
+                >
+                  <Plus size={12} /> LoRA
+                </button>
+              </header>
+              {scene.generation.loras.map((lora, idx) => (
+                <div key={idx} className="h3-row-3">
+                  <label>
+                    LoRA File
+                    {environment && environment.discoveredLoras.length > 0 ? (
+                      <select
+                        aria-label={`LoRA ${idx + 1} file`}
+                        value={lora.fileName}
+                        onChange={(e) => {
+                          const loras = scene.generation.loras.map((item, i) =>
+                            i === idx ? { ...item, fileName: e.target.value } : item,
+                          );
+                          updateGen({ loras });
+                        }}
+                      >
+                        <option value="">Select LoRA…</option>
+                        {environment.discoveredLoras.map((f) => <option key={f.fileName} value={f.fileName}>{f.fileName}</option>)}
+                      </select>
+                    ) : (
+                      <input
+                        aria-label={`LoRA ${idx + 1} file`}
+                        value={lora.fileName}
+                        onChange={(e) => {
+                          const loras = scene.generation.loras.map((item, i) =>
+                            i === idx ? { ...item, fileName: e.target.value } : item,
+                          );
+                          updateGen({ loras });
+                        }}
+                        placeholder="custom_h3_style.safetensors"
+                      />
+                    )}
+                  </label>
+                  <label>
+                    Strength
+                    <input
+                      type="number"
+                      min={-2}
+                      max={2}
+                      step={0.05}
+                      value={lora.strengthModel}
+                      onChange={(e) => {
+                        const loras = scene.generation.loras.map((item, i) =>
+                          i === idx ? { ...item, strengthModel: Number(e.target.value) } : item,
+                        );
+                        updateGen({ loras });
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="danger-icon"
+                    aria-label={`Remove LoRA ${idx + 1}`}
+                    onClick={() =>
+                      updateGen({
+                        loras: scene.generation.loras.filter((_, i) => i !== idx),
+                      })
+                    }
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

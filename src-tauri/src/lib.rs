@@ -283,6 +283,7 @@ async fn import_movie_reference_paths(
     paths: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<MovieReferenceImport, String> {
+    let _guard = claim_workspace(&state)?;
     let paths = app_control::import_paths(paths)?;
     let studio = state.studio.clone();
     tokio::task::spawn_blocking(move || {
@@ -1200,6 +1201,7 @@ fn list_movie_reference_assets(
 #[tauri::command]
 fn create_movie_h3_project(
     request: CreateMovieH3ProjectRequest,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<MovieProject, String> {
     let _guard = claim_workspace(&state)?;
@@ -1217,6 +1219,7 @@ fn create_movie_h3_project(
             request,
             &research.comfy_root,
             research.advanced_mode || control.advanced_mode,
+            Some(&app),
         )
         .map_err(|error| error.to_string())
 }
@@ -1657,6 +1660,7 @@ async fn import_image_take_as_movie_reference(
     take_id: String,
     state: State<'_, AppState>,
 ) -> Result<MovieReferenceAsset, String> {
+    let _guard = claim_workspace(&state)?;
     let project = state
         .images
         .get(&image_project_id)
@@ -1699,6 +1703,7 @@ async fn import_speech_clip_as_movie_reference(
     label: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<MovieReferenceAsset, String> {
+    let _guard = claim_workspace(&state)?;
     let path = state
         .speech
         .generated_clip_path(&relative_path)
@@ -1723,6 +1728,7 @@ async fn import_music_take_as_movie_reference(
     take_id: String,
     state: State<'_, AppState>,
 ) -> Result<MovieReferenceAsset, String> {
+    let _guard = claim_workspace(&state)?;
     let project = state
         .music
         .get(&music_project_id)
@@ -1780,12 +1786,13 @@ fn cancel_movie_render(
 #[tauri::command]
 async fn render_movie_edit(
     request: RenderMovieExportRequest,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<MovieExportReceipt, String> {
     let _guard = claim_workspace(&state)?;
     state
         .studio
-        .render_h3_export(request)
+        .render_h3_export(request, Some(&app))
         .await
         .map_err(|error| error.to_string())
 }
@@ -3723,6 +3730,13 @@ async fn get_producer_environment(
         ..Default::default()
     };
     let h3_env = state.studio.environment_snapshot(&research.comfy_root);
+    let h3_projects = state
+        .studio
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .take(8)
+        .collect::<Vec<_>>();
     let paths = [
         ("FFmpeg", research.ffmpeg_path),
         ("FFprobe", research.ffprobe_path),
@@ -3748,6 +3762,10 @@ async fn get_producer_environment(
             (
                 "movieH3Environment".into(),
                 serde_json::to_value(h3_env).map_err(|e| e.to_string())?,
+            ),
+            (
+                "movieH3Projects".into(),
+                serde_json::to_value(h3_projects).map_err(|e| e.to_string())?,
             ),
             (
                 "music".into(),

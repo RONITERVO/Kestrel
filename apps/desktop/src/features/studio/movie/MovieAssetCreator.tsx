@@ -4,17 +4,17 @@ import {
   Save, Scissors, Sparkles, Trash2, UserRound, Video, X,
 } from "lucide-react";
 import {
-  deleteMovieH3Entity, getImageProject, getLocalSpeechSnapshot, getMusicProject,
+  deleteMovieH3Entity, getImageProject, getLocalSpeechSnapshot, getMovie, getMusicProject,
   importImageTakeAsMovieReference, importMusicTakeAsMovieReference,
   importSpeechClipAsMovieReference, listImageProjects, listMovieImageAssets,
   listMovieReferenceAssets, listMusicProjects, movieMediaUrl,
-  pickMovieReferenceFiles, stageMovieH3Reference, synthesizeLocalSpeech,
+  pickMovieReferenceFiles, placeMovieH3Take, stageMovieH3Reference, synthesizeLocalSpeech,
   upsertMovieH3Entity,
 } from "../../../platform/api";
 import type {
-  H3CropRect, H3EntityKind, H3ReferenceEntity, H3ReferenceMember,
+  H3AudioIntent, H3CropRect, H3EntityKind, H3ReferenceEntity, H3ReferenceMember,
   H3ReferencePopulation, H3ReferenceRole, H3RetentionLevel, H3Scene,
-  MovieProject, MovieReferenceAsset, VoiceProfile,
+  H3VisualIntent, MovieProject, MovieReferenceAsset, VoiceProfile,
 } from "../../../contracts/index";
 import { PagedList } from "../../../shared/book/PagedList";
 import { ExternalCollaborationExchange } from "../../../shared/collaboration/ExternalCollaborationExchange";
@@ -238,6 +238,20 @@ const MEMBER_ROLES: { value: H3ReferenceRole; label: string }[] = [
   { value: "general", label: "General" },
 ];
 
+const VISUAL_INTENTS: { value: H3VisualIntent; label: string }[] = [
+  { value: "preserve", label: "Preserve Identity" },
+  { value: "adapt", label: "Adapt to Scene" },
+  { value: "transfer", label: "Transfer Attribute / Outfit" },
+  { value: "context", label: "Scene / Environment Context" },
+];
+
+const AUDIO_INTENTS: { value: H3AudioIntent; label: string }[] = [
+  { value: "voiceIdentity", label: "Voice Timbre Identity" },
+  { value: "soundTexture", label: "Foley / Sound Texture" },
+  { value: "useEmbedded", label: "Use Embedded Video Audio" },
+  { value: "ignoreEmbedded", label: "Ignore Embedded Audio" },
+];
+
 function inferPopulation(kind: string): H3ReferencePopulation {
   if (kind === "video") return "videos";
   if (kind === "audio") return "standaloneAudios";
@@ -289,6 +303,7 @@ export function H3EntityLibrary({
   project,
   scene,
   disabled,
+  onPersistSceneIfNeeded,
   onProject,
   onDraftDescription,
   onError,
@@ -297,6 +312,7 @@ export function H3EntityLibrary({
   project: MovieProject;
   scene: H3Scene;
   disabled?: boolean;
+  onPersistSceneIfNeeded?: () => Promise<void>;
   onProject: (next: MovieProject) => void;
   onDraftDescription?: (currentText: string, handle: string, apply: (text: string) => void) => void;
   onError: (message: string) => void;
@@ -458,6 +474,7 @@ export function H3EntityLibrary({
     }
     setWorking(true);
     try {
+      await onPersistSceneIfNeeded?.();
       const receipt = await stageMovieH3Reference({
         projectId: project.id,
         sceneId: scene.id,
@@ -467,6 +484,8 @@ export function H3EntityLibrary({
         useVisual: true,
         useAudio: true,
       });
+      const updated = await getMovie(project.id);
+      onProject(updated);
       onNotice?.(
         `Staged @${ent.handle} on ${receipt.laneName} [${receipt.startSec.toFixed(2)}s..${receipt.endSec.toFixed(2)}s].`,
       );
@@ -480,6 +499,7 @@ export function H3EntityLibrary({
   const handleStageRawAsset = async (asset: MovieReferenceAsset) => {
     setWorking(true);
     try {
+      await onPersistSceneIfNeeded?.();
       const receipt = await stageMovieH3Reference({
         projectId: project.id,
         sceneId: scene.id,
@@ -489,7 +509,35 @@ export function H3EntityLibrary({
         useVisual: asset.kind !== "audio",
         useAudio: asset.kind === "audio" || (asset.kind === "video" && asset.hasAudio),
       });
+      const updated = await getMovie(project.id);
+      onProject(updated);
       onNotice?.(`Staged "${asset.name}" on ${receipt.laneName}.`);
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const handlePlaceAssetOnLane = async (asset: MovieReferenceAsset, laneKind: "driver" | "video" | "audio") => {
+    setWorking(true);
+    try {
+      await onPersistSceneIfNeeded?.();
+      const updated = await placeMovieH3Take({
+        projectId: project.id,
+        jobId: "",
+        assetId: asset.id,
+        targetSceneId: scene.id,
+        placementMode: "trimmed",
+        targetVideoLaneId: laneKind === "video" ? (scene.videoLanes[0]?.id ?? null) : null,
+        targetAudioLaneId: laneKind === "audio" ? (scene.audioLanes[0]?.id ?? null) : null,
+        targetDriverLaneId: laneKind === "driver" ? (scene.driverLanes[0]?.id ?? null) : null,
+        timelineStartOverrideSec: scene.window.inSec,
+        durationOverrideSec: Math.max(0.5, scene.window.outSec - scene.window.inSec),
+      });
+      onProject(updated);
+      const laneLabel = laneKind === "driver" ? "D1 (Driver)" : laneKind === "video" ? "V1 (Video)" : "A1 (Audio)";
+      onNotice?.(`Placed "${asset.name}" onto ${laneLabel} at ${scene.window.inSec.toFixed(2)}s.`);
     } catch (err) {
       onError(String(err));
     } finally {
@@ -721,6 +769,28 @@ export function H3EntityLibrary({
               {RETENTION_LEVELS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
           </label>
+          <label>
+            Default Visual Intent
+            <select
+              aria-label="Entity visual intent"
+              value={draft.defaultVisualIntent}
+              disabled={disabled || working}
+              onChange={(e) => setDraft((c) => ({ ...c, defaultVisualIntent: e.target.value as H3VisualIntent }))}
+            >
+              {VISUAL_INTENTS.map((vi) => <option key={vi.value} value={vi.value}>{vi.label}</option>)}
+            </select>
+          </label>
+          <label>
+            Default Audio Intent
+            <select
+              aria-label="Entity audio intent"
+              value={draft.defaultAudioIntent}
+              disabled={disabled || working}
+              onChange={(e) => setDraft((c) => ({ ...c, defaultAudioIntent: e.target.value as H3AudioIntent }))}
+            >
+              {AUDIO_INTENTS.map((ai) => <option key={ai.value} value={ai.value}>{ai.label}</option>)}
+            </select>
+          </label>
           <label className="wide">
             <span>
               Subject / Timbre / Environment Description (auto-injected into H3 Channel 2 Subjects Ledger whenever staged)
@@ -879,6 +949,14 @@ export function H3EntityLibrary({
                           Bind Embedded Video Audio (&lt;Audio&gt;)
                         </label>
                       )}
+                      <label>
+                        Member Description Override (optional)
+                        <input
+                          value={member.descriptionOverride}
+                          onChange={(e) => updateMember(member.id, { descriptionOverride: e.target.value })}
+                          placeholder="Override entity description for this slot…"
+                        />
+                      </label>
                     </div>
 
                     {member.crop && (
@@ -945,8 +1023,28 @@ export function H3EntityLibrary({
                         <Plus size={12} /> Add to @{draft.handle || "Entity"}
                       </button>
                       <button type="button" disabled={disabled || working} onClick={() => void handleStageRawAsset(asset)}>
-                        <Layers size={12} /> Stage
+                        <Layers size={12} /> Stage R1
                       </button>
+                      {asset.kind === "video" && (
+                        <>
+                          <button type="button" disabled={disabled || working} onClick={() => void handlePlaceAssetOnLane(asset, "driver")}>
+                            + D1 Driver
+                          </button>
+                          <button type="button" disabled={disabled || working} onClick={() => void handlePlaceAssetOnLane(asset, "video")}>
+                            + V1 Clip
+                          </button>
+                        </>
+                      )}
+                      {asset.kind === "image" && (
+                        <button type="button" disabled={disabled || working} onClick={() => void handlePlaceAssetOnLane(asset, "video")}>
+                          + V1 Still
+                        </button>
+                      )}
+                      {asset.kind === "audio" && (
+                        <button type="button" disabled={disabled || working} onClick={() => void handlePlaceAssetOnLane(asset, "audio")}>
+                          + A1 Audio
+                        </button>
+                      )}
                     </div>
                   </article>
                 ))}

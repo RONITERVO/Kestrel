@@ -6,9 +6,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { GenerateAssetButton } from "./MovieAssetCreator";
 import type { H3MonitorSource } from "./MovieH3Preview";
 import type {
-  H3AudioClip, H3GuideItem, H3PromptSection, H3ReferenceItemVerdict, H3Scene,
-  H3StagedReferenceItem, H3VideoClip, H3WindowCompileResult, H3WindowConfig,
-  MovieProject,
+  H3AudioClip, H3DriverClip, H3GuideItem, H3PromptSection, H3ReferenceItemVerdict,
+  H3ReferenceRole, H3RetentionLevel, H3Scene, H3StagedReferenceItem, H3VideoClip,
+  H3WindowCompileResult, H3WindowConfig, MovieProject,
 } from "../../../contracts/index";
 
 const FPS = 24;
@@ -189,6 +189,7 @@ export function MovieTimeline({
   useEffect(() => {
     const nextSaved = savedScene ?? scene;
     if (
+      priorSaved.current.id === nextSaved.id &&
       JSON.stringify(priorSaved.current) !== JSON.stringify(nextSaved) &&
       JSON.stringify(priorValue.current) === JSON.stringify(priorSaved.current)
     ) {
@@ -278,7 +279,7 @@ export function MovieTimeline({
     commit({ ...scene, window: clampSceneWindow(scene.window, patch, totalSec) });
   };
 
-  const addLane = (kind: "video" | "audio" | "ref") => {
+  const addLane = (kind: "video" | "audio" | "ref" | "driver") => {
     if (kind === "video") {
       const idx = scene.videoLanes.length + 1;
       commit({
@@ -295,6 +296,15 @@ export function MovieTimeline({
         audioLanes: [
           ...scene.audioLanes,
           { id: makeId("aud-lane"), name: `A${idx}`, muted: false, solo: false, locked: false, clips: [] },
+        ],
+      });
+    } else if (kind === "driver") {
+      const idx = scene.driverLanes.length + 1;
+      commit({
+        ...scene,
+        driverLanes: [
+          ...scene.driverLanes,
+          { id: makeId("drv-lane"), name: `D${idx}`, muted: false, locked: false, clips: [] },
         ],
       });
     } else {
@@ -346,6 +356,13 @@ export function MovieTimeline({
     return lane && clip ? { laneId: lane.id, clip } : undefined;
   })();
 
+  const selectedDriverClip: { laneId: string; clip: H3DriverClip } | undefined = (() => {
+    if (selected?.kind !== "driver") return undefined;
+    const lane = scene.driverLanes.find((l) => l.id === selected.laneId);
+    const clip = lane?.clips.find((c) => c.id === selected.id);
+    return lane && clip ? { laneId: lane.id, clip } : undefined;
+  })();
+
   const selectedAudioClip: { laneId: string; clip: H3AudioClip } | undefined = (() => {
     if (selected?.kind !== "audio") return undefined;
     const lane = scene.audioLanes.find((l) => l.id === selected.laneId);
@@ -392,6 +409,27 @@ export function MovieTimeline({
     commit({
       ...scene,
       videoLanes: scene.videoLanes.map((l) =>
+        l.id === laneId ? { ...l, clips: l.clips.filter((c) => c.id !== clipId) } : l,
+      ),
+    });
+    setSelected(null);
+  };
+
+  const updateDriverClip = (laneId: string, clipId: string, patch: Partial<H3DriverClip>) => {
+    commit({
+      ...scene,
+      driverLanes: scene.driverLanes.map((l) =>
+        l.id === laneId
+          ? { ...l, clips: l.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)) }
+          : l,
+      ),
+    });
+  };
+
+  const deleteDriverClip = (laneId: string, clipId: string) => {
+    commit({
+      ...scene,
+      driverLanes: scene.driverLanes.map((l) =>
         l.id === laneId ? { ...l, clips: l.clips.filter((c) => c.id !== clipId) } : l,
       ),
     });
@@ -523,6 +561,9 @@ export function MovieTimeline({
           />
           <button type="button" disabled={disabled} onClick={() => addLane("ref")}>
             <Plus size={12} /> R
+          </button>
+          <button type="button" disabled={disabled} onClick={() => addLane("driver")}>
+            <Plus size={12} /> D
           </button>
           <button type="button" disabled={disabled} onClick={() => addLane("video")}>
             <Plus size={12} /> V
@@ -770,7 +811,39 @@ export function MovieTimeline({
         {scene.driverLanes.map((lane) => (
           <div key={lane.id} className={`h3-track-row driver ${lane.muted ? "muted" : ""}`}>
             <div className="h3-track-header">
-              <strong><Compass size={11} /> {lane.name}</strong>
+              <div className="h3-lane-title-row">
+                <strong><Compass size={11} /> {lane.name}</strong>
+                <div className="h3-lane-toggles">
+                  <button
+                    type="button"
+                    aria-label={`${lane.muted ? "Unmute" : "Mute"} ${lane.name}`}
+                    onClick={() =>
+                      commit({
+                        ...scene,
+                        driverLanes: scene.driverLanes.map((l) =>
+                          l.id === lane.id ? { ...l, muted: !l.muted } : l,
+                        ),
+                      })
+                    }
+                  >
+                    {lane.muted ? <EyeOff size={11} /> : <Eye size={11} />}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`${lane.locked ? "Unlock" : "Lock"} ${lane.name}`}
+                    onClick={() =>
+                      commit({
+                        ...scene,
+                        driverLanes: scene.driverLanes.map((l) =>
+                          l.id === lane.id ? { ...l, locked: !l.locked } : l,
+                        ),
+                      })
+                    }
+                  >
+                    {lane.locked ? <Lock size={11} /> : <Unlock size={11} />}
+                  </button>
+                </div>
+              </div>
               <small>Swap / Pose ({lane.clips.length})</small>
             </div>
             <div className="h3-lane-canvas compact" style={{ width: `${trackWidth}px` }}>
@@ -926,6 +999,20 @@ export function MovieTimeline({
                   >
                     S
                   </button>
+                  <button
+                    type="button"
+                    aria-label={`${lane.locked ? "Unlock" : "Lock"} ${lane.name}`}
+                    onClick={() =>
+                      commit({
+                        ...scene,
+                        audioLanes: scene.audioLanes.map((l) =>
+                          l.id === lane.id ? { ...l, locked: !l.locked } : l,
+                        ),
+                      })
+                    }
+                  >
+                    {lane.locked ? <Lock size={11} /> : <Unlock size={11} />}
+                  </button>
                 </div>
               </div>
               <small>Audio ({lane.clips.length})</small>
@@ -960,7 +1047,7 @@ export function MovieTimeline({
       </div>
 
       {/* Selected Timeline Item Inspector Strip */}
-      {(selectedRefItem || selectedVideoClip || selectedAudioClip || selectedGuide) && (
+      {(selectedRefItem || selectedVideoClip || selectedDriverClip || selectedAudioClip || selectedGuide) && (
         <footer className="h3-selection-strip">
           {selectedRefItem && (
             <>
@@ -998,6 +1085,61 @@ export function MovieTimeline({
                   }
                 />
               </label>
+              <label>
+                Role
+                <select
+                  aria-label="Staged reference role override"
+                  value={selectedRefItem.item.roleOverride ?? ""}
+                  onChange={(e) =>
+                    updateRefItem(selectedRefItem.laneId, selectedRefItem.item.id, {
+                      roleOverride: (e.target.value || undefined) as H3ReferenceRole | undefined,
+                    })
+                  }
+                >
+                  <option value="">Entity Default</option>
+                  <option value="subject">Subject</option>
+                  <option value="outfit">Outfit</option>
+                  <option value="scene">Scene / Location</option>
+                  <option value="motion">Motion</option>
+                  <option value="camera">Camera</option>
+                  <option value="voice">Voice</option>
+                  <option value="sound">Sound</option>
+                  <option value="general">General</option>
+                </select>
+              </label>
+              <label>
+                Retention
+                <select
+                  aria-label="Staged reference retention override"
+                  value={selectedRefItem.item.retentionOverride ?? ""}
+                  onChange={(e) =>
+                    updateRefItem(selectedRefItem.laneId, selectedRefItem.item.id, {
+                      retentionOverride: (e.target.value || undefined) as H3RetentionLevel | undefined,
+                    })
+                  }
+                >
+                  <option value="">Entity Default</option>
+                  <option value="fullyPreserved">Fully Preserved</option>
+                  <option value="partiallyPreserved">Partially Preserved</option>
+                  <option value="reference">Reference</option>
+                  <option value="attributeTransfer">Attribute Transfer</option>
+                  <option value="weakReference">Weak Reference</option>
+                  <option value="fullyCopy">Fully Copy</option>
+                </select>
+              </label>
+              <label>
+                Desc Override
+                <input
+                  aria-label="Staged reference description override"
+                  value={selectedRefItem.item.descriptionOverride}
+                  onChange={(e) =>
+                    updateRefItem(selectedRefItem.laneId, selectedRefItem.item.id, {
+                      descriptionOverride: e.target.value,
+                    })
+                  }
+                  placeholder="Optional window-specific description…"
+                />
+              </label>
               <label className="checkbox-inline">
                 <input
                   type="checkbox"
@@ -1026,6 +1168,73 @@ export function MovieTimeline({
                 type="button"
                 className="danger-icon"
                 onClick={() => deleteRefItem(selectedRefItem.laneId, selectedRefItem.item.id)}
+              >
+                <Trash2 size={13} /> Remove
+              </button>
+            </>
+          )}
+
+          {selectedDriverClip && (
+            <>
+              <strong>Driver Clip: {selectedDriverClip.clip.label || "Driver Video"}</strong>
+              <label>
+                Timeline (s)
+                <input
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={selectedDriverClip.clip.timelineStartSec}
+                  onChange={(e) =>
+                    updateDriverClip(selectedDriverClip.laneId, selectedDriverClip.clip.id, {
+                      timelineStartSec: snapToFrame(Number(e.target.value)),
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Duration (s)
+                <input
+                  type="number"
+                  min={0.2}
+                  step={0.1}
+                  value={selectedDriverClip.clip.durationSec}
+                  onChange={(e) =>
+                    updateDriverClip(selectedDriverClip.laneId, selectedDriverClip.clip.id, {
+                      durationSec: snapToFrame(Math.max(0.2, Number(e.target.value))),
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Source In (s)
+                <input
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={selectedDriverClip.clip.sourceInSec}
+                  onChange={(e) =>
+                    updateDriverClip(selectedDriverClip.laneId, selectedDriverClip.clip.id, {
+                      sourceInSec: snapToFrame(Math.max(0, Number(e.target.value))),
+                    })
+                  }
+                />
+              </label>
+              <label className="checkbox-inline">
+                <input
+                  type="checkbox"
+                  checked={selectedDriverClip.clip.enabled}
+                  onChange={(e) =>
+                    updateDriverClip(selectedDriverClip.laneId, selectedDriverClip.clip.id, {
+                      enabled: e.target.checked,
+                    })
+                  }
+                />
+                Enabled
+              </label>
+              <button
+                type="button"
+                className="danger-icon"
+                onClick={() => deleteDriverClip(selectedDriverClip.laneId, selectedDriverClip.clip.id)}
               >
                 <Trash2 size={13} /> Remove
               </button>
@@ -1116,6 +1325,34 @@ export function MovieTimeline({
                   onChange={(e) =>
                     updateAudioClip(selectedAudioClip.laneId, selectedAudioClip.clip.id, {
                       timelineStartSec: snapToFrame(Number(e.target.value)),
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Duration (s)
+                <input
+                  type="number"
+                  min={0.2}
+                  step={0.1}
+                  value={selectedAudioClip.clip.durationSec}
+                  onChange={(e) =>
+                    updateAudioClip(selectedAudioClip.laneId, selectedAudioClip.clip.id, {
+                      durationSec: snapToFrame(Math.max(0.2, Number(e.target.value))),
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Source In (s)
+                <input
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={selectedAudioClip.clip.sourceInSec}
+                  onChange={(e) =>
+                    updateAudioClip(selectedAudioClip.laneId, selectedAudioClip.clip.id, {
+                      sourceInSec: snapToFrame(Math.max(0, Number(e.target.value))),
                     })
                   }
                 />

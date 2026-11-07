@@ -381,6 +381,14 @@ pub struct MovieSummary {
     pub updated_at: String,
     pub clip_count: usize,
     pub final_path: String,
+    #[serde(default)]
+    pub active_scene_id: String,
+    #[serde(default)]
+    pub scene_count: usize,
+    #[serde(default)]
+    pub entity_count: usize,
+    #[serde(default)]
+    pub render_job_count: usize,
 }
 
 pub fn default_clip_seconds() -> f32 {
@@ -491,6 +499,10 @@ impl From<&MovieProject> for MovieSummary {
             updated_at: project.updated_at.clone(),
             clip_count: project.clips.len().max(completed_h3),
             final_path: project.final_path.clone(),
+            active_scene_id: project.active_scene_id.clone(),
+            scene_count: project.scenes.len(),
+            entity_count: project.entities.len(),
+            render_job_count: project.render_jobs.len(),
         }
     }
 }

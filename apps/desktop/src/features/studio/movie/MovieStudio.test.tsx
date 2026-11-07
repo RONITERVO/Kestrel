@@ -13,8 +13,20 @@ afterEach(() => {
 
 function mockBaseStudioApis() {
   vi.spyOn(api, "listMovies").mockResolvedValue([
-    { ...sampleFinishedMovie, clipCount: sampleFinishedMovie.clips.length },
-    { ...sampleMovie, clipCount: 0 },
+    {
+      ...sampleFinishedMovie,
+      clipCount: sampleFinishedMovie.clips.length,
+      sceneCount: sampleFinishedMovie.scenes.length,
+      entityCount: sampleFinishedMovie.entities.length,
+      renderJobCount: sampleFinishedMovie.renderJobs.length,
+    },
+    {
+      ...sampleMovie,
+      clipCount: 0,
+      sceneCount: sampleMovie.scenes.length,
+      entityCount: sampleMovie.entities.length,
+      renderJobCount: sampleMovie.renderJobs.length,
+    },
   ]);
   vi.spyOn(api, "getMovie").mockImplementation(async (id) =>
     structuredClone(id === sampleMovie.id ? sampleMovie : sampleFinishedMovie),

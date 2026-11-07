@@ -8,8 +8,10 @@ use kestrel_app_core::{
     H3SceneKind, H3TimeSpan,
 };
 
-const MAX_STORY_EXCERPT_CHARS: usize = 420;
-const MAX_RECENT_JOBS: usize = 8;
+const MAX_STORY_EXCERPT_CHARS: usize = 360;
+const MAX_RECENT_JOBS: usize = 6;
+const MAX_SPANS_PER_SCENE: usize = 4;
+const TARGET_DIGEST_BYTES: usize = 3_950;
 
 pub fn compute_video_coverage(scene: &H3Scene) -> (Vec<H3TimeSpan>, Vec<H3TimeSpan>) {
     let total = scene.duration_sec.max(0.0);
@@ -97,10 +99,10 @@ where
     let entities: Vec<H3EntityDigest> = project
         .entities
         .iter()
-        .take(24)
+        .take(16)
         .map(|ent| H3EntityDigest {
-            id: ent.id.clone(),
-            handle: format!("@{}", ent.handle),
+            id: truncate_chars(&ent.id, 32),
+            handle: format!("@{}", truncate_chars(&ent.handle, 24)),
             kind: ent.kind,
             picture_count: ent
                 .members
@@ -115,15 +117,19 @@ where
             audio_count: ent
                 .members
                 .iter()
-                .filter(|m| m.population == H3ReferencePopulation::StandaloneAudios || m.use_embedded_audio)
+                .filter(|m| {
+                    m.population == H3ReferencePopulation::StandaloneAudios || m.use_embedded_audio
+                })
                 .count(),
             has_description: !ent.subject_description.trim().is_empty(),
         })
         .collect();
 
-    let mut scenes: Vec<H3SceneDigest> = Vec::with_capacity(project.scenes.len());
-    for sc in project.scenes.iter().take(12) {
-        let (covered, gaps) = compute_video_coverage(sc);
+    let mut scenes: Vec<H3SceneDigest> = Vec::with_capacity(project.scenes.len().min(8));
+    for sc in project.scenes.iter().take(8) {
+        let (mut covered, mut gaps) = compute_video_coverage(sc);
+        covered.truncate(MAX_SPANS_PER_SCENE);
+        gaps.truncate(MAX_SPANS_PER_SCENE);
         let (err_cnt, warn_cnt) = match compile_h3_window(
             project,
             sc,
@@ -153,8 +159,8 @@ where
         let staged_reference_count: usize = sc.reference_lanes.iter().map(|l| l.items.len()).sum();
 
         scenes.push(H3SceneDigest {
-            id: sc.id.clone(),
-            name: sc.name.clone(),
+            id: truncate_chars(&sc.id, 32),
+            name: truncate_chars(&sc.name, 48),
             kind: sc.kind,
             width: sc.width,
             height: sc.height,
@@ -181,15 +187,15 @@ where
         .rev()
         .take(MAX_RECENT_JOBS)
         .map(|job| H3JobDigest {
-            id: job.id.clone(),
-            scene_id: job.scene_id.clone(),
-            label: truncate_chars(&job.label, 48),
+            id: truncate_chars(&job.id, 32),
+            scene_id: truncate_chars(&job.scene_id, 32),
+            label: truncate_chars(&job.label, 40),
             status: job.status,
             pass_preset: job.pass_preset,
             duration_sec: round2(job.geometry.trimmed_duration_sec),
             audio_peak_dbfs: job.quality.as_ref().map(|q| q.audio_peak_dbfs),
             verified: job.quality.as_ref().is_some_and(|q| q.verified),
-            error: truncate_chars(&job.error, 120),
+            error: truncate_chars(&job.error, 80),
         })
         .collect();
 
@@ -245,7 +251,7 @@ where
             });
             if !has_hi_res && sc.video_clip_count > 0 {
                 next_actions.push(format!(
-                    "Draft coverage is complete for '{}'; refine windows with Detail1Mp (denoise 0.75) -> Upscale1080p (denoise 0.40) and layer a separate 64x32 Soundtrack or Music Studio score on A2.",
+                    "Draft coverage is complete for '{}'; refine windows with detail1Mp (denoise 0.75) -> upscale1080p (denoise 0.40) and layer a separate 64x32 Soundtrack or Music Studio score on A2.",
                     sc.name
                 ));
             } else if project.exports.is_empty() {
@@ -261,9 +267,9 @@ where
     let final_export_ready = !project.final_path.is_empty()
         && std::path::Path::new(&project.final_path).is_file();
 
-    H3ProductionDigest {
+    let mut digest = H3ProductionDigest {
         project_id: project.id.clone(),
-        title: project.title.clone(),
+        title: truncate_chars(&project.title, 64),
         status: project.status.clone(),
         phase: project.phase.clone(),
         active_scene_id: project.active_scene_id.clone(),
@@ -275,7 +281,59 @@ where
         export_count: project.exports.len(),
         final_export_ready,
         next_actions,
+    };
+
+    compact_digest_within_budget(&mut digest);
+    digest
+}
+
+fn compact_digest_within_budget(digest: &mut H3ProductionDigest) {
+    let serialized_len = |d: &H3ProductionDigest| {
+        serde_json::to_string(d)
+            .map(|s| s.len())
+            .unwrap_or(usize::MAX)
+    };
+    if serialized_len(digest) <= TARGET_DIGEST_BYTES {
+        return;
     }
+
+    digest.story_excerpt = truncate_chars(&digest.story_excerpt, 180);
+    if serialized_len(digest) <= TARGET_DIGEST_BYTES {
+        return;
+    }
+
+    digest.recent_jobs.truncate(3);
+    for sc in &mut digest.scenes {
+        sc.covered_video_spans.truncate(2);
+        sc.uncovered_video_gaps.truncate(2);
+    }
+    if serialized_len(digest) <= TARGET_DIGEST_BYTES {
+        return;
+    }
+
+    digest.entities.truncate(10);
+    if serialized_len(digest) <= TARGET_DIGEST_BYTES {
+        return;
+    }
+
+    if digest.scenes.len() > 4 {
+        let active_id = digest.active_scene_id.clone();
+        let active = digest.scenes.iter().find(|s| s.id == active_id).cloned();
+        digest.scenes.truncate(3);
+        if let Some(act) = active {
+            if !digest.scenes.iter().any(|s| s.id == act.id) {
+                digest.scenes.push(act);
+            }
+        }
+    }
+    if serialized_len(digest) <= TARGET_DIGEST_BYTES {
+        return;
+    }
+
+    digest.story_excerpt = truncate_chars(&digest.story_excerpt, 80);
+    digest.entities.truncate(6);
+    digest.recent_jobs.truncate(2);
+    digest.next_actions.truncate(2);
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -295,8 +353,8 @@ mod tests {
     use super::*;
     use kestrel_app_core::{
         H3AudioIntent, H3EntityKind, H3GenerationSettings, H3GlobalPrompt, H3ReferenceEntity,
-        H3RetentionLevel, H3TakePlacementMode, H3TaskMode, H3VideoClip, H3VideoLane,
-        H3VisualIntent, H3WindowConfig, MovieEdit, MovieSettings,
+        H3RenderQueueJob, H3RetentionLevel, H3TakePlacementMode, H3TaskMode, H3VideoClip,
+        H3VideoLane, H3VisualIntent, H3WindowConfig, MovieEdit, MovieSettings,
     };
     use serde_json::Value;
 
@@ -433,6 +491,170 @@ mod tests {
         assert!(
             serialized.len() < 4_096,
             "digest JSON must stay under 4 KB for 64k Producer Agent, got {} bytes",
+            serialized.len()
+        );
+    }
+
+    #[test]
+    fn digest_compacts_stress_project_under_4kb_budget() {
+        let env = H3EnvironmentSnapshot {
+            ready: true,
+            comfy_root: "/comfy".into(),
+            has_ref2va: true,
+            has_fl2va: true,
+            has_qwen3vl: true,
+            has_video_vae: true,
+            has_audio_vae: true,
+            has_taeh3_preview: true,
+            has_ref2v_turbo_lora: true,
+            has_fl2v_turbo_lora: true,
+            discovered_loras: Vec::new(),
+            detail: "Ready".into(),
+        };
+        let entities: Vec<H3ReferenceEntity> = (0..40)
+            .map(|i| H3ReferenceEntity {
+                id: format!("entity-very-long-identifier-{i}"),
+                handle: format!("Character_Handle_With_Long_Name_{i}"),
+                display_name: format!("Character {i}"),
+                kind: H3EntityKind::Character,
+                subject_description: "Detailed look.".into(),
+                retention_level: H3RetentionLevel::FullyPreserved,
+                default_visual_intent: H3VisualIntent::Preserve,
+                default_audio_intent: H3AudioIntent::VoiceIdentity,
+                members: Vec::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            })
+            .collect();
+
+        let scenes: Vec<H3Scene> = (0..10)
+            .map(|i| H3Scene {
+                id: format!("scene-identifier-{i}"),
+                name: format!("Extended Scene Title With Descriptive Subtitle {}", i + 1),
+                kind: H3SceneKind::Standard,
+                width: 1920,
+                height: 1088,
+                fps: 24,
+                duration_sec: 120.0,
+                window: H3WindowConfig::default(),
+                generation: H3GenerationSettings::default(),
+                global_prompt: H3GlobalPrompt::default(),
+                prompt_sections: Vec::new(),
+                video_lanes: vec![H3VideoLane {
+                    id: "v1".into(),
+                    name: "V1".into(),
+                    muted: false,
+                    solo: false,
+                    locked: false,
+                    clips: (0..12)
+                        .map(|c| H3VideoClip {
+                            id: format!("c-{c}"),
+                            source_kind: kestrel_app_core::H3ClipSourceKind::Take,
+                            source_id: format!("job-{c}"),
+                            label: format!("Shot {c}"),
+                            timeline_start_sec: (c as f64) * 10.0,
+                            duration_sec: 4.0,
+                            source_in_sec: 0.0,
+                            source_duration_sec: 4.0,
+                            opacity: 1.0,
+                            audio_gain: 1.0,
+                            include_embedded_audio: true,
+                            enabled: true,
+                        })
+                        .collect(),
+                }],
+                audio_lanes: Vec::new(),
+                driver_lanes: Vec::new(),
+                reference_lanes: Vec::new(),
+                guides: Vec::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            })
+            .collect();
+
+        let geom = crate::studio::h3_geometry::calculate_take_placement(
+            &H3WindowConfig::default(),
+            24,
+        )
+        .unwrap();
+        let render_jobs: Vec<H3RenderQueueJob> = (0..50)
+            .map(|i| H3RenderQueueJob {
+                id: format!("render-job-identifier-{i}"),
+                project_id: "proj-stress".into(),
+                scene_id: "scene-identifier-0".into(),
+                scene_name: "Scene 1".into(),
+                label: format!("Render Take Pass #{i} With Long Description"),
+                status: H3RenderJobStatus::Failed,
+                pass_preset: H3PassPreset::Draft02Mp,
+                task_mode: H3TaskMode::Standard,
+                placement_mode: H3TakePlacementMode::Trimmed,
+                width: 640,
+                height: 352,
+                steps: 10,
+                denoise: 1.0,
+                seed: 42,
+                compiled_prompt: String::new(),
+                resolved_model: "ref2va_cond+minimax_h3_ref2va".into(),
+                geometry: geom.clone(),
+                output_clip_id: None,
+                take_media_path: String::new(),
+                take_sha256: String::new(),
+                color_drift: None,
+                quality: None,
+                error: "Detailed simulated error message explaining why the render failed".into(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            })
+            .collect();
+
+        let project = MovieProject {
+            schema_version: 9,
+            id: "proj-stress".into(),
+            prompt: String::new(),
+            title: "Stress Test Feature Film With 10 Scenes And 40 Cast Members".into(),
+            status: "ready".into(),
+            phase: "editing".into(),
+            detail: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            model: String::new(),
+            legacy_model_roles: Value::Null,
+            renderer: "MiniMax H3".into(),
+            settings: MovieSettings::default(),
+            references: Vec::new(),
+            plan: None,
+            sources: Vec::new(),
+            clips: Vec::new(),
+            edit: MovieEdit {
+                clips: Vec::new(),
+                export_title: "Stress".into(),
+                export_preset: "publish".into(),
+                normalize_audio: false,
+                target_lufs: -14.0,
+                markers: Vec::new(),
+            },
+            final_path: String::new(),
+            exports: Vec::new(),
+            error: String::new(),
+            producer_review_required: false,
+            producer_approved_at: String::new(),
+            story_markdown: "Long story markdown content. ".repeat(400),
+            story_revisions: Vec::new(),
+            entities,
+            scenes,
+            active_scene_id: "scene-identifier-9".into(),
+            render_jobs,
+            legacy_producer_feedback: Vec::new(),
+            legacy_copilot_history: Vec::new(),
+        };
+
+        let digest = build_production_digest(&project, 40, &env, false, |id| {
+            Err(StudioError::NotFound(id.into()))
+        });
+        let serialized = serde_json::to_string(&digest).unwrap();
+        assert!(
+            serialized.len() < 4_096,
+            "stress digest JSON must stay under 4 KB, got {} bytes",
             serialized.len()
         );
     }

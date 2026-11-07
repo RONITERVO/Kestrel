@@ -31,17 +31,17 @@ use futures_util::StreamExt;
 use kestrel_app_core::{
     CaptureMovieH3FrameRequest, CompileMovieH3WindowRequest, CreateMovieH3ProjectRequest,
     CreateMovieH3SceneRequest, DeleteMovieH3EntityRequest, H3AdvisorySeverity, H3AudioClip,
-    H3AudioLane, H3ClipSourceKind, H3DiscoveredLora, H3DriverLane, H3EnvironmentSnapshot,
-    H3GenerationSettings, H3GenerationStartReceipt, H3GlobalPrompt, H3GuideItem, H3PassPreset,
-    H3ProductionDigest, H3PromptFormat, H3PromptSection, H3QueuedWindowSpec,
-    H3ReferenceLane, H3RenderJobStatus, H3RenderQueueJob, H3Scene, H3SceneKind,
-    H3StageReferenceReceipt, H3StagedReferenceItem, H3StartGenerationRequest, H3TakeInspection,
-    H3TakePlacementGeometry, H3TakePlacementMode, H3TaskMode, H3UpsertPromptSectionReceipt,
-    H3VideoClip, H3VideoLane, H3WindowCompileResult, H3WindowConfig, MovieEdit,
-    MovieExportReceipt, MovieSettings, MovieStoryRevision, MovieStoryRevisionOrigin,
-    PlaceMovieH3TakeRequest, RenderMovieExportRequest, SaveMovieH3SceneRequest,
-    SaveMovieH3StoryRequest, StageMovieH3ReferenceRequest, UpsertMovieH3EntityRequest,
-    UpsertMovieH3PromptSectionRequest,
+    H3AudioLane, H3ClipSourceKind, H3DiscoveredLora, H3DriverClip, H3DriverLane, H3EntityKind,
+    H3EnvironmentSnapshot, H3GenerationSettings, H3GenerationStartReceipt, H3GlobalPrompt,
+    H3GuideItem, H3PassPreset, H3ProductionDigest, H3PromptFormat, H3PromptSection,
+    H3QueuedWindowSpec, H3ReferenceEntity, H3ReferenceLane, H3RenderJobStatus, H3RenderQueueJob,
+    H3Scene, H3SceneKind, H3StageReferenceReceipt, H3StagedReferenceItem,
+    H3StartGenerationRequest, H3TakeInspection, H3TakePlacementGeometry, H3TakePlacementMode,
+    H3TaskMode, H3UpsertPromptSectionReceipt, H3VideoClip, H3VideoLane, H3WindowCompileResult,
+    H3WindowConfig, MovieEdit, MovieExportReceipt, MovieSettings, MovieStoryRevision,
+    MovieStoryRevisionOrigin, PlaceMovieH3TakeRequest, RenderMovieExportRequest,
+    SaveMovieH3SceneRequest, SaveMovieH3StoryRequest, StageMovieH3ReferenceRequest,
+    UpsertMovieH3EntityRequest, UpsertMovieH3PromptSectionRequest,
 };
 use serde_json::{json, Value};
 use std::{
@@ -302,7 +302,10 @@ pub fn build_default_h3_scene(
     let w = width.unwrap_or(def_w);
     let h = height.unwrap_or(def_h);
     let (w, h) = validate_canvas_dimensions(w, h, kind == H3SceneKind::Soundtrack, advanced)?;
-    let dur = duration_sec.unwrap_or(15.0).clamp(1.0, 600.0);
+    let dur = duration_sec
+        .filter(|v| v.is_finite())
+        .unwrap_or(15.0)
+        .clamp(1.0, 600.0);
     let win_out = dur.min(5.0);
     let now = Utc::now().to_rfc3339();
 
@@ -427,21 +430,78 @@ pub(super) fn migrate_legacy_project_in_memory(project_dir: &Path, project: &mut
     }
 
     let w = if project.settings.width >= 256 && project.settings.width.is_multiple_of(32) {
-        project.settings.width.clamp(1280, 1920)
+        project.settings.width.clamp(256, 1920)
     } else {
         1920
     };
     let h = if project.settings.height >= 256 && project.settings.height.is_multiple_of(32) {
-        project.settings.height.clamp(736, 1088)
+        project.settings.height.clamp(256, 1920)
     } else {
         1088
     };
+
+    if project.entities.is_empty() && !project.references.is_empty() {
+        for (r_idx, r) in project.references.iter().enumerate() {
+            if r.asset_id.trim().is_empty() {
+                continue;
+            }
+            let raw_handle: String = r
+                .name
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(24)
+                .collect();
+            let handle = if raw_handle.is_empty() || !raw_handle.chars().next().unwrap().is_ascii_alphabetic() {
+                format!("Ref{}", r_idx + 1)
+            } else {
+                raw_handle
+            };
+            let pop = infer_population_for_kind(&r.kind);
+            let kind = match pop {
+                kestrel_app_core::H3ReferencePopulation::StandaloneAudios => H3EntityKind::Voice,
+                _ => H3EntityKind::Character,
+            };
+            project.entities.push(H3ReferenceEntity {
+                id: format!("legacy-ent-{}", r_idx + 1),
+                handle: handle.clone(),
+                display_name: if r.name.trim().is_empty() {
+                    handle
+                } else {
+                    r.name.clone()
+                },
+                kind,
+                subject_description: r.description.clone(),
+                retention_level: kestrel_app_core::H3RetentionLevel::FullyPreserved,
+                default_visual_intent: kestrel_app_core::H3VisualIntent::Preserve,
+                default_audio_intent: kestrel_app_core::H3AudioIntent::VoiceIdentity,
+                members: vec![kestrel_app_core::H3ReferenceMember {
+                    id: format!("legacy-mem-{}", r_idx + 1),
+                    asset_id: r.asset_id.clone(),
+                    population: pop,
+                    role: default_role_for_entity(kind, pop),
+                    label: r.name.clone(),
+                    description_override: String::new(),
+                    use_embedded_audio: r.use_embedded_audio,
+                    crop: None,
+                    source_start_sec: 0.0,
+                    source_end_sec: 0.0,
+                }],
+                created_at: project.created_at.clone(),
+                updated_at: project.updated_at.clone(),
+            });
+        }
+    }
 
     let mut cursor_sec = 0.0_f64;
     let mut sections = Vec::new();
     if let Some(plan) = &project.plan {
         for (idx, clip) in plan.clips.iter().enumerate() {
-            let dur = (clip.duration_seconds as f64).clamp(2.0, 15.0);
+            let raw_dur = clip.duration_seconds as f64;
+            let dur = if raw_dur.is_finite() {
+                raw_dur.clamp(2.0, 15.0)
+            } else {
+                5.0
+            };
             sections.push(H3PromptSection {
                 id: if clip.id.is_empty() {
                     format!("legacy-sec-{}", idx + 1)
@@ -468,7 +528,12 @@ pub(super) fn migrate_legacy_project_in_memory(project_dir: &Path, project: &mut
     let mut v_cursor = 0.0_f64;
     for clip in &project.clips {
         if clip.status == "complete" && !clip.path.is_empty() && Path::new(&clip.path).is_file() {
-            let dur = (clip.duration_seconds as f64).max(1.0);
+            let raw_dur = clip.duration_seconds as f64;
+            let dur = if raw_dur.is_finite() {
+                raw_dur.max(1.0)
+            } else {
+                5.0
+            };
             let job_id = format!("legacy-take-{}", clip.id);
             let geom = calculate_take_placement(
                 &H3WindowConfig {
@@ -679,6 +744,7 @@ impl MovieStudio {
         request: CreateMovieH3ProjectRequest,
         comfy_root: &str,
         advanced: bool,
+        app: Option<&AppHandle>,
     ) -> Result<MovieProject, StudioError> {
         let title = request.title.trim();
         if title.is_empty() || title.chars().count() > 140 || title.chars().any(char::is_control) {
@@ -733,7 +799,7 @@ impl MovieStudio {
             ..MovieSettings::default()
         };
 
-        let project = MovieProject {
+        let mut project = MovieProject {
             schema_version: SCHEMA_VERSION,
             id: id.clone(),
             prompt: if story_md.is_empty() {
@@ -778,7 +844,7 @@ impl MovieStudio {
             legacy_copilot_history: Vec::new(),
         };
 
-        self.save(&project)?;
+        self.persist_emit(&mut project, app)?;
         Ok(project)
     }
 
@@ -849,6 +915,8 @@ impl MovieStudio {
         entity.handle = normalize_handle(&entity.handle)?;
         if entity.id.trim().is_empty() {
             entity.id = format!("ent-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+        } else {
+            validate_id_like(&entity.id, "entity id")?;
         }
         if entity.display_name.trim().is_empty() {
             entity.display_name = entity.handle.clone();
@@ -898,11 +966,11 @@ impl MovieStudio {
             if member.source_end_sec < 0.0 || !member.source_end_sec.is_finite() {
                 member.source_end_sec = 0.0;
             }
-            if member.role == kestrel_app_core::H3ReferenceRole::Subject
-                && member.population == kestrel_app_core::H3ReferencePopulation::StandaloneAudios
-            {
-                member.role = default_role_for_entity(entity.kind, member.population);
-            }
+            member.role = super::h3_references::normalize_member_role(
+                entity.kind,
+                member.population,
+                member.role,
+            );
             self.ensure_project_reference_copy(&mut project, &asset, &entity.subject_description)?;
         }
 
@@ -1001,6 +1069,41 @@ impl MovieStudio {
         let _guard = lock.lock().await;
         let mut project = self.get(&request.project_id)?;
         let mut scene = request.scene;
+
+        // If a digest-driven caller (such as the 64k Producer Agent) updates `window` or `generation`
+        // without passing full lane/shot arrays, preserve the existing scene's collections rather than
+        // wiping them with `#[serde(default)]` empty vectors!
+        if let Some(existing) = project.scenes.iter().find(|s| s.id == scene.id) {
+            if scene.name.trim().is_empty() {
+                scene.name = existing.name.clone();
+            }
+            if scene.video_lanes.is_empty() {
+                scene.video_lanes = existing.video_lanes.clone();
+            }
+            if scene.audio_lanes.is_empty() {
+                scene.audio_lanes = existing.audio_lanes.clone();
+            }
+            if scene.driver_lanes.is_empty() {
+                scene.driver_lanes = existing.driver_lanes.clone();
+            }
+            if scene.reference_lanes.is_empty() {
+                scene.reference_lanes = existing.reference_lanes.clone();
+            }
+            if !request.replace_empty_collections {
+                if scene.prompt_sections.is_empty() && !existing.prompt_sections.is_empty() {
+                    scene.prompt_sections = existing.prompt_sections.clone();
+                }
+                if scene.guides.is_empty() && !existing.guides.is_empty() {
+                    scene.guides = existing.guides.clone();
+                }
+                if scene.global_prompt == H3GlobalPrompt::default()
+                    && existing.global_prompt != H3GlobalPrompt::default()
+                {
+                    scene.global_prompt = existing.global_prompt.clone();
+                }
+            }
+        }
+
         validate_h3_scene(&mut scene, advanced)?;
         scene.updated_at = Utc::now().to_rfc3339();
 
@@ -1290,7 +1393,7 @@ impl MovieStudio {
             .find(|s| s.id == request.scene_id)
             .ok_or_else(|| StudioError::NotFound(format!("Scene {} not found.", request.scene_id)))?;
         let env = self.environment_snapshot(comfy_root);
-        compile_h3_window(
+        let mut res = compile_h3_window(
             &project,
             scene,
             request.window_override.as_ref(),
@@ -1298,7 +1401,13 @@ impl MovieStudio {
             &env,
             advanced,
             |aid| self.resolve_reference_asset(aid),
-        )
+        )?;
+        if res.verdicts.len() > 24 {
+            res.verdicts
+                .retain(|v| v.verdict != kestrel_app_core::H3ReferenceVerdictKind::Outside);
+            res.verdicts.truncate(24);
+        }
+        Ok(res)
     }
 
     /// Validates and enqueues one or more H3 window render jobs (optionally expanding each window
@@ -1375,7 +1484,10 @@ impl MovieStudio {
                 .unwrap_or_else(|| scene.generation.clone());
 
             let passes: Vec<H3GenerationSettings> = if request.expand_quality_ladder
-                && base_gen.task_mode != H3TaskMode::SoundtrackPass
+                && !matches!(
+                    base_gen.task_mode,
+                    H3TaskMode::SoundtrackPass | H3TaskMode::AudioOverExistingVideo
+                )
                 && scene.kind != H3SceneKind::Soundtrack
             {
                 let mut p1 = base_gen.clone();
@@ -1387,11 +1499,31 @@ impl MovieStudio {
                 p2.pass_preset = H3PassPreset::Detail1Mp;
                 p2.denoise = 0.75;
                 p2.placement_mode = H3TakePlacementMode::Trimmed;
+                if matches!(
+                    base_gen.task_mode,
+                    H3TaskMode::CharacterSwap | H3TaskMode::HeadSwap
+                ) {
+                    p2.prompt_format = if base_gen.task_mode == H3TaskMode::HeadSwap {
+                        H3PromptFormat::HeadSwap
+                    } else {
+                        H3PromptFormat::CharacterSwap
+                    };
+                    p2.task_mode = H3TaskMode::Standard;
+                }
 
                 let mut p3 = base_gen;
                 p3.pass_preset = H3PassPreset::Upscale1080p;
                 p3.denoise = 0.40;
                 p3.placement_mode = H3TakePlacementMode::Trimmed;
+                if p2.task_mode == H3TaskMode::Standard
+                    && matches!(
+                        p2.prompt_format,
+                        H3PromptFormat::CharacterSwap | H3PromptFormat::HeadSwap
+                    )
+                {
+                    p3.prompt_format = p2.prompt_format;
+                    p3.task_mode = H3TaskMode::Standard;
+                }
                 vec![p1, p2, p3]
             } else {
                 vec![base_gen]
@@ -1457,6 +1589,11 @@ impl MovieStudio {
                     }),
                 )?;
 
+                let queued_denoise = if request.expand_quality_ladder && p_idx > 0 {
+                    pass_gen.denoise.clamp(0.05, 1.0)
+                } else {
+                    compiled.resolved_denoise
+                };
                 let seed = shared_seed.wrapping_add(p_idx as u64) & (i64::MAX as u64);
                 project.render_jobs.push(H3RenderQueueJob {
                     id: job_id.clone(),
@@ -1471,7 +1608,7 @@ impl MovieStudio {
                     width: compiled.resolved_width,
                     height: compiled.resolved_height,
                     steps: compiled.resolved_steps,
-                    denoise: compiled.resolved_denoise,
+                    denoise: queued_denoise,
                     seed,
                     compiled_prompt: compiled.compiled_prompt,
                     resolved_model: compiled.resolved_model,
@@ -1803,10 +1940,34 @@ impl MovieStudio {
                                         .into(),
                                 )
                             })?;
-                            let comfy_out = comfy_path
-                                .join("output")
-                                .join(&media.1)
-                                .join(&media.0);
+                            let valid_name = super::validate_comfy_filename(&media.0)?;
+                            let sub_path = Path::new(&media.1);
+                            if sub_path.is_absolute()
+                                || sub_path.components().any(|c| {
+                                    matches!(
+                                        c,
+                                        std::path::Component::ParentDir
+                                            | std::path::Component::RootDir
+                                            | std::path::Component::Prefix(_)
+                                    )
+                                })
+                            {
+                                return Err(StudioError::Invalid(format!(
+                                    "Rejected unsafe ComfyUI output subfolder '{}'.",
+                                    media.1
+                                )));
+                            }
+                            let output_root = comfy_path.join("output");
+                            let comfy_out = output_root.join(sub_path).join(&valid_name);
+                            if let (Ok(canon_root), Ok(canon_out)) =
+                                (output_root.canonicalize(), comfy_out.canonicalize())
+                            {
+                                if !canon_out.starts_with(&canon_root) {
+                                    return Err(StudioError::Invalid(
+                                        "ComfyUI output path escaped output directory.".into(),
+                                    ));
+                                }
+                            }
                             tokio::fs::copy(&comfy_out, &raw_mp4).await?;
                             write_json_atomic(
                                 &take_dir.join("result.json"),
@@ -1920,8 +2081,13 @@ impl MovieStudio {
                             };
                             j.error = err.to_string();
                             j.updated_at = Utc::now().to_rfc3339();
-                        } else if is_cancel && j.status == H3RenderJobStatus::Queued {
+                        } else if j.status == H3RenderJobStatus::Queued {
                             j.status = H3RenderJobStatus::Cancelled;
+                            j.error = if is_cancel {
+                                "Cancelled.".into()
+                            } else {
+                                format!("Cancelled because an earlier queued pass failed: {err}")
+                            };
                             j.updated_at = Utc::now().to_rfc3339();
                         }
                     }
@@ -1962,17 +2128,60 @@ impl MovieStudio {
         let lock = self.project_lock(&request.project_id)?;
         let _guard = lock.lock().await;
         let mut project = self.get(&request.project_id)?;
+
+        if let Some(asset_id) = request
+            .asset_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let asset = self.resolve_reference_asset(asset_id)?;
+            self.ensure_project_reference_copy(&mut project, &asset, &asset.name)?;
+            let _ = place_reference_asset_on_scene(&mut project, &request, &asset)?;
+            project.detail = format!("Placed asset '{}' onto scene timeline.", asset.name);
+            self.persist_emit(&mut project, app)?;
+            return Ok(project);
+        }
+
+        let job_id = request.job_id.trim();
+        if job_id.is_empty() {
+            return Err(StudioError::Invalid(
+                "Supply either jobId (completed take) or assetId (reference asset) to place on the timeline.".into(),
+            ));
+        }
         let job = project
             .render_jobs
             .iter()
-            .find(|j| j.id == request.job_id)
+            .find(|j| j.id == job_id)
             .cloned()
-            .ok_or_else(|| StudioError::NotFound(format!("Take {} not found.", request.job_id)))?;
+            .ok_or_else(|| StudioError::NotFound(format!("Take {job_id} not found.")))?;
         if job.status != H3RenderJobStatus::Complete || !Path::new(&job.take_media_path).is_file() {
             return Err(StudioError::Invalid(format!(
-                "Take {} does not have a completed media file on disk.",
-                request.job_id
+                "Take {job_id} does not have a completed media file on disk."
             )));
+        }
+
+        if let Some(driver_lane_id) = request
+            .target_driver_lane_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let clip_id = place_take_on_driver_lane(
+                &mut project,
+                &request.target_scene_id,
+                &job,
+                request.placement_mode,
+                driver_lane_id,
+                request.timeline_start_override_sec,
+                request.duration_override_sec,
+            )?;
+            self.update_job_state(&mut project, &job.id, |j| {
+                j.output_clip_id = Some(clip_id);
+            });
+            project.detail = format!("Placed take '{}' onto driver lane.", job.label);
+            self.persist_emit(&mut project, app)?;
+            return Ok(project);
         }
 
         let clip_id = place_completed_take_on_scene(
@@ -2002,6 +2211,7 @@ impl MovieStudio {
         project_id: &str,
         job_id: &str,
     ) -> Result<H3TakeInspection, StudioError> {
+        validate_id_like(job_id, "job id")?;
         let project = self.get(project_id)?;
         let job = project
             .render_jobs
@@ -2037,6 +2247,7 @@ impl MovieStudio {
     pub async fn render_h3_export(
         &self,
         request: RenderMovieExportRequest,
+        app: Option<&AppHandle>,
     ) -> Result<MovieExportReceipt, StudioError> {
         let lock = self.project_lock(&request.project_id)?;
         let _guard = lock.lock().await;
@@ -2056,6 +2267,29 @@ impl MovieStudio {
             .unwrap_or(&project.title)
             .to_string();
         let headroom = request.peak_headroom_db.unwrap_or(-1.0);
+
+        // Validate optional destinationPath up front before running FFmpeg.
+        let validated_destination = if let Some(dest_str) = request
+            .destination_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if Path::new(dest_str)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(StudioError::Invalid(
+                    "destinationPath must not contain parent-directory ('..') traversal.".into(),
+                ));
+            }
+            Some(
+                crate::app_control::export_path(dest_str, ext)
+                    .map_err(StudioError::Invalid)?,
+            )
+        } else {
+            None
+        };
 
         let scene_id = request
             .scene_id
@@ -2152,26 +2386,7 @@ impl MovieStudio {
         fs::rename(&temporary, &target)?;
 
         let mut destination_copy_path = None;
-        if let Some(dest_str) = request
-            .destination_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            let dest = PathBuf::from(dest_str);
-            if !dest.is_absolute() || dest_str.contains(['*', '?']) {
-                return Err(StudioError::Invalid(
-                    "destinationPath must be an absolute path without wildcards.".into(),
-                ));
-            }
-            if dest.exists() {
-                return Err(StudioError::Invalid(
-                    "destinationPath already exists; choose a new filename instead of overwriting user files.".into(),
-                ));
-            }
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(dest) = validated_destination {
             fs::copy(&target, &dest)?;
             destination_copy_path = Some(dest.to_string_lossy().into_owned());
         }
@@ -2180,9 +2395,8 @@ impl MovieStudio {
             project.final_path = target.to_string_lossy().into_owned();
         }
         project.exports.push(export_record.clone());
-        project.updated_at = Utc::now().to_rfc3339();
         project.detail = format!("Exported '{}' ({preset}).", title);
-        self.save(&project)?;
+        self.persist_emit(&mut project, app)?;
 
         Ok(MovieExportReceipt {
             project_id: project.id,
@@ -2249,6 +2463,16 @@ impl MovieStudio {
                 Ok((path, has_audio))
             }
             H3ClipSourceKind::ReferenceAsset => {
+                if let Ok(asset) = self.resolve_reference_asset(source_id) {
+                    return Ok((PathBuf::from(asset.path), asset.has_audio));
+                }
+                if let Some(job) = project.render_jobs.iter().find(|j| j.id == source_id) {
+                    let path = PathBuf::from(&job.take_media_path);
+                    if path.is_file() {
+                        let has_audio = job.quality.as_ref().is_none_or(|q| q.has_audio);
+                        return Ok((path, has_audio));
+                    }
+                }
                 let asset = self.resolve_reference_asset(source_id)?;
                 Ok((PathBuf::from(asset.path), asset.has_audio))
             }
@@ -2339,6 +2563,136 @@ fn validate_h3_scene(scene: &mut H3Scene, advanced: bool) -> Result<(), StudioEr
         ));
     }
     let _ = calculate_take_placement(&scene.window, scene.fps)?;
+
+    if scene.video_lanes.is_empty() {
+        scene.video_lanes.push(H3VideoLane {
+            id: "vid-lane-1".into(),
+            name: "V1".into(),
+            muted: false,
+            solo: false,
+            locked: false,
+            clips: Vec::new(),
+        });
+    }
+    if scene.audio_lanes.is_empty() {
+        scene.audio_lanes.push(H3AudioLane {
+            id: "aud-lane-1".into(),
+            name: "A1 (Dialogue & Foley)".into(),
+            muted: false,
+            solo: false,
+            locked: false,
+            clips: Vec::new(),
+        });
+        scene.audio_lanes.push(H3AudioLane {
+            id: "aud-lane-2".into(),
+            name: "A2 (Score)".into(),
+            muted: false,
+            solo: false,
+            locked: false,
+            clips: Vec::new(),
+        });
+    }
+    if scene.driver_lanes.is_empty() {
+        scene.driver_lanes.push(H3DriverLane {
+            id: "drv-lane-1".into(),
+            name: "D1 (Pose / Motion Driver)".into(),
+            muted: false,
+            locked: false,
+            clips: Vec::new(),
+        });
+    }
+    if scene.reference_lanes.is_empty() {
+        scene.reference_lanes.push(H3ReferenceLane {
+            id: "ref-lane-1".into(),
+            name: "R1 (Cast & World)".into(),
+            muted: false,
+            locked: false,
+            items: Vec::new(),
+        });
+    }
+
+    for lane in &scene.video_lanes {
+        for clip in &lane.clips {
+            validate_timeline_span(
+                clip.timeline_start_sec,
+                clip.duration_sec,
+                clip.source_in_sec,
+                &format!("video clip '{}'", clip.id),
+            )?;
+        }
+    }
+    for lane in &scene.audio_lanes {
+        for clip in &lane.clips {
+            validate_timeline_span(
+                clip.timeline_start_sec,
+                clip.duration_sec,
+                clip.source_in_sec,
+                &format!("audio clip '{}'", clip.id),
+            )?;
+        }
+    }
+    for lane in &scene.driver_lanes {
+        for clip in &lane.clips {
+            validate_timeline_span(
+                clip.timeline_start_sec,
+                clip.duration_sec,
+                clip.source_in_sec,
+                &format!("driver clip '{}'", clip.id),
+            )?;
+        }
+    }
+    for lane in &scene.reference_lanes {
+        for item in &lane.items {
+            validate_timeline_span(
+                item.timeline_start_sec,
+                item.duration_sec,
+                0.0,
+                &format!("reference item '{}'", item.id),
+            )?;
+        }
+    }
+    for sec in &scene.prompt_sections {
+        validate_timeline_span(
+            sec.timeline_start_sec,
+            sec.duration_sec,
+            0.0,
+            &format!("prompt section '{}'", sec.id),
+        )?;
+    }
+    for g in &scene.guides {
+        if !g.timeline_sec.is_finite() || g.timeline_sec < 0.0 || g.timeline_sec > 86_400.0 {
+            return Err(StudioError::Invalid(format!(
+                "Guide '{}' timelineSec must be between 0s and 86400s.",
+                g.id
+            )));
+        }
+    }
+    for lora in &scene.generation.loras {
+        if !lora.file_name.trim().is_empty() {
+            super::validate_comfy_filename(lora.file_name.trim())?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_timeline_span(
+    start_sec: f64,
+    duration_sec: f64,
+    source_in_sec: f64,
+    label: &str,
+) -> Result<(), StudioError> {
+    if !start_sec.is_finite()
+        || !duration_sec.is_finite()
+        || !source_in_sec.is_finite()
+        || !(0.0..=86_400.0).contains(&start_sec)
+        || duration_sec <= 0.0
+        || duration_sec > 86_400.0
+        || source_in_sec < 0.0
+    {
+        return Err(StudioError::Invalid(format!(
+            "Invalid timeline span on {label}: start={start_sec}, duration={duration_sec}, sourceIn={source_in_sec}."
+        )));
+    }
     Ok(())
 }
 
@@ -2354,6 +2708,327 @@ fn validate_id_like(id: &str, label: &str) -> Result<(), StudioError> {
         )));
     }
     Ok(())
+}
+
+fn select_audio_lane_index(
+    lanes: &[H3AudioLane],
+    explicit_id: Option<&str>,
+    prefer_score_lane: bool,
+) -> Result<usize, StudioError> {
+    if let Some(lid) = explicit_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let idx = lanes
+            .iter()
+            .position(|l| l.id == lid)
+            .ok_or_else(|| StudioError::NotFound(format!("Audio lane {lid} not found.")))?;
+        if lanes[idx].locked {
+            return Err(StudioError::Invalid(format!(
+                "Audio lane '{}' is locked; unlock it or choose another lane.",
+                lanes[idx].name
+            )));
+        }
+        return Ok(idx);
+    }
+    let any_solo = lanes.iter().any(|l| l.solo);
+    if prefer_score_lane && lanes.len() > 1 {
+        let l = &lanes[1];
+        if !l.locked && !l.muted && (!any_solo || l.solo) {
+            return Ok(1);
+        }
+    }
+    if let Some(idx) = lanes
+        .iter()
+        .position(|l| !l.locked && !l.muted && (!any_solo || l.solo))
+    {
+        return Ok(idx);
+    }
+    if let Some(idx) = lanes.iter().position(|l| !l.locked) {
+        return Ok(idx);
+    }
+    Err(StudioError::Invalid(
+        "All audio lanes on this scene are locked.".into(),
+    ))
+}
+
+fn select_video_lane_index(
+    lanes: &[H3VideoLane],
+    explicit_id: Option<&str>,
+) -> Result<usize, StudioError> {
+    if let Some(lid) = explicit_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let idx = lanes
+            .iter()
+            .position(|l| l.id == lid)
+            .ok_or_else(|| StudioError::NotFound(format!("Video lane {lid} not found.")))?;
+        if lanes[idx].locked {
+            return Err(StudioError::Invalid(format!(
+                "Video lane '{}' is locked; unlock it or choose another lane.",
+                lanes[idx].name
+            )));
+        }
+        return Ok(idx);
+    }
+    let any_solo = lanes.iter().any(|l| l.solo);
+    if let Some(idx) = lanes
+        .iter()
+        .position(|l| !l.locked && !l.muted && (!any_solo || l.solo))
+    {
+        return Ok(idx);
+    }
+    if let Some(idx) = lanes.iter().position(|l| !l.locked) {
+        return Ok(idx);
+    }
+    Err(StudioError::Invalid(
+        "All video lanes on this scene are locked.".into(),
+    ))
+}
+
+fn select_driver_lane_index(
+    lanes: &[H3DriverLane],
+    explicit_id: Option<&str>,
+) -> Result<usize, StudioError> {
+    if let Some(lid) = explicit_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let idx = lanes
+            .iter()
+            .position(|l| l.id == lid)
+            .ok_or_else(|| StudioError::NotFound(format!("Driver lane {lid} not found.")))?;
+        if lanes[idx].locked {
+            return Err(StudioError::Invalid(format!(
+                "Driver lane '{}' is locked; unlock it or choose another lane.",
+                lanes[idx].name
+            )));
+        }
+        return Ok(idx);
+    }
+    if let Some(idx) = lanes.iter().position(|l| !l.locked && !l.muted) {
+        return Ok(idx);
+    }
+    if let Some(idx) = lanes.iter().position(|l| !l.locked) {
+        return Ok(idx);
+    }
+    Err(StudioError::Invalid(
+        "All driver lanes on this scene are locked.".into(),
+    ))
+}
+
+fn place_take_on_driver_lane(
+    project: &mut MovieProject,
+    scene_id: &str,
+    job: &H3RenderQueueJob,
+    placement_mode: H3TakePlacementMode,
+    driver_lane_id: &str,
+    timeline_start_override_sec: Option<f64>,
+    duration_override_sec: Option<f64>,
+) -> Result<String, StudioError> {
+    let scene = project
+        .scenes
+        .iter_mut()
+        .find(|s| s.id == scene_id)
+        .ok_or_else(|| StudioError::NotFound(format!("Scene {scene_id} not found.")))?;
+    if scene.driver_lanes.is_empty() {
+        scene.driver_lanes.push(H3DriverLane {
+            id: "drv-lane-1".into(),
+            name: "D1 (Pose / Motion Driver)".into(),
+            muted: false,
+            locked: false,
+            clips: Vec::new(),
+        });
+    }
+    let lane_idx = select_driver_lane_index(&scene.driver_lanes, Some(driver_lane_id))?;
+    let (tl_start, src_in, default_dur) = match placement_mode {
+        H3TakePlacementMode::Trimmed | H3TakePlacementMode::AssetOnly => (
+            timeline_start_override_sec.unwrap_or(job.geometry.trimmed_timeline_start_sec),
+            job.geometry.trimmed_source_in_sec,
+            job.geometry.trimmed_duration_sec,
+        ),
+        H3TakePlacementMode::Untrimmed => (
+            timeline_start_override_sec.unwrap_or(job.geometry.untrimmed_timeline_start_sec),
+            0.0,
+            job.geometry.untrimmed_duration_sec,
+        ),
+    };
+    let dur = duration_override_sec.unwrap_or(default_dur).max(0.25);
+    let tl_end = tl_start + dur;
+    if tl_end > scene.duration_sec {
+        scene.duration_sec = tl_end;
+    }
+    let clip_id = format!("drv-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+    let lane = &mut scene.driver_lanes[lane_idx];
+    overwrite_driver_lane_span(&mut lane.clips, tl_start, tl_end);
+    lane.clips.push(H3DriverClip {
+        id: clip_id.clone(),
+        asset_id: job.id.clone(),
+        label: job.label.clone(),
+        timeline_start_sec: tl_start,
+        duration_sec: dur,
+        source_in_sec: src_in,
+        enabled: true,
+    });
+    lane.clips.sort_by(|a, b| {
+        a.timeline_start_sec
+            .partial_cmp(&b.timeline_start_sec)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    scene.updated_at = Utc::now().to_rfc3339();
+    Ok(clip_id)
+}
+
+fn place_reference_asset_on_scene(
+    project: &mut MovieProject,
+    request: &PlaceMovieH3TakeRequest,
+    asset: &MovieReferenceAsset,
+) -> Result<Option<String>, StudioError> {
+    if request.placement_mode == H3TakePlacementMode::AssetOnly {
+        return Ok(None);
+    }
+    let scene = project
+        .scenes
+        .iter_mut()
+        .find(|s| s.id == request.target_scene_id)
+        .ok_or_else(|| {
+            StudioError::NotFound(format!("Scene {} not found.", request.target_scene_id))
+        })?;
+    let tl_start = request
+        .timeline_start_override_sec
+        .unwrap_or(scene.window.in_sec)
+        .max(0.0);
+    let asset_dur = asset.duration_seconds.max(0.25);
+    let default_dur = if asset.kind == "image" {
+        (scene.window.out_sec - scene.window.in_sec).max(1.0)
+    } else {
+        asset_dur
+    };
+    let dur = request
+        .duration_override_sec
+        .unwrap_or(default_dur)
+        .max(0.25);
+    let tl_end = tl_start + dur;
+    if tl_end > scene.duration_sec {
+        scene.duration_sec = tl_end;
+    }
+
+    let clip_id = format!("clip-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+
+    if let Some(driver_lane_id) = request
+        .target_driver_lane_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if scene.driver_lanes.is_empty() {
+            scene.driver_lanes.push(H3DriverLane {
+                id: "drv-lane-1".into(),
+                name: "D1 (Pose / Motion Driver)".into(),
+                muted: false,
+                locked: false,
+                clips: Vec::new(),
+            });
+        }
+        let lane_idx = select_driver_lane_index(&scene.driver_lanes, Some(driver_lane_id))?;
+        let lane = &mut scene.driver_lanes[lane_idx];
+        overwrite_driver_lane_span(&mut lane.clips, tl_start, tl_end);
+        lane.clips.push(H3DriverClip {
+            id: clip_id.clone(),
+            asset_id: asset.id.clone(),
+            label: asset.name.clone(),
+            timeline_start_sec: tl_start,
+            duration_sec: dur,
+            source_in_sec: 0.0,
+            enabled: true,
+        });
+        lane.clips.sort_by(|a, b| {
+            a.timeline_start_sec
+                .partial_cmp(&b.timeline_start_sec)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scene.updated_at = Utc::now().to_rfc3339();
+        return Ok(Some(clip_id));
+    }
+
+    let place_as_audio = asset.kind == "audio"
+        || (request
+            .target_audio_lane_id
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+            && request
+                .target_video_lane_id
+                .as_deref()
+                .is_none_or(|s| s.trim().is_empty()));
+
+    if place_as_audio {
+        if scene.audio_lanes.is_empty() {
+            scene.audio_lanes.push(H3AudioLane {
+                id: "aud-lane-1".into(),
+                name: "A1".into(),
+                muted: false,
+                solo: false,
+                locked: false,
+                clips: Vec::new(),
+            });
+        }
+        let lane_idx = select_audio_lane_index(
+            &scene.audio_lanes,
+            request.target_audio_lane_id.as_deref(),
+            true,
+        )?;
+        let lane = &mut scene.audio_lanes[lane_idx];
+        overwrite_audio_lane_span(&mut lane.clips, tl_start, tl_end);
+        lane.clips.push(H3AudioClip {
+            id: clip_id.clone(),
+            source_kind: H3ClipSourceKind::ReferenceAsset,
+            source_id: asset.id.clone(),
+            label: asset.name.clone(),
+            timeline_start_sec: tl_start,
+            duration_sec: dur,
+            source_in_sec: 0.0,
+            source_duration_sec: dur,
+            gain: if lane_idx == 1 { 0.65 } else { 1.0 },
+            fade_in_sec: 0.0,
+            fade_out_sec: 0.0,
+            enabled: true,
+        });
+        lane.clips.sort_by(|a, b| {
+            a.timeline_start_sec
+                .partial_cmp(&b.timeline_start_sec)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    } else {
+        if scene.video_lanes.is_empty() {
+            scene.video_lanes.push(H3VideoLane {
+                id: "vid-lane-1".into(),
+                name: "V1".into(),
+                muted: false,
+                solo: false,
+                locked: false,
+                clips: Vec::new(),
+            });
+        }
+        let lane_idx = select_video_lane_index(
+            &scene.video_lanes,
+            request.target_video_lane_id.as_deref(),
+        )?;
+        let lane = &mut scene.video_lanes[lane_idx];
+        overwrite_video_lane_span(&mut lane.clips, tl_start, tl_end);
+        lane.clips.push(H3VideoClip {
+            id: clip_id.clone(),
+            source_kind: H3ClipSourceKind::ReferenceAsset,
+            source_id: asset.id.clone(),
+            label: asset.name.clone(),
+            timeline_start_sec: tl_start,
+            duration_sec: dur,
+            source_in_sec: 0.0,
+            source_duration_sec: dur,
+            opacity: 1.0,
+            audio_gain: 1.0,
+            include_embedded_audio: asset.has_audio,
+            enabled: true,
+        });
+        lane.clips.sort_by(|a, b| {
+            a.timeline_start_sec
+                .partial_cmp(&b.timeline_start_sec)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    scene.updated_at = Utc::now().to_rfc3339();
+    Ok(Some(clip_id))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2403,22 +3078,6 @@ fn place_completed_take_on_scene(
     ) || scene.kind == H3SceneKind::Soundtrack;
 
     if audio_only_mode {
-        // Place onto A2 (Score) for SoundtrackPass or A1 (Dialogue & Foley) for AudioOverExistingVideo!
-        let lane_idx = if let Some(lid) = target_audio_lane_id.filter(|s| !s.is_empty()) {
-            scene
-                .audio_lanes
-                .iter()
-                .position(|l| l.id == lid)
-                .unwrap_or(0)
-        } else if task_mode == H3TaskMode::SoundtrackPass || scene.kind == H3SceneKind::Soundtrack {
-            if scene.audio_lanes.len() > 1 {
-                1
-            } else {
-                0
-            }
-        } else {
-            0
-        };
         if scene.audio_lanes.is_empty() {
             scene.audio_lanes.push(H3AudioLane {
                 id: "aud-lane-1".into(),
@@ -2429,6 +3088,13 @@ fn place_completed_take_on_scene(
                 clips: Vec::new(),
             });
         }
+        let prefer_score =
+            task_mode == H3TaskMode::SoundtrackPass || scene.kind == H3SceneKind::Soundtrack;
+        let lane_idx = select_audio_lane_index(
+            &scene.audio_lanes,
+            target_audio_lane_id,
+            prefer_score,
+        )?;
         let lane = &mut scene.audio_lanes[lane_idx];
         overwrite_audio_lane_span(&mut lane.clips, tl_start, tl_end);
         lane.clips.push(H3AudioClip {
@@ -2455,15 +3121,6 @@ fn place_completed_take_on_scene(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     } else {
-        let lane_idx = if let Some(lid) = target_video_lane_id.filter(|s| !s.is_empty()) {
-            scene
-                .video_lanes
-                .iter()
-                .position(|l| l.id == lid)
-                .unwrap_or(0)
-        } else {
-            0
-        };
         if scene.video_lanes.is_empty() {
             scene.video_lanes.push(H3VideoLane {
                 id: "vid-lane-1".into(),
@@ -2474,6 +3131,7 @@ fn place_completed_take_on_scene(
                 clips: Vec::new(),
             });
         }
+        let lane_idx = select_video_lane_index(&scene.video_lanes, target_video_lane_id)?;
         let lane = &mut scene.video_lanes[lane_idx];
         // Non-destructive overwrite on the target lane (`V1` by default) prevents stacked
         // multi-pass takes from doubling embedded audio while preserving prior takes in `render_jobs`!
@@ -2500,6 +3158,33 @@ fn place_completed_take_on_scene(
     }
     scene.updated_at = Utc::now().to_rfc3339();
     Ok(Some(clip_id))
+}
+
+fn overwrite_driver_lane_span(clips: &mut Vec<H3DriverClip>, cut_start: f64, cut_end: f64) {
+    let mut updated = Vec::with_capacity(clips.len() + 1);
+    for clip in clips.drain(..) {
+        let c_start = clip.timeline_start_sec;
+        let c_end = c_start + clip.duration_sec;
+        if c_end <= cut_start + 1e-3 || c_start >= cut_end - 1e-3 {
+            updated.push(clip);
+            continue;
+        }
+        if c_start < cut_start - 0.04 {
+            let mut left = clip.clone();
+            left.duration_sec = cut_start - c_start;
+            updated.push(left);
+        }
+        if c_end > cut_end + 0.04 {
+            let mut right = clip;
+            right.id = format!("{}-tail", right.id);
+            let delta = cut_end - c_start;
+            right.timeline_start_sec = cut_end;
+            right.source_in_sec += delta;
+            right.duration_sec = c_end - cut_end;
+            updated.push(right);
+        }
+    }
+    *clips = updated;
 }
 
 fn overwrite_video_lane_span(clips: &mut Vec<H3VideoClip>, cut_start: f64, cut_end: f64) {
@@ -2627,6 +3312,7 @@ mod tests {
                 },
                 &comfy_str,
                 false,
+                None,
             )
             .unwrap();
         let scene_id = project.active_scene_id.clone();
@@ -2657,6 +3343,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sec_receipt.shot_count, 1);
+
+        // Partial scene update must preserve prompt_sections when omitted!
+        let saved = studio
+            .save_h3_scene(
+                SaveMovieH3SceneRequest {
+                    project_id: project.id.clone(),
+                    scene: H3Scene {
+                        id: scene_id.clone(),
+                        name: "Scene 1 — Updated".into(),
+                        kind: H3SceneKind::Standard,
+                        width: 1920,
+                        height: 1088,
+                        fps: 24,
+                        duration_sec: 12.0,
+                        window: H3WindowConfig {
+                            in_sec: 0.0,
+                            out_sec: 5.0,
+                            ..Default::default()
+                        },
+                        video_lanes: Vec::new(),
+                        audio_lanes: Vec::new(),
+                        driver_lanes: Vec::new(),
+                        reference_lanes: Vec::new(),
+                        prompt_sections: Vec::new(),
+                        guides: Vec::new(),
+                        global_prompt: H3GlobalPrompt::default(),
+                        generation: H3GenerationSettings::default(),
+                        created_at: String::new(),
+                        updated_at: String::new(),
+                    },
+                    set_active: true,
+                    replace_empty_collections: false,
+                },
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.scenes[0].prompt_sections.len(), 1);
 
         // Queue 3-pass quality ladder!
         let start_receipt = studio

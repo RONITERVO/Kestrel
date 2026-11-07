@@ -320,25 +320,12 @@ pub fn build_h3_comfy_graph(req: H3ComfyGraphBuild<'_>) -> Value {
             });
 
             if compile.uses_audio_noise_mask {
-                let freeze_all_audio = req.task_mode == H3TaskMode::KeepExistingAudio
-                    || (matches!(
-                        req.task_mode,
-                        H3TaskMode::CharacterSwap | H3TaskMode::HeadSwap
-                    ) && compile.ordinals.audios.is_empty());
                 let mask_id = build_audio_latent_mask(
                     &mut graph,
                     &mut ids,
                     compile.geometry.audio_latent_tokens,
-                    if freeze_all_audio {
-                        0
-                    } else {
-                        compile.geometry.audio_mask_token_lo
-                    },
-                    if freeze_all_audio {
-                        0
-                    } else {
-                        compile.geometry.audio_mask_token_hi
-                    },
+                    compile.geometry.audio_mask_token_lo,
+                    compile.geometry.audio_mask_token_hi,
                 );
                 let set_mask = ids.next();
                 graph[&set_mask] = json!({
@@ -413,64 +400,102 @@ pub fn build_h3_comfy_graph(req: H3ComfyGraphBuild<'_>) -> Value {
         }
     }
 
-    // 4. Chain `MiniMaxH3AddGuide` nodes onto positive conditioning ("5")
-    let mut cond_node = "5".to_string();
+    // 4. Bind guide keyframes (`first_frame` / `last_frame` on `MiniMaxH3ImageToVideo`, or extra
+    // reference slots on `MiniMaxH3ReferenceToVideo` since ComfyUI's stock `nodes_minimax_h3.py`
+    // cannot combine `minimax_refs` and `minimax_keyframes` in `PackedLayout`).
+    let cond_node = "5".to_string();
+    let mut next_pic_idx = req.picture_refs.len();
+    let mut next_vid_idx = req.video_refs.len();
+    let mut next_aud_idx = req.standalone_audio_refs.len();
+    let mut has_first_frame = false;
+    let mut has_last_frame = false;
+
     for guide in req.guides {
         if !guide.use_image && !guide.use_audio {
             continue;
         }
-        let guide_node = ids.next();
-        let mut inputs = json!({
-            "positive": [cond_node, 0],
-            "latent": latent_ref,
-            "frame_idx": guide.frame_idx
-        });
-        match guide.kind.as_str() {
-            "image" => {
-                let load_img = ids.next();
-                graph[&load_img] = json!({
-                    "class_type": "LoadImage",
-                    "inputs": { "image": guide.relative_file }
-                });
-                inputs["vae"] = json!(["3", 0]);
-                inputs["image"] = json!([load_img, 0]);
-            }
-            "video" => {
-                let load_vid = ids.next();
-                let comp_vid = ids.next();
-                graph[&load_vid] = json!({
-                    "class_type": "LoadVideo",
-                    "inputs": { "file": guide.relative_file }
-                });
-                graph[&comp_vid] = json!({
-                    "class_type": "GetVideoComponents",
-                    "inputs": { "video": [load_vid, 0] }
-                });
-                if guide.use_image {
-                    inputs["vae"] = json!(["3", 0]);
-                    inputs["image"] = json!([comp_vid, 0]);
+        if uses_ref_conditioning {
+            match guide.kind.as_str() {
+                "image" if guide.use_image && next_pic_idx < 9 => {
+                    let load_img = ids.next();
+                    graph[&load_img] = json!({
+                        "class_type": "LoadImage",
+                        "inputs": { "image": guide.relative_file }
+                    });
+                    graph["5"]["inputs"][format!("ref_images.ref_image_{next_pic_idx}")] =
+                        json!([load_img, 0]);
+                    next_pic_idx += 1;
                 }
-                if guide.use_audio {
-                    inputs["audio_vae"] = json!(["4", 0]);
-                    inputs["audio"] = json!([comp_vid, 1]);
+                "video" if (guide.use_image || guide.use_audio) && next_vid_idx < 3 => {
+                    let load_vid = ids.next();
+                    let comp_vid = ids.next();
+                    graph[&load_vid] = json!({
+                        "class_type": "LoadVideo",
+                        "inputs": { "file": guide.relative_file }
+                    });
+                    graph[&comp_vid] = json!({
+                        "class_type": "GetVideoComponents",
+                        "inputs": { "video": [load_vid, 0] }
+                    });
+                    if guide.use_image {
+                        graph["5"]["inputs"][format!("ref_videos.ref_video_{next_vid_idx}")] =
+                            json!([comp_vid, 0]);
+                    }
+                    if guide.use_audio {
+                        graph["5"]["inputs"]
+                            [format!("ref_video_audios.ref_video_audio_{next_vid_idx}")] =
+                            json!([comp_vid, 1]);
+                    }
+                    next_vid_idx += 1;
+                }
+                "audio" if guide.use_audio && next_aud_idx < 3 => {
+                    let load_aud = ids.next();
+                    graph[&load_aud] = json!({
+                        "class_type": "LoadAudio",
+                        "inputs": { "audio": guide.relative_file }
+                    });
+                    graph["5"]["inputs"][format!("ref_audios.ref_audio_{next_aud_idx}")] =
+                        json!([load_aud, 0]);
+                    next_aud_idx += 1;
+                }
+                _ => {}
+            }
+        } else if guide.use_image {
+            let image_out = match guide.kind.as_str() {
+                "image" => {
+                    let load_img = ids.next();
+                    graph[&load_img] = json!({
+                        "class_type": "LoadImage",
+                        "inputs": { "image": guide.relative_file }
+                    });
+                    Some(load_img)
+                }
+                "video" => {
+                    let load_vid = ids.next();
+                    let comp_vid = ids.next();
+                    graph[&load_vid] = json!({
+                        "class_type": "LoadVideo",
+                        "inputs": { "file": guide.relative_file }
+                    });
+                    graph[&comp_vid] = json!({
+                        "class_type": "GetVideoComponents",
+                        "inputs": { "video": [load_vid, 0] }
+                    });
+                    Some(comp_vid)
+                }
+                _ => None,
+            };
+            if let Some(img_node) = image_out {
+                let midpoint = (compile.geometry.unpadded_frames / 2) as i32;
+                if !has_first_frame && (guide.frame_idx <= midpoint || has_last_frame) {
+                    graph["5"]["inputs"]["first_frame"] = json!([img_node, 0]);
+                    has_first_frame = true;
+                } else if !has_last_frame {
+                    graph["5"]["inputs"]["last_frame"] = json!([img_node, 0]);
+                    has_last_frame = true;
                 }
             }
-            "audio" => {
-                let load_aud = ids.next();
-                graph[&load_aud] = json!({
-                    "class_type": "LoadAudio",
-                    "inputs": { "audio": guide.relative_file }
-                });
-                inputs["audio_vae"] = json!(["4", 0]);
-                inputs["audio"] = json!([load_aud, 0]);
-            }
-            _ => continue,
         }
-        graph[&guide_node] = json!({
-            "class_type": "MiniMaxH3AddGuide",
-            "inputs": inputs
-        });
-        cond_node = guide_node;
     }
 
     // 5. Sampling (`RandomNoise` -> `BasicScheduler` -> `KSamplerSelect` -> `BasicGuider`/`CFGGuider` -> `SamplerCustomAdvanced`)
@@ -863,7 +888,7 @@ mod tests {
         assert_eq!(graph["11"]["class_type"], "VAEDecodeTiled");
         assert_eq!(graph[PREVIEW_NODE_ID]["class_type"], "ModelPreviewOverrideKJ");
 
-        // Verify MiniMaxH3SigmaShift, LoraLoaderModelOnly, SetLatentNoiseMask, LTXVConcatAVLatent, MiniMaxH3AddGuide exist
+        // Verify MiniMaxH3SigmaShift, LoraLoaderModelOnly, SetLatentNoiseMask, LTXVConcatAVLatent exist
         let classes: Vec<&str> = graph
             .as_object()
             .unwrap()
@@ -875,7 +900,7 @@ mod tests {
         assert!(classes.contains(&"SetLatentNoiseMask"));
         assert!(classes.contains(&"LTXVConcatAVLatent"));
         assert!(classes.contains(&"LTXVSeparateAVLatent"));
-        assert!(classes.contains(&"MiniMaxH3AddGuide"));
+        assert!(graph["5"]["inputs"].get("ref_images.ref_image_1").is_some());
     }
 
     #[test]

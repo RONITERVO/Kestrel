@@ -38,16 +38,10 @@ pub fn normalize_handle(raw: &str) -> Result<String, StudioError> {
     Ok(trimmed.to_string())
 }
 
-fn is_handle_boundary_before(prev: Option<char>) -> bool {
+pub(crate) fn is_handle_boundary_before(prev: Option<char>) -> bool {
     match prev {
         None => true,
-        Some(c) => {
-            c.is_whitespace()
-                || matches!(
-                    c,
-                    '(' | '[' | '{' | '<' | '"' | '\'' | ',' | '.' | ';' | ':' | '!' | '?' | '/' | '-'
-                )
-        }
+        Some(c) => !c.is_alphanumeric() && c != '_' && c != '@',
     }
 }
 
@@ -119,6 +113,36 @@ pub fn default_role_for_entity(
             H3EntityKind::Location => H3ReferenceRole::Scene,
             _ => H3ReferenceRole::General,
         },
+    }
+}
+
+pub fn normalize_member_role(
+    entity_kind: H3EntityKind,
+    population: H3ReferencePopulation,
+    role: H3ReferenceRole,
+) -> H3ReferenceRole {
+    match population {
+        H3ReferencePopulation::StandaloneAudios => {
+            if matches!(role, H3ReferenceRole::Voice | H3ReferenceRole::Sound) {
+                if entity_kind == H3EntityKind::Sound && role == H3ReferenceRole::Voice {
+                    H3ReferenceRole::Sound
+                } else {
+                    role
+                }
+            } else {
+                default_role_for_entity(entity_kind, population)
+            }
+        }
+        H3ReferencePopulation::Pictures | H3ReferencePopulation::Videos => {
+            if matches!(role, H3ReferenceRole::Voice | H3ReferenceRole::Sound)
+                || (!matches!(entity_kind, H3EntityKind::Character | H3EntityKind::Voice)
+                    && role == H3ReferenceRole::Subject)
+            {
+                default_role_for_entity(entity_kind, population)
+            } else {
+                role
+            }
+        }
     }
 }
 
@@ -286,20 +310,37 @@ where
                     ent.members.iter().collect()
                 };
                 if selected_members.is_empty() {
-                    advisories.push(H3CompileAdvisory {
-                        severity: H3AdvisorySeverity::Warning,
-                        code: "entity_has_no_members".into(),
-                        message: format!(
-                            "@{} is staged in the active window, but has no media members attached.",
-                            ent.handle
-                        ),
-                    });
-                    verdicts[verdict_idx].verdict = H3ReferenceVerdictKind::BelowThreshold;
-                    verdicts[verdict_idx].detail =
-                        format!("@{} has no media members.", ent.handle);
+                    if ent.members.is_empty() {
+                        advisories.push(H3CompileAdvisory {
+                            severity: H3AdvisorySeverity::Warning,
+                            code: "entity_has_no_members".into(),
+                            message: format!(
+                                "@{} is staged in the active window, but has no media members attached.",
+                                ent.handle
+                            ),
+                        });
+                        verdicts[verdict_idx].verdict = H3ReferenceVerdictKind::BelowThreshold;
+                        verdicts[verdict_idx].detail =
+                            format!("@{} has no media members.", ent.handle);
+                    } else {
+                        advisories.push(H3CompileAdvisory {
+                            severity: H3AdvisorySeverity::Warning,
+                            code: "missing_entity_member".into(),
+                            message: format!(
+                                "@{} staged member '{}' was not found on the entity.",
+                                ent.handle,
+                                item.member_id.as_deref().unwrap_or_default()
+                            ),
+                        });
+                        verdicts[verdict_idx].verdict = H3ReferenceVerdictKind::BelowThreshold;
+                        verdicts[verdict_idx].detail =
+                            format!("@{} member ID not found.", ent.handle);
+                    }
                     continue;
                 }
 
+                let mut emitted_for_entity = 0_usize;
+                let mut skipped_by_modality = 0_usize;
                 for member in selected_members {
                     let asset = match resolve_asset(&member.asset_id) {
                         Ok(asset) => asset,
@@ -316,11 +357,13 @@ where
                     match population {
                         H3ReferencePopulation::Pictures => {
                             if !item.use_visual {
+                                skipped_by_modality += 1;
                                 continue;
                             }
                         }
                         H3ReferencePopulation::Videos => {
                             if !item.use_visual {
+                                skipped_by_modality += 1;
                                 if item.use_audio && member.use_embedded_audio {
                                     advisories.push(H3CompileAdvisory {
                                         severity: H3AdvisorySeverity::Warning,
@@ -336,6 +379,7 @@ where
                         }
                         H3ReferencePopulation::StandaloneAudios => {
                             if !item.use_audio {
+                                skipped_by_modality += 1;
                                 continue;
                             }
                         }
@@ -360,13 +404,7 @@ where
                         });
                     }
                     let role = item.role_override.unwrap_or_else(|| {
-                        if member.role == H3ReferenceRole::Subject
-                            && population == H3ReferencePopulation::StandaloneAudios
-                        {
-                            H3ReferenceRole::Voice
-                        } else {
-                            member.role
-                        }
+                        normalize_member_role(ent.kind, population, member.role)
                     });
                     let retention = item.retention_override.unwrap_or(ent.retention_level);
                     let desc = if !item.description_override.trim().is_empty() {
@@ -387,6 +425,7 @@ where
                         member.source_end_sec,
                         asset.duration_seconds,
                     );
+                    emitted_for_entity += 1;
                     candidates.push(CandidateMember {
                         item_idx: verdict_idx,
                         item_id: item.id.clone(),
@@ -412,6 +451,19 @@ where
                         source_start_sec: src_start,
                         source_end_sec: src_end,
                     });
+                }
+                if emitted_for_entity == 0 {
+                    if skipped_by_modality > 0 {
+                        verdicts[verdict_idx].verdict = H3ReferenceVerdictKind::Muted;
+                        verdicts[verdict_idx].detail =
+                            "All entity members were disabled by visual/audio modality toggles."
+                                .into();
+                    } else {
+                        verdicts[verdict_idx].verdict = H3ReferenceVerdictKind::BelowThreshold;
+                        verdicts[verdict_idx].detail =
+                            "No valid media assets could be resolved for entity members.".into();
+                    }
+                    continue;
                 }
             } else if let Some(aid) = item.asset_id.as_deref().filter(|s| !s.is_empty()) {
                 let asset = match resolve_asset(aid) {
@@ -576,7 +628,8 @@ where
     let mut pictures: Vec<(usize, H3BoundOrdinalSlot)> = Vec::new();
     let mut videos: Vec<(usize, H3BoundOrdinalSlot)> = Vec::new();
     let mut standalone_audios: Vec<(usize, H3BoundOrdinalSlot)> = Vec::new();
-    let mut seen_dedup = HashSet::new();
+    let mut seen_dedup: HashMap<String, usize> = HashMap::new();
+    let mut dedup_aliases: Vec<(usize, usize)> = Vec::new();
     let mut embedded_audio_count = 0_usize;
 
     for mut cand in active_candidates {
@@ -588,9 +641,13 @@ where
             cand.source_end_sec,
             cand.crop
         );
-        if !seen_dedup.insert(dedup_key) {
+        if let Some(&first_idx) = seen_dedup.get(&dedup_key) {
+            if first_idx != cand.item_idx {
+                dedup_aliases.push((cand.item_idx, first_idx));
+            }
             continue;
         }
+        seen_dedup.insert(dedup_key, cand.item_idx);
 
         match cand.population {
             H3ReferencePopulation::Pictures => {
@@ -620,7 +677,9 @@ where
                     );
                     continue;
                 }
-                if cand.use_embedded_audio && embedded_audio_count >= defaults.max_audio_refs {
+                if cand.use_embedded_audio
+                    && (embedded_audio_count + standalone_audios.len()) >= defaults.max_audio_refs
+                {
                     cand.use_embedded_audio = false;
                     advisories.push(H3CompileAdvisory {
                         severity: H3AdvisorySeverity::Warning,
@@ -685,6 +744,15 @@ where
         audios.push(audio_slot);
     }
 
+    for (dup_idx, first_idx) in dedup_aliases {
+        let shared = verdicts[first_idx].assigned_tags.clone();
+        for tag in shared {
+            if !verdicts[dup_idx].assigned_tags.contains(&tag) {
+                verdicts[dup_idx].assigned_tags.push(tag);
+            }
+        }
+    }
+
     let mut picture_slots: Vec<H3BoundOrdinalSlot> =
         pictures.into_iter().map(|(_, s)| s).collect();
     let mut video_slots: Vec<H3BoundOrdinalSlot> = videos.into_iter().map(|(_, s)| s).collect();
@@ -721,17 +789,29 @@ where
         let mut visual_tags = Vec::new();
         let mut audio_tags = Vec::new();
         let mut retention = ent.retention_level;
+        let mut effective_description = ent.subject_description.trim().to_string();
 
         for slot in picture_slots.iter().chain(video_slots.iter()) {
             if slot.entity_id.as_deref() == Some(eid.as_str()) {
                 visual_tags.push(slot.tag.clone());
                 retention = slot.retention;
+                if !slot.description.trim().is_empty()
+                    && (effective_description.is_empty()
+                        || slot.description.trim() != ent.subject_description.trim())
+                {
+                    effective_description = slot.description.trim().to_string();
+                }
             }
         }
         for slot in &audios {
             if slot.entity_id.as_deref() == Some(eid.as_str()) {
                 audio_tags.push(slot.tag.clone());
-                retention = slot.retention;
+                if visual_tags.is_empty() {
+                    retention = slot.retention;
+                }
+                if effective_description.is_empty() && !slot.description.trim().is_empty() {
+                    effective_description = slot.description.trim().to_string();
+                }
             }
         }
 
@@ -754,7 +834,7 @@ where
                 entity_id: ent.id.clone(),
                 visual_tags,
                 audio_tags,
-                subject_description: ent.subject_description.trim().to_string(),
+                subject_description: effective_description,
                 retention,
                 shot_indices: Vec::new(),
             });
