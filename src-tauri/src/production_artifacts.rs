@@ -182,3 +182,33 @@ pub(crate) fn resolve(state: &AppState, source: &ProductionArtifact) -> Result<S
         outpoint,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use kestrel_app_core::{MovieH3TakeFile, ProductionArtifact};
+    use serde_json::json;
+
+    #[test]
+    fn h3_take_artifacts_parse_the_documented_shape_and_name_take_files() {
+        for (file, name) in [
+            ("video", "take.mp4"),
+            ("contactStart", "contact-start.png"),
+            ("contactMid", "contact-mid.png"),
+            ("contactEnd", "contact-end.png"),
+        ] {
+            let artifact: ProductionArtifact = serde_json::from_value(json!({
+                "kind": "movieH3Take", "projectId": "p", "jobId": "h3job-1", "file": file
+            }))
+            .unwrap();
+            let ProductionArtifact::MovieH3Take { file, .. } = artifact else {
+                panic!("expected movieH3Take");
+            };
+            assert_eq!(file.file_name(), name);
+        }
+        assert!(serde_json::from_value::<ProductionArtifact>(json!({
+            "kind": "movieH3Take", "projectId": "p", "jobId": "j", "file": "contact-start.png"
+        }))
+        .is_err());
+        assert_eq!(MovieH3TakeFile::Video.file_name(), "take.mp4");
+    }
+}

@@ -5,8 +5,8 @@ use tauri::Manager;
 
 pub(super) fn is_mutation(name: &str, args: &Value) -> bool {
     match name {
-        "write_file" | "create_directory" | "move_path" | "copy_file" | "run_program"
-        | "open_path" => true,
+        "write_file" | "edit_file" | "create_directory" | "move_path" | "copy_file"
+        | "run_program" | "open_path" => true,
         "app_call" => args
             .get("command")
             .and_then(Value::as_str)
@@ -144,6 +144,18 @@ fn observe_file(
             } else if (!target.exists() && data.get("expectedSha256").is_none())
                 || (current.is_some()
                     && current.as_deref() == data.get("expectedSha256").and_then(Value::as_str))
+            {
+                Some(json!({"outcome":"unchangedStateObserved","path":target,"sha256":current}))
+            } else {
+                None
+            }
+        }
+        "edit_file" => {
+            // The edited bytes are not journaled, so only the untouched state is provable.
+            let target = path("path")?;
+            let current = file_hash(&target)?;
+            if current.is_some()
+                && current.as_deref() == data.get("expectedSha256").and_then(Value::as_str)
             {
                 Some(json!({"outcome":"unchangedStateObserved","path":target,"sha256":current}))
             } else {
