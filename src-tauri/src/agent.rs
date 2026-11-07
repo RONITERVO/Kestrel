@@ -398,7 +398,7 @@ pub async fn run(
             // A truncated tool batch may contain incomplete arguments. Execute none of it,
             // and never turn a token-limit response into a completed task.
             if truncated_retries > 2 {
-                return Err("The local model reached its response limit three times without completing an action. Completed work is preserved; review the transcript and resume with a smaller step or a larger output budget.".into());
+                return Err("The assistant tried to write too much in one reply three times, so it paused. Nothing from those replies was saved, and earlier work is safe. Send \"continue\" and it will make the change in smaller edits.".into());
             }
             event(&app, &store, &run_id, step, "progress", "Continuing after the model response limit", "The model ran out of response space. Its incomplete tool batch was not executed. Retrying with a smaller next step; this is not task completion.", Some(json!({"finishReason":"length","retry":truncated_retries})))?;
             if let Some(content) = message
@@ -408,7 +408,7 @@ pub async fn run(
             {
                 messages.push(json!({"role":"assistant","content":content}));
             }
-            messages.push(json!({"role":"user","content":"Native runner feedback: your last response reached the token limit; none of its proposed tools were executed and the task is still unfinished. Continue the existing authorized task with ONE small concrete action. Do not repeat the plan or broad discovery. Reuse known artifact IDs. For large authored files, write a minimal complete version first or split the work into bounded actions. Finish only after checking the actual requested result; if blocked, use ask_user."}));
+            messages.push(json!({"role":"user","content":"Native runner feedback: your last response reached the token limit; none of its proposed tools were executed and the task is still unfinished. Continue the existing authorized task with ONE small concrete action. Do not repeat the plan or broad discovery. Reuse known artifact IDs. For large authored files, do not rewrite them in one response: change existing files with edit_file, or write a short complete version first and grow it with edit_file in bounded steps. Finish only after checking the actual requested result; if blocked, use ask_user."}));
             continue;
         }
         truncated_retries = 0;
@@ -718,6 +718,20 @@ pub async fn run(
                     Some(json!({"path": path.to_string_lossy()})),
                 )?;
             }
+            if name.starts_with("app_") {
+                for extra in crate::agent_app::extra_artifacts(&arguments, output.data.as_ref()) {
+                    event(
+                        &app,
+                        &store,
+                        &run_id,
+                        step,
+                        "artifact",
+                        "Artifact ready",
+                        &extra.to_string_lossy(),
+                        Some(json!({"path": extra.to_string_lossy()})),
+                    )?;
+                }
+            }
             messages.push(json!({"role":"tool","tool_call_id":call_id,"content":memory::preview(&output.text, result_sequence)}));
         }
     }
@@ -841,13 +855,18 @@ fn tool_schemas(access: Access, has_attachments: bool) -> Vec<Value> {
         ),
         schema(
             "read_file",
-            "Read a local text file in bounded character pages. Returns content, nextOffset and sha256. Inspect existing content before changing it; pass its sha256 as expectedSha256 to write_file. Supports text files up to 64 MiB without filling model context.",
+            "Read a local text file in bounded character pages. Returns content, nextOffset and sha256. Inspect existing content before changing it; pass its sha256 as expectedSha256 to write_file or edit_file. Supports text files up to 64 MiB without filling model context.",
             json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":16000}},"required":["path"]}),
         ),
         schema(
             "write_file",
-            "Save exact text to an approved path with a recovery copy. To overwrite an existing file, first read it and pass its exact sha256 as expectedSha256; intervening changes are rejected. Omit expectedSha256 only for a new file. Never overwrite another person's changes without inspecting and preserving their work.",
+            "Save exact text to an approved path with a recovery copy. To overwrite an existing file, first read it and pass its exact sha256 as expectedSha256; intervening changes are rejected. Omit expectedSha256 only for a new file. Never overwrite another person's changes without inspecting and preserving their work. To change part of an existing file, use edit_file instead of rewriting it. For a large new file, write a short complete version first, then grow it with edit_file.",
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expectedSha256":{"type":"string"}},"required":["path","content"]}),
+        ),
+        schema(
+            "edit_file",
+            "Change part of an existing text file without rewriting all of it, with a recovery copy. Read the file first and pass its sha256 as expectedSha256. Each edit replaces one exact find string, copied from read_file, that occurs exactly once; edits apply in order and nothing is saved if any edit fails. Returns the new sha256 for further edits.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"expectedSha256":{"type":"string"},"edits":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"find":{"type":"string"},"replace":{"type":"string"}},"required":["find","replace"]}}},"required":["path","expectedSha256","edits"]}),
         ),
         schema(
             "create_directory",
@@ -1018,72 +1037,29 @@ async fn execute_tool(
                 return Err("write_file content exceeds 5 MiB".into());
             }
             let path = allowed_new(string("path")?, access, roots)?;
-            verify_write_version(
+            save_text_with_recovery(
                 &path,
+                content,
                 arguments.get("expectedSha256").and_then(Value::as_str),
-            )?;
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            )
+        }
+        "edit_file" => {
+            let path = allowed_existing(string("path")?, access, roots)?;
+            let expected = string("expectedSha256")?;
+            let edits = arguments
+                .get("edits")
+                .and_then(Value::as_array)
+                .ok_or("edit_file requires edits: [{find, replace}]")?;
+            if fs::metadata(&path).map_err(|e| e.to_string())?.len() > 5 * 1_048_576 {
+                return Err("edit_file supports text files up to 5 MiB.".into());
             }
-            let backup = if path.is_file() {
-                let backup = recovery_path(&path);
-                fs::copy(&path, &backup).map_err(|error| error.to_string())?;
-                Some(backup)
-            } else {
-                None
-            };
-            let temporary = path.with_extension(format!(
-                "{}.{}.kestrel-tmp",
-                path.extension()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("file"),
-                uuid::Uuid::new_v4()
-            ));
-            use std::io::Write;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .map_err(|error| error.to_string())?;
-            let staged = file
-                .write_all(content.as_bytes())
-                .and_then(|()| file.sync_all());
-            drop(file);
-            if let Err(error) = staged {
-                let _ = fs::remove_file(&temporary);
-                return Err(error.to_string());
+            let original = String::from_utf8(fs::read(&path).map_err(|e| e.to_string())?)
+                .map_err(|_| "edit_file only edits UTF-8 text files.".to_string())?;
+            if text_sha256(original.as_bytes()) != expected {
+                return Err("The file changed after it was inspected. Read it again and pass its current sha256 as expectedSha256.".into());
             }
-            if let Err(error) = verify_write_version(
-                &path,
-                arguments.get("expectedSha256").and_then(Value::as_str),
-            ) {
-                let _ = fs::remove_file(&temporary);
-                return Err(error);
-            }
-            if let Err(error) = fs::rename(&temporary, &path) {
-                let _ = fs::remove_file(&temporary);
-                if !path.exists() {
-                    if let Some(backup) = &backup {
-                        let _ = fs::copy(backup, &path);
-                    }
-                }
-                return Err(error.to_string());
-            }
-            Ok(ToolOutput {
-                text: format!(
-                    "Wrote {} bytes to {}{}",
-                    content.len(),
-                    path.display(),
-                    backup
-                        .as_ref()
-                        .map(|value| format!("; recovery copy: {}", value.display()))
-                        .unwrap_or_default()
-                ),
-                artifact: Some(path.clone()),
-                data: Some(
-                    json!({"path":path,"backup":backup,"sha256":text_sha256(content.as_bytes())}),
-                ),
-            })
+            let edited = apply_text_edits(&original, edits)?;
+            save_text_with_recovery(&path, &edited, Some(expected))
         }
         "create_directory" => {
             let path = allowed_new(string("path")?, access, roots)?;
@@ -1293,6 +1269,103 @@ fn text_sha256(bytes: &[u8]) -> String {
     hex::encode(sha2::Sha256::digest(bytes))
 }
 
+/// Saves text through a temporary file after re-checking the inspected version, keeping a
+/// recovery copy of any file it replaces. Shared by write_file and edit_file.
+fn save_text_with_recovery(
+    path: &Path,
+    content: &str,
+    expected: Option<&str>,
+) -> Result<ToolOutput, String> {
+    verify_write_version(path, expected)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let backup = if path.is_file() {
+        let backup = recovery_path(path);
+        fs::copy(path, &backup).map_err(|error| error.to_string())?;
+        Some(backup)
+    } else {
+        None
+    };
+    let temporary = path.with_extension(format!(
+        "{}.{}.kestrel-tmp",
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("file"),
+        uuid::Uuid::new_v4()
+    ));
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| error.to_string())?;
+    let staged = file
+        .write_all(content.as_bytes())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = staged {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    if let Err(error) = verify_write_version(path, expected) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        if !path.exists() {
+            if let Some(backup) = &backup {
+                let _ = fs::copy(backup, path);
+            }
+        }
+        return Err(error.to_string());
+    }
+    Ok(ToolOutput {
+        text: format!(
+            "Wrote {} bytes to {}{}",
+            content.len(),
+            path.display(),
+            backup
+                .as_ref()
+                .map(|value| format!("; recovery copy: {}", value.display()))
+                .unwrap_or_default()
+        ),
+        artifact: Some(path.to_path_buf()),
+        data: Some(json!({"path":path,"backup":backup,"sha256":text_sha256(content.as_bytes())})),
+    })
+}
+
+/// Applies exact find/replace edits in order. Each `find` must occur exactly once in the text
+/// as edited so far, so an edit can never silently land in the wrong place.
+fn apply_text_edits(original: &str, edits: &[Value]) -> Result<String, String> {
+    if edits.is_empty() || edits.len() > 64 {
+        return Err("edit_file needs 1–64 edits.".into());
+    }
+    let mut text = original.to_string();
+    for (index, edit) in edits.iter().enumerate() {
+        let number = index + 1;
+        let find = edit
+            .get("find")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("Edit {number} needs a non-empty find string."))?;
+        let replace = edit
+            .get("replace")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Edit {number} needs a replace string (use \"\" to delete)."))?;
+        match text.matches(find).count() {
+            1 => text = text.replacen(find, replace, 1),
+            0 => return Err(format!("Edit {number}: find text was not found. Copy it exactly from read_file, including spaces and line breaks. No edits were saved.")),
+            count => return Err(format!("Edit {number}: find text occurs {count} times. Include more surrounding text so it matches once. No edits were saved.")),
+        }
+    }
+    if text.len() > 5 * 1_048_576 {
+        return Err("The edited file would exceed 5 MiB.".into());
+    }
+    Ok(text)
+}
+
 fn verify_write_version(path: &Path, expected: Option<&str>) -> Result<(), String> {
     if path.exists() {
         let expected = expected.ok_or("This file already exists. Read it first, preserve existing work and pass its sha256 as expectedSha256 before replacing it.")?;
@@ -1497,6 +1570,55 @@ mod tests {
             fs::read_to_string(other_staging).unwrap(),
             "another writer's unfinished file"
         );
+    }
+
+    #[tokio::test]
+    async fn edit_tool_changes_one_exact_span_and_rejects_ambiguity_or_stale_versions() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("workspace");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("index.html");
+        let page = "<h2>Reel</h2>\n<video src=\"reel.mp4\"></video>\n<p>x</p><p>x</p>\n";
+        fs::write(&path, page).unwrap();
+        let attachments = AttachmentStore::new(directory.path()).unwrap();
+        let roots = [root.to_string_lossy().into_owned()];
+        let run = |args: Value| {
+            let attachments = &attachments;
+            let roots = &roots;
+            async move {
+                execute_tool("edit_file", &args, Access::Workspace, roots, attachments, &[]).await
+            }
+        };
+        let sha = text_sha256(page.as_bytes());
+        for (edits, expected) in [
+            (json!([{"find":"<p>x</p>","replace":"y"}]), "occurs 2 times"),
+            (json!([{"find":"missing","replace":"y"}]), "not found"),
+            (json!([{"find":"","replace":"y"}]), "non-empty find"),
+        ] {
+            let error = run(json!({"path":path,"expectedSha256":sha,"edits":edits}))
+                .await
+                .err()
+                .expect("edit should be rejected");
+            assert!(error.contains(expected), "{error}");
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), page);
+        let stale = run(json!({"path":path,"expectedSha256":text_sha256(b"old"),"edits":[{"find":"Reel","replace":"Stills"}]}))
+            .await
+            .err()
+            .expect("stale version should be rejected");
+        assert!(stale.contains("changed after it was inspected"));
+        let edited = run(json!({"path":path,"expectedSha256":sha,"edits":[
+            {"find":"<h2>Reel</h2>","replace":"<h2>Stills</h2>"},
+            {"find":"<video src=\"reel.mp4\"></video>","replace":"<img src=\"shot1-start.png\">"}
+        ]}))
+        .await
+        .unwrap();
+        let expected = "<h2>Stills</h2>\n<img src=\"shot1-start.png\">\n<p>x</p><p>x</p>\n";
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+        let data = edited.data.unwrap();
+        assert_eq!(data["sha256"], text_sha256(expected.as_bytes()));
+        assert_eq!(fs::read_to_string(data["backup"].as_str().unwrap()).unwrap(), page);
+        assert!(recovery::is_mutation("edit_file", &json!({})));
     }
 
     #[tokio::test]

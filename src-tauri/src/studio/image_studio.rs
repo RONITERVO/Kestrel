@@ -178,7 +178,33 @@ impl ImageStudio {
         stored.high_level_description = edited.high_level_description;
         stored.style = edited.style;
         stored.background = edited.background;
-        stored.elements = edited.elements;
+        let mut raw_ids = HashSet::new();
+        let mut has_duplicate_raw_id = false;
+        for el in &edited.elements {
+            let trimmed = el.id.trim();
+            if !trimmed.is_empty() && !raw_ids.insert(trimmed.to_string()) {
+                has_duplicate_raw_id = true;
+            }
+        }
+        stored.elements = edited
+            .elements
+            .into_iter()
+            .map(|mut el| {
+                if !has_duplicate_raw_id
+                    && (el.id.trim().is_empty() || uuid::Uuid::parse_str(&el.id).is_err())
+                {
+                    el.id = uuid::Uuid::new_v4().to_string();
+                }
+                match el.kind.trim().to_ascii_lowercase().as_str() {
+                    "text" | "label" | "title" | "caption" => el.kind = "text".into(),
+                    "" | "obj" | "object" | "subject" | "character" | "person" | "prop" => {
+                        el.kind = "obj".into()
+                    }
+                    _ => {}
+                }
+                el
+            })
+            .collect();
         stored.settings = edited.settings;
         if edited.active_take_id.is_empty()
             || stored

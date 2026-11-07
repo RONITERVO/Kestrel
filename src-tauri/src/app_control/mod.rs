@@ -146,7 +146,7 @@ impl AppControl {
             }
             *self.task_progress.lock().map_err(|e| e.to_string())? = Some((title, detail, now()));
         }
-        if !matches!(event, "studio-prompt-draft" | "movie-studio-chat") {
+        if event != "studio-prompt-draft" {
             return Ok(());
         }
         let Some(id) = value.get("requestId").and_then(Value::as_str) else {
@@ -365,11 +365,42 @@ pub fn describe(name: &str) -> Result<AppActionDescription, String> {
     })
 }
 
+/// Local models sometimes JSON-encode a large nested `args` object into a string. When that
+/// string is exactly one JSON object, use the object; any other string stays a string and is
+/// rejected by the normal object check. Path and policy checks run on the decoded object.
+pub fn coerce_stringified_object(value: Value) -> Value {
+    if let Value::String(text) = &value {
+        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(text.trim()) {
+            return Value::Object(map);
+        }
+    }
+    value
+}
+
 pub async fn execute(
     app: &AppHandle,
-    request: AppActionRequest,
+    mut request: AppActionRequest,
 ) -> Result<AppActionReceipt, String> {
     valid_id(&request.request_id)?;
+    request.args = coerce_stringified_object(std::mem::take(&mut request.args));
+    if let Ok((arguments, _, _)) = describe_app_command(&request.command) {
+        if let Some(arr) = arguments.as_array() {
+            if arr.len() == 1 {
+                if let Some(key) = arr[0].get("name").and_then(Value::as_str).filter(|k| {
+                    matches!(
+                        *k,
+                        "request" | "edited" | "project" | "settings" | "draft"
+                    )
+                }) {
+                    if let Some(obj) = request.args.as_object() {
+                        if !obj.contains_key(key) && !obj.is_empty() {
+                            request.args = json!({ key: request.args });
+                        }
+                    }
+                }
+            }
+        }
+    }
     if matches!(
         request.command.as_str(),
         "export_narration" | "export_music_lyrics" | "export_music_midi"
@@ -396,7 +427,9 @@ pub async fn execute(
     let state = app.state::<AppState>();
     let serial = state.control.serial.lock().await;
     let path = state.control.path("actions", &request.request_id)?;
-    if path.exists() || path.with_extension("json.backup").exists() {
+    // Read actions have no side effects, so a reused request ID re-reads current state.
+    // Replaying an old receipt here showed a long-running producer stale project data.
+    if access != "read" && (path.exists() || path.with_extension("json.backup").exists()) {
         let prior: AppActionReceipt = read(&path)?;
         if prior.request.command != request.command || prior.request.args != request.args {
             return Err("Retry conflict: that request ID belongs to different arguments. Use a new ID for a new intentional action.".into());
@@ -466,6 +499,16 @@ mod tests {
             assert!(valid_id(id).is_err());
         }
         assert!(validate_keys(&json!({"id":"ok","typo":true}), &["id"]).is_err());
+    }
+    #[test]
+    fn stringified_object_args_are_decoded_and_other_strings_are_kept() {
+        let nested = json!({"request": {"scene": {"audioLanes": [{"clips": [{"gain": 0.32}]}]}}});
+        let decoded = coerce_stringified_object(Value::String(format!(" {nested} ")));
+        assert_eq!(decoded, nested);
+        for kept in [json!("plain text"), json!("[1,2]"), json!("\"quoted\""), json!(3)] {
+            assert_eq!(coerce_stringified_object(kept.clone()), kept);
+        }
+        assert_eq!(coerce_stringified_object(nested.clone()), nested);
     }
     #[test]
     fn unfinished_actions_and_drafts_recover_without_replay() {

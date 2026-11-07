@@ -67,6 +67,43 @@ pub(crate) fn resolve(state: &AppState, source: &ProductionArtifact) -> Result<S
             let project = state.studio.get(project_id).map_err(|e| e.to_string())?;
             (project.final_path, None, false, None)
         }
+        ProductionArtifact::MovieH3Take {
+            project_id,
+            job_id,
+            file,
+        } => {
+            let project = state.studio.get(project_id).map_err(|e| e.to_string())?;
+            let job = project
+                .render_jobs
+                .iter()
+                .find(|j| &j.id == job_id)
+                .ok_or("H3 take not found. Use a jobId from get_movie_h3_digest.")?;
+            if job.status != kestrel_app_core::H3RenderJobStatus::Complete
+                || job.take_media_path.is_empty()
+            {
+                return Err("Choose a completed H3 take; this job has no verified media.".into());
+            }
+            let take = std::path::Path::new(&job.take_media_path);
+            match file {
+                kestrel_app_core::MovieH3TakeFile::Video => (
+                    job.take_media_path.clone(),
+                    Some(job.take_sha256.clone()).filter(|hash| !hash.is_empty()),
+                    false,
+                    None,
+                ),
+                still => {
+                    let folder = take.parent().ok_or("H3 take folder is missing.")?;
+                    let path = folder.join(still.file_name());
+                    if !path.is_file() {
+                        return Err(format!(
+                            "{} is missing for this take; run inspect_movie_h3_take to write its contact sheets.",
+                            still.file_name()
+                        ));
+                    }
+                    (path.to_string_lossy().into_owned(), None, true, None)
+                }
+            }
+        }
         ProductionArtifact::MovieClip {
             project_id,
             clip_id,
@@ -144,4 +181,34 @@ pub(crate) fn resolve(state: &AppState, source: &ProductionArtifact) -> Result<S
         still,
         outpoint,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use kestrel_app_core::{MovieH3TakeFile, ProductionArtifact};
+    use serde_json::json;
+
+    #[test]
+    fn h3_take_artifacts_parse_the_documented_shape_and_name_take_files() {
+        for (file, name) in [
+            ("video", "take.mp4"),
+            ("contactStart", "contact-start.png"),
+            ("contactMid", "contact-mid.png"),
+            ("contactEnd", "contact-end.png"),
+        ] {
+            let artifact: ProductionArtifact = serde_json::from_value(json!({
+                "kind": "movieH3Take", "projectId": "p", "jobId": "h3job-1", "file": file
+            }))
+            .unwrap();
+            let ProductionArtifact::MovieH3Take { file, .. } = artifact else {
+                panic!("expected movieH3Take");
+            };
+            assert_eq!(file.file_name(), name);
+        }
+        assert!(serde_json::from_value::<ProductionArtifact>(json!({
+            "kind": "movieH3Take", "projectId": "p", "jobId": "j", "file": "contact-start.png"
+        }))
+        .is_err());
+        assert_eq!(MovieH3TakeFile::Video.file_name(), "take.mp4");
+    }
 }

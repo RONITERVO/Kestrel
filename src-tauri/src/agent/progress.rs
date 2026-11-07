@@ -114,7 +114,7 @@ fn tool_label(event: &ComputerTaskEvent) -> (String, String) {
             "Reading local material",
             "Checking the relevant files and saved work.",
         ),
-        "write_file" => (
+        "write_file" | "edit_file" => (
             "Saving your work",
             "Writing the result to your approved workspace.",
         ),

@@ -1,19 +1,17 @@
-//! Durable offline movie Studio facade.
+//! Durable offline Movie, Image, and Music Studio facade.
 //!
 //! Maintainers should read `studio/README.md` before changing model-assisted flows or persistence
-//! boundaries. Child modules own producer state, rendering, media, and editing concerns.
+//! boundaries. Child modules own MiniMax H3 multi-scene timeline direction, Reference Library
+//! `@Handle` compilation, stock ComfyUI rendering, Image Studio, Music Studio, and FFmpeg exports.
 
 pub use kestrel_app_core::movie::{
-    default_export_preset, default_gain, default_speed, default_target_lufs, ClipEdit, ClipVersion,
-    MovieEdit, MovieExport, MoviePlan, MovieProject, MovieQualityReview, MovieReference,
-    MovieReferenceAsset, MovieReferenceImport, MovieSettings, MovieSummary, PlannedClip,
-    ProducerReferenceRequest, RenderedClip, MAX_MOVIE_SCENES, MOVIE_THINKING_BUDGET,
+    default_export_preset, ClipEdit, MovieExport, MovieProject, MovieReference,
+    MovieReferenceAsset, MovieReferenceImport, MovieSummary, RenderedClip,
 };
 
-use crate::models::ControlSettings;
 use chrono::Utc;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -30,10 +28,14 @@ use thiserror::Error;
 use tokio::{process::Child, sync::Mutex as AsyncMutex};
 use tokio_util::sync::CancellationToken;
 
-mod editor;
-mod editor_media;
-mod editor_timeline;
 mod export;
+mod h3_digest;
+mod h3_engine;
+mod h3_geometry;
+mod h3_graph;
+mod h3_media;
+mod h3_prompt;
+mod h3_references;
 mod image_assets;
 mod image_studio;
 mod live_preview;
@@ -42,16 +44,12 @@ mod music;
 mod music_lyrics_model;
 mod music_midi;
 mod music_yue2;
-mod producer;
-mod producer_chat;
 mod prompt_draft;
+
 pub use image_assets::MovieImageAssetGeneration;
 pub use image_studio::{CreateImageProjectRequest, ImageProject, ImageStudio, ImageSummary};
 pub use live_preview::MovieRenderState;
-use live_preview::{
-    emit_preview_unavailable, preview_node, LivePreviewRegistry, LivePreviewSession, PreviewTarget,
-    PREVIEW_NODE_ID,
-};
+use live_preview::LivePreviewRegistry;
 pub use music::{
     CreateMusicProjectRequest, DraftLyricsFromAudioRangeRequest, DraftLyricsFromAudioRangeResult,
     MusicLyricsRequest, MusicLyricsSaveResult, MusicMidiRequest, MusicMidiSaveResult, MusicProject,
@@ -64,17 +62,13 @@ pub(crate) use music_lyrics_model::{
     translate as translate_music_lyrics_with_model,
     validate_translation_request as validate_music_lyrics_translation,
 };
-pub use producer_chat::{
-    emit_error as emit_studio_chat_error, emit_settled as emit_studio_chat_settled,
-    summarize_conversation as summarize_studio_conversation, MovieStudioChatJob,
-};
 pub(crate) use prompt_draft::{
     emit_error as emit_prompt_draft_error, emit_settled as emit_prompt_draft_settled,
     validate_request as validate_prompt_draft_request, IMAGE_COMPOSITION_SCHEMA,
 };
 pub use prompt_draft::{PromptDraftJob, PromptDraftRequest};
 
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 const COMFY_BASE: &str = "http://127.0.0.1:8188";
 pub(super) const MUSIC_COMFY_BASE: &str = "http://127.0.0.1:8189";
 const MAX_REFERENCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -82,12 +76,9 @@ const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
 pub(super) const MAX_MOVIE_PROMPT_BYTES: usize = 64 * 1024;
-const MAX_REFERENCE_SECONDS: f64 = 15.1;
+const MAX_REFERENCE_SECONDS: f64 = 3_600.0;
 
 const COMFY_RENDER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
-const MIN_TIMELINE_SOURCE_SECONDS: f32 = 0.1;
-
-pub(crate) use kestrel_app_core::runtime_policy_limits;
 
 #[derive(Clone, Copy)]
 pub(crate) enum ComfyWorkload {
@@ -219,7 +210,7 @@ fn read_media_response_from_library(
         "wav" => "audio/wav",
         "mp3" => "audio/mpeg",
         "flac" => "audio/flac",
-        "ogg" | "oga" => "audio/ogg",
+        "ogg" | "oga" | "opus" => "audio/ogg",
         "m4a" | "aac" => "audio/mp4",
         _ => "application/octet-stream",
     };
@@ -330,83 +321,6 @@ pub enum StudioError {
     Cancelled,
 }
 
-pub trait MovieSettingsPolicy: Sized {
-    fn validate(self, advanced: bool) -> Result<Self, StudioError>;
-    fn runtime_settings_for(&self, base: &ControlSettings, model_id: &str) -> ControlSettings;
-}
-
-impl MovieSettingsPolicy for MovieSettings {
-    fn validate(mut self, advanced: bool) -> Result<Self, StudioError> {
-        let runtime_limits = runtime_policy_limits(advanced);
-        if !self.width.is_multiple_of(32) || !self.height.is_multiple_of(32) {
-            return Err(StudioError::Invalid(
-                "H3 generation width and height must be multiples of 32. The faster default is 768×448; media composition chooses its final frame size independently.".into(),
-            ));
-        }
-        let maximum_edge = if advanced { 2_048 } else { 1_344 };
-        if self.width < 320
-            || self.height < 320
-            || self.width > maximum_edge
-            || self.height > maximum_edge
-        {
-            return Err(StudioError::Invalid(format!(
-                "resolution must be between 320 and {maximum_edge} pixels per edge"
-            )));
-        }
-        self.clip_seconds = self.clip_seconds.clamp(5.0, 15.0);
-        self.steps = self.steps.clamp(1, if advanced { 100 } else { 40 });
-        self.max_clips = self.max_clips.clamp(1, MAX_MOVIE_SCENES);
-        self.temperature = self.temperature.clamp(0.0, 2.0);
-        self.top_p = self.top_p.clamp(0.05, 1.0);
-        self.top_k = self.top_k.clamp(1, 200);
-        self.thinking_budget = self.thinking_budget.min(MOVIE_THINKING_BUDGET);
-        self.max_output_tokens = self.max_output_tokens.clamp(
-            runtime_limits.minimum_max_output_tokens,
-            runtime_limits.maximum_max_output_tokens,
-        );
-        if self.context_window > 0 {
-            self.context_window = self.context_window.clamp(
-                runtime_limits.minimum_context_window,
-                runtime_limits.maximum_context_window,
-            );
-        }
-        let root = PathBuf::from(&self.comfy_root);
-        if !root.is_absolute() {
-            return Err(StudioError::Invalid(
-                "ComfyUI root must be an absolute local path".into(),
-            ));
-        }
-        if !matches!(self.ref_image_size.as_str(), "match" | "max") {
-            return Err(StudioError::Invalid(
-                "reference image size must be match or max".into(),
-            ));
-        }
-        Ok(self)
-    }
-
-    /// Apply the project layer after System defaults and per-model policy.
-    fn runtime_settings_for(&self, base: &ControlSettings, model_id: &str) -> ControlSettings {
-        let mut effective = base.for_model(model_id);
-        if self.context_window > 0 {
-            effective.context_window = self.context_window;
-        }
-        effective.max_output_tokens = self.max_output_tokens;
-        effective.model_overrides.clear();
-        effective
-    }
-}
-
-fn validate_h3_reference_counts(
-    images: usize,
-    videos: usize,
-    audio: usize,
-) -> Result<(), StudioError> {
-    if images > 9 || videos > 3 || audio > 3 {
-        return Err(StudioError::Invalid(format!("One H3 scene can use at most 9 pictures, 3 videos and 3 audio signals. This selection has {images} pictures, {videos} videos and {audio} audio signals. Keep assets in the library and select fewer for this scene.")));
-    }
-    Ok(())
-}
-
 #[derive(Clone)]
 pub struct MovieStudio {
     root: PathBuf,
@@ -438,7 +352,7 @@ impl MovieStudio {
         };
         studio.recover_interrupted()?;
         studio.recover_image_asset_generations()?;
-        studio.recover_editor_generations()?;
+        studio.recover_h3_render_jobs()?;
         Ok(studio)
     }
 
@@ -465,8 +379,8 @@ impl MovieStudio {
         self.import_reference_path_named(source, None)
     }
 
-    /// Imports a media file into the reference library; `name` replaces the file name shown to the
-    /// producer (an Image Studio take is named after its project).
+    /// Imports a media file into the content-addressed reference library; `name` replaces the file
+    /// name shown to the producer (e.g., an Image Studio take, Speech Studio clip, or Music take).
     pub fn import_reference_path_named(
         &self,
         source: &Path,
@@ -526,76 +440,6 @@ impl MovieStudio {
         Ok(asset)
     }
 
-    pub(crate) fn create_producer_base(
-        &self,
-        prompt: String,
-        settings: MovieSettings,
-        references: Vec<ProducerReferenceRequest>,
-        collaborator_name: &str,
-        advanced: bool,
-    ) -> Result<MovieProject, StudioError> {
-        if prompt.trim().chars().count() < 3 || prompt.len() > MAX_MOVIE_PROMPT_BYTES {
-            return Err(StudioError::Invalid(
-                "starting material must contain 3 characters to 64 KiB".into(),
-            ));
-        }
-        let settings = settings.validate(advanced)?;
-        let now = Utc::now().to_rfc3339();
-        let id = uuid::Uuid::new_v4().to_string();
-        let folder = self.project_dir(&id);
-        fs::create_dir_all(folder.join("raw"))?;
-        fs::create_dir_all(folder.join("exports"))?;
-        fs::create_dir_all(folder.join("references"))?;
-        let references = match self.materialize_references(&id, references) {
-            Ok(references) => references,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&folder);
-                return Err(error);
-            }
-        };
-        let project = MovieProject {
-            schema_version: SCHEMA_VERSION,
-            id: id.clone(),
-            prompt,
-            title: "Untitled movie".into(),
-            status: "awaiting-review".into(),
-            phase: "story-draft".into(),
-            detail: "The starting material is safe. The story collaborator is ready to write one complete Markdown sketch.".into(),
-            created_at: now.clone(),
-            updated_at: now,
-            model: format!("Producer Studio collaborator · {collaborator_name}"),
-            legacy_model_roles: Value::Null,
-            renderer: "MiniMax H3 / ComfyUI native".into(),
-            settings,
-            references,
-            plan: None,
-            sources: Vec::new(),
-            clips: Vec::new(),
-            edit: MovieEdit {
-                clips: Vec::new(),
-                export_title: "Kestrel Movie".into(),
-                export_preset: default_export_preset(),
-                normalize_audio: false,
-                target_lufs: default_target_lufs(),
-                markers: Vec::new(),
-            },
-            final_path: String::new(),
-            exports: Vec::new(),
-            error: String::new(),
-            producer_review_required: true,
-            producer_approved_at: String::new(),
-            legacy_producer_feedback: Vec::new(),
-            legacy_copilot_history: Vec::new(),
-        };
-        write_json_atomic(
-            &folder.join("request.json"),
-            &json!({"prompt":project.prompt,"settings":project.settings,"references":project.references,"createdAt":project.created_at}),
-        )?;
-        write_json_atomic(&folder.join("references.json"), &project.references)?;
-        self.save(&project)?;
-        Ok(project)
-    }
-
     fn resolve_reference_asset(&self, id: &str) -> Result<MovieReferenceAsset, StudioError> {
         if id.len() != 64 || !id.bytes().all(|value| value.is_ascii_hexdigit()) {
             return Err(StudioError::Invalid("invalid movie reference id".into()));
@@ -624,173 +468,6 @@ impl MovieStudio {
         Ok(asset)
     }
 
-    fn materialize_references(
-        &self,
-        project_id: &str,
-        requests: Vec<ProducerReferenceRequest>,
-    ) -> Result<Vec<MovieReference>, StudioError> {
-        self.materialize_reference_additions(project_id, requests, &[])
-    }
-
-    fn materialize_reference_additions(
-        &self,
-        project_id: &str,
-        requests: Vec<ProducerReferenceRequest>,
-        existing: &[MovieReference],
-    ) -> Result<Vec<MovieReference>, StudioError> {
-        if existing.len() + requests.len() > 4096 {
-            return Err(StudioError::Invalid("A production can keep up to 4096 reference assets. Start another production for additional assets.".into()));
-        }
-        let mut seen = HashSet::new();
-        let mut prepared = Vec::new();
-        for request in requests {
-            if !seen.insert(request.asset_id.clone()) {
-                return Err(StudioError::Invalid(
-                    "the same producer reference cannot be attached twice".into(),
-                ));
-            }
-            let description = request.description.trim();
-            if description.len() < 3 || description.len() > 4_000 {
-                return Err(StudioError::Invalid(
-                    "describe what each reference should control in 3 to 4,000 characters".into(),
-                ));
-            }
-            if contains_reference_tag(description)
-                || contains_reference_tag(&request.embedded_audio_description)
-            {
-                return Err(StudioError::Invalid(
-                    "reference descriptions cannot contain reserved H3 tags such as <Picture 1> or <Audio 1>"
-                        .into(),
-                ));
-            }
-            let asset = self.resolve_reference_asset(&request.asset_id)?;
-            if request.use_embedded_audio && (asset.kind != "video" || !asset.has_audio) {
-                return Err(StudioError::Invalid(format!(
-                    "{} has no embedded audio track to use",
-                    asset.name
-                )));
-            }
-            if request.embedded_audio_description.len() > 4_000 {
-                return Err(StudioError::Invalid(
-                    "embedded audio descriptions cannot exceed 4,000 bytes".into(),
-                ));
-            }
-            if request.use_embedded_audio && request.embedded_audio_description.trim().len() < 3 {
-                return Err(StudioError::Invalid(format!(
-                    "describe what the embedded audio from {} should control",
-                    asset.name
-                )));
-            }
-            prepared.push((asset, request));
-        }
-        let embedded_audio = prepared
-            .iter()
-            .filter(|(asset, request)| asset.kind == "video" && request.use_embedded_audio)
-            .count();
-        let project_root = self.project_dir(project_id).join("references");
-        let mut picture_index = existing
-            .iter()
-            .filter(|reference| reference.kind == "image")
-            .count();
-        let mut video_index = existing
-            .iter()
-            .filter(|reference| reference.kind == "video")
-            .count();
-        let existing_audio = existing
-            .iter()
-            .filter(|reference| reference.kind == "audio" || reference.use_embedded_audio)
-            .count();
-        let mut embedded_index = existing_audio;
-        let mut standalone_index = 0usize;
-        let mut result = Vec::with_capacity(prepared.len());
-        for (asset, request) in prepared {
-            let (tag, audio_tag, file_stem) = match asset.kind.as_str() {
-                "image" => {
-                    picture_index += 1;
-                    (
-                        format!("<Picture {picture_index}>"),
-                        String::new(),
-                        format!("picture-{picture_index:02}"),
-                    )
-                }
-                "video" => {
-                    video_index += 1;
-                    let audio_tag = if request.use_embedded_audio {
-                        embedded_index += 1;
-                        format!("<Audio {embedded_index}>")
-                    } else {
-                        String::new()
-                    };
-                    (
-                        format!("<Video {video_index}>"),
-                        audio_tag,
-                        format!("video-{video_index:02}"),
-                    )
-                }
-                "audio" => {
-                    standalone_index += 1;
-                    let index = existing_audio + embedded_audio + standalone_index;
-                    (
-                        format!("<Audio {index}>"),
-                        String::new(),
-                        format!("audio-{index:02}"),
-                    )
-                }
-                _ => unreachable!("validated reference kind"),
-            };
-            let extension = Path::new(&asset.path)
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or("bin");
-            let target =
-                project_root.join(format!("{file_stem}-{}.{}", &asset.id[..12], extension));
-            if target.is_file() {
-                if hash_reference(&target)? != asset.id {
-                    return Err(StudioError::Invalid(format!(
-                        "The preserved project copy of {} failed its integrity check; it was not overwritten.",
-                        asset.name
-                    )));
-                }
-            } else {
-                if target.exists() {
-                    return Err(StudioError::Invalid(format!(
-                        "The project reference destination for {} is not a regular file.",
-                        asset.name
-                    )));
-                }
-                if fs::hard_link(&asset.path, &target).is_err() {
-                    fs::copy(&asset.path, &target)?;
-                    if hash_reference(&target)? != asset.id {
-                        let _ = fs::remove_file(&target);
-                        return Err(StudioError::Invalid(format!(
-                            "The copied project reference {} failed its integrity check.",
-                            asset.name
-                        )));
-                    }
-                }
-            }
-            result.push(MovieReference {
-                asset_id: asset.id,
-                tag,
-                audio_tag,
-                name: asset.name,
-                kind: asset.kind,
-                mime_type: asset.mime_type,
-                bytes: asset.bytes,
-                duration_seconds: asset.duration_seconds,
-                width: asset.width,
-                height: asset.height,
-                has_audio: asset.has_audio,
-                path: target.to_string_lossy().into_owned(),
-                description: request.description.trim().into(),
-                use_embedded_audio: request.use_embedded_audio,
-                embedded_audio_description: request.embedded_audio_description.trim().into(),
-                generation: asset.generation,
-            });
-        }
-        Ok(result)
-    }
-
     pub fn list(&self) -> Result<Vec<MovieSummary>, StudioError> {
         let mut projects = fs::read_dir(&self.root)?
             .filter_map(Result::ok)
@@ -804,7 +481,13 @@ impl MovieStudio {
     pub fn get(&self, id: &str) -> Result<MovieProject, StudioError> {
         validate_id(id)?;
         self.load_path(&self.project_dir(id).join("project.json"))
-            .map_err(|error| if matches!(error, StudioError::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound) { StudioError::NotFound(id.into()) } else { error })
+            .map_err(|error| {
+                if matches!(error, StudioError::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound) {
+                    StudioError::NotFound(id.into())
+                } else {
+                    error
+                }
+            })
     }
 
     fn project_lock(&self, id: &str) -> Result<Arc<AsyncMutex<()>>, StudioError> {
@@ -816,22 +499,6 @@ impl MovieStudio {
             .entry(id.to_owned())
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone())
-    }
-
-    pub async fn save_edits(
-        &self,
-        id: &str,
-        mut edit: MovieEdit,
-    ) -> Result<MovieProject, StudioError> {
-        let lock = self.project_lock(id)?;
-        let _guard = lock.lock().await;
-        let mut project = self.get(id)?;
-        validate_movie_edit(&project, &mut edit)?;
-        project.edit = edit;
-        project.schema_version = SCHEMA_VERSION;
-        project.updated_at = Utc::now().to_rfc3339();
-        self.save(&project)?;
-        Ok(project)
     }
 
     pub fn fail(&self, id: &str, error: impl ToString, app: Option<&AppHandle>) {
@@ -846,10 +513,24 @@ impl MovieStudio {
 
     pub fn stop(&self, id: &str, app: Option<&AppHandle>) -> Result<MovieProject, StudioError> {
         let mut project = self.get(id)?;
+        let now = Utc::now().to_rfc3339();
+        for job in &mut project.render_jobs {
+            if matches!(
+                job.status,
+                kestrel_app_core::H3RenderJobStatus::Queued
+                    | kestrel_app_core::H3RenderJobStatus::Preparing
+                    | kestrel_app_core::H3RenderJobStatus::Rendering
+                    | kestrel_app_core::H3RenderJobStatus::PostProcessing
+            ) {
+                job.status = kestrel_app_core::H3RenderJobStatus::Cancelled;
+                job.error = "Stopped by producer.".into();
+                job.updated_at = now.clone();
+            }
+        }
         project.status = "cancelled".into();
         project.phase = "cancelled".into();
         project.detail =
-            "Production stopped. The plan and every completed master are safe to resume.".into();
+            "Production stopped. Every completed take and timeline edit is safe.".into();
         self.persist_emit(&mut project, app)?;
         Ok(project)
     }
@@ -862,105 +543,6 @@ impl MovieStudio {
             .timeout(Duration::from_secs(30))
             .send()
             .await;
-    }
-
-    pub async fn render(
-        &self,
-        id: &str,
-        configured_comfy_root: &str,
-        cancel: &CancellationToken,
-        app: Option<&AppHandle>,
-    ) -> Result<MovieProject, StudioError> {
-        let mut project = self.get(id)?;
-        ensure_producer_render_approval(&project)?;
-        if !Path::new(configured_comfy_root).is_absolute() {
-            return Err(StudioError::Invalid(
-                "Choose an absolute ComfyUI folder in Setup".into(),
-            ));
-        }
-        project.settings.comfy_root = configured_comfy_root.into();
-        self.save(&project)?;
-        self.live_previews.clear_movie(id);
-        let comfy_root = project.settings.comfy_root.clone();
-        self.ensure_comfy(&comfy_root, &mut project, app).await?;
-        let plan = project
-            .plan
-            .clone()
-            .ok_or_else(|| StudioError::Invalid("project has no saved plan".into()))?;
-        for (index, planned) in plan.clips.iter().enumerate() {
-            check_cancel(cancel)?;
-            let rendered_clip = project.clips.get(index).ok_or_else(|| {
-                StudioError::Invalid(format!("rendered scene record {} is missing", index + 1))
-            })?;
-            if rendered_clip.status == "complete" && Path::new(&rendered_clip.path).is_file() {
-                continue;
-            }
-            let seed = rendered_clip.seed;
-            project.phase = "rendering".into();
-            project.detail = format!(
-                "Rendering clip {} of {} — {}",
-                index + 1,
-                plan.clips.len(),
-                planned.title
-            );
-            project
-                .clips
-                .get_mut(index)
-                .ok_or_else(|| {
-                    StudioError::Invalid(format!("rendered scene record {} is missing", index + 1))
-                })?
-                .status = "rendering".into();
-            self.persist_emit(&mut project, app)?;
-            match self
-                .render_clip(
-                    &project,
-                    planned,
-                    index,
-                    seed,
-                    cancel,
-                    ClipRenderContext { variant: None, app },
-                )
-                .await
-            {
-                Ok(path) => {
-                    let clip = project.clips.get_mut(index).ok_or_else(|| {
-                        StudioError::Invalid(format!(
-                            "rendered scene record {} is missing",
-                            index + 1
-                        ))
-                    })?;
-                    clip.status = "complete".into();
-                    clip.path = path;
-                    clip.error.clear();
-                    self.extract_last_frame(&project, index).await?;
-                    self.persist_emit(&mut project, app)?;
-                }
-                Err(error) => {
-                    let clip = project.clips.get_mut(index).ok_or_else(|| {
-                        StudioError::Invalid(format!(
-                            "rendered scene record {} is missing",
-                            index + 1
-                        ))
-                    })?;
-                    clip.status = "failed".into();
-                    clip.error = error.to_string();
-                    self.persist_emit(&mut project, app)?;
-                    return Err(error);
-                }
-            }
-        }
-        project.phase = "assembling".into();
-        project.detail =
-            "Joining the untouched H3 masters into a review cut without trimming or replacing audio."
-                .into();
-        self.persist_emit(&mut project, app)?;
-        let final_path = self.assemble_default(&project).await?;
-        project.final_path = final_path;
-        project.status = "complete".into();
-        project.phase = "complete".into();
-        project.detail = "The untouched H3 review cut is ready. Producer edits are opt-in and every source master remains preserved.".into();
-        self.persist_emit(&mut project, app)?;
-        Ok(project)
     }
 
     async fn ensure_comfy(
@@ -1100,422 +682,6 @@ impl MovieStudio {
         available
     }
 
-    async fn render_clip(
-        &self,
-        project: &MovieProject,
-        planned: &PlannedClip,
-        index: usize,
-        seed: u64,
-        cancel: &CancellationToken,
-        context: ClipRenderContext<'_>,
-    ) -> Result<String, StudioError> {
-        let ClipRenderContext { variant, app } = context;
-        let variant_suffix = variant.map(|value| format!("-{value}")).unwrap_or_default();
-        let prefix = format!(
-            "kestrel_movies/{}/shot_{:03}{variant_suffix}",
-            project.id,
-            index + 1
-        );
-        let legacy_reference_ids = planned.reference_ids.iter().collect::<HashSet<_>>();
-        let selected_references = project
-            .references
-            .iter()
-            .filter_map(|reference| {
-                let selection = planned
-                    .reference_selections
-                    .iter()
-                    .find(|selection| selection.asset_id == reference.asset_id);
-                let selected = if planned.reference_selections.is_empty() {
-                    legacy_reference_ids.contains(&reference.asset_id)
-                } else {
-                    selection.is_some_and(|selection| selection.use_visual || selection.use_audio)
-                };
-                selected.then_some((reference, selection))
-            })
-            .collect::<Vec<_>>();
-        let mut graph_references = Vec::with_capacity(selected_references.len());
-        validate_h3_reference_counts(
-            selected_references
-                .iter()
-                .filter(|(reference, _)| reference.kind == "image")
-                .count(),
-            selected_references
-                .iter()
-                .filter(|(reference, _)| reference.kind == "video")
-                .count(),
-            selected_references
-                .iter()
-                .filter(|(reference, selection)| {
-                    reference.kind == "audio"
-                        || (reference.kind == "video"
-                            && selection
-                                .map(|selection| selection.use_audio)
-                                .unwrap_or(reference.use_embedded_audio))
-                })
-                .count(),
-        )?;
-        for (reference, selection) in &selected_references {
-            if selection.is_some_and(|selection| {
-                reference.kind == "video" && selection.use_audio && !selection.use_visual
-            }) {
-                return Err(StudioError::Render(
-                    "H3 cannot bind embedded video audio without also binding that video's motion; update the producer reference selection"
-                        .into(),
-                ));
-            }
-            let relative = stage_movie_reference(project, reference).await?;
-            graph_references.push(H3ReferenceInput {
-                kind: reference.kind.as_str(),
-                file: relative,
-                use_embedded_audio: selection
-                    .map(|selection| selection.use_audio)
-                    .unwrap_or(reference.use_embedded_audio),
-                description: &reference.description,
-                guidance: selection
-                    .map(|selection| selection.guidance.as_str())
-                    .unwrap_or_default(),
-            });
-        }
-        let explicit_first =
-            stage_frame_reference(project, &planned.first_frame_reference_id, "first-frame")
-                .await?;
-        let explicit_last =
-            stage_frame_reference(project, &planned.last_frame_reference_id, "last-frame").await?;
-        if !graph_references.is_empty() && (explicit_first.is_some() || explicit_last.is_some()) {
-            return Err(StudioError::Render(
-                "H3 first/last-frame conditioning cannot be combined with native references in one scene"
-                    .into(),
-            ));
-        }
-        let continuity_input = if explicit_first.is_some() {
-            explicit_first
-        } else if graph_references.is_empty() && index > 0 && planned.use_previous_frame {
-            let source = self
-                .project_dir(&project.id)
-                .join("stills")
-                .join(format!("clip-{:03}-last.png", index));
-            if source.is_file() {
-                let relative = format!("kestrel/{}/clip-{:03}-last.png", project.id, index);
-                let target = PathBuf::from(&project.settings.comfy_root)
-                    .join("input")
-                    .join(&relative);
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                tokio::fs::copy(source, target).await?;
-                Some(relative)
-            } else {
-                return Err(StudioError::Render(format!("Scene {} requires the previous scene's last frame, but {} is missing. Render the preceding shot first; Kestrel will not replace visual continuity with text-only generation.", index + 1, source.display())));
-            }
-        } else {
-            None
-        };
-        let render_prompt = if graph_references.is_empty() {
-            planned.prompt.clone()
-        } else {
-            format!(
-                "{}\n\n{}",
-                bound_reference_prompt(&graph_references),
-                planned.prompt
-            )
-        };
-        let preview_available = self.comfy_preview_available().await;
-        let graph = h3_graph(H3GraphRequest {
-            prompt: &render_prompt,
-            width: project.settings.width,
-            height: project.settings.height,
-            seconds: planned.duration_seconds,
-            steps: project.settings.steps,
-            seed,
-            prefix: &prefix,
-            first_frame: continuity_input.as_deref(),
-            last_frame: explicit_last.as_deref(),
-            references: &graph_references,
-            ref_image_size: &project.settings.ref_image_size,
-            preview_available,
-        });
-        let receipt_dir = self
-            .project_dir(&project.id)
-            .join("render-receipts")
-            .join(uuid::Uuid::new_v4().to_string());
-        fs::create_dir_all(&receipt_dir)?;
-        let mut endpoint_receipts = Vec::new();
-        for (role, relative) in [
-            ("first", continuity_input.as_ref()),
-            ("last", explicit_last.as_ref()),
-        ] {
-            if let Some(relative) = relative {
-                let path = PathBuf::from(&project.settings.comfy_root)
-                    .join("input")
-                    .join(relative);
-                endpoint_receipts
-                    .push(json!({"role":role,"input":relative,"sha256":hash_reference(&path)?}));
-            }
-        }
-        producer::write_recoverable_json(&receipt_dir.join("graph.json"), &graph)?;
-        producer::write_recoverable_json(
-            &receipt_dir.join("request.json"),
-            &json!({"projectId":project.id,"clipId":planned.id,"clipIndex":index,"variant":variant,"seed":seed.to_string(),"plan":planned,"endpoints":endpoint_receipts,"references":project.references}),
-        )?;
-        if let Some(id) = variant.filter(|_| planned.id.starts_with("editor-")) {
-            // The native graph is preserved before submission, including exact endpoint inputs.
-            producer::write_recoverable_json(
-                &self
-                    .project_dir(&project.id)
-                    .join("editor-generations")
-                    .join(id)
-                    .join("graph.json"),
-                &graph,
-            )?;
-        }
-        let client_id = format!("kestrel-preview-{}", uuid::Uuid::new_v4().simple());
-        let job_id = variant
-            .map(|value| format!("{}-{value}", planned.id))
-            .unwrap_or_else(|| planned.id.clone());
-        let preview_target = PreviewTarget::movie_clip(job_id, &project.id, &planned.id, index);
-        let preview = if preview_available {
-            LivePreviewSession::connect(app, &client_id, preview_target, &self.live_previews).await
-        } else {
-            emit_preview_unavailable(app, &self.live_previews, preview_target);
-            None
-        };
-        let response = self
-            .http
-            .post(format!("{COMFY_BASE}/prompt"))
-            .json(&json!({"prompt":graph,"client_id":client_id}))
-            .send()
-            .await?;
-        let status = response.status();
-        let value: Value = response.json().await?;
-        producer::write_recoverable_json(&receipt_dir.join("submission.json"), &value)?;
-        if !status.is_success() {
-            return Err(StudioError::Render(format!(
-                "ComfyUI rejected clip: {}",
-                truncate(&value.to_string(), 700)
-            )));
-        }
-        let prompt_id = value
-            .get("prompt_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                StudioError::Render(format!("ComfyUI returned no prompt id: {value}"))
-            })?;
-        let deadline = tokio::time::Instant::now() + COMFY_RENDER_TIMEOUT;
-        loop {
-            if cancel.is_cancelled() {
-                let _ = self
-                    .http
-                    .post(format!("{COMFY_BASE}/interrupt"))
-                    .send()
-                    .await;
-                return Err(StudioError::Cancelled);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(StudioError::Render(format!(
-                    "ComfyUI did not finish prompt {prompt_id} within 24 hours. The project and completed masters are safe; verify the ComfyUI queue before resuming."
-                )));
-            }
-            let history: Value = self
-                .http
-                .get(format!("{COMFY_BASE}/history/{prompt_id}"))
-                .send()
-                .await?
-                .json()
-                .await?;
-            if let Some(entry) = history.get(prompt_id) {
-                if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
-                    let detail = comfy_execution_error(entry).unwrap_or_else(|| {
-                        format!("execution failed: {}", truncate(&entry.to_string(), 1_000))
-                    });
-                    return Err(StudioError::Render(format!(
-                        "ComfyUI {detail}. The project and completed masters are safe; review the error, then resume."
-                    )));
-                }
-                if entry.pointer("/status/completed").and_then(Value::as_bool) == Some(true) {
-                    if let Some(preview) = &preview {
-                        preview.finish();
-                    }
-                    let media = find_output_media(entry, "videos").ok_or_else(|| {
-                        StudioError::Render("completed H3 job exposed no saved video".into())
-                    })?;
-                    let source = PathBuf::from(&project.settings.comfy_root)
-                        .join("output")
-                        .join(&media.1)
-                        .join(&media.0);
-                    let target = self
-                        .project_dir(&project.id)
-                        .join("raw")
-                        .join(format!("clip-{:03}{variant_suffix}.mp4", index + 1));
-                    tokio::fs::copy(&source, &target).await.map_err(|error| {
-                        StudioError::Render(format!(
-                            "could not preserve {}: {error}",
-                            source.display()
-                        ))
-                    })?;
-                    producer::write_recoverable_json(
-                        &receipt_dir.join("result.json"),
-                        &json!({"promptId":prompt_id,"path":target,"sha256":hash_reference(&target)?,"history":entry}),
-                    )?;
-                    return Ok(target.to_string_lossy().into_owned());
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    }
-
-    async fn extract_last_frame(
-        &self,
-        project: &MovieProject,
-        index: usize,
-    ) -> Result<(), StudioError> {
-        let clip = project.clips.get(index).ok_or_else(|| {
-            StudioError::Render("completed clip disappeared before continuity extraction".into())
-        })?;
-        let stills = self.project_dir(&project.id).join("stills");
-        fs::create_dir_all(&stills)?;
-        let target = stills.join(format!("clip-{:03}-last.png", index + 1));
-        let output = tokio::process::Command::new(media_program("ffmpeg"))
-            .args([
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-sseof",
-                "-0.08",
-                "-i",
-            ])
-            .arg(&clip.path)
-            .args(["-frames:v", "1"])
-            .arg(&target)
-            .output()
-            .await?;
-        if !output.status.success() {
-            return Err(StudioError::Render(format!(
-                "continuity-frame extraction failed: {}",
-                truncate(&String::from_utf8_lossy(&output.stderr), 500)
-            )));
-        }
-        Ok(())
-    }
-
-    async fn assemble_default(&self, project: &MovieProject) -> Result<String, StudioError> {
-        let folder = self.project_dir(&project.id);
-        let concat_path = folder.join("assembly.txt");
-        let mut concat = String::new();
-        for clip in project
-            .clips
-            .iter()
-            .filter(|clip| !clip.id.starts_with("editor-"))
-        {
-            if clip.status == "complete" {
-                concat.push_str(&format!(
-                    "file '{}'\n",
-                    clip.path.replace('\\', "/").replace('\'', "'\\''")
-                ));
-            }
-        }
-        if concat.is_empty() {
-            return Err(StudioError::Render(
-                "there are no completed clips to assemble".into(),
-            ));
-        }
-        fs::write(&concat_path, concat)?;
-        let target = folder.join("exports").join("first-cut.mp4");
-        let output = tokio::process::Command::new(media_program("ffmpeg"))
-            .args([
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-            ])
-            .arg(&concat_path)
-            .args(["-c", "copy", "-movflags", "+faststart"])
-            .arg(&target)
-            .output()
-            .await?;
-        if !output.status.success() {
-            return Err(StudioError::Render(format!(
-                "FFmpeg assembly failed: {}",
-                truncate(&String::from_utf8_lossy(&output.stderr), 1_000)
-            )));
-        }
-        Ok(target.to_string_lossy().into_owned())
-    }
-
-    pub async fn render_edit(&self, id: &str) -> Result<MovieProject, StudioError> {
-        let lock = self.project_lock(id)?;
-        let _guard = lock.lock().await;
-        let mut project = self.get(id)?;
-        let mut edit = project.edit.clone();
-        validate_movie_edit(&project, &mut edit)?;
-        project.edit = edit;
-        let mut edits = project
-            .edit
-            .clips
-            .iter()
-            .filter(|edit| edit.enabled)
-            .cloned()
-            .collect::<Vec<_>>();
-        edits.sort_by_key(|edit| edit.order);
-        if edits.is_empty() {
-            return Err(StudioError::Invalid(
-                "enable at least one clip before exporting".into(),
-            ));
-        }
-        let export_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
-        let file_stem = format!(
-            "{}-{}-{export_id}",
-            safe_export_stem(&project.edit.export_title),
-            Utc::now().format("%Y%m%d-%H%M%S")
-        );
-        let exports = self.project_dir(id).join("exports");
-        fs::create_dir_all(&exports)?;
-        let target = exports.join(format!("{file_stem}.mp4"));
-        let temporary = exports.join(format!("{file_stem}.partial.mp4"));
-        let duration_seconds = export::render_timeline(&project, &edits, &temporary).await?;
-        let export = MovieExport {
-            id: export_id,
-            created_at: Utc::now().to_rfc3339(),
-            title: project.edit.export_title.clone(),
-            preset: project.edit.export_preset.clone(),
-            path: target.to_string_lossy().into_owned(),
-            bytes: temporary.metadata()?.len(),
-            sha256: hash_reference(&temporary)?,
-            duration_seconds,
-            clip_count: edits.len(),
-        };
-        let sidecar = exports.join(format!("{file_stem}.json"));
-        if let Err(error) = write_json_atomic(
-            &sidecar,
-            &json!({
-                "schemaVersion": SCHEMA_VERSION,
-                "projectId": project.id,
-                "export": export,
-                "edit": project.edit,
-            }),
-        ) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-        if let Err(error) = fs::rename(&temporary, &target) {
-            let _ = fs::remove_file(&temporary);
-            let _ = fs::remove_file(&sidecar);
-            return Err(error.into());
-        }
-        project.final_path = target.to_string_lossy().into_owned();
-        project.exports.push(export);
-        project.schema_version = SCHEMA_VERSION;
-        project.updated_at = Utc::now().to_rfc3339();
-        project.detail = "A new immutable, non-destructive timeline export is ready.".into();
-        self.save(&project)?;
-        Ok(project)
-    }
-
     pub fn project_dir(&self, id: &str) -> PathBuf {
         self.root.join(id)
     }
@@ -1564,6 +730,10 @@ impl MovieStudio {
             },
         };
         normalize_movie_project(&mut project);
+        h3_engine::migrate_legacy_project_in_memory(
+            path.parent().unwrap_or_else(|| Path::new("")),
+            &mut project,
+        );
         Ok(project)
     }
 
@@ -1576,12 +746,14 @@ impl MovieStudio {
             if project.status == "running" {
                 project.status = "interrupted".into();
                 project.phase = "interrupted".into();
-                project.detail = "Kestrel closed during production. Completed masters are safe; resume when ready.".into();
+                project.detail =
+                    "Kestrel closed during production. Completed masters are safe; resume when ready."
+                        .into();
                 project.updated_at = Utc::now().to_rfc3339();
                 write_json_atomic(&path, &project)?;
             }
         }
-        Ok(())
+        Ok(usize::default()).map(|_| ())
     }
 }
 
@@ -1647,137 +819,6 @@ fn normalize_movie_project(project: &mut MovieProject) {
     }
 }
 
-fn validate_movie_edit(project: &MovieProject, edit: &mut MovieEdit) -> Result<(), StudioError> {
-    if edit.clips.len() > MAX_MOVIE_SCENES as usize {
-        return Err(StudioError::Invalid(
-            "a movie timeline can contain at most 4096 items".into(),
-        ));
-    }
-    let title = edit.export_title.trim();
-    if title.is_empty() || title.chars().count() > 120 || title.chars().any(char::is_control) {
-        return Err(StudioError::Invalid(
-            "export title must contain 1 to 120 printable characters".into(),
-        ));
-    }
-    edit.export_title = title.into();
-    if !matches!(
-        edit.export_preset.as_str(),
-        "archive" | "publish" | "review"
-    ) {
-        return Err(StudioError::Invalid(
-            "export preset must be archive, publish, or review".into(),
-        ));
-    }
-    if !edit.target_lufs.is_finite() || !(-24.0..=-9.0).contains(&edit.target_lufs) {
-        return Err(StudioError::Invalid(
-            "audio normalization target must be between -24 and -9 LUFS".into(),
-        ));
-    }
-    edit.clips.sort_by_key(|item| item.order);
-    let mut ids = HashSet::new();
-    for (index, item) in edit.clips.iter_mut().enumerate() {
-        if item.id.is_empty() {
-            item.id = format!("edit-{}-{}", item.clip_id, index + 1);
-        }
-        if item.id.len() > 128
-            || item.id.chars().any(char::is_control)
-            || !ids.insert(item.id.clone())
-        {
-            return Err(StudioError::Invalid(format!(
-                "timeline item id must be unique and printable: {}",
-                item.id
-            )));
-        }
-        item.order = index as u32;
-        let source = selected_clip_source(project, item)?;
-        let values = [
-            item.trim_start,
-            item.trim_end,
-            item.audio_gain,
-            item.speed,
-            item.fade_in,
-            item.fade_out,
-            item.audio_fade_in,
-            item.audio_fade_out,
-        ];
-        if values.iter().any(|value| !value.is_finite())
-            || item.trim_start < 0.0
-            || item.trim_end < 0.0
-            || item.audio_gain < 0.0
-            || item.audio_gain > 4.0
-            || !(0.25..=4.0).contains(&item.speed)
-            || item.fade_in < 0.0
-            || item.fade_out < 0.0
-            || item.audio_fade_in < 0.0
-            || item.audio_fade_out < 0.0
-        {
-            return Err(StudioError::Invalid(format!(
-                "timeline item {} has trims, speed, fades, or audio gain outside supported bounds",
-                item.id
-            )));
-        }
-        if item.label.chars().count() > 120
-            || item.label.chars().any(char::is_control)
-            || item.notes.chars().count() > 4_000
-            || item
-                .notes
-                .chars()
-                .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
-        {
-            return Err(StudioError::Invalid(format!(
-                "timeline item {} has a label or producer note outside supported bounds",
-                item.id
-            )));
-        }
-        let source_duration = source.duration_seconds;
-        if item.trim_start + item.trim_end > source_duration - MIN_TIMELINE_SOURCE_SECONDS {
-            return Err(StudioError::Invalid(format!(
-                "timeline item {} trims away the entire preserved source",
-                item.id
-            )));
-        }
-        let output_duration = (source_duration - item.trim_start - item.trim_end) / item.speed;
-        if item.fade_in + item.fade_out > output_duration + 0.001
-            || item.audio_fade_in + item.audio_fade_out > output_duration + 0.001
-        {
-            return Err(StudioError::Invalid(format!(
-                "timeline item {} fades overlap beyond its {:.2}-second edited duration",
-                item.id, output_duration
-            )));
-        }
-    }
-    if edit.markers.len() > 256 {
-        return Err(StudioError::Invalid(
-            "a movie timeline can contain at most 256 markers and to-do items".into(),
-        ));
-    }
-    let mut marker_ids = HashSet::new();
-    edit.markers.sort_by(|left, right| {
-        left.time_seconds
-            .partial_cmp(&right.time_seconds)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    for marker in &mut edit.markers {
-        marker.label = marker.label.trim().into();
-        if marker.id.is_empty()
-            || marker.id.len() > 128
-            || marker.id.chars().any(char::is_control)
-            || !marker_ids.insert(marker.id.clone())
-            || !marker.time_seconds.is_finite()
-            || !(0.0..=86_400.0).contains(&marker.time_seconds)
-            || marker.label.is_empty()
-            || marker.label.chars().count() > 120
-            || marker.label.chars().any(char::is_control)
-            || !matches!(marker.kind.as_str(), "marker" | "todo" | "chapter")
-        {
-            return Err(StudioError::Invalid(
-                "timeline markers require a unique ID, a printable label, a valid time, and marker, todo, or chapter type".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn atempo_filters(speed: f32) -> Vec<f32> {
     let mut remaining = speed;
     let mut filters = Vec::new();
@@ -1826,250 +867,6 @@ fn check_cancel(cancel: &CancellationToken) -> Result<(), StudioError> {
     }
 }
 
-async fn stage_movie_reference(
-    project: &MovieProject,
-    reference: &MovieReference,
-) -> Result<String, StudioError> {
-    let file_name = Path::new(&reference.path)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| StudioError::Render("invalid project reference filename".into()))?;
-    let relative = format!("kestrel/{}/references/{file_name}", project.id);
-    let target = PathBuf::from(&project.settings.comfy_root)
-        .join("input")
-        .join(&relative);
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    tokio::fs::copy(&reference.path, &target).await?;
-    Ok(relative)
-}
-
-fn ensure_producer_render_approval(project: &MovieProject) -> Result<(), StudioError> {
-    if project.producer_approved_at.trim().is_empty() {
-        return Err(StudioError::Invalid(
-            "save and explicitly approve the producer-owned scene cards before rendering".into(),
-        ));
-    }
-    Ok(())
-}
-
-async fn stage_frame_reference(
-    project: &MovieProject,
-    asset_id: &str,
-    label: &str,
-) -> Result<Option<String>, StudioError> {
-    if asset_id.is_empty() {
-        return Ok(None);
-    }
-    let reference = project
-        .references
-        .iter()
-        .find(|reference| reference.asset_id == asset_id)
-        .ok_or_else(|| {
-            StudioError::Render(format!(
-                "the producer-selected {label} image is no longer in this project"
-            ))
-        })?;
-    if reference.kind != "image" {
-        return Err(StudioError::Render(format!(
-            "the producer-selected {label} input must be an image"
-        )));
-    }
-    stage_movie_reference(project, reference).await.map(Some)
-}
-
-struct H3GraphRequest<'a> {
-    prompt: &'a str,
-    width: u32,
-    height: u32,
-    seconds: f32,
-    steps: u32,
-    seed: u64,
-    prefix: &'a str,
-    first_frame: Option<&'a str>,
-    last_frame: Option<&'a str>,
-    references: &'a [H3ReferenceInput<'a>],
-    ref_image_size: &'a str,
-    preview_available: bool,
-}
-
-struct ClipRenderContext<'a> {
-    variant: Option<&'a str>,
-    app: Option<&'a AppHandle>,
-}
-
-struct H3ReferenceInput<'a> {
-    kind: &'a str,
-    file: String,
-    use_embedded_audio: bool,
-    description: &'a str,
-    guidance: &'a str,
-}
-
-fn bound_reference_prompt(references: &[H3ReferenceInput<'_>]) -> String {
-    let mut bindings = Vec::new();
-    let mut picture = 0usize;
-    for reference in references
-        .iter()
-        .filter(|reference| reference.kind == "image")
-    {
-        picture += 1;
-        bindings.push(format!(
-            "Use <Picture {picture}> as a visual reference for {}{}.",
-            reference.description.trim(),
-            reference_guidance_suffix(reference.guidance)
-        ));
-    }
-    let mut video = 0usize;
-    let mut audio = 0usize;
-    for reference in references
-        .iter()
-        .filter(|reference| reference.kind == "video")
-    {
-        if reference.use_embedded_audio {
-            audio += 1;
-            bindings.push(format!(
-                "Use <Audio {audio}> exactly as it is; do not replace, reinterpret, remix, shorten, extend, or regenerate it{}.",
-                reference_guidance_suffix(reference.guidance)
-            ));
-        }
-        video += 1;
-        bindings.push(format!(
-            "Use <Video {video}> as a motion reference for {}{}.",
-            reference.description.trim(),
-            reference_guidance_suffix(reference.guidance)
-        ));
-    }
-    for reference in references
-        .iter()
-        .filter(|reference| reference.kind == "audio")
-    {
-        audio += 1;
-        bindings.push(format!(
-            "Use <Audio {audio}> exactly as it is; do not replace, reinterpret, remix, shorten, extend, or regenerate it{}.",
-            reference_guidance_suffix(reference.guidance)
-        ));
-    }
-    bindings.join(" ")
-}
-
-fn reference_guidance_suffix(guidance: &str) -> String {
-    let guidance = guidance.trim();
-    if guidance.is_empty() {
-        String::new()
-    } else {
-        format!(". Producer placement: {guidance}")
-    }
-}
-
-fn h3_graph(request: H3GraphRequest<'_>) -> Value {
-    let H3GraphRequest {
-        prompt,
-        width,
-        height,
-        seconds,
-        steps,
-        seed,
-        prefix,
-        first_frame,
-        last_frame,
-        references,
-        ref_image_size,
-        preview_available,
-    } = request;
-    let raw_frames = (seconds * 24.0).round().max(5.0) as u32;
-    let length = raw_frames + (5 + 17 - raw_frames % 17) % 17;
-    let using_references = !references.is_empty();
-    let unet = if using_references {
-        "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
-    } else {
-        "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
-    };
-    let conditioning = if using_references {
-        json!({"class_type":"MiniMaxH3ReferenceToVideo","inputs":{"clip":["2",0],"vae":["3",0],"audio_vae":["4",0],"prompt":prompt,"width":width,"height":height,"length":length,"ref_image_size":ref_image_size}})
-    } else {
-        json!({"class_type":"MiniMaxH3ImageToVideo","inputs":{"clip":["2",0],"vae":["3",0],"prompt":prompt,"width":width,"height":height,"length":length}})
-    };
-    let mut graph = json!({
-        "1":{"class_type":"UNETLoader","inputs":{"unet_name":unet,"weight_dtype":"default"}},
-        "2":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors","type":"minimax","device":"default"}},
-        "3":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_video_vae_fp16.safetensors"}},
-        "4":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_audio_vae_fp32.safetensors"}},
-        "5":conditioning,
-        "6":{"class_type":"RandomNoise","inputs":{"noise_seed":seed}},
-        "7":{"class_type":"BasicScheduler","inputs":{"model":["1",0],"scheduler":"simple","steps":steps,"denoise":1.0}},
-        "8":{"class_type":"KSamplerSelect","inputs":{"sampler_name":"res_multistep"}},
-        "9":{"class_type":"BasicGuider","inputs":{"model":["1",0],"conditioning":["5",0]}},
-        "10":{"class_type":"SamplerCustomAdvanced","inputs":{"noise":["6",0],"guider":["9",0],"sampler":["8",0],"sigmas":["7",0],"latent_image":["5",1]}},
-        "11":{"class_type":"VAEDecode","inputs":{"samples":["10",0],"vae":["3",0]}},
-        "12":{"class_type":"VAEDecodeAudio","inputs":{"samples":["10",0],"vae":["4",0]}},
-        "13":{"class_type":"CreateVideo","inputs":{"images":["11",0],"audio":["12",0],"fps":24.0,"bit_depth":8}},
-        "14":{"class_type":"SaveVideo","inputs":{"video":["13",0],"filename_prefix":prefix,"format":"auto","codec":"auto"}}
-    });
-    if preview_available {
-        graph[PREVIEW_NODE_ID] = preview_node("1", 12);
-        graph["7"]["inputs"]["model"] = json!([PREVIEW_NODE_ID, 0]);
-        graph["9"]["inputs"]["model"] = json!([PREVIEW_NODE_ID, 0]);
-    }
-    if !using_references {
-        if let Some(image) = first_frame {
-            graph["15"] = json!({"class_type":"LoadImage","inputs":{"image":image}});
-            graph["5"]["inputs"]["first_frame"] = json!(["15", 0]);
-        }
-        if let Some(image) = last_frame {
-            graph["16"] = json!({"class_type":"LoadImage","inputs":{"image":image}});
-            graph["5"]["inputs"]["last_frame"] = json!(["16", 0]);
-        }
-        return graph;
-    }
-    let mut node = 15usize;
-    // Comfy's V3 autogrow API accepts dotted, zero-based dynamic paths. The H3 prompt labels
-    // those same values with one-based ordinals, which bound_reference_prompt owns separately.
-    let mut picture = 0usize;
-    for reference in references
-        .iter()
-        .filter(|reference| reference.kind == "image")
-    {
-        picture += 1;
-        let node_id = node.to_string();
-        graph[&node_id] = json!({"class_type":"LoadImage","inputs":{"image":reference.file}});
-        graph["5"]["inputs"][format!("ref_images.ref_image_{}", picture - 1)] = json!([node_id, 0]);
-        node += 1;
-    }
-    let mut video = 0usize;
-    for reference in references
-        .iter()
-        .filter(|reference| reference.kind == "video")
-    {
-        video += 1;
-        let load_id = node.to_string();
-        let components_id = (node + 1).to_string();
-        graph[&load_id] = json!({"class_type":"LoadVideo","inputs":{"file":reference.file}});
-        graph[&components_id] =
-            json!({"class_type":"GetVideoComponents","inputs":{"video":[load_id,0]}});
-        graph["5"]["inputs"][format!("ref_videos.ref_video_{}", video - 1)] =
-            json!([components_id, 0]);
-        if reference.use_embedded_audio {
-            graph["5"]["inputs"][format!("ref_video_audios.ref_video_audio_{}", video - 1)] =
-                json!([components_id, 1]);
-        }
-        node += 2;
-    }
-    let mut audio = 0usize;
-    for reference in references
-        .iter()
-        .filter(|reference| reference.kind == "audio")
-    {
-        audio += 1;
-        let node_id = node.to_string();
-        graph[&node_id] = json!({"class_type":"LoadAudio","inputs":{"audio":reference.file}});
-        graph["5"]["inputs"][format!("ref_audios.ref_audio_{}", audio - 1)] = json!([node_id, 0]);
-        node += 1;
-    }
-    graph
-}
-
 pub(crate) fn find_output_media(entry: &Value, category: &str) -> Option<(String, String)> {
     let outputs = entry.get("outputs")?.as_object()?;
     let is_video_file = |name: &str| {
@@ -2109,6 +906,13 @@ pub(crate) fn find_output_media(entry: &Value, category: &str) -> Option<(String
         for output in outputs.values() {
             if let Some(media_list) = output.get(*cat).and_then(Value::as_array) {
                 for media in media_list {
+                    if media
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| !t.eq_ignore_ascii_case("output"))
+                    {
+                        continue;
+                    }
                     if let Some(filename) = media.get("filename").and_then(Value::as_str) {
                         let matches_cat = match category {
                             "videos" => {
@@ -2186,7 +990,7 @@ fn classify_reference(path: &Path) -> Result<(String, String, u64), StudioError>
         "wav" => ("audio", "audio/wav", MAX_AUDIO_BYTES),
         "mp3" => ("audio", "audio/mpeg", MAX_AUDIO_BYTES),
         "flac" => ("audio", "audio/flac", MAX_AUDIO_BYTES),
-        "ogg" | "oga" => ("audio", "audio/ogg", MAX_AUDIO_BYTES),
+        "ogg" | "oga" | "opus" => ("audio", "audio/ogg", MAX_AUDIO_BYTES),
         "m4a" | "aac" => ("audio", "audio/mp4", MAX_AUDIO_BYTES),
         _ => {
             return Err(StudioError::Invalid(format!(
@@ -2259,16 +1063,16 @@ fn probe_reference(path: &Path, kind: &str) -> Result<ReferenceProbe, StudioErro
             })
         })
         .unwrap_or(0.0);
-    if kind == "video" && !(2.0..=MAX_REFERENCE_SECONDS).contains(&duration) {
+    if kind == "video" && !(0.15..=MAX_REFERENCE_SECONDS).contains(&duration) {
         return Err(StudioError::Invalid(format!(
-            "{} is {:.2}s; H3 reference videos must be trimmed to 2-15 seconds",
+            "{} is {:.2}s; video references must be between 0.15s and 1 hour",
             reference_name(path),
             duration
         )));
     }
-    if kind == "audio" && !(0.2..=MAX_REFERENCE_SECONDS).contains(&duration) {
+    if kind == "audio" && !(0.15..=MAX_REFERENCE_SECONDS).contains(&duration) {
         return Err(StudioError::Invalid(format!(
-            "{} is {:.2}s; trim H3 audio references to 0.2-15 seconds for predictable conditioning",
+            "{} is {:.2}s; audio references must be between 0.15s and 1 hour",
             reference_name(path),
             duration
         )));
@@ -2321,7 +1125,7 @@ fn copy_reference_and_hash(
     result
 }
 
-pub(super) fn hash_file(path: &Path) -> Result<(u64, String), StudioError> {
+pub(crate) fn hash_file(path: &Path) -> Result<(u64, String), StudioError> {
     let mut input = fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
@@ -2369,28 +1173,27 @@ fn readable_bytes(bytes: u64) -> String {
     }
 }
 
-fn contains_reference_tag(value: &str) -> bool {
-    let value = value.to_ascii_lowercase();
-    ["<picture", "<video", "<audio", "<subject"]
-        .iter()
-        .any(|tag| value.contains(tag))
-}
-
-fn derive_seed(base: u64, index: u64) -> u64 {
-    let base = if base == 0 {
-        Utc::now().timestamp_nanos_opt().unwrap_or_default() as u64
-    } else {
-        base
-    };
-    base.wrapping_add(index.wrapping_mul(0x9E37_79B9_7F4A_7C15)) & i64::MAX as u64
-}
-
 fn validate_id(id: &str) -> Result<(), StudioError> {
     if uuid::Uuid::parse_str(id).is_err() {
         Err(StudioError::Invalid("invalid movie project id".into()))
     } else {
         Ok(())
     }
+}
+
+pub(super) fn validate_comfy_filename(name: &str) -> Result<String, StudioError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 240
+        || trimmed.contains("..")
+        || trimmed.contains(['\\', ':', '*', '?', '"', '<', '>', '|'])
+        || trimmed.starts_with('/')
+    {
+        return Err(StudioError::Invalid(format!(
+            "Unsafe ComfyUI filename '{name}': must be a relative filename without '..' or path separators."
+        )));
+    }
+    Ok(trimmed.to_string())
 }
 
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), StudioError> {
@@ -2458,86 +1261,8 @@ pub(crate) fn validate_comfy_installation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kestrel_app_core::CreateMovieH3ProjectRequest;
     use tempfile::tempdir;
-
-    #[test]
-    fn h3_frame_graph_uses_both_producer_selected_endpoints() {
-        let graph = h3_graph(H3GraphRequest {
-            prompt: "A timed scene.",
-            width: 1344,
-            height: 768,
-            seconds: 5.0,
-            steps: 20,
-            seed: 42,
-            prefix: "kestrel/test",
-            first_frame: Some("first.png"),
-            last_frame: Some("last.png"),
-            references: &[],
-            ref_image_size: "match",
-            preview_available: false,
-        });
-        assert_eq!(
-            graph["1"]["inputs"]["unet_name"],
-            "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
-        );
-        assert_eq!(graph["15"]["inputs"]["image"], "first.png");
-        assert_eq!(graph["16"]["inputs"]["image"], "last.png");
-        assert_eq!(graph["5"]["inputs"]["first_frame"], json!(["15", 0]));
-        assert_eq!(graph["5"]["inputs"]["last_frame"], json!(["16", 0]));
-    }
-
-    #[test]
-    fn h3_reference_graph_binds_exact_audio_and_native_inputs() {
-        let references = vec![
-            H3ReferenceInput {
-                kind: "image",
-                file: "identity.png".into(),
-                use_embedded_audio: false,
-                description: "Mara's face and raincoat",
-                guidance: "keep the scar on her left cheek",
-            },
-            H3ReferenceInput {
-                kind: "audio",
-                file: "station-id.wav".into(),
-                use_embedded_audio: false,
-                description: "station identification",
-                guidance: "begin at the first frame",
-            },
-        ];
-        let prompt = bound_reference_prompt(&references);
-        assert!(prompt.contains("Use <Picture 1> as a visual reference"));
-        assert!(prompt.contains("Use <Audio 1> exactly as it is"));
-        assert!(prompt
-            .contains("do not replace, reinterpret, remix, shorten, extend, or regenerate it"));
-        assert!(prompt.contains("Producer placement: begin at the first frame"));
-
-        let graph = h3_graph(H3GraphRequest {
-            prompt: &prompt,
-            width: 1344,
-            height: 768,
-            seconds: 5.0,
-            steps: 20,
-            seed: 42,
-            prefix: "kestrel/test",
-            first_frame: None,
-            last_frame: None,
-            references: &references,
-            ref_image_size: "match",
-            preview_available: false,
-        });
-        assert_eq!(
-            graph["1"]["inputs"]["unet_name"],
-            "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
-        );
-        assert_eq!(
-            graph["5"]["inputs"]["ref_images.ref_image_0"],
-            json!(["15", 0])
-        );
-        assert_eq!(
-            graph["5"]["inputs"]["ref_audios.ref_audio_0"],
-            json!(["16", 0])
-        );
-    }
 
     #[test]
     #[ignore = "needs FFprobe on PATH or KESTREL_FFPROBE_PATH"]
@@ -2568,12 +1293,17 @@ mod tests {
         let root = tempdir().unwrap();
         let studio = MovieStudio::new(root.path()).unwrap();
         let mut project = studio
-            .create_producer_base(
-                "A keeper waits beside a fog signal.".into(),
-                MovieSettings::default(),
-                Vec::new(),
-                "test collaborator",
+            .create_h3_project(
+                CreateMovieH3ProjectRequest {
+                    title: "Fog Signal".into(),
+                    story_markdown: "A keeper waits beside a fog signal.".into(),
+                    width: None,
+                    height: None,
+                    duration_sec: None,
+                },
+                &root.path().to_string_lossy(),
                 false,
+                None,
             )
             .unwrap();
         project.detail = "second durable state".into();
@@ -2592,12 +1322,17 @@ mod tests {
         let root = tempdir().unwrap();
         let studio = MovieStudio::new(root.path()).unwrap();
         let project = studio
-            .create_producer_base(
-                "A keeper waits beside a fog signal.".into(),
-                MovieSettings::default(),
-                Vec::new(),
-                "test collaborator",
+            .create_h3_project(
+                CreateMovieH3ProjectRequest {
+                    title: "Fog Signal".into(),
+                    story_markdown: "A keeper waits beside a fog signal.".into(),
+                    width: None,
+                    height: None,
+                    duration_sec: None,
+                },
+                &root.path().to_string_lossy(),
                 false,
+                None,
             )
             .unwrap();
         let mut value = serde_json::to_value(project).unwrap();
@@ -2610,5 +1345,37 @@ mod tests {
         let saved = serde_json::to_value(loaded).unwrap();
         assert_eq!(saved["producerFeedback"][0]["feedback"], "preserved note");
         assert_eq!(saved["copilotHistory"][0]["response"], "preserved response");
+    }
+
+    #[test]
+    fn find_output_media_ignores_input_load_video_nodes_and_returns_saved_output_video() {
+        let entry = json!({
+            "outputs": {
+                "105": {
+                    "images": [
+                        {
+                            "filename": "window-source.mp4",
+                            "subfolder": "kestrel/proj-1/job-2",
+                            "type": "input"
+                        }
+                    ],
+                    "animated": [true]
+                },
+                "14": {
+                    "images": [
+                        {
+                            "filename": "job-2_00001_.mp4",
+                            "subfolder": "kestrel_h3/proj-1",
+                            "type": "output"
+                        }
+                    ],
+                    "animated": [true]
+                }
+            }
+        });
+        assert_eq!(
+            find_output_media(&entry, "videos"),
+            Some(("job-2_00001_.mp4".into(), "kestrel_h3/proj-1".into()))
+        );
     }
 }

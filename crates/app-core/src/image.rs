@@ -22,12 +22,17 @@ pub struct ImageStyle {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageElement {
+    #[serde(default)]
     pub id: String,
+    #[serde(default, alias = "type")]
     pub kind: String,
     /// Editor coordinates in `[y_min, x_min, y_max, x_max]` order, normalized to 0..1000.
     pub bbox: [u16; 4],
+    #[serde(default)]
     pub text: String,
+    #[serde(default, alias = "desc")]
     pub description: String,
+    #[serde(default)]
     pub color_palette: Vec<String>,
 }
 

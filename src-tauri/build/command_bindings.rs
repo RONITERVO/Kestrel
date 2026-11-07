@@ -203,7 +203,7 @@ fn export_command_bindings() {{
         "commands": [{}],
         "events": kestrel_app_core::events::bindings(),
         "speechPreferencesDefaults": kestrel_app_core::SpeechPreferences::default(),
-        "movieProducerDefaults": kestrel_app_core::MovieProducerProjectSettings::default(),
+        "movieH3Defaults": kestrel_app_core::MovieH3Defaults::default(),
         "runtimePolicyCatalog": kestrel_app_core::RUNTIME_POLICY_CATALOG,
         "externalCollaborationFormat": kestrel_app_core::EXTERNAL_COLLABORATION,
     }});

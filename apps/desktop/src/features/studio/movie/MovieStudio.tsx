@@ -1,605 +1,1694 @@
-import { movieProducerDefaults } from "../../../contracts/index";
-import type { PendingMovieReference } from "./movieDrafts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowDown, ArrowLeft, ArrowUp, AudioLines, Check, ChevronDown, CircleStop, Clapperboard,
-  Download, FilePenLine, Film, FolderOpen, Library, LoaderCircle, MessageSquare,
-  Paperclip, Play, Plus, RotateCcw, Save, Send, Settings2, ShieldCheck, Sparkles,
-  Trash2, Video, X,
+  AlertTriangle, BookOpen, CheckCircle2, CircleStop, Clapperboard, Cpu, Download,
+  Film, FolderOpen, Layers, LoaderCircle, PanelLeft, Plus, Save, Sparkles,
+  Users, WandSparkles, X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  getMovieEditorState, onMovieEditorJob, acceptMovieStoryRevision, attachMovieProducerReferences, cancelMovieRender,
-  cancelMovieStudioChat, createMovieProducerProject, getMovie,
-  getMovieProducerWorkspace, getMovieStudioConversation, listMovieImageAssets,
-  listMovies, movieMediaUrl, onMovieProducerWorkspace, onMovieProject,
-  onMovieStudioChat, pickMovieReferenceFiles, renderMovieEdit, renderMovieScenes,
-  resetMovieStudioConversation, revealMovie, saveMovieEdits, saveMovieScenes,
-  saveMovieStoryRevision, startMovieStudioChat, summarizeMovieStudioConversation,
+  cancelMovieRender, cancelStudioPromptDraft, captureMovieH3FrameGuide,
+  compileMovieH3Window, createMovieH3Project, createMovieH3Scene, getMovie,
+  getMovieH3Environment, inspectMovieH3Take, installMovieH3TurboLoras,
+  listMovieReferenceAssets, listMovies, movieMediaUrl, onMovieProject,
+  onStudioPromptDraft, placeMovieH3Take, renderMovieEdit, revealMovie,
+  saveMovieH3Scene, saveMovieH3Story, startMovieH3Generation,
+  startStudioPromptDraft,
 } from "../../../platform/api";
-import { FlowPages, type FlowPagesController } from "../../../shared/book/FlowPages";
-import { CardPages, MessagePages, ReplyViewToggle, type ReplyView } from "../../../shared/book/MessagePages";
-import { TextParagraphs } from "../../../shared/components/TextParagraphs";
-import { PagedList } from "../../../shared/book/PagedList";
-import { MarkdownContent } from "../../../shared/components/MarkdownContent";
-import { appendModelThinking } from "../../control/ModelThinkingStream";
-import { useInferenceTelemetryReporter } from "../../control/InferenceTelemetry";
-import { MovieTimeline } from "./MovieTimeline";
-import { MovieGenerationPanel } from "./MovieGenerationPanel";
-import { GenerateAssetButton, MovieAssetCreator } from "./MovieAssetCreator";
-import type { ImageHandoff } from "../imageHandoff";
-import { MovieH3Preview } from "./MovieH3Preview";
-import "./movie.css";
 import type {
-  ControlSettings, ModelInfo, MovieEdit, MovieProducerWorkspace, MovieReference,
-  MovieReferenceAsset, MovieSceneDraft, MovieSceneFrameSource,
-  MovieStudioConversation, MovieStudioConversationKind, MovieStudioConversationMode, MovieStudioChatRequest,
-  MovieSummary, ThinkingLevel,
+  ControlSettings, H3EnvironmentSnapshot, H3RenderQueueJob, H3Scene, H3SceneKind,
+  H3TakeInspection, H3TakePlacementMode, H3WindowCompileResult, ModelInfo,
+  MovieProject, MovieReferenceAsset, MovieSummary, PromptDraftMode,
+  PromptDraftReceipt, PromptDraftTarget, ThinkingLevel,
 } from "../../../contracts/index";
+import { appendModelThinking } from "../../control/ModelThinkingStream";
+import { ModelReplyPages } from "../../control/ModelReplyPages";
+import { effectiveModelRuntimePolicy, ModelRuntimePolicyControls, type RuntimePolicyValue } from "../../control/ModelRuntimePolicy";
+import { effectiveThinkingLevelForModel } from "../../control/modelPolicy";
+import { PagedList } from "../../../shared/book/PagedList";
+import { ExternalCollaborationExchange } from "../../../shared/collaboration/ExternalCollaborationExchange";
+import { buildExternalCollaborationRequest, parseExternalTextResult } from "../../../shared/collaboration/externalCollaboration";
+import type { ImageHandoff } from "../imageHandoff";
+import { H3ProgramMonitor, type H3MonitorSource } from "./MovieH3Preview";
+import { H3EntityLibrary, MovieAssetCreator } from "./MovieAssetCreator";
+import { MovieGenerationPanel } from "./MovieGenerationPanel";
+import { activeMonitorSourceAtPlayhead, MovieTimeline, snapToFrame } from "./MovieTimeline";
+import "./movie.css";
 
-type ProjectWorkspace = "story" | "scenes" | "edit" | "deliver";
-type ChatState = { requestId?: string; kind?: MovieStudioConversationKind; text: string; reasoning: string; status: string };
+type StudioRoom = "studio" | "references" | "story" | "takes" | "deliver";
 
-const defaultSettings = movieProducerDefaults;
-const emptyChat: ChatState = { text: "", reasoning: "", status: "" };
-
-function requestId(): string {
-  return crypto.randomUUID();
+interface CollaboratorDraftSession {
+  id: string;
+  label: string;
+  target: PromptDraftTarget;
+  mode: PromptDraftMode;
+  text: string;
+  reasoning: string;
+  status: string;
+  modelName: string;
+  thinkingLevel?: ThinkingLevel;
+  receipt?: PromptDraftReceipt;
+  apply: (text: string) => void;
 }
 
-function emptyScene(storyRevisionId: string, durationSeconds: number, index: number): MovieSceneDraft {
-  const now = new Date().toISOString();
-  return {
-    id: requestId(), revision: 0, title: `Scene ${index + 1}`,
-    purpose: "", durationSeconds, h3Prompt: "", continuityIn: "",
-    continuityOut: "", transition: "Cut", references: [], storyRevisionId,
-    createdAt: now, updatedAt: now,
-  };
-}
+const CANVAS_PRESETS: { key: string; label: string; width: number; height: number }[] = [
+  { key: "768x448", label: "768×448 · Fast 16:9 Cinema (Default)", width: 768, height: 448 },
+  { key: "1920x1088", label: "1920×1088 · Full 1080p 16:9 Cinema", width: 1920, height: 1088 },
+  { key: "960x544", label: "960×544 · Half-Res Audition", width: 960, height: 544 },
+  { key: "1088x1920", label: "1088×1920 · Vertical 9:16", width: 1088, height: 1920 },
+  { key: "1440x1088", label: "1440×1088 · Academy 4:3", width: 1440, height: 1088 },
+];
 
-function useStableCallback<T extends (...args: never[]) => unknown>(callback: T): T {
-  const callbackRef = useRef(callback);
-  useEffect(() => { callbackRef.current = callback; }, [callback]);
-  return useCallback(((...args: Parameters<T>) => callbackRef.current(...args)) as T, []);
+const EXPORT_PRESETS: { value: string; label: string; hint: string }[] = [
+  { value: "publish", label: "Publish Master (MP4 · H.264 BT.709 + AAC 48kHz)", hint: "Web & screening ready with -1 dBFS peak headroom" },
+  { value: "review", label: "Fast Review Cut (MP4 · Quick H.264)", hint: "Rapid editorial check" },
+  { value: "archive", label: "Archive Master (MP4 · High-Bitrate H.264)", hint: "Near-master archival quality" },
+  { value: "lossless", label: "Lossless Mezzanine (MKV · FFV1 + FLAC)", hint: "Bit-exact archival master" },
+  { value: "audio_flac", label: "Soundtrack Stem Only (FLAC · 48kHz Stereo)", hint: "Lossless audio bounce" },
+];
+
+function makeRequestId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? `draft-${crypto.randomUUID().slice(0, 8)}`
+    : `draft-${Date.now().toString(36)}`;
 }
 
 export function MovieStudio({
-  initialComfyRoot, advancedEnabled, models = [], selectedModelId, onError: onErrorProp, onRequestImage,
+  initialComfyRoot,
+  advancedEnabled,
+  models = [],
+  selectedModelId,
+  controlSettings,
+  onError,
+  onRequestImage,
 }: {
-  initialComfyRoot?: string; advancedEnabled: boolean; models?: ModelInfo[];
-  selectedModelId?: string; controlSettings?: ControlSettings; onError: (message: string) => void;
-  /** Opens Image Studio to make a picture that comes back to this production. */
+  initialComfyRoot?: string;
+  advancedEnabled: boolean;
+  models?: ModelInfo[];
+  selectedModelId?: string;
+  controlSettings?: ControlSettings;
+  onError: (message: string) => void;
   onRequestImage?: (handoff: ImageHandoff) => void;
 }) {
-  const onError = useStableCallback(onErrorProp);
-  const [movies, setMovies] = useState<MovieSummary[]>([]);
-  const [project, setProject] = useState<Awaited<ReturnType<typeof getMovie>> | null>(null);
-  const [producer, setProducer] = useState<MovieProducerWorkspace | null>(null);
-  const [creating, setCreating] = useState(true);
-  // Browsing the library keeps the open production intact until another one is chosen.
-  const [browsing, setBrowsing] = useState(false);
-  const [startingMaterial, setStartingMaterial] = useState("");
+  const [summaries, setSummaries] = useState<MovieSummary[]>([]);
+  const [project, setProject] = useState<MovieProject>();
+  const [sceneDraft, setSceneDraft] = useState<H3Scene>();
+  const [sceneDirty, setSceneDirty] = useState(false);
+  const [storyDraft, setStoryDraft] = useState("");
+  const [storyTitleDraft, setStoryTitleDraft] = useState("");
+  const [storyInstruction, setStoryInstruction] = useState("Updated story brief");
+  const [storyDirty, setStoryDirty] = useState(false);
+
+  const [environment, setEnvironment] = useState<H3EnvironmentSnapshot>();
+  const [installingTurbo, setInstallingTurbo] = useState(false);
+  const [referenceAssets, setReferenceAssets] = useState<MovieReferenceAsset[]>([]);
+  const [compileResult, setCompileResult] = useState<H3WindowCompileResult | null>(null);
+
+  const [room, setRoom] = useState<StudioRoom>("studio");
+  const [showLibrary, setShowLibrary] = useState(() => window.matchMedia?.("(max-width: 1199px)").matches !== true);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [busyAction, setBusyAction] = useState("");
+  const [notice, setNotice] = useState("");
+
+  // New production form
+  const [newTitle, setNewTitle] = useState("");
+  const [newStory, setNewStory] = useState("");
+  const [newCanvasKey, setNewCanvasKey] = useState("768x448");
+  const [newDurationSec, setNewDurationSec] = useState(15);
+
+  // Playback & timeline selection
+  const [playheadSec, setPlayheadSec] = useState(0);
+  const [selectedShotId, setSelectedShotId] = useState<string>();
+
+  // Takes & Telemetry room state
+  const [selectedTakeJobId, setSelectedTakeJobId] = useState("");
+  const [takeInspection, setTakeInspection] = useState<H3TakeInspection>();
+  const [takeInspecting, setTakeInspecting] = useState(false);
+  const [placeMode, setPlaceMode] = useState<H3TakePlacementMode>("trimmed");
+  const [placeSceneId, setPlaceSceneId] = useState("");
+  const [placeVideoLaneId, setPlaceVideoLaneId] = useState("");
+  const [placeAudioLaneId, setPlaceAudioLaneId] = useState("");
+  const [placeDriverLaneId, setPlaceDriverLaneId] = useState("");
+
+  // Deliver / Export room state
+  const [exportSceneId, setExportSceneId] = useState("");
+  const [exportTitle, setExportTitle] = useState("");
+  const [exportPreset, setExportPreset] = useState("publish");
+  const [exportHeadroomDb, setExportHeadroomDb] = useState(-1.0);
+  const [exporting, setExporting] = useState(false);
+
+  // Local LLM Collaborator state
   const [modelId, setModelId] = useState(selectedModelId ?? models[0]?.id ?? "");
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | "default">("default");
-  const [settings, setSettings] = useState(() => ({ ...defaultSettings, comfyRoot: initialComfyRoot || "" }));
-  const [advanced, setAdvanced] = useState(false);
-  const [pendingReferences, setPendingReferences] = useState<PendingMovieReference[]>([]);
-  const [workspace, setWorkspace] = useState<ProjectWorkspace>("story");
-  const [conversation, setConversation] = useState<MovieStudioConversation | null>(null);
-  const [storyDraft, setStoryDraft] = useState("");
-  const [storyRevisionId, setStoryRevisionId] = useState("");
-  const [storyEditing, setStoryEditing] = useState(false);
-  const [scenes, setScenes] = useState<MovieSceneDraft[]>([]);
-  const [selectedSceneIds, setSelectedSceneIds] = useState<string[]>([]);
-  const [chat, setChat] = useState<ChatState>(emptyChat);
-  const [chatInstruction, setChatInstruction] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [editorActive, setEditorActive] = useState(false);
-  const [edit, setEdit] = useState<MovieEdit>({ clips: [], exportTitle: "Kestrel Movie", exportPreset: "publish", normalizeAudio: false, targetLufs: -14, markers: [] });
-  const [generatedImages, setGeneratedImages] = useState<MovieReferenceAsset[]>([]);
-  const activeProjectId = useRef("");
-  const visibleEdit = useRef(edit);
-  const savedProject = useRef(project);
-  visibleEdit.current = edit;
-  savedProject.current = project;
-  const activeChatRequest = useRef("");
-  const modelIds = models.map((model) => model.id).join("\u0000");
+  const [draftMode, setDraftMode] = useState<PromptDraftMode>("develop");
+  const [runtimePolicyOverride, setRuntimePolicyOverride] = useState<RuntimePolicyValue>();
+  const [draftSession, setDraftSession] = useState<CollaboratorDraftSession>();
+
+  const activeProjectIdRef = useRef("");
+  const sceneDirtyRef = useRef(false);
+  const storyDirtyRef = useRef(false);
+  sceneDirtyRef.current = sceneDirty;
+  storyDirtyRef.current = storyDirty;
 
   useEffect(() => {
-    let alive = true;
-    let dispose: (() => void) | undefined;
-    setEditorActive(false);
-    if (project?.id) void getMovieEditorState(project.id).then((state) => {
-      if (alive) setEditorActive(state.jobs.some((job) => ["preparing", "writing", "rendering"].includes(job.status)));
-    }).catch((error) => onError(String(error)));
-    void onMovieEditorJob((job) => {
-      if (alive && job.projectId === project?.id) setEditorActive(["preparing", "writing", "rendering"].includes(job.status));
-    }).then((unlisten) => { if (alive) dispose = unlisten; else unlisten(); });
-    return () => { alive = false; dispose?.(); };
-  }, [project?.id, onError]);
+    if (!modelId && (selectedModelId || models[0]?.id)) {
+      setModelId(selectedModelId ?? models[0]?.id ?? "");
+    }
+  }, [modelId, models, selectedModelId]);
 
-  useEffect(() => {
-    if (models.some((model) => model.id === modelId)) return;
-    setModelId(models.find((model) => model.id === selectedModelId)?.id ?? models[0]?.id ?? "");
-  }, [modelId, modelIds, models, selectedModelId]);
-
-  const refreshList = useCallback(async () => setMovies(await listMovies()), []);
-  const loadConversation = useCallback(async (projectId: string, next: MovieProducerWorkspace, kind: MovieStudioConversationKind) => {
-    const id = kind === "story" ? next.activeStoryConversationId : next.activeSceneConversationId;
-    setConversation(id ? await getMovieStudioConversation(projectId, id) : null);
-  }, []);
-  const applyProducer = useCallback((next: MovieProducerWorkspace, preserveSceneDraft = false) => {
-    setProducer(next);
-    if (!preserveSceneDraft) setScenes(next.scenes);
-    const active = next.storyRevisions.find((item) => item.id === next.activeStoryRevisionId) ?? next.storyRevisions.at(-1);
-    setStoryRevisionId(active?.id ?? "");
-    setStoryDraft(active?.markdown ?? "");
+  const applyLoadedProject = useCallback((loaded: MovieProject, preserveDrafts = false) => {
+    activeProjectIdRef.current = loaded.id;
+    setProject(loaded);
+    const activeScene = loaded.scenes.find((s) => s.id === loaded.activeSceneId) ?? loaded.scenes[0];
+    if (activeScene && (!preserveDrafts || !sceneDirtyRef.current)) {
+      setSceneDraft(structuredClone(activeScene));
+      setSceneDirty(false);
+      setSelectedShotId((prev) =>
+        activeScene.promptSections.some((s) => s.id === prev) ? prev : activeScene.promptSections[0]?.id,
+      );
+    }
+    if (!preserveDrafts || !storyDirtyRef.current) {
+      setStoryDraft(loaded.storyMarkdown ?? "");
+      setStoryTitleDraft(loaded.title);
+      setStoryDirty(false);
+    }
+    setExportSceneId((prev) =>
+      loaded.scenes.some((s) => s.id === prev) ? prev : activeScene?.id ?? "",
+    );
+    setPlaceSceneId((prev) =>
+      loaded.scenes.some((s) => s.id === prev) ? prev : activeScene?.id ?? "",
+    );
+    setExportTitle((prev) => prev || loaded.edit?.exportTitle || loaded.title);
+    setSelectedTakeJobId((prev) =>
+      loaded.renderJobs.some((j) => j.id === prev)
+        ? prev
+        : [...loaded.renderJobs].reverse()[0]?.id ?? "",
+    );
   }, []);
 
-  const openProject = useCallback(async (id: string) => {
-    setBusy(true);
-    try {
-      const [nextProject, nextProducer] = await Promise.all([getMovie(id), getMovieProducerWorkspace(id)]);
-      activeProjectId.current = id;
-      setSelectedSceneIds([]);
-      setProject(nextProject); setEdit(nextProject.edit); applyProducer(nextProducer); setCreating(false); setBrowsing(false);
-      const nextWorkspace: ProjectWorkspace = nextProducer.acceptedStoryRevisionId ? "scenes" : "story";
-      setWorkspace(nextWorkspace);
-      await loadConversation(id, nextProducer, nextWorkspace);
-    } catch (error) { onError(String(error)); } finally { setBusy(false); }
-  }, [applyProducer, loadConversation, onError]);
+  const refreshSummariesAndAssets = useCallback(async () => {
+    const [nextSummaries, nextEnv, nextAssets] = await Promise.all([
+      listMovies().catch(() => [] as MovieSummary[]),
+      getMovieH3Environment().catch(() => undefined),
+      listMovieReferenceAssets().catch(() => [] as MovieReferenceAsset[]),
+    ]);
+    setSummaries(nextSummaries);
+    if (nextEnv) setEnvironment(nextEnv);
+    setReferenceAssets(nextAssets);
+    return nextSummaries;
+  }, []);
+
+  const refreshActiveProject = useCallback(async (preferredId?: string) => {
+    const nextSummaries = await listMovies();
+    setSummaries(nextSummaries);
+    const targetId = preferredId || activeProjectIdRef.current || nextSummaries[0]?.id;
+    if (targetId) {
+      const loaded = await getMovie(targetId);
+      applyLoadedProject(loaded, false);
+      setCreating(false);
+    } else {
+      setCreating(true);
+    }
+  }, [applyLoadedProject]);
 
   useEffect(() => {
-    let alive = true;
-    void listMovies().then((items) => { if (alive) setMovies(items); }).catch((error) => onError(String(error)));
-    void listMovieImageAssets().then((items) => {
-      if (alive) setGeneratedImages(items.flatMap((item) => item.status === "complete" ? item.candidates.map((candidate) => candidate.asset) : []));
-    }).catch(() => undefined);
-    return () => { alive = false; };
-  }, [onError]);
+    let disposed = false;
+    const cleanups: Array<() => void> = [];
 
-  useEffect(() => {
-    let disposeProject: (() => void) | undefined;
-    let disposeProducer: (() => void) | undefined;
-    let disposeChat: (() => void) | undefined;
-    void onMovieProject((next) => {
-      if (next.id !== activeProjectId.current) return;
-      const hasUnsavedEdit = JSON.stringify(visibleEdit.current) !== JSON.stringify(savedProject.current?.edit);
-      setProject(next);
-      if (next.status !== "running" && !hasUnsavedEdit) setEdit(next.edit);
-      void refreshList().catch(() => undefined);
-    }).then((dispose) => { disposeProject = dispose; });
-    void onMovieProducerWorkspace((next) => {
-      if (next.projectId === activeProjectId.current) applyProducer(next);
-    }).then((dispose) => { disposeProducer = dispose; });
-    void onMovieStudioChat((event) => {
-      if (event.requestId !== activeChatRequest.current) return;
-      if (event.projectId !== activeProjectId.current) {
-        if (event.event === "settled") { activeChatRequest.current = ""; setChat(emptyChat); }
-        return;
-      }
-      if (event.event === "queued") setChat((value) => ({ ...value, status: `Loading ${event.modelName ?? "local collaborator"}…` }));
-      else if (event.event === "started") setChat((value) => ({ ...value, status: "Writing locally…" }));
-      else if (event.event === "token" && event.kind === "story" && event.content) setChat((value) => ({ ...value, text: value.text + event.content }));
-      else if (event.event === "reasoning" && event.content) setChat((value) => ({ ...value, reasoning: appendModelThinking(value.reasoning, event.content ?? "") }));
-      else if (event.event === "scene-saved") setChat((value) => ({ ...value, text: "", reasoning: "", status: "Scene saved. Drafting the next distinct scene…" }));
-      else if (event.event === "cancelled") setChat((value) => ({ ...value, status: "Stopped. Partial text was preserved but not applied." }));
-      else if (event.event === "error") {
-        setChat((value) => ({ ...value, status: event.content || "The local collaborator stopped with an error." }));
-        onError(event.content || "Movie Studio collaborator failed.");
-      } else if (event.event === "complete") setChat((value) => ({ ...value, status: event.kind === "story" ? "A new story revision is ready." : "Scene changes are saved." }));
-      else if (event.event === "settled") {
-        const kind = event.kind;
-        const projectId = event.projectId;
-        activeChatRequest.current = "";
-        setChat((value) => ({ ...value, requestId: undefined }));
-        void Promise.all([getMovie(projectId), getMovieProducerWorkspace(projectId)]).then(async ([nextProject, nextProducer]) => {
-          if (activeProjectId.current !== projectId) return;
-          setProject(nextProject); setEdit(nextProject.edit); applyProducer(nextProducer);
-          await loadConversation(projectId, nextProducer, kind); await refreshList();
-        }).catch((error) => onError(String(error)));
-      }
-    }).then((dispose) => { disposeChat = dispose; });
-    return () => { disposeProject?.(); disposeProducer?.(); disposeChat?.(); };
-  }, [applyProducer, loadConversation, onError, refreshList]);
-
-  const run = async <T,>(action: () => Promise<T>, apply?: (value: T) => void) => {
-    setBusy(true);
-    try { const result = await action(); apply?.(result); return result; }
-    catch (error) { onError(String(error)); return undefined; }
-    finally { setBusy(false); }
-  };
-
-  const attachReferences = async (toProject = false) => {
-    setBusy(true);
-    try {
-      const imported = await pickMovieReferenceFiles();
-      if (imported.failures.length) onError(imported.failures.join("\n"));
-      const known = new Set(toProject ? project?.references.map((item) => item.assetId) : pendingReferences.map((item) => item.assetId));
-      const added = imported.references.filter((item) => !known.has(item.id)).map(toPendingReference);
-      if (!added.length) return;
-      if (toProject && project) {
-        const next = await attachMovieProducerReferences({
-          projectId: project.id,
-          references: added.map((item) => ({ assetId: item.assetId, description: item.description, includeEmbeddedAudio: item.useEmbeddedAudio, embeddedAudioDescription: item.embeddedAudioDescription })),
-        });
-        setProject(next);
-      } else setPendingReferences((current) => [...current, ...added]);
-    } catch (error) { onError(String(error)); } finally { setBusy(false); }
-  };
-
-  const useGeneratedImage = async (asset: MovieReferenceAsset, toProject = false) => {
-    const pending = toPendingReference(asset);
-    if (toProject && project) {
-      if (project.references.some((reference) => reference.assetId === asset.id)) return;
-      setBusy(true);
+    (async () => {
       try {
-        setProject(await attachMovieProducerReferences({ projectId: project.id, references: [{ assetId: pending.assetId, description: pending.description, includeEmbeddedAudio: false, embeddedAudioDescription: "" }] }));
-      } catch (error) { onError(String(error)); throw error; }
-      finally { setBusy(false); }
-    } else if (!pendingReferences.some((item) => item.assetId === pending.assetId)) setPendingReferences((current) => [...current, pending]);
-  };
+        const nextSummaries = await refreshSummariesAndAssets();
+        if (disposed) return;
+        if (nextSummaries[0]?.id) {
+          const loaded = await getMovie(nextSummaries[0].id);
+          if (!disposed) applyLoadedProject(loaded, false);
+        } else {
+          setCreating(true);
+        }
+      } catch (err) {
+        if (!disposed) onError(String(err));
+      } finally {
+        if (!disposed) setLoading(false);
+      }
+    })();
 
-  const beginNew = () => {
-    if (chat.requestId) void cancelMovieStudioChat(chat.requestId).catch(() => undefined);
-    activeProjectId.current = "";
-    activeChatRequest.current = "";
-    setProject(null); setProducer(null); setConversation(null); setCreating(true); setBrowsing(false);
-    setStartingMaterial(""); setPendingReferences([]); setWorkspace("story");
-    setStoryDraft(""); setStoryRevisionId(""); setScenes([]); setSelectedSceneIds([]); setChat(emptyChat);
-  };
+    void onMovieProject((next) => {
+      if (disposed) return;
+      void listMovies().then((items) => { if (!disposed) setSummaries(items); }).catch(() => undefined);
+      void listMovieReferenceAssets().then((assets) => { if (!disposed) setReferenceAssets(assets); }).catch(() => undefined);
+      if (next.id === activeProjectIdRef.current) {
+        applyLoadedProject(next, true);
+      } else if (!activeProjectIdRef.current) {
+        applyLoadedProject(next, false);
+        setCreating(false);
+      }
+    }).then((dispose) => (disposed ? dispose() : cleanups.push(dispose)));
 
-  const sendChat = async (kind: MovieStudioConversationKind, instruction = chatInstruction, projectId = project?.id, currentProducer = producer, sceneBatch?: MovieStudioChatRequest["sceneBatch"]) => {
-    if (!projectId || !currentProducer || !modelId || instruction.trim().length < 2 || activeChatRequest.current) return;
-    const id = requestId();
-    const conversationId = kind === "story" ? currentProducer.activeStoryConversationId : currentProducer.activeSceneConversationId;
-    activeChatRequest.current = id;
-    setChat({ requestId: id, kind, text: "", reasoning: "", status: "Preparing the local collaborator…" });
-    setChatInstruction("");
-    try {
-      await startMovieStudioChat({
-        requestId: id, projectId, kind, mode: "continue", conversationId, modelId, instruction,
-        storyRevisionId: kind === "story" ? storyRevisionId || undefined : currentProducer.acceptedStoryRevisionId,
-        selectedSceneIds: kind === "scenes" ? selectedSceneIds : [],
-        thinkingLevel: thinkingLevel === "default" ? undefined : thinkingLevel,
-        sceneBatch,
+    void onStudioPromptDraft((event) => {
+      if (disposed) return;
+      if (event.kind === "error") onError(event.content ?? "Local Studio collaborator stopped.");
+      setDraftSession((current) => {
+        if (!current || current.id !== event.requestId) return current;
+        const nextThinking = event.thinkingLevel ?? current.thinkingLevel;
+        if (event.kind === "token") {
+          return {
+            ...current,
+            text: current.text + (event.content ?? ""),
+            status: "writing",
+            modelName: event.modelName ?? current.modelName,
+            thinkingLevel: nextThinking,
+          };
+        }
+        if (event.kind === "started") {
+          return {
+            ...current,
+            status: "writing",
+            modelName: event.modelName ?? current.modelName,
+            receipt: event.receipt ?? undefined,
+            thinkingLevel: nextThinking,
+          };
+        }
+        if (event.kind === "reasoning") {
+          return {
+            ...current,
+            reasoning: appendModelThinking(current.reasoning, event.content ?? ""),
+            status: "thinking",
+            modelName: event.modelName ?? current.modelName,
+            thinkingLevel: nextThinking,
+          };
+        }
+        if (event.kind === "complete") {
+          return { ...current, status: "ready", modelName: event.modelName ?? current.modelName, thinkingLevel: nextThinking };
+        }
+        if (event.kind === "limited" || event.kind === "cancelled") {
+          return { ...current, status: "checkpoint", modelName: event.modelName ?? current.modelName, thinkingLevel: nextThinking };
+        }
+        if (event.kind === "error") {
+          return { ...current, status: "error" };
+        }
+        return current;
       });
-    } catch (error) { activeChatRequest.current = ""; setChat(emptyChat); onError(String(error)); }
-  };
+    }).then((dispose) => (disposed ? dispose() : cleanups.push(dispose)));
 
-  const createProject = async () => {
-    if (!modelId || startingMaterial.trim().length < 3) return;
-    setBusy(true);
+    return () => {
+      disposed = true;
+      cleanups.forEach((fn) => fn());
+    };
+    // Subscriptions remain stable across the MovieStudio session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Recompile active H3 window whenever project/scene/window/generation updates
+  useEffect(() => {
+    if (!project?.id || !sceneDraft?.id) {
+      setCompileResult(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void compileMovieH3Window({
+        projectId: project.id,
+        sceneId: sceneDraft.id,
+        windowOverride: sceneDraft.window,
+        generationOverride: sceneDraft.generation,
+      })
+        .then((res) => { if (!cancelled) setCompileResult(res); })
+        .catch(() => { if (!cancelled) setCompileResult(null); });
+    }, 100);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    project?.id,
+    project?.updatedAt,
+    sceneDraft?.id,
+    sceneDraft?.window,
+    sceneDraft?.generation,
+  ]);
+
+  // Inspect selected take when in Takes room
+  useEffect(() => {
+    if (room !== "takes" || !project?.id || !selectedTakeJobId) {
+      setTakeInspection(undefined);
+      return;
+    }
+    let cancelled = false;
+    setTakeInspecting(true);
+    void inspectMovieH3Take(project.id, selectedTakeJobId)
+      .then((res) => {
+        if (!cancelled) {
+          setTakeInspection(res);
+          setPlaceSceneId((prev) => prev || res.sceneId);
+        }
+      })
+      .catch((err) => { if (!cancelled) onError(String(err)); })
+      .finally(() => { if (!cancelled) setTakeInspecting(false); });
+    return () => { cancelled = true; };
+  }, [room, project?.id, project?.updatedAt, selectedTakeJobId, onError]);
+
+  const rendering = useMemo(() => {
+    if (!project) return false;
+    return (
+      project.status === "rendering" ||
+      project.renderJobs.some(
+        (j) =>
+          j.status === "queued" ||
+          j.status === "preparing" ||
+          j.status === "rendering" ||
+          j.status === "postProcessing",
+      )
+    );
+  }, [project]);
+
+  const completedTakes = useMemo<H3RenderQueueJob[]>(() => {
+    if (!project) return [];
+    return [...project.renderJobs].filter((j) => j.status === "complete" && Boolean(j.takeMediaPath)).reverse();
+  }, [project]);
+
+  const assetPathMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const asset of referenceAssets) {
+      if (asset.path) map.set(asset.id, asset.path);
+    }
+    return map;
+  }, [referenceAssets]);
+
+  const savedScene = useMemo(() => {
+    if (!project || !sceneDraft) return undefined;
+    return project.scenes.find((s) => s.id === sceneDraft.id);
+  }, [project, sceneDraft]);
+
+  const activeMonitorClip: H3MonitorSource | undefined = useMemo(() => {
+    if (!sceneDraft || !project) return undefined;
+    return activeMonitorSourceAtPlayhead(project, sceneDraft, playheadSec, assetPathMap);
+  }, [sceneDraft, playheadSec, project, assetPathMap]);
+
+  const selectedModel = useMemo(
+    () => models.find((m) => m.id === modelId) ?? models[0],
+    [models, modelId],
+  );
+  const inheritedPolicy = useMemo(
+    () => effectiveModelRuntimePolicy(controlSettings, selectedModel?.id, selectedModel?.fixedContextWindow),
+    [controlSettings, selectedModel],
+  );
+  const activeRuntimePolicy = runtimePolicyOverride ?? inheritedPolicy;
+
+  const startLocalDraft = async (
+    target: PromptDraftTarget,
+    label: string,
+    existingText: string,
+    assetName: string,
+    assetKind: string,
+    apply: (text: string) => void,
+  ) => {
+    const chosenModel = selectedModel?.id || modelId;
+    if (!chosenModel) {
+      onError("Select a local GGUF model in Control before starting the local Studio collaborator, or use External AI Copy/Paste.");
+      return;
+    }
+    const requestId = makeRequestId();
+    const resolvedThinking = thinkingLevel === "default"
+      ? effectiveThinkingLevelForModel(controlSettings, selectedModel?.id)
+      : thinkingLevel;
+    setDraftSession({
+      id: requestId,
+      label,
+      target,
+      mode: draftMode,
+      text: "",
+      reasoning: "",
+      status: "starting",
+      modelName: selectedModel?.name ?? chosenModel,
+      thinkingLevel: resolvedThinking,
+      apply,
+    });
     try {
-      const nextProject = await createMovieProducerProject({
-        startingMaterial, collaboratorModelId: modelId,
-        thinkingLevel: thinkingLevel === "default" ? undefined : thinkingLevel,
-        settings: {
-          width: settings.width, height: settings.height, clipSeconds: settings.clipSeconds,
-          steps: settings.steps, maxClips: settings.maxClips, seed: settings.seed,
-          thinkingBudget: settings.thinkingBudget, maxOutputTokens: settings.maxOutputTokens,
-          comfyRoot: settings.comfyRoot, refImageSize: settings.refImageSize,
-        },
-        references: pendingReferences.map((item) => ({ assetId: item.assetId, description: item.description, includeEmbeddedAudio: item.useEmbeddedAudio, embeddedAudioDescription: item.embeddedAudioDescription })),
+      await startStudioPromptDraft({
+        requestId,
+        modelId: chosenModel,
+        target,
+        mode: draftMode,
+        storyText: storyDraft || project?.storyMarkdown || newStory || "",
+        existingText,
+        assetName,
+        assetKind,
+        thinkingLevel: resolvedThinking,
+        contextWindow: activeRuntimePolicy.contextWindow,
+        maxOutputTokens: activeRuntimePolicy.maxOutputTokens,
       });
-      const nextProducer = await getMovieProducerWorkspace(nextProject.id);
-      activeProjectId.current = nextProject.id;
-      setProject(nextProject); setEdit(nextProject.edit); applyProducer(nextProducer); setCreating(false); setWorkspace("story");
-      await loadConversation(nextProject.id, nextProducer, "story"); await refreshList();
-      await sendChat("story", "Write the first complete story sketch from my starting material. Make confident creative choices while preserving its intent.", nextProject.id, nextProducer);
-    } catch (error) { onError(String(error)); } finally { setBusy(false); }
+    } catch (err) {
+      setDraftSession(undefined);
+      onError(String(err));
+    }
   };
 
-  const showWorkspace = async (next: ProjectWorkspace) => {
-    setWorkspace(next);
-    if (project && producer && (next === "story" || next === "scenes")) await loadConversation(project.id, producer, next).catch((error) => onError(String(error)));
+  const persistSceneIfNeeded = async (force = false): Promise<H3Scene | undefined> => {
+    if (!project || !sceneDraft) return sceneDraft;
+    if (!force && !sceneDirty && project.activeSceneId === sceneDraft.id) return sceneDraft;
+    setBusyAction("saving-scene");
+    try {
+      const updated = await saveMovieH3Scene({
+        projectId: project.id,
+        scene: sceneDraft,
+        setActive: true,
+        replaceEmptyCollections: true,
+      });
+      applyLoadedProject(updated, false);
+      const refreshed = updated.scenes.find((s) => s.id === sceneDraft.id) ?? updated.scenes[0];
+      return refreshed;
+    } finally {
+      setBusyAction("");
+    }
   };
-  const chooseStoryRevision = (id: string) => {
-    const revision = producer?.storyRevisions.find((item) => item.id === id);
-    if (revision) { setStoryRevisionId(id); setStoryDraft(revision.markdown); setStoryEditing(false); }
+
+  const handleSceneChange = (next: H3Scene) => {
+    setSceneDraft(next);
+    setSceneDirty(true);
   };
-  const saveStory = async () => {
-    if (!project || storyDraft.trim().length < 3) return;
-    const next = await run(() => saveMovieStoryRevision({ projectId: project.id, parentRevisionId: storyRevisionId || undefined, instruction: "Direct producer edit", markdown: storyDraft }));
-    if (next) { applyProducer(next); setStoryEditing(false); }
+
+  const handleSaveScene = async () => {
+    try {
+      await persistSceneIfNeeded(true);
+      setNotice("Saved H3 scene timeline & refreshed prompt compiler.");
+    } catch (err) {
+      onError(String(err));
+    }
   };
-  const acceptStory = async (mode: MovieStudioConversationMode) => {
-    if (!project || !storyRevisionId) return;
-    const next = await run(() => acceptMovieStoryRevision({ projectId: project.id, revisionId: storyRevisionId, conversationMode: mode }));
-    if (next) { applyProducer(next); setWorkspace("scenes"); await loadConversation(project.id, next, "scenes").catch((error) => onError(String(error))); }
+
+  const handleSelectProject = async (id: string) => {
+    if (id === project?.id && !creating) return;
+    try {
+      if (sceneDirty && project) {
+        await persistSceneIfNeeded(true);
+      }
+      const loaded = await getMovie(id);
+      applyLoadedProject(loaded, false);
+      setPlayheadSec(0);
+      setCreating(false);
+    } catch (err) {
+      onError(String(err));
+    }
   };
-  const saveScenes = async () => {
-    if (!project || !producer) return;
-    const next = await run(() => saveMovieScenes({ projectId: project.id, expectedRevision: producer.sceneRevision, scenes }));
-    if (next) applyProducer(next);
+
+  const handleCreateProject = async () => {
+    const preset = CANVAS_PRESETS.find((p) => p.key === newCanvasKey) ?? CANVAS_PRESETS[0];
+    setBusyAction("creating-project");
+    try {
+      const created = await createMovieH3Project({
+        title: newTitle.trim() || "Untitled H3 Production",
+        storyMarkdown: newStory.trim(),
+        width: preset.width,
+        height: preset.height,
+        durationSec: Math.max(2, newDurationSec),
+      });
+      await refreshSummariesAndAssets();
+      applyLoadedProject(created, false);
+      setCreating(false);
+      setRoom("studio");
+      setNewTitle("");
+      setNewStory("");
+      setNotice(`Created MiniMax H3 production "${created.title}".`);
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setBusyAction("");
+    }
   };
-  const startSceneChat = async () => {
-    if (!project || !producer) return;
-    const saved = await run(() => saveMovieScenes({ projectId: project.id, expectedRevision: producer.sceneRevision, scenes }));
-    if (saved) { applyProducer(saved); await sendChat("scenes", chatInstruction, project.id, saved); }
+
+  const handleSwitchScene = async (targetSceneId: string) => {
+    if (!project || targetSceneId === sceneDraft?.id) return;
+    try {
+      let currentProject = project;
+      if (sceneDirty && sceneDraft) {
+        currentProject = await saveMovieH3Scene({
+          projectId: project.id,
+          scene: sceneDraft,
+          setActive: false,
+          replaceEmptyCollections: true,
+        });
+      }
+      const target = currentProject.scenes.find((s) => s.id === targetSceneId);
+      if (!target) return;
+      const updated = await saveMovieH3Scene({
+        projectId: currentProject.id,
+        scene: target,
+        setActive: true,
+        replaceEmptyCollections: true,
+      });
+      applyLoadedProject(updated, false);
+      setPlayheadSec(snapToFrame(target.window.inSec));
+    } catch (err) {
+      onError(String(err));
+    }
   };
-  const startSceneBatch = async (sceneCount: number, resume: boolean) => {
-    if (!project || !producer) return;
-    const current = sceneDirty
-      ? await run(() => saveMovieScenes({ projectId: project.id, expectedRevision: producer.sceneRevision, scenes }))
-      : producer;
-    if (!current) return;
-    applyProducer(current);
-    await sendChat("scenes", resume ? "Resume the saved scene queue." : chatInstruction.trim() || "Adapt the accepted story into distinct scenes with clear visual action and continuity.", project.id, current, { sceneCount, resume });
-  };
-  const resetConversation = async (keepSummary: boolean) => {
-    if (!project || !conversation) return;
-    const next = await run(() => resetMovieStudioConversation({ projectId: project.id, conversationId: conversation.id, keepSummary }));
-    if (next) { setConversation(next); applyProducer(await getMovieProducerWorkspace(project.id)); }
-  };
-  const summarizeConversation = async () => {
-    if (!project || !conversation || !modelId) return;
-    const next = await run(() => summarizeMovieStudioConversation({
-      projectId: project.id, conversationId: conversation.id, modelId,
-      thinkingLevel: thinkingLevel === "default" ? undefined : thinkingLevel,
-    }));
-    if (next) setConversation(next);
-  };
-  const renderScenes = async () => {
-    if (!project || !producer) return;
-    const saved = await run(() => saveMovieScenes({ projectId: project.id, expectedRevision: producer.sceneRevision, scenes }));
-    if (!saved) return;
-    applyProducer(saved);
-    await run(() => renderMovieScenes(project.id), (next) => { setProject(next); setEdit(next.edit); });
-  };
-  const saveEdits = async (exportNow: boolean) => {
+
+  const handleAddScene = async (kind: H3SceneKind) => {
     if (!project) return;
-    await run(async () => { let next = await saveMovieEdits(project.id, edit); if (exportNow) next = await renderMovieEdit(project.id); return next; }, (next) => { setProject(next); setEdit(next.edit); });
+    setBusyAction("adding-scene");
+    try {
+      if (sceneDirty) await persistSceneIfNeeded(true);
+      const count = project.scenes.filter((s) => s.kind === kind).length + 1;
+      const spec =
+        kind === "audition"
+          ? { name: `Audition ${count}`, width: 768, height: 448, durationSec: 10 }
+          : kind === "soundtrack"
+            ? { name: `Soundtrack ${count}`, width: 64, height: 32, durationSec: 15 }
+            : { name: `Scene ${project.scenes.length + 1}`, width: 768, height: 448, durationSec: 15 };
+      const updated = await createMovieH3Scene({
+        projectId: project.id,
+        name: spec.name,
+        kind,
+        width: spec.width,
+        height: spec.height,
+        durationSec: spec.durationSec,
+      });
+      applyLoadedProject(updated, false);
+      setPlayheadSec(0);
+      setRoom("studio");
+      setNotice(`Created ${spec.name} (${spec.width}×${spec.height}).`);
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setBusyAction("");
+    }
   };
 
-  const activeStory = producer?.storyRevisions.find((item) => item.id === storyRevisionId);
-  const storyDirty = Boolean(activeStory && activeStory.markdown !== storyDraft);
-  const sceneDirty = Boolean(producer && JSON.stringify(scenes) !== JSON.stringify(producer.scenes));
-  const complete = project?.clips.filter((clip) => clip.status === "complete").length ?? 0;
+  const handleInstallTurboLoras = async () => {
+    setInstallingTurbo(true);
+    try {
+      const nextEnv = await installMovieH3TurboLoras();
+      setEnvironment(nextEnv);
+      setNotice("MiniMax H3 Ref2V + FL2V Turbo LoRAs verified and ready.");
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setInstallingTurbo(false);
+    }
+  };
 
-  const launching = creating || !project || !producer || browsing;
-  return <MovieAssetCreator production={project?.title || "the new production"} onUse={(asset) => useGeneratedImage(asset, !launching)} onRequestImage={onRequestImage} onError={onError}><div className={`movie-studio producer-movie-studio ${launching ? "is-launch" : "has-project"}`}>
-    {launching ? <div className="spread movie-launch-spread">
-      <aside className="page page-left movie-library">
-        <div className="movie-library-title"><span><small className="eyebrow">Private movie library</small><strong>Your productions</strong></span><button className="quiet-button compact" onClick={beginNew}><Plus size={15} /> New production</button></div>
-        {browsing && project && <button className="primary-button compact movie-library-return" onClick={() => setBrowsing(false)}><ArrowLeft size={15} /> Back to {project.title}</button>}
-        <PagedList
-            as="nav"
-            className="movie-list"
-            label="Private movie library"
-            items={movies}
-            itemKey={(movie) => movie.id}
-            selectedKey={project?.id}
-            empty={<div className="movie-empty-list"><Library size={18} />Your durable productions will appear here.</div>}
-            renderItem={(movie) => <button className={project?.id === movie.id ? "active" : ""} onClick={() => void openProject(movie.id)}><Film size={15} /><span><strong>{movie.title}</strong><small>{movie.phase} · {movie.clipCount} clips</small></span></button>}
-          />
-      </aside>
-      <section className="page page-right movie-stage">
-        <ProducerLaunch material={startingMaterial} onMaterial={setStartingMaterial} modelId={modelId} onModel={setModelId} models={models} thinkingLevel={thinkingLevel} onThinkingLevel={setThinkingLevel} settings={settings} onSettings={setSettings} advanced={advanced} onAdvanced={setAdvanced} advancedEnabled={advancedEnabled} references={pendingReferences} onReferences={setPendingReferences} generatedImages={generatedImages} busy={busy || Boolean(chat.requestId)} onAttach={() => void attachReferences(false)} onUseGenerated={(asset) => useGeneratedImage(asset, false)} onCreate={() => void createProject()} />
-      </section>
-    </div> : <section className="movie-stage">
-      <div className="movie-compact-library"><label>Production<select aria-label="Open production" value={project?.id ?? ""} onChange={(event) => event.target.value && void openProject(event.target.value)}><option value="">Choose a production</option>{movies.map((movie) => <option key={movie.id} value={movie.id}>{movie.title}</option>)}</select></label></div>
-      {project && workspace !== "edit" && (project.status === "running" || editorActive) && <div className="movie-preview-dock"><MovieH3Preview projectId={project.id} active onStop={() => void cancelMovieRender(project.id).catch((error) => onError(String(error)))} /></div>}
-      <div className="movie-project-view movie-production-shell producer-project-shell">
-        <header className="studio-project-bar"><div><span className={`studio-project-state ${project.status}`}>{project.status === "running" ? <LoaderCircle className="spin" /> : <ShieldCheck />}{project.phase}</span><span><strong>{project.title}</strong><small>Producer-owned story, scenes, media choices, and H3 masters</small></span></div><div className="movie-project-actions"><button onClick={() => setBrowsing(true)}><Library /> Library</button><button onClick={beginNew}><Plus /> New</button><button onClick={() => void revealMovie(project.id)}><FolderOpen /> Files</button>{project.status === "running" && <button className="danger" onClick={() => void cancelMovieRender(project.id).catch((error) => onError(String(error)))}><CircleStop /> Stop H3 safely</button>}</div></header>
-        <div className={`studio-production-strip ${project.status}`}><span>{project.status === "running" ? <LoaderCircle className="spin" /> : <ShieldCheck />}<strong>{project.detail}</strong><small>{producer.storyRevisions.length} story revisions · {producer.scenes.length} scene cards · {complete} H3 masters</small></span><div className="movie-progress"><i style={{ width: `${project.clips.length ? complete / project.clips.length * 100 : 0}%` }} /></div>{project.error && <button title={project.error} onClick={() => onError(project.error)}>Production issue</button>}</div>
-        <nav className="studio-workspace-tabs project-tabs" aria-label="Production workspaces">
-          <button className={workspace === "story" ? "active" : ""} onClick={() => void showWorkspace("story")}><FilePenLine /><span><strong>Story</strong><small>Draft and revise</small></span>{producer.activeStoryRevisionId && <Check />}</button>
-          <button className={workspace === "scenes" ? "active" : ""} disabled={!producer.acceptedStoryRevisionId} onClick={() => void showWorkspace("scenes")}><Video /><span><strong>Scenes</strong><small>Cards and H3 bindings</small></span>{producer.scenes.length > 0 && <b>{producer.scenes.length}</b>}</button>
-          <button className={workspace === "edit" ? "active" : ""} disabled={!project.clips.length} onClick={() => void showWorkspace("edit")}><Film /><span><strong>Edit</strong><small>Timeline and native mix</small></span>{edit.clips.length > 0 && <b>{edit.clips.filter((item) => item.enabled).length}</b>}</button>
-          <button className={workspace === "deliver" ? "active" : ""} disabled={!project.clips.length} onClick={() => void showWorkspace("deliver")}><Download /><span><strong>Deliver</strong><small>Immutable exports</small></span>{project.exports.length > 0 && <b>{project.exports.length}</b>}</button>
-        </nav>
-        <div className={`studio-workspace-body producer-workspace producer-${workspace}`}>
-          {workspace === "story" && <StoryRoom producer={producer} revisionId={storyRevisionId} draft={storyDraft} editing={storyEditing} dirty={storyDirty} acceptedId={producer.acceptedStoryRevisionId} conversation={conversation} chat={chat} instruction={chatInstruction} modelId={modelId} models={models} disabled={busy || project.status === "running" || Boolean(chat.requestId)} onRevision={chooseStoryRevision} onDraft={setStoryDraft} onEditing={setStoryEditing} onInstruction={setChatInstruction} onSend={() => void sendChat("story")} onStop={() => chat.requestId && void cancelMovieStudioChat(chat.requestId)} onSave={() => void saveStory()} onAccept={(mode) => void acceptStory(mode)} onSummarize={() => void summarizeConversation()} onReset={(keep) => void resetConversation(keep)} />}
-          {workspace === "scenes" && <SceneRoom project={project} producer={producer} scenes={scenes} selectedIds={selectedSceneIds} dirty={sceneDirty} conversation={conversation} chat={chat} instruction={chatInstruction} modelId={modelId} models={models} disabled={busy || project.status === "running" || Boolean(chat.requestId)} generatedImages={generatedImages} onScenes={setScenes} onSelected={setSelectedSceneIds} onInstruction={setChatInstruction} onAttach={() => void attachReferences(true)} onUseGenerated={(asset) => useGeneratedImage(asset, true)} onSave={() => void saveScenes()} onSend={() => void startSceneChat()} onStop={() => chat.requestId && void cancelMovieStudioChat(chat.requestId)} onSummarize={() => void summarizeConversation()} onReset={(keep) => void resetConversation(keep)} onRender={() => void renderScenes()} onBatch={(count, resume) => void startSceneBatch(count, resume)} />}
-          {workspace === "edit" && project.clips.length > 0 && <section className="project-edit-room"><MovieTimeline key={project.id} project={project} value={edit} disabled={busy || editorActive || project.status === "running"} onChange={setEdit} onRequestSave={() => void saveEdits(false)} renderPreview={editorActive || project.status === "running" ? <MovieH3Preview projectId={project.id} active onStop={() => void cancelMovieRender(project.id).catch((error) => onError(String(error)))} /> : undefined} generationPanel={(playhead, duration) => <MovieGenerationPanel project={project} edit={edit} playhead={playhead} duration={duration} models={models} modelId={modelId} disabled={busy || project.status === "running" || Boolean(chat.requestId)} onProject={(next) => { setProject(next); setEdit(next.edit); }} onActive={setEditorActive} onError={onError} />} /></section>}
-          {workspace === "deliver" && <DeliveryRoom project={project} edit={edit} busy={busy} complete={complete} onExport={() => void saveEdits(true)} />}
+  const handleStartGeneration = async (expandQualityLadder: boolean) => {
+    if (!project || !sceneDraft) return;
+    setBusyAction("starting-render");
+    try {
+      const persistedScene = await persistSceneIfNeeded(sceneDirty || project.activeSceneId !== sceneDraft.id);
+      const active = persistedScene ?? sceneDraft;
+      const receipt = await startMovieH3Generation({
+        projectId: project.id,
+        windows: [
+          {
+            sceneId: active.id,
+            label: `${active.name} [${active.window.inSec.toFixed(2)}s..${active.window.outSec.toFixed(2)}s]`,
+            windowOverride: null,
+            generationOverride: null,
+          },
+        ],
+        expandQualityLadder,
+      });
+      const reloaded = await getMovie(project.id);
+      applyLoadedProject(reloaded, false);
+      setNotice(receipt.detail);
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const handleStopGeneration = async () => {
+    if (!project) return;
+    try {
+      const updated = await cancelMovieRender(project.id);
+      applyLoadedProject(updated, true);
+      setNotice("Requested H3 queue stop.");
+    } catch (err) {
+      onError(String(err));
+    }
+  };
+
+  const handleCaptureGuide = async (source: H3MonitorSource, sourceTimeSec: number, timelineSec: number) => {
+    if (!project || !sceneDraft) return;
+    setBusyAction("capturing-guide");
+    try {
+      if (sceneDirty) await persistSceneIfNeeded(true);
+      const asset = await captureMovieH3FrameGuide({
+        projectId: project.id,
+        sceneId: sceneDraft.id,
+        sourceJobId: source.sourceKind === "renderedTake" ? source.id : null,
+        sourceAssetId: source.sourceKind === "referenceAsset" ? source.id : null,
+        timeSec: sourceTimeSec,
+        addGuideAtSec: timelineSec,
+        label: `Guide @ ${timelineSec.toFixed(2)}s`,
+      });
+      const [reloaded, assets] = await Promise.all([
+        getMovie(project.id),
+        listMovieReferenceAssets().catch(() => referenceAssets),
+      ]);
+      setReferenceAssets(assets);
+      applyLoadedProject(reloaded, false);
+      setNotice(`Pinned guide frame "${asset.name}" at ${timelineSec.toFixed(2)}s.`);
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const handleSaveStory = async () => {
+    if (!project) return;
+    setBusyAction("saving-story");
+    try {
+      const updated = await saveMovieH3Story({
+        projectId: project.id,
+        title: storyTitleDraft.trim() || project.title,
+        storyMarkdown: storyDraft,
+        instruction: storyInstruction.trim() || "Producer revision",
+      });
+      await refreshSummariesAndAssets();
+      applyLoadedProject(updated, false);
+      setNotice(`Saved Story Brief revision #${updated.storyRevisions.length}.`);
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const handlePlaceTake = async () => {
+    if (!project || !selectedTakeJobId) return;
+    const targetScene = project.scenes.find((s) => s.id === placeSceneId) ?? sceneDraft ?? project.scenes[0];
+    if (!targetScene) return;
+    setBusyAction("placing-take");
+    try {
+      if (sceneDirty) await persistSceneIfNeeded(true);
+      const updated = await placeMovieH3Take({
+        projectId: project.id,
+        jobId: selectedTakeJobId,
+        assetId: null,
+        targetSceneId: targetScene.id,
+        placementMode: placeMode,
+        targetVideoLaneId: placeDriverLaneId ? null : placeVideoLaneId || null,
+        targetAudioLaneId: placeDriverLaneId ? null : placeAudioLaneId || null,
+        targetDriverLaneId: placeDriverLaneId || null,
+        timelineStartOverrideSec: null,
+        durationOverrideSec: null,
+      });
+      applyLoadedProject(updated, false);
+      setNotice(`Placed take onto "${targetScene.name}" (${placeMode}).`);
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const handleRenderExport = async () => {
+    if (!project) return;
+    setExporting(true);
+    try {
+      if (sceneDirty) await persistSceneIfNeeded(true);
+      const receipt = await renderMovieEdit({
+        projectId: project.id,
+        sceneId: exportSceneId || sceneDraft?.id || null,
+        preset: exportPreset,
+        title: exportTitle.trim() || project.title,
+        peakHeadroomDb: exportHeadroomDb,
+        destinationPath: null,
+      });
+      const reloaded = await getMovie(project.id);
+      applyLoadedProject(reloaded, false);
+      setNotice(`Exported master "${receipt.export.title}" (${receipt.export.durationSeconds.toFixed(1)}s).`);
+    } catch (err) {
+      onError(String(err));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const placeTargetScene = project?.scenes.find((s) => s.id === placeSceneId) ?? sceneDraft;
+
+  return (
+    <MovieAssetCreator
+      production={project?.title ?? (newTitle || "MiniMax H3 Production")}
+      onUse={async (asset) => {
+        setReferenceAssets((prev) => [asset, ...prev.filter((a) => a.id !== asset.id)]);
+      }}
+      onRequestImage={onRequestImage}
+      onError={onError}
+    >
+      <div className="movie-studio">
+        {/* Left Project Library Column */}
+        {showLibrary && (
+          <aside className="movie-library" aria-label="Movie productions">
+            <header className="movie-library-head">
+              <div>
+                <span className="eyebrow">MiniMax H3 NLE</span>
+                <h2>Productions</h2>
+              </div>
+              <button
+                type="button"
+                className="primary-action compact"
+                onClick={() => setCreating(true)}
+              >
+                <Plus size={14} /> New
+              </button>
+            </header>
+
+            {loading ? (
+              <p className="muted"><LoaderCircle size={14} className="spin" /> Loading studio…</p>
+            ) : summaries.length === 0 ? (
+              <p className="muted">No H3 productions yet. Create your first multi-scene production.</p>
+            ) : (
+              <PagedList
+                items={summaries}
+                itemKey={(item) => item.id}
+                label="Production list"
+                selectedKey={!creating ? project?.id : null}
+                renderItem={(item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`movie-library-item ${!creating && project?.id === item.id ? "active" : ""}`}
+                    onClick={() => void handleSelectProject(item.id)}
+                  >
+                    <strong>{item.title}</strong>
+                    <small>{item.status} · {new Date(item.updatedAt).toLocaleDateString()}</small>
+                  </button>
+                )}
+              />
+            )}
+          </aside>
+        )}
+
+        {/* Main Workspace Column */}
+        <div className="movie-workspace">
+          {/* Top Bar */}
+          <header className="movie-topbar">
+            <div className="movie-topbar-title">
+              <button
+                type="button"
+                className="quiet-button compact"
+                aria-label="Toggle production library"
+                onClick={() => setShowLibrary((v) => !v)}
+              >
+                <PanelLeft size={15} />
+              </button>
+              <div>
+                <h1>{creating || !project ? "New MiniMax H3 Production" : project.title}</h1>
+                {project && !creating && (
+                  <span className="movie-status-line">
+                    <span className={`h3-status-pill status-${project.status}`}>{project.status}</span>
+                    {sceneDirty && <span className="h3-dirty-pill">Unsaved scene edits</span>}
+                    <small>{project.detail}</small>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* H3 Environment & Turbo LoRA Status */}
+            <div className="movie-env-bar">
+              {environment ? (
+                <>
+                  <span
+                    className={`h3-env-badge ${environment.ready ? "ready" : "missing"}`}
+                    title={`ComfyUI: ${environment.comfyRoot || initialComfyRoot || "Unset"} — ${environment.detail}`}
+                  >
+                    <Cpu size={13} />
+                    {environment.ready ? "H3 Weights Ready" : "H3 Weights Incomplete"}
+                    {environment.hasTaeh3Preview ? " · TAEH3" : ""}
+                  </span>
+                  {environment.hasRef2vTurboLora && environment.hasFl2vTurboLora ? (
+                    <span className="h3-env-badge ready" title="Ref2V + FL2V Turbo LoRAs installed">
+                      <CheckCircle2 size={13} /> Turbo LoRAs Ready
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="quiet-button compact"
+                      disabled={installingTurbo}
+                      onClick={() => void handleInstallTurboLoras()}
+                    >
+                      {installingTurbo ? <LoaderCircle size={13} className="spin" /> : <Download size={13} />}
+                      Install H3 Turbo LoRAs
+                    </button>
+                  )}
+                </>
+              ) : null}
+
+              {project && !creating && (
+                <button
+                  type="button"
+                  className="quiet-button compact"
+                  onClick={() => void revealMovie(project.id).catch((e) => onError(String(e)))}
+                >
+                  <FolderOpen size={14} /> Folder
+                </button>
+              )}
+            </div>
+          </header>
+
+          {notice && (
+            <div className="movie-notice-banner" role="status">
+              <span>{notice}</span>
+              <button type="button" className="quiet-button compact" aria-label="Dismiss notice" onClick={() => setNotice("")}>
+                <X size={13} />
+              </button>
+            </div>
+          )}
+
+          {/* Active Local LLM Collaborator Sheet */}
+          {draftSession && (
+            <section className="movie-collaborator-sheet" aria-label="Local Studio Collaborator">
+              <header>
+                <strong><WandSparkles size={15} /> Local Collaborator · {draftSession.label} ({draftSession.modelName})</strong>
+                <div className="h3-inline-actions">
+                  {["starting", "thinking", "writing"].includes(draftSession.status) && (
+                    <button
+                      type="button"
+                      className="quiet-button compact"
+                      onClick={() => void cancelStudioPromptDraft(draftSession.id)}
+                    >
+                      <CircleStop size={13} /> Stop
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="primary-action compact"
+                    disabled={!draftSession.text.trim()}
+                    onClick={() => {
+                      draftSession.apply(draftSession.text.trim());
+                      setDraftSession(undefined);
+                    }}
+                  >
+                    <CheckCircle2 size={13} /> Apply Draft
+                  </button>
+                  <button
+                    type="button"
+                    className="quiet-button compact"
+                    onClick={() => setDraftSession(undefined)}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </header>
+              <div className="movie-collaborator-pages">
+                <ModelReplyPages
+                  label={draftSession.label}
+                  text={draftSession.text}
+                  reasoning={draftSession.reasoning}
+                  live={["starting", "thinking", "writing"].includes(draftSession.status)}
+                  modelName={draftSession.modelName}
+                  thinkingLevel={draftSession.thinkingLevel}
+                  request={advancedEnabled && draftSession.receipt ? JSON.stringify(draftSession.receipt.exactRequest, null, 2) : undefined}
+                />
+              </div>
+            </section>
+          )}
+
+          {/* New Production Launcher OR Active Multi-Scene Studio */}
+          {creating || !project ? (
+            <section className="movie-create-card" aria-label="Create MiniMax H3 production">
+              <header>
+                <h2><Clapperboard size={18} /> Start a MiniMax H3 Reference Production</h2>
+                <p className="muted">
+                  Build reusable <code>@Handle</code> characters, locations, props, voices, and sounds; stage them across timeline windows; and run Sonder’s 3-pass quality ladder (<code>0.2 MP</code> → <code>1 MP</code> → <code>1080p</code>) with joint 48 kHz audio.
+                </p>
+              </header>
+
+              <div className="h3-form-grid">
+                <label>
+                  Production Title
+                  <input
+                    aria-label="Production title"
+                    value={newTitle}
+                    onChange={(e) => setNewTitle(e.target.value)}
+                    placeholder="The Frog Who Measured the Sky"
+                  />
+                </label>
+
+                <div className="h3-row-2">
+                  <label>
+                    Master Scene Canvas
+                    <select
+                      aria-label="Master scene canvas"
+                      value={newCanvasKey}
+                      onChange={(e) => setNewCanvasKey(e.target.value)}
+                    >
+                      {CANVAS_PRESETS.map((preset) => (
+                        <option key={preset.key} value={preset.key}>{preset.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Initial Scene Duration (s)
+                    <input
+                      aria-label="Initial scene duration"
+                      type="number"
+                      min={2}
+                      max={600}
+                      value={newDurationSec}
+                      onChange={(e) => setNewDurationSec(Math.max(2, Number(e.target.value) || 15))}
+                    />
+                  </label>
+                </div>
+
+                <label>
+                  Story Brief &amp; Cast Notes (Markdown)
+                  <textarea
+                    aria-label="Production story brief"
+                    rows={7}
+                    value={newStory}
+                    onChange={(e) => setNewStory(e.target.value)}
+                    placeholder="Describe the story arc, visual world, @Characters, @Locations, and sonic atmosphere…"
+                  />
+                </label>
+
+                <div className="h3-inline-actions">
+                  <button
+                    type="button"
+                    className="quiet-button compact"
+                    onClick={() => void startLocalDraft(
+                      "story",
+                      "Production Story Brief",
+                      newStory,
+                      newTitle || "New H3 Production",
+                      "story",
+                      (text) => setNewStory(text),
+                    )}
+                  >
+                    <Sparkles size={13} /> Draft Brief with Local LLM
+                  </button>
+
+                  <ExternalCollaborationExchange
+                    title="External AI Story Brief"
+                    summary="Copy/paste structured story brief request"
+                    buildRequest={() =>
+                      buildExternalCollaborationRequest({
+                        target: "movie-brief",
+                        role: "MiniMax H3 Story Producer",
+                        instructions: [
+                          "Draft a concise multi-shot story brief with clear @Character and @Location handles for MiniMax H3.",
+                          "Highlight sonic atmosphere and character voices.",
+                        ],
+                        context: {
+                          title: newTitle || "New H3 Production",
+                          currentDraft: newStory,
+                        },
+                        resultTemplate: { text: "Complete Markdown story brief with @Handle definitions." },
+                      })
+                    }
+                    parseResponse={(raw) => parseExternalTextResult(raw, "movie-brief")}
+                    onApply={(text) => setNewStory(text)}
+                  />
+                </div>
+              </div>
+
+              <footer className="h3-inline-actions">
+                <button
+                  type="button"
+                  className="primary-action"
+                  disabled={busyAction === "creating-project"}
+                  onClick={() => void handleCreateProject()}
+                >
+                  {busyAction === "creating-project" ? <LoaderCircle size={15} className="spin" /> : <Clapperboard size={15} />}
+                  Create H3 Production
+                </button>
+                {project && (
+                  <button type="button" className="quiet-button" onClick={() => setCreating(false)}>
+                    Cancel
+                  </button>
+                )}
+              </footer>
+            </section>
+          ) : (
+            <>
+              {/* Multi-Scene Switcher + Room Navigation */}
+              <div className="movie-nav-strip">
+                <div className="movie-scene-tabs" role="tablist" aria-label="Production scenes">
+                  {project.scenes.map((sc) => (
+                    <button
+                      key={sc.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={sceneDraft?.id === sc.id}
+                      className={`movie-scene-tab ${sceneDraft?.id === sc.id ? "active" : ""}`}
+                      onClick={() => void handleSwitchScene(sc.id)}
+                    >
+                      <span>{sc.name}</span>
+                      <small>{sc.width}×{sc.height}</small>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="quiet-button compact"
+                    disabled={busyAction === "adding-scene"}
+                    title="Add a full 1920×1088 cinema scene"
+                    onClick={() => void handleAddScene("standard")}
+                  >
+                    <Plus size={12} /> Scene
+                  </button>
+                  <button
+                    type="button"
+                    className="quiet-button compact"
+                    disabled={busyAction === "adding-scene"}
+                    title="Add a fast 960×544 character & blocking audition scene"
+                    onClick={() => void handleAddScene("audition")}
+                  >
+                    <Plus size={12} /> Audition
+                  </button>
+                  <button
+                    type="button"
+                    className="quiet-button compact"
+                    disabled={busyAction === "adding-scene"}
+                    title="Add a tiny 64×32 soundtrack-only scene for fast standalone H3 score/ambience"
+                    onClick={() => void handleAddScene("soundtrack")}
+                  >
+                    <Plus size={12} /> 64×32 Soundtrack
+                  </button>
+                </div>
+
+                <nav className="movie-room-tabs" aria-label="Studio rooms">
+                  <button
+                    type="button"
+                    className={room === "studio" ? "active" : ""}
+                    onClick={() => setRoom("studio")}
+                  >
+                    <Film size={14} /> Timeline &amp; Compiler
+                  </button>
+                  <button
+                    type="button"
+                    className={room === "references" ? "active" : ""}
+                    onClick={() => setRoom("references")}
+                  >
+                    <Users size={14} /> @Handle Library ({project.entities.length})
+                  </button>
+                  <button
+                    type="button"
+                    className={room === "story" ? "active" : ""}
+                    onClick={() => setRoom("story")}
+                  >
+                    <BookOpen size={14} /> Story Brief
+                  </button>
+                  <button
+                    type="button"
+                    className={room === "takes" ? "active" : ""}
+                    onClick={() => setRoom("takes")}
+                  >
+                    <Layers size={14} /> Takes &amp; Telemetry ({project.renderJobs.length})
+                  </button>
+                  <button
+                    type="button"
+                    className={room === "deliver" ? "active" : ""}
+                    onClick={() => setRoom("deliver")}
+                  >
+                    <Download size={14} /> Deliver ({project.exports.length})
+                  </button>
+                </nav>
+              </div>
+
+              {/* Room 1: Timeline & Compiler */}
+              {room === "studio" && sceneDraft && (
+                <div className="h3-nle-workbench">
+                  <div className="h3-upper-deck">
+                    <H3ProgramMonitor
+                      sceneName={sceneDraft.name}
+                      sceneWidth={sceneDraft.width}
+                      sceneHeight={sceneDraft.height}
+                      playheadSec={playheadSec}
+                      durationSec={sceneDraft.durationSec}
+                      activeClip={activeMonitorClip}
+                      completedTakes={completedTakes}
+                      rendering={rendering}
+                      projectId={project.id}
+                      disabled={Boolean(busyAction)}
+                      onPlayhead={setPlayheadSec}
+                      onCaptureGuide={(source, srcTime, tlSec) => void handleCaptureGuide(source, srcTime, tlSec)}
+                      onStopRender={() => void handleStopGeneration()}
+                    />
+
+                    <MovieGenerationPanel
+                      project={project}
+                      scene={sceneDraft}
+                      environment={environment}
+                      selectedShotId={selectedShotId}
+                      compileResult={compileResult}
+                      rendering={rendering}
+                      disabled={Boolean(busyAction)}
+                      onSceneChange={handleSceneChange}
+                      onSelectShot={setSelectedShotId}
+                      onStartGeneration={handleStartGeneration}
+                      onStopGeneration={() => void handleStopGeneration()}
+                      onDraftDirection={(currentText, shotLabel, apply) =>
+                        void startLocalDraft("imageAsset", `Shot Action · ${shotLabel}`, currentText, shotLabel, "shot", apply)
+                      }
+                      onPersistSceneIfNeeded={async () => {
+                        await persistSceneIfNeeded(false);
+                      }}
+                      onProjectRefresh={async () => {
+                        const reloaded = await getMovie(project.id);
+                        applyLoadedProject(reloaded, false);
+                      }}
+                      onError={onError}
+                      onNotice={(msg) => setNotice(msg)}
+                    />
+                  </div>
+
+                  <MovieTimeline
+                    key={`${project.id}:${sceneDraft.id}`}
+                    project={project}
+                    scene={sceneDraft}
+                    savedScene={savedScene}
+                    playheadSec={playheadSec}
+                    compileResult={compileResult}
+                    selectedShotId={selectedShotId}
+                    disabled={rendering || Boolean(busyAction)}
+                    dirty={sceneDirty}
+                    onSceneChange={handleSceneChange}
+                    onSaveScene={() => void handleSaveScene()}
+                    onPlayhead={setPlayheadSec}
+                    onSelectShot={setSelectedShotId}
+                  />
+                </div>
+              )}
+
+              {/* Room 2: @Handle Entity Reference Library */}
+              {room === "references" && sceneDraft && (
+                <H3EntityLibrary
+                  project={project}
+                  scene={sceneDraft}
+                  disabled={rendering}
+                  onPersistSceneIfNeeded={async () => {
+                    await persistSceneIfNeeded(false);
+                  }}
+                  onProject={(next) => {
+                    applyLoadedProject(next, false);
+                    void refreshSummariesAndAssets();
+                  }}
+                  onDraftDescription={(currentText, handle, apply) =>
+                    void startLocalDraft(
+                      "referenceDescription",
+                      `@${handle} Subject Description`,
+                      currentText,
+                      `@${handle}`,
+                      "character",
+                      apply,
+                    )
+                  }
+                  onError={onError}
+                  onNotice={(msg) => setNotice(msg)}
+                />
+              )}
+
+              {/* Room 3: Story Brief & Local Collaborator Controls */}
+              {room === "story" && (
+                <section className="h3-story-room" aria-label="Story brief">
+                  <div className="h3-story-editor">
+                    <header className="h3-section-head">
+                      <div>
+                        <h3>Story Brief &amp; Cast Bible</h3>
+                        <small>Durable Markdown brief shared with both Local Collaborator and Computer Use Producer Agent.</small>
+                      </div>
+                      <button
+                        type="button"
+                        className="primary-action compact"
+                        disabled={busyAction === "saving-story"}
+                        onClick={() => void handleSaveStory()}
+                      >
+                        <Save size={14} /> Save Story Revision
+                      </button>
+                    </header>
+
+                    <div className="h3-row-2">
+                      <label>
+                        Production Title
+                        <input
+                          aria-label="Edit production title"
+                          value={storyTitleDraft}
+                          onChange={(e) => { setStoryTitleDraft(e.target.value); setStoryDirty(true); }}
+                        />
+                      </label>
+                      <label>
+                        Revision Note
+                        <input
+                          aria-label="Story revision note"
+                          value={storyInstruction}
+                          onChange={(e) => setStoryInstruction(e.target.value)}
+                          placeholder="Refined @Pip character arc and scene beats"
+                        />
+                      </label>
+                    </div>
+
+                    <label>
+                      Story Markdown
+                      <textarea
+                        aria-label="Story brief markdown"
+                        rows={14}
+                        value={storyDraft}
+                        onChange={(e) => { setStoryDraft(e.target.value); setStoryDirty(true); }}
+                      />
+                    </label>
+
+                    <div className="h3-inline-actions">
+                      <button
+                        type="button"
+                        className="quiet-button compact"
+                        onClick={() =>
+                          void startLocalDraft(
+                            "story",
+                            "Story Brief",
+                            storyDraft,
+                            storyTitleDraft || project.title,
+                            "story",
+                            (text) => { setStoryDraft(text); setStoryDirty(true); },
+                          )
+                        }
+                      >
+                        <Sparkles size={13} /> {draftMode === "continue" ? "Continue with Local LLM" : "Develop with Local LLM"}
+                      </button>
+
+                      <ExternalCollaborationExchange
+                        title="External AI Story Brief"
+                        summary="Copy/paste structured story brief revision"
+                        buildRequest={() =>
+                          buildExternalCollaborationRequest({
+                            target: "movie-brief",
+                            role: "MiniMax H3 Story Producer",
+                            instructions: [
+                              "Refine this MiniMax H3 story brief with clear @Character and @Location handles and vivid sonic cues.",
+                            ],
+                            context: {
+                              title: storyTitleDraft || project.title,
+                              currentDraft: storyDraft,
+                            },
+                            resultTemplate: { text: "Revised Markdown story brief." },
+                          })
+                        }
+                        parseResponse={(raw) => parseExternalTextResult(raw, "movie-brief")}
+                        onApply={(text) => {
+                          setStoryDraft(text);
+                          setStoryDirty(true);
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <aside className="h3-story-sidebar">
+                    <div className="h3-card">
+                      <h4>Local LLM Collaborator Policy</h4>
+                      <label>
+                        Model
+                        <select
+                          aria-label="Collaborator model"
+                          value={modelId}
+                          onChange={(e) => setModelId(e.target.value)}
+                        >
+                          {models.length === 0 && <option value="">No GGUF models scanned</option>}
+                          {models.map((m) => (
+                            <option key={m.id} value={m.id}>{m.name} ({m.quantization})</option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="h3-row-2">
+                        <label>
+                          Mode
+                          <select
+                            aria-label="Collaborator draft mode"
+                            value={draftMode}
+                            onChange={(e) => setDraftMode(e.target.value as PromptDraftMode)}
+                          >
+                            <option value="develop">Develop / Rewrite</option>
+                            <option value="continue">Continue Writing</option>
+                          </select>
+                        </label>
+                        <label>
+                          Thinking
+                          <select
+                            aria-label="Collaborator thinking level"
+                            value={thinkingLevel}
+                            onChange={(e) => setThinkingLevel(e.target.value as ThinkingLevel | "default")}
+                          >
+                            <option value="default">Model Default</option>
+                            <option value="off">Off</option>
+                            <option value="low">Low</option>
+                            <option value="medium">Medium</option>
+                            <option value="high">High</option>
+                          </select>
+                        </label>
+                      </div>
+                      <ModelRuntimePolicyControls
+                        value={activeRuntimePolicy}
+                        inherited={inheritedPolicy}
+                        disabled={false}
+                        expert={advancedEnabled}
+                        fixedContextWindow={selectedModel?.fixedContextWindow}
+                        scope="Movie collaborator"
+                        onChange={setRuntimePolicyOverride}
+                        onReset={() => setRuntimePolicyOverride(undefined)}
+                      />
+                    </div>
+
+                    <div className="h3-card">
+                      <h4>Story Revisions ({project.storyRevisions.length})</h4>
+                      {project.storyRevisions.length === 0 ? (
+                        <p className="muted">No saved revisions yet.</p>
+                      ) : (
+                        <ul className="h3-revision-list">
+                          {[...project.storyRevisions].reverse().map((rev) => (
+                            <li key={rev.id}>
+                              <div>
+                                <strong>#{rev.number} · {rev.origin}</strong>
+                                <small>{rev.instruction || "Initial brief"}</small>
+                              </div>
+                              <button
+                                type="button"
+                                className="quiet-button compact"
+                                onClick={() => {
+                                  setStoryDraft(rev.markdown);
+                                  setStoryDirty(true);
+                                }}
+                              >
+                                Load
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </aside>
+                </section>
+              )}
+
+              {/* Room 4: Takes & Telemetry */}
+              {room === "takes" && (
+                <section className="h3-takes-room" aria-label="H3 takes and telemetry">
+                  <aside className="h3-takes-list">
+                    <header className="h3-section-head">
+                      <h3>Render Queue &amp; Takes</h3>
+                      <small>{project.renderJobs.length} total</small>
+                    </header>
+                    {project.renderJobs.length === 0 ? (
+                      <p className="muted">Queue a window or 3-pass ladder from Timeline &amp; Compiler to inspect takes here.</p>
+                    ) : (
+                      <ul className="h3-job-list">
+                        {[...project.renderJobs].reverse().map((job) => (
+                          <li key={job.id}>
+                            <button
+                              type="button"
+                              className={`h3-job-card ${selectedTakeJobId === job.id ? "active" : ""}`}
+                              onClick={() => setSelectedTakeJobId(job.id)}
+                            >
+                              <div className="h3-job-row">
+                                <strong>{job.label}</strong>
+                                <span className={`h3-status-pill status-${job.status}`}>{job.status}</span>
+                              </div>
+                              <small>
+                                {job.passPreset} · {job.width}×{job.height} · {job.steps} steps · denoise {job.denoise}
+                              </small>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </aside>
+
+                  <div className="h3-take-inspector">
+                    {takeInspecting ? (
+                      <p className="muted"><LoaderCircle size={15} className="spin" /> Inspecting take telemetry…</p>
+                    ) : !takeInspection ? (
+                      <p className="muted">Select a render job on the left to inspect its media, 3 contact-sheet frames, audio dBFS, color-drift matrix, and compiled prompt.</p>
+                    ) : (
+                      <>
+                        <header className="h3-section-head">
+                          <div>
+                            <h3>{takeInspection.label}</h3>
+                            <small>
+                              Model: <code>{takeInspection.resolvedModel || "pending"}</code> · Task: <code>{takeInspection.taskMode}</code> · Seed: <code>{String(takeInspection.seed)}</code>
+                            </small>
+                          </div>
+                          <span className={`h3-status-pill status-${takeInspection.status}`}>{takeInspection.status}</span>
+                        </header>
+
+                        {takeInspection.error && (
+                          <div className="h3-advisory-box" role="alert">
+                            <AlertTriangle size={14} /> {takeInspection.error}
+                          </div>
+                        )}
+
+                        {takeInspection.takeMediaPath && movieMediaUrl(takeInspection.takeMediaPath) && (
+                          <div className="h3-take-player">
+                            <video
+                              controls
+                              playsInline
+                              src={movieMediaUrl(takeInspection.takeMediaPath)}
+                            />
+                          </div>
+                        )}
+
+                        {/* 3 Contact-Sheet Stills */}
+                        {takeInspection.quality && takeInspection.quality.contactSheetPaths.length > 0 && (
+                          <div className="h3-contact-sheet">
+                            {takeInspection.quality.contactSheetPaths.map((stillPath, idx) => {
+                              const url = movieMediaUrl(stillPath);
+                              return (
+                                <figure key={stillPath}>
+                                  {url ? <img src={url} alt={`Take frame ${idx + 1}`} /> : <div className="h3-still-placeholder">Still {idx + 1}</div>}
+                                  <figcaption>{["20% Early", "50% Mid", "85% Late"][idx] ?? `Frame ${idx + 1}`}</figcaption>
+                                </figure>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {/* Telemetry Cards */}
+                        <div className="h3-telemetry-grid">
+                          {takeInspection.quality && (
+                            <div className="h3-card">
+                              <h4>Media &amp; Audio Quality</h4>
+                              <p>
+                                <strong>{takeInspection.quality.width}×{takeInspection.quality.height}</strong> @ {takeInspection.quality.fps} fps ·{" "}
+                                {takeInspection.quality.frameCount} frames ({takeInspection.quality.durationSec.toFixed(2)}s)
+                              </p>
+                              <p>
+                                Audio: {takeInspection.quality.hasAudio
+                                  ? `Peak ${takeInspection.quality.audioPeakDbfs.toFixed(1)} dBFS · RMS ${takeInspection.quality.audioRmsDbfs.toFixed(1)} dBFS${takeInspection.quality.audioIsSilent ? " (Silent)" : ""}`
+                                  : "No audio stream"}
+                              </p>
+                              {takeInspection.quality.warnings.length > 0 && (
+                                <ul className="h3-warning-list">
+                                  {takeInspection.quality.warnings.map((w, idx) => <li key={idx}><AlertTriangle size={12} /> {w}</li>)}
+                                </ul>
+                              )}
+                            </div>
+                          )}
+
+                          {takeInspection.colorDrift && (
+                            <div className="h3-card">
+                              <h4>Ridge Color-Drift Cancellation</h4>
+                              <p>
+                                Status: <strong>{takeInspection.colorDrift.applied ? "Applied" : "Bypassed"}</strong> ·{" "}
+                                Matched context frames: {takeInspection.colorDrift.matchedContextFrames}
+                              </p>
+                              <p>
+                                Max bias: {takeInspection.colorDrift.maxBiasAbs.toFixed(4)} · Matrix dev: {takeInspection.colorDrift.maxMatrixDeviation.toFixed(4)}
+                              </p>
+                              <small>{takeInspection.colorDrift.summary}</small>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Place Take onto Any Scene / Lane */}
+                        {takeInspection.status === "complete" && (
+                          <div className="h3-card">
+                            <h4>Place Take onto Timeline</h4>
+                            <div className="h3-row-4">
+                              <label>
+                                Target Scene
+                                <select
+                                  aria-label="Place take target scene"
+                                  value={placeSceneId}
+                                  onChange={(e) => setPlaceSceneId(e.target.value)}
+                                >
+                                  {project.scenes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                </select>
+                              </label>
+                              <label>
+                                Trim Mode
+                                <select
+                                  aria-label="Place take trim mode"
+                                  value={placeMode}
+                                  onChange={(e) => setPlaceMode(e.target.value as H3TakePlacementMode)}
+                                >
+                                  <option value="trimmed">Trimmed [In, Out] Only</option>
+                                  <option value="untrimmed">Untrimmed (Include Context)</option>
+                                </select>
+                              </label>
+                              <label>
+                                Video Lane
+                                <select
+                                  aria-label="Place take video lane"
+                                  value={placeVideoLaneId}
+                                  onChange={(e) => setPlaceVideoLaneId(e.target.value)}
+                                >
+                                  <option value="">Top Video Lane (Default)</option>
+                                  {placeTargetScene?.videoLanes.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                                </select>
+                              </label>
+                              <label>
+                                Audio Lane
+                                <select
+                                  aria-label="Place take audio lane"
+                                  value={placeAudioLaneId}
+                                  disabled={Boolean(placeDriverLaneId)}
+                                  onChange={(e) => setPlaceAudioLaneId(e.target.value)}
+                                >
+                                  <option value="">Top Audio Lane (Default)</option>
+                                  {placeTargetScene?.audioLanes.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                                </select>
+                              </label>
+                              <label>
+                                Driver Lane (D1..Dn)
+                                <select
+                                  aria-label="Place take driver lane"
+                                  value={placeDriverLaneId}
+                                  onChange={(e) => setPlaceDriverLaneId(e.target.value)}
+                                >
+                                  <option value="">None (Use Video/Audio)</option>
+                                  {placeTargetScene?.driverLanes.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                                </select>
+                              </label>
+                            </div>
+                            <button
+                              type="button"
+                              className="primary-action compact"
+                              disabled={busyAction === "placing-take"}
+                              onClick={() => void handlePlaceTake()}
+                            >
+                              <Layers size={14} /> Place Take on Timeline
+                            </button>
+                          </div>
+                        )}
+
+                        <details className="h3-card">
+                          <summary>Compiled 6-Channel Prompt</summary>
+                          <pre className="h3-compiled-pre">{takeInspection.compiledPrompt}</pre>
+                        </details>
+                      </>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {/* Room 5: Deliver / Export */}
+              {room === "deliver" && (
+                <section className="h3-deliver-room" aria-label="Deliver and export">
+                  <div className="h3-card">
+                    <header className="h3-section-head">
+                      <div>
+                        <h3>Render Non-Destructive Master</h3>
+                        <small>Composites enabled video lanes, mixes multi-track 48 kHz audio with peak headroom protection, and tags BT.709 color.</small>
+                      </div>
+                      <button
+                        type="button"
+                        className="quiet-button compact"
+                        onClick={() => void revealMovie(project.id).catch((e) => onError(String(e)))}
+                      >
+                        <FolderOpen size={14} /> Open Production Folder
+                      </button>
+                    </header>
+
+                    <div className="h3-row-2">
+                      <label>
+                        Source Scene
+                        <select
+                          aria-label="Export source scene"
+                          value={exportSceneId}
+                          onChange={(e) => setExportSceneId(e.target.value)}
+                        >
+                          {project.scenes.map((sc) => (
+                            <option key={sc.id} value={sc.id}>{sc.name} ({sc.width}×{sc.height})</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Export Title
+                        <input
+                          aria-label="Export title"
+                          value={exportTitle}
+                          onChange={(e) => setExportTitle(e.target.value)}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="h3-row-2">
+                      <label>
+                        Master Preset
+                        <select
+                          aria-label="Export preset"
+                          value={exportPreset}
+                          onChange={(e) => setExportPreset(e.target.value)}
+                        >
+                          {EXPORT_PRESETS.map((p) => (
+                            <option key={p.value} value={p.value}>{p.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Audio Peak Ceiling (dBFS)
+                        <input
+                          aria-label="Audio peak headroom dBFS"
+                          type="number"
+                          min={-20}
+                          max={0}
+                          step={0.5}
+                          value={exportHeadroomDb}
+                          onChange={(e) => setExportHeadroomDb(Math.min(0, Math.max(-20, Number(e.target.value) || -1)))}
+                        />
+                      </label>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="primary-action"
+                      disabled={exporting}
+                      onClick={() => void handleRenderExport()}
+                    >
+                      {exporting ? <LoaderCircle size={15} className="spin" /> : <Download size={15} />}
+                      Render Master
+                    </button>
+                  </div>
+
+                  <div className="h3-card">
+                    <h3>Published Masters ({project.exports.length})</h3>
+                    {project.exports.length === 0 ? (
+                      <p className="muted">No masters exported yet.</p>
+                    ) : (
+                      <ul className="h3-export-list">
+                        {[...project.exports].reverse().map((exp) => {
+                          const url = movieMediaUrl(exp.path);
+                          return (
+                            <li key={exp.id} className="h3-export-item">
+                              <div>
+                                <strong>{exp.title}</strong>
+                                <small>
+                                  {exp.preset} · {exp.durationSeconds.toFixed(1)}s · {(exp.bytes / (1024 * 1024)).toFixed(2)} MiB · SHA-256 {exp.sha256.slice(0, 12)}…
+                                </small>
+                              </div>
+                              {url && (
+                                exp.preset === "audio_flac"
+                                  ? <audio controls src={url} />
+                                  : <video controls playsInline src={url} className="h3-export-video" />
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                </section>
+              )}
+            </>
+          )}
         </div>
       </div>
-    </section>}
-  </div></MovieAssetCreator>;
-}
-
-function ProducerLaunch({ material, onMaterial, modelId, onModel, models, thinkingLevel, onThinkingLevel, settings, onSettings, advanced, onAdvanced, advancedEnabled, references, onReferences, generatedImages, busy, onAttach, onUseGenerated, onCreate }: {
-  material: string; onMaterial: (value: string) => void; modelId: string; onModel: (value: string) => void;
-  models: ModelInfo[]; thinkingLevel: ThinkingLevel | "default"; onThinkingLevel: (value: ThinkingLevel | "default") => void;
-  settings: typeof defaultSettings; onSettings: (value: typeof defaultSettings) => void; advanced: boolean; onAdvanced: (value: boolean) => void; advancedEnabled: boolean;
-  references: PendingMovieReference[]; onReferences: (value: PendingMovieReference[]) => void; generatedImages: MovieReferenceAsset[];
-  busy: boolean; onAttach: () => void; onUseGenerated: (asset: MovieReferenceAsset) => void | Promise<void>; onCreate: () => void;
-}) {
-  return <div className="movie-launch producer-launch"><div className="movie-launch-mark"><Clapperboard /></div><span className="eyebrow">Producer-led · private local collaborator · MiniMax H3</span><h1>Start with the movie, not a workflow.</h1><p>Paste an idea, loose notes, a story, or a script. Your local model writes one complete creative sketch. You revise it together, accept it, then shape scene cards and choose every media reference yourself.</p>
-    <div className="movie-prompt-box"><textarea aria-label="Starting material" maxLength={262144} value={material} onChange={(event) => onMaterial(event.target.value)} placeholder="A woman keeps receiving postcards from a city that disappeared…" /><div><span><ShieldCheck /> Tool-free, offline story collaboration</span><button disabled={busy || !modelId || material.trim().length < 3} onClick={onCreate}>{busy ? <LoaderCircle className="spin" /> : <Sparkles />} Create story sketch</button></div></div>
-    <section className="producer-launch-controls"><label>Local collaborator<select aria-label="Story collaborator" value={modelId} onChange={(event) => onModel(event.target.value)}><option value="">Choose a local model</option>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label><label>Thinking<select aria-label="Story thinking" value={thinkingLevel} onChange={(event) => onThinkingLevel(event.target.value as ThinkingLevel | "default")}><option value="default">Use model default</option><option value="off">Direct</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Maximum</option></select></label><button onClick={onAttach}><Paperclip /> Add references</button><GenerateAssetButton disabled={busy} /></section>
-    <label>Video quality<select aria-label="Video quality" value={`${settings.width}x${settings.height}`} onChange={(event) => { const [width, height] = event.target.value.split("x").map(Number); onSettings({ ...settings, width, height }); }}><option value="768x448">Faster · 768 × 448 (default)</option><option value="1344x768">Higher detail · 1344 × 768 (much slower)</option>{!((settings.width === 768 && settings.height === 448) || (settings.width === 1344 && settings.height === 768)) && <option value={`${settings.width}x${settings.height}`}>Custom · {settings.width} × {settings.height}</option>}</select><small>Start with the faster size. Render time depends on your GPU, scene length, and steps.</small></label>
-    <ReferenceShelf references={references} generatedImages={generatedImages} editable onReferences={onReferences} onUseGenerated={onUseGenerated} />
-    <button className="movie-advanced-toggle" onClick={() => onAdvanced(!advanced)}><Settings2 /> Production settings <ChevronDown className={advanced ? "open" : ""} /></button>
-    {advanced && <div className="movie-advanced producer-settings"><NumberField label="Width" value={settings.width} min={256} max={2048} onChange={(width) => onSettings({ ...settings, width })} /><NumberField label="Height" value={settings.height} min={256} max={2048} onChange={(height) => onSettings({ ...settings, height })} /><NumberField label="Default scene seconds" value={settings.clipSeconds} min={5} max={15} onChange={(clipSeconds) => onSettings({ ...settings, clipSeconds })} /><NumberField label="Maximum scenes" value={settings.maxClips} min={1} max={4096} onChange={(maxClips) => onSettings({ ...settings, maxClips })} /><NumberField label="H3 steps" value={settings.steps} min={1} max={advancedEnabled ? 100 : 40} onChange={(steps) => onSettings({ ...settings, steps })} /><NumberField label="Seed (0 = random)" value={settings.seed} min={0} max={Number.MAX_SAFE_INTEGER} onChange={(seed) => onSettings({ ...settings, seed })} /><p className="wide">Rendering uses the ComfyUI folder selected in Setup.</p></div>}
-    <div className="studio-room-assurance"><ShieldCheck /><span><strong>Your work stays on this computer.</strong><small>Story revisions, conversations, scene cards, reference choices, and completed renders are saved for you to return to.</small></span></div>
-  </div>;
-}
-
-function StoryRoom({ producer, revisionId, draft, editing, dirty, acceptedId, conversation, chat, instruction, modelId, models, disabled, onRevision, onDraft, onEditing, onInstruction, onSend, onStop, onSave, onAccept, onSummarize, onReset }: {
-  producer: MovieProducerWorkspace; revisionId: string; draft: string; editing: boolean; dirty: boolean; acceptedId?: string;
-  conversation: MovieStudioConversation | null; chat: ChatState; instruction: string; modelId: string; models: ModelInfo[]; disabled: boolean;
-  onRevision: (id: string) => void; onDraft: (value: string) => void; onEditing: (value: boolean) => void; onInstruction: (value: string) => void;
-  onSend: () => void; onStop: () => void; onSave: () => void; onAccept: (mode: MovieStudioConversationMode) => void; onSummarize: () => void; onReset: (keepSummary: boolean) => void;
-}) {
-  const revision = producer.storyRevisions.find((item) => item.id === revisionId);
-  return <div className="producer-split-room"><main className="producer-document-room">
-    <header className="producer-room-header"><span><small>Story document</small><strong>One complete creative source of truth</strong></span><div>
-      {producer.storyRevisions.length
-        ? <select aria-label="Story revision" title="Choose which saved story revision to read" disabled={disabled || dirty} value={revisionId} onChange={(event) => onRevision(event.target.value)}>{producer.storyRevisions.map((item) => <option value={item.id} key={item.id}>Revision {item.number}{item.id === acceptedId ? " · accepted" : ""}</option>)}</select>
-        : <span className="chip">No revision yet</span>}
-      <button disabled={disabled} className={editing ? "active" : ""} onClick={() => onEditing(!editing)}><FilePenLine /> {editing ? "Preview" : "Edit"}</button>
-      {editing && <button disabled={disabled || !dirty || draft.trim().length < 3} onClick={onSave}><Save /> Save revision</button>}
-    </div></header>
-    <article className={`producer-story-paper ${editing ? "editing" : ""}`}>
-      {editing ? <textarea aria-label="Story document" disabled={disabled} maxLength={262144} value={draft} onChange={(event) => onDraft(event.target.value)} /> : draft ? <FlowPages className="producer-story-pages" label="Story pages" resetKey={revisionId}><MarkdownContent value={draft} /></FlowPages> : <div className="studio-room-empty"><LoaderCircle className={chat.requestId ? "spin" : ""} /><strong>{chat.requestId ? "Writing the first story sketch" : "No story revision yet"}</strong><span>The complete Markdown response will become revision 1.</span></div>}
-    </article>
-    <footer className="producer-document-footer"><span>{revision ? `Revision ${revision.number} · ${new Date(revision.createdAt).toLocaleString()}` : "Waiting for the first revision"}{dirty ? " · unsaved edits" : ""}</span><div>{revisionId === acceptedId && <span className="accepted-badge"><Check /> Accepted</span>}<button disabled={disabled || Boolean(chat.requestId) || !revisionId || dirty} onClick={() => onAccept("continue")}><Check /> Accept and continue scenes</button><button disabled={disabled || Boolean(chat.requestId) || !revisionId || dirty} onClick={() => onAccept("fresh")}><RotateCcw /> Accept with fresh scene chat</button></div></footer>
-  </main><ConversationPanel kind="story" conversation={conversation} chat={chat} instruction={instruction} modelId={modelId} models={models} disabled={disabled || dirty} selectedCount={0} onInstruction={onInstruction} onSend={onSend} onStop={onStop} onSummarize={onSummarize} onReset={onReset} /></div>;
-}
-
-function SceneRoom({ project, producer, scenes, selectedIds, dirty, conversation, chat, instruction, modelId, models, disabled, generatedImages, onScenes, onSelected, onInstruction, onAttach, onUseGenerated, onSave, onSend, onStop, onSummarize, onReset, onRender, onBatch }: {
-  project: Awaited<ReturnType<typeof getMovie>>; producer: MovieProducerWorkspace; scenes: MovieSceneDraft[]; selectedIds: string[]; dirty: boolean;
-  conversation: MovieStudioConversation | null; chat: ChatState; instruction: string; modelId: string; models: ModelInfo[]; disabled: boolean; generatedImages: MovieReferenceAsset[];
-  onScenes: (scenes: MovieSceneDraft[]) => void; onSelected: (ids: string[]) => void; onInstruction: (value: string) => void;
-  onAttach: () => void; onUseGenerated: (asset: MovieReferenceAsset) => void | Promise<void>; onSave: () => void; onSend: () => void; onStop: () => void; onSummarize: () => void; onReset: (keepSummary: boolean) => void; onRender: () => void;
-  onBatch: (count: number, resume: boolean) => void;
-}) {
-  const [batchCount, setBatchCount] = useState(12);
-  const [page, setPage] = useState(0);
-  const pageSize = 12;
-  const lastPage = Math.max(0, Math.ceil(scenes.length / pageSize) - 1);
-  const visiblePage = Math.min(page, lastPage);
-  const cardPages = useRef<FlowPagesController | null>(null);
-  const groupNav = useRef<HTMLElement>(null);
-  const shownGroup = useRef(visiblePage);
-  // A new group of cards starts right after the group navigation; turn there instead of page 1.
-  useEffect(() => {
-    if (shownGroup.current === visiblePage) return;
-    shownGroup.current = visiblePage;
-    if (groupNav.current) cardPages.current?.showElement(groupNav.current);
-  }, [visiblePage]);
-  const batch = producer.sceneDraftBatch;
-  const incomplete = Boolean(batch && batch.completedSceneIds.length < batch.sceneCount);
-  const accepted = producer.storyRevisions.find((item) => item.id === producer.acceptedStoryRevisionId);
-  const patchScene = (id: string, patch: Partial<MovieSceneDraft>) => onScenes(scenes.map((scene) => scene.id === id ? { ...scene, ...patch } : scene));
-  const move = (index: number, change: number) => {
-    const target = index + change;
-    if (target < 0 || target >= scenes.length) return;
-    const next = [...scenes]; [next[index], next[target]] = [next[target], next[index]]; onScenes(next);
-  };
-  const remove = (id: string) => { onScenes(scenes.filter((scene) => scene.id !== id)); onSelected(selectedIds.filter((item) => item !== id)); };
-  return <div className="producer-scene-layout"><main className="producer-scene-room">
-    <header className="producer-room-header"><span><small>Scene cards · accepted story revision {accepted?.number ?? "—"}</small><strong>Producer-controlled H3 picture and sound</strong></span><div><button onClick={onAttach} disabled={disabled}><Paperclip /> Add media</button><GenerateAssetButton disabled={disabled} /><button disabled={disabled || !dirty} onClick={onSave}><Save /> Save cards</button><button className="accent" disabled={disabled || !scenes.length || dirty} onClick={onRender}>{project.status === "running" ? <LoaderCircle className="spin" /> : <Play />} Render H3 masters</button></div></header>
-    <FlowPages className="producer-scene-pages" label="Scene card pages" resetKey={project.id} controller={cardPages}>
-    <div className="producer-context-note"><ShieldCheck /><span><strong>You choose the model context.</strong><small>The full accepted story is always included. Only checked scene cards are supplied in full. References, paths, frame bindings, and render controls never enter model context.</small></span></div>
-    <section className="producer-batch-controls"><strong>Draft distinct scenes</strong><p>Choose a count and start once. Each scene gets its own prompt. The queue uses your direction below, checked context cards, and the four most recent scenes it writes for continuity. You can stop and resume later, then choose references and render.</p><label>New scenes<input aria-label="New scenes" type="number" min={1} max={Math.max(1, 4096 - scenes.length)} step={1} disabled={disabled} value={batchCount} onChange={(event) => setBatchCount(Number(event.target.value))} /></label><span>{Number.isFinite(batchCount) ? (batchCount * project.settings.clipSeconds / 60).toFixed(1) : "—"} minutes at {project.settings.clipSeconds} seconds per scene</span><button disabled={disabled || !modelId || !Number.isInteger(batchCount) || batchCount < 1 || batchCount + scenes.length > 4096} onClick={() => onBatch(batchCount, false)}><Sparkles /> Draft {batchCount} distinct scenes</button>{batch && <p role="status">{batch.completedSceneIds.length} of {batch.sceneCount} scenes saved. {incomplete ? "An incomplete queue resumes only when you choose Resume." : "Drafting complete. Review cards and choose references before rendering."}</p>}{incomplete && batch && <button disabled={disabled || dirty} onClick={() => onBatch(batch.sceneCount, true)}><Play /> Resume scene queue</button>}</section>
-    <ReferenceShelf references={project.references} generatedImages={generatedImages.filter((asset) => !project.references.some((item) => item.assetId === asset.id))} onUseGenerated={onUseGenerated} />
-    {lastPage > 0 && <nav ref={groupNav} aria-label="Scene card groups"><button disabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>Previous cards</button><span>Cards {visiblePage * pageSize + 1}–{Math.min(scenes.length, (visiblePage + 1) * pageSize)} of {scenes.length}</span><button disabled={visiblePage === lastPage} onClick={() => setPage(visiblePage + 1)}>Next cards</button></nav>}
-    <div className="producer-scene-list">{scenes.slice(visiblePage * pageSize, (visiblePage + 1) * pageSize).map((scene, offset) => { const index = visiblePage * pageSize + offset; return <SceneCard key={scene.id} scene={scene} index={index} first={index === 0} last={index === scenes.length - 1} references={project.references} selected={selectedIds.includes(scene.id)} disabled={disabled} rendered={project.clips.find((clip) => clip.id === scene.id)} onSelected={(selected) => onSelected(selected ? [...selectedIds, scene.id] : selectedIds.filter((id) => id !== scene.id))} onPatch={(patch) => patchScene(scene.id, patch)} onMoveUp={() => move(index, -1)} onMoveDown={() => move(index, 1)} onRemove={() => remove(scene.id)} onUseGenerated={onUseGenerated} />; })}
-      {!scenes.length && <div className="studio-room-empty"><Video /><strong>Turn the accepted story into scenes</strong><span>Ask the scene collaborator for a first pass, or add the first card yourself. Nothing renders until you approve the cards.</span></div>}
-    </div>
-    <button className="producer-add-scene" disabled={disabled || scenes.length >= project.settings.maxClips} onClick={() => onScenes([...scenes, emptyScene(producer.acceptedStoryRevisionId ?? "", project.settings.clipSeconds, scenes.length)])}><Plus /> Add scene card</button>
-    </FlowPages>
-  </main><ConversationPanel kind="scenes" conversation={conversation} chat={chat} instruction={instruction} modelId={modelId} models={models} disabled={disabled} selectedCount={selectedIds.length} onInstruction={onInstruction} onSend={onSend} onStop={onStop} onSummarize={onSummarize} onReset={onReset} /></div>;
-}
-
-function SceneCard({ scene, index, first, last, references, selected, disabled, rendered, onSelected, onPatch, onMoveUp, onMoveDown, onRemove, onUseGenerated }: {
-  scene: MovieSceneDraft; index: number; first: boolean; last: boolean; references: MovieReference[]; selected: boolean; disabled: boolean;
-  onUseGenerated: (asset: MovieReferenceAsset) => void | Promise<void>;
-  rendered?: Awaited<ReturnType<typeof getMovie>>["clips"][number];
-  onSelected: (value: boolean) => void; onPatch: (patch: Partial<MovieSceneDraft>) => void; onMoveUp: () => void; onMoveDown: () => void; onRemove: () => void;
-}) {
-  const [referenceQuery, setReferenceQuery] = useState("");
-  const selectedReferences = new Set([...scene.references.map((item) => item.assetId), scene.firstFrame?.assetId, scene.lastFrame?.assetId]);
-  const matchingReferences = references.filter((reference) => `${reference.name} ${reference.description}`.toLocaleLowerCase().includes(referenceQuery.toLocaleLowerCase()));
-  const visibleReferences = [...references.filter((reference) => selectedReferences.has(reference.assetId)), ...matchingReferences.filter((reference) => !selectedReferences.has(reference.assetId)).slice(0, 40)];
-  const images = visibleReferences.filter((item) => item.kind === "image");
-  const hasFrames = Boolean(scene.firstFrame || scene.lastFrame);
-  const hasReferences = scene.references.length > 0;
-  const kinds = new Map(references.map((reference) => [reference.assetId, reference.kind]));
-  const pictures = scene.references.filter((reference) => reference.useVisual && kinds.get(reference.assetId) === "image").length;
-  const videos = scene.references.filter((reference) => reference.useVisual && kinds.get(reference.assetId) === "video").length;
-  const audio = scene.references.filter((reference) => reference.useAudio).length;
-  const frameValue = (frame?: MovieSceneFrameSource) => !frame ? "" : frame.kind === "previousScene" ? "previous" : `image:${frame.assetId}`;
-  const parseFrame = (value: string): MovieSceneFrameSource | undefined => value === "previous" ? { kind: "previousScene" } : value.startsWith("image:") ? { kind: "referenceImage", assetId: value.slice(6) } : undefined;
-  const updateReference = (reference: MovieReference, signal: "visual" | "audio", checked: boolean) => {
-    const current = scene.references.find((item) => item.assetId === reference.assetId);
-    const next = current ?? { assetId: reference.assetId, useVisual: false, useAudio: false, guidance: "" };
-    const updated = signal === "visual" ? { ...next, useVisual: checked } : { ...next, useAudio: checked };
-    onPatch({ references: updated.useVisual || updated.useAudio ? [...scene.references.filter((item) => item.assetId !== reference.assetId), updated] : scene.references.filter((item) => item.assetId !== reference.assetId) });
-  };
-  return <article className={`producer-scene-card ${selected ? "selected" : ""}`}><fieldset className="scene-card-fields" disabled={disabled}>
-    <header><label><input type="checkbox" aria-label={`Include ${scene.title} in scene chat context`} checked={selected} onChange={(event) => onSelected(event.target.checked)} /> <span>Scene {index + 1}</span></label><div><button aria-label={`Move ${scene.title} up`} disabled={disabled || first} onClick={onMoveUp}><ArrowUp /></button><button aria-label={`Move ${scene.title} down`} disabled={disabled || last} onClick={onMoveDown}><ArrowDown /></button><button aria-label={`Remove ${scene.title}`} disabled={disabled} onClick={onRemove}><Trash2 /></button></div></header>
-    <div className="producer-scene-fields"><label>Title<input value={scene.title} maxLength={160} onChange={(event) => onPatch({ title: event.target.value })} /></label><label>Purpose<input value={scene.purpose} maxLength={4000} onChange={(event) => onPatch({ purpose: event.target.value })} placeholder="What changes in the movie here?" /></label><label className="short">Seconds<input type="number" min={5} max={15} step={1} value={scene.durationSeconds} onChange={(event) => onPatch({ durationSeconds: Number(event.target.value) })} /></label><label className="wide">H3 prompt<textarea aria-label={`${scene.title} H3 prompt`} maxLength={65536} value={scene.h3Prompt} onChange={(event) => onPatch({ h3Prompt: event.target.value })} placeholder="Concrete subject, setting, framing, camera, light, timed action beats, exact sound/dialogue, exclusions, and visible final frame…" /></label><label>Continuity in<textarea value={scene.continuityIn} onChange={(event) => onPatch({ continuityIn: event.target.value })} /></label><label>Continuity out<textarea value={scene.continuityOut} onChange={(event) => onPatch({ continuityOut: event.target.value })} /></label><label>Transition<input value={scene.transition} onChange={(event) => onPatch({ transition: event.target.value })} /></label></div>
-    <section className="producer-frame-controls"><strong>Frame conditioning</strong>{references.length > 40 && <label>Find media<input aria-label={`${scene.title} reference search`} value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="Search all attached media…" /><small>Showing selected media and up to 40 matches.</small></label>}<small>Choose first/last frames, or native references below. H3 cannot combine them. {hasReferences && "Uncheck native references to choose frames; your selections stay saved until you change them."}</small><div><div><label htmlFor={`first-frame-${scene.id}`}>First frame<select id={`first-frame-${scene.id}`} disabled={disabled || hasReferences} value={frameValue(scene.firstFrame)} onChange={(event) => onPatch({ firstFrame: parseFrame(event.target.value) })}><option value="">None</option>{!first && <option value="previous">Previous scene final frame</option>}{images.map((item) => <option key={item.assetId} value={`image:${item.assetId}`}>{item.name}</option>)}</select></label><GenerateAssetButton disabled={disabled || hasReferences} label="Create first frame" direction={scene.h3Prompt} onUse={async (asset) => { await onUseGenerated(asset); onPatch({ firstFrame: { kind: "referenceImage", assetId: asset.id } }); }} /></div><div><label htmlFor={`last-frame-${scene.id}`}>Last frame<select id={`last-frame-${scene.id}`} disabled={disabled || hasReferences} value={frameValue(scene.lastFrame)} onChange={(event) => onPatch({ lastFrame: parseFrame(event.target.value) })}><option value="">None</option>{images.map((item) => <option key={item.assetId} value={`image:${item.assetId}`}>{item.name}</option>)}</select></label><GenerateAssetButton disabled={disabled || hasReferences} label="Create last frame" direction={scene.h3Prompt} onUse={async (asset) => { await onUseGenerated(asset); onPatch({ lastFrame: { kind: "referenceImage", assetId: asset.id } }); }} /></div></div></section>
-    <section className={`producer-reference-bindings ${hasFrames ? "disabled" : ""}`}><strong>Native H3 references</strong><small>{pictures}/9 pictures · {videos}/3 videos · {audio}/3 audio signals selected for this scene.</small><GenerateAssetButton disabled={disabled || hasFrames || pictures >= 9} label="Create reference image" direction={scene.h3Prompt} onUse={async (asset) => { await onUseGenerated(asset); onPatch({ references: [...scene.references.filter((item) => item.assetId !== asset.id), { assetId: asset.id, useVisual: true, useAudio: false, guidance: "" }] }); }} />{hasFrames && <small>Clear frame conditioning to enable references.</small>}{visibleReferences.map((reference) => {
-      const value = scene.references.find((item) => item.assetId === reference.assetId);
-      const canVisual = reference.kind !== "audio"; const canAudio = reference.kind === "audio" || reference.hasAudio;
-      return <div key={reference.assetId}><span><b>{reference.name}</b><small>{reference.kind === "video" ? "Motion and optional original sound. Uncheck exact audio before disabling motion." : reference.kind === "audio" ? "Original sound; may be mixed with image and motion references." : "Appearance, identity, or style; may be mixed with motion and audio."}</small></span>{canVisual && <label><input type="checkbox" disabled={disabled || hasFrames || (!value?.useVisual && (reference.kind === "image" ? pictures >= 9 : videos >= 3)) || (reference.kind === "video" && Boolean(value?.useAudio))} checked={value?.useVisual ?? false} onChange={(event) => updateReference(reference, "visual", event.target.checked)} /> Visual / motion</label>}{canAudio && <label><input type="checkbox" disabled={disabled || hasFrames || (!value?.useAudio && audio >= 3) || (reference.kind === "video" && !(value?.useVisual ?? false))} checked={value?.useAudio ?? false} onChange={(event) => updateReference(reference, "audio", event.target.checked)} /> Exact audio</label>}{value && <input aria-label={`${reference.name} scene guidance`} disabled={disabled || hasFrames} maxLength={4000} value={value.guidance} onChange={(event) => onPatch({ references: scene.references.map((item) => item.assetId === reference.assetId ? { ...item, guidance: event.target.value } : item) })} placeholder="Optional placement guidance from you…" />}</div>;
-    })}</section>
-    {rendered?.path && <details className="producer-rendered-scene"><summary><Check /> H3 master available</summary><video controls preload="metadata" src={movieMediaUrl(rendered.path)} /></details>}</fieldset>
-  </article>;
-}
-
-function ConversationPanel({ kind, conversation, chat, instruction, modelId, models, disabled, selectedCount, onInstruction, onSend, onStop, onSummarize, onReset }: {
-  kind: MovieStudioConversationKind; conversation: MovieStudioConversation | null; chat: ChatState; instruction: string;
-  modelId: string; models: ModelInfo[]; disabled: boolean; selectedCount: number;
-  onInstruction: (value: string) => void; onSend: () => void; onStop: () => void; onSummarize: () => void; onReset: (keepSummary: boolean) => void;
-}) {
-  return <aside className="producer-chat-panel"><header><span><MessageSquare /><strong>{kind === "story" ? "Story collaborator" : "Scene collaborator"}</strong><small>{kind === "story" ? "Every response is a full Markdown revision" : `${selectedCount} scene card${selectedCount === 1 ? "" : "s"} in full context`}</small></span><div><button disabled={disabled || Boolean(chat.requestId) || !conversation?.messages.length} title="Summarize this conversation" onClick={onSummarize}><Sparkles /></button><button disabled={disabled || Boolean(chat.requestId) || !conversation} title="Clear and start a blank conversation" onClick={() => onReset(false)}><Trash2 /></button><button disabled={disabled || Boolean(chat.requestId) || !conversation?.summary} title="Start a new conversation carrying the saved summary" onClick={() => onReset(true)}><RotateCcw /></button></div></header>
-    {conversation?.summary && <section className="producer-chat-summary"><strong>Carried summary</strong><MarkdownContent value={conversation.summary} /></section>}
-    <MessagePages className="producer-chat-pages producer-chat-history" label={kind === "story" ? "Story conversation" : "Scene conversation"} resetKey={conversation?.id ?? kind} live>
-      {conversation?.messages.map((message) => <article className={message.role} key={message.id} data-keep-with-next={message.role === "producer" || undefined}><small>{message.role === "producer" ? "You" : message.role === "collaborator" ? "Local collaborator" : "Kestrel"}{message.selectedSceneIds.length ? ` · ${message.selectedSceneIds.length} selected scenes` : ""}</small><CardPages label={message.role === "producer" ? "Your note" : "Reply"}><MarkdownContent value={message.markdown} /></CardPages></article>)}
-      {(chat.text || (chat.reasoning && chat.requestId)) && <LiveCollaborator key={chat.requestId ?? "live"} chat={chat} modelName={models.find((model) => model.id === modelId)?.name} />}
-      {!conversation?.messages.length && !chat.text && !chat.reasoning && <div key="empty" className="studio-room-empty"><MessageSquare /><strong>{kind === "story" ? "Revise by talking" : "Shape scenes by talking"}</strong><span>{kind === "story" ? "Ask for tone, structure, character, pacing, or a full rewrite. Every answer is saved as a new revision." : "Check only the cards the collaborator may change. It can add cards around the outline without seeing your media choices."}</span></div>}
-    </MessagePages>
-    {chat.status && <div className="producer-chat-status">{chat.requestId && <LoaderCircle className="spin" />}{chat.status}</div>}
-    <div className="producer-chat-compose"><textarea aria-label={`${kind} collaborator direction`} maxLength={16000} value={instruction} onChange={(event) => onInstruction(event.target.value)} placeholder={kind === "story" ? "Make the ending quieter and let Mara choose to stay…" : selectedCount ? "Split the selected scene and make the second beat more intimate…" : "Create a first scene pass from the accepted story…"} /><div><select aria-label={`${kind} collaborator model`} value={modelId} disabled>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select>{chat.requestId ? <button className="danger" onClick={onStop}><CircleStop /> Stop</button> : <button disabled={disabled || !modelId || instruction.trim().length < 2} onClick={onSend}><Send /> Send</button>}</div></div>
-    <footer><ShieldCheck /> Tool-free local inference. Conversation and revisions are durable.</footer>
-  </aside>;
-}
-
-/** The collaborator's reply while it is written: reasoning first, then the answer, following its newest page. */
-function LiveCollaborator({ chat, modelName }: { chat: ChatState; modelName?: string }) {
-  const [chosen, setChosen] = useState<ReplyView | null>(null);
-  useInferenceTelemetryReporter({ active: Boolean(chat.requestId), text: chat.reasoning + chat.text, modelName });
-  const view: ReplyView = chosen ?? (chat.text || !chat.reasoning ? "answer" : "reasoning");
-  return <article className="collaborator live"><small>Local collaborator · live {chat.reasoning && <ReplyViewToggle view={view} onView={setChosen} live={!chat.text} />}</small>
-    <CardPages label="Live reply" follow="end" resetKey={view}>
-      {view === "reasoning" ? <TextParagraphs className="collaborator-reasoning" text={chat.reasoning} /> : <MarkdownContent value={chat.text} streaming={Boolean(chat.requestId)} />}
-    </CardPages>
-  </article>;
-}
-
-function ReferenceShelf({ references, generatedImages = [], editable = false, onReferences, onUseGenerated }: {
-  references: Array<PendingMovieReference | MovieReference>; generatedImages?: MovieReferenceAsset[]; editable?: boolean;
-  onReferences?: (value: PendingMovieReference[]) => void; onUseGenerated?: (asset: MovieReferenceAsset) => void | Promise<void>;
-}) {
-  const [mediaSearch, setMediaSearch] = useState("");
-  const matching = references.filter((reference) => `${reference.name} ${reference.description}`.toLocaleLowerCase().includes(mediaSearch.toLocaleLowerCase()));
-  if (!references.length && !generatedImages.length) return null;
-  return <details className="producer-reference-shelf"><summary><Paperclip /> {references.length} attached reference{references.length === 1 ? "" : "s"}{generatedImages.length ? ` · ${generatedImages.length} generated image${generatedImages.length === 1 ? "" : "s"} available` : ""}</summary>{references.length > 40 && <label>Find attached media<input value={mediaSearch} onChange={(event) => setMediaSearch(event.target.value)} placeholder="Search all attached media…" /><small>Showing up to 40 of {matching.length} matches.</small></label>}<div>{matching.slice(0, 40).map((reference) => {
-    const id = reference.assetId;
-    return <article key={id}><ReferencePreview reference={reference} /><span><strong>{reference.name}</strong><small>{reference.kind}{reference.hasAudio ? " · audio available" : ""}</small>{editable && onReferences && <textarea value={reference.description} onChange={(event) => onReferences(references.map((item) => ({ ...item, description: item.assetId === id ? event.target.value : item.description })) as PendingMovieReference[])} placeholder="Optional identity, style, motion, or use note…" />}</span>{editable && onReferences && <button aria-label={`Remove ${reference.name}`} onClick={() => onReferences(references.filter((item) => item.assetId !== id) as PendingMovieReference[])}><X /></button>}</article>;
-  })}{generatedImages.map((asset) => <article key={asset.id}><ReferencePreview reference={asset} /><span><strong>{asset.name}</strong><small>Generated image</small></span><button className="use-generated" onClick={() => { void Promise.resolve(onUseGenerated?.(asset)).catch(() => undefined); }}><Plus /> Use</button></article>)}</div></details>;
-}
-
-function ReferencePreview({ reference }: { reference: MovieReferenceAsset | MovieReference | PendingMovieReference }) {
-  const source = movieMediaUrl(reference.path);
-  if (reference.kind === "image") return <div className="movie-reference-preview">{source && <img src={source} alt="" loading="lazy" />}</div>;
-  if (reference.kind === "video") return <div className="movie-reference-preview">{source && <video controls preload="metadata" src={source} />}</div>;
-  return <div className="movie-reference-preview audio"><AudioLines />{source && <audio controls preload="metadata" src={source} />}</div>;
-}
-
-function DeliveryRoom({ project, edit, busy, complete, onExport }: {
-  project: Awaited<ReturnType<typeof getMovie>>; edit: MovieEdit; busy: boolean; complete: number; onExport: () => void;
-}) {
-  const latest = project.exports.at(-1);
-  return <section className="project-room-scroll delivery-room"><div className="studio-room-heading"><span><small>Producer delivery room</small><strong>Review and preserve every explicit export</strong></span><button disabled={busy || !complete || project.status === "running" || !edit.clips.some((item) => item.enabled)} onClick={onExport}>{busy ? <LoaderCircle className="spin" /> : <Play />} Export current cut</button></div>
-    {project.finalPath ? <section className="movie-final"><div className="movie-section-heading"><div><span className="eyebrow">{latest ? "Latest immutable export" : "Assembled file"}</span><h2>{latest?.title ?? project.title}</h2><small>Native masters and earlier exports remain addressable.</small></div><a href={movieMediaUrl(project.finalPath)} download><Download /> Open file</a></div><video controls preload="metadata" src={movieMediaUrl(project.finalPath)} /></section> : <div className="studio-room-empty"><Download /><strong>No deliverable yet</strong><span>Render scenes, arrange the timeline, then explicitly export a cut.</span></div>}
-    {project.exports.length > 0 && <section className="movie-export-history"><div className="movie-section-heading"><div><span className="eyebrow">Immutable deliverables</span><h2>Export history</h2></div></div><PagedList className="movie-export-list" label="Export history" items={[...project.exports].reverse()} itemKey={(item) => item.id} renderItem={(item) => <article><span><strong>{item.title}</strong><small>{new Date(item.createdAt).toLocaleString()} · {item.preset} · {item.clipCount} items · {item.durationSeconds.toFixed(2)}s</small><code title={item.sha256}>{item.sha256.slice(0, 16)}…</code></span><a href={movieMediaUrl(item.path)} download><Download /> Open</a></article>} /></section>}
-  </section>;
-}
-
-function NumberField({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange: (value: number) => void }) {
-  return <label>{label}<input type="number" min={min} max={max} value={value} onChange={(event) => { const next = Number(event.target.value); if (Number.isFinite(next) && next >= min && next <= max) onChange(next); }} /></label>;
-}
-
-function toPendingReference(asset: MovieReferenceAsset): PendingMovieReference {
-  const description = asset.kind === "image"
-    ? `Use ${asset.name} as a producer-selected visual identity and appearance reference.`
-    : asset.kind === "video"
-      ? `Use ${asset.name} as a producer-selected motion and visual reference.`
-      : `Use the exact audio from ${asset.name} when the producer selects it for a scene.`;
-  return {
-    ...asset,
-    assetId: asset.id,
-    description,
-    useEmbeddedAudio: asset.kind === "video" && asset.hasAudio,
-    embeddedAudioDescription: asset.kind === "video" && asset.hasAudio
-      ? `Use the exact embedded audio from ${asset.name} when selected for a scene.`
-      : "",
-  };
+    </MovieAssetCreator>
+  );
 }

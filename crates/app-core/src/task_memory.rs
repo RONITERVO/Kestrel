@@ -3,43 +3,56 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct TaskCheckpoint {
     /// Agent-authored working summary, never a replacement for original user instructions.
+    #[serde(default)]
     pub summary: String,
+    #[serde(default)]
     pub plan: Vec<TaskPlanItem>,
+    #[serde(default)]
     pub decisions: Vec<String>,
+    #[serde(default)]
     pub references: Vec<String>,
+    #[serde(default)]
     pub next_steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct TaskPlanItem {
     pub id: String,
     pub description: String,
+    #[serde(default)]
     pub status: TaskPlanStatus,
     /// One-based native journal sequence numbers supporting the claimed result.
+    #[serde(default)]
     pub evidence: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum TaskPlanStatus {
+    #[default]
+    #[serde(alias = "Pending", alias = "todo")]
     Pending,
+    #[serde(alias = "InProgress", alias = "in_progress", alias = "active", alias = "running")]
     InProgress,
+    #[serde(alias = "Done", alias = "completed", alias = "complete")]
     Done,
+    #[serde(alias = "Blocked", alias = "waiting")]
     Blocked,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct TaskCheckpointUpdate {
     /// Compare-and-swap revision obtained from get_task_memory or task_memory.
+    #[serde(default)]
     pub expected_revision: u32,
     pub checkpoint: TaskCheckpoint,
 }

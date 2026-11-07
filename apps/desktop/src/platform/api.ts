@@ -10,15 +10,16 @@ export const stopProducerWorkflow = (id: string) => invoke("stop_producer_workfl
 export const getProducerTaskStatus = (id: string) => invoke("get_producer_task_status", { id });
 export const getStrataDashboard = () => invoke("get_strata_dashboard", {});
 export const getStrataRequestDetail = (id: string) => invoke("get_strata_request_detail", { id });
-import type { MovieEditorGenerateRequest, MovieEditorJob, MovieEditorRangeRequest, MovieEditorState } from "../contracts/index";
 import { readLegacySpeechPreferences } from "./legacySpeechPreferences";
 import type { DesktopCommands, ExportedFiles, NarrationExportRequest, NarrationPreferences, ResearchSpeechPreferences, VadSettings } from "../contracts/index";
 import type {
   AppSnapshot,
+  CaptureMovieH3FrameRequest,
   ChatSession,
   ChatSessionSummary,
   ChatStart,
   ChatStreamEvent,
+  CompileMovieH3WindowRequest,
   ComputerTaskEvent,
   ComputerTaskRequest,
   ComputerTaskRun,
@@ -26,10 +27,23 @@ import type {
   ContextAttachmentImport,
   ControlSettings,
   ControlSnapshot,
+  CreateMovieH3ProjectRequest,
+  CreateMovieH3SceneRequest,
+  DeleteMovieH3EntityRequest,
   DeveloperRepairReport,
   GpuMemoryProcess,
+  H3EnvironmentSnapshot,
+  H3GenerationStartReceipt,
+  H3ProductionDigest,
+  H3StageReferenceReceipt,
+  H3StartGenerationRequest,
+  H3TakeInspection,
+  H3UpsertPromptSectionReceipt,
+  H3WindowCompileResult,
   OperationProgress,
+  PlaceMovieH3TakeRequest,
   ProfileTransfer,
+  RenderMovieExportRequest,
   ResearchProgress,
   ResearchReport,
   LocalSpeechSnapshot,
@@ -45,13 +59,16 @@ import type {
   ResearchSettings,
   ResumeComputerTaskRequest,
   RunResearchRequest,
+  SaveMovieH3SceneRequest,
+  SaveMovieH3StoryRequest,
+  StageMovieH3ReferenceRequest,
   StartChatRequest,
   SystemSnapshot,
   SetupInstallRequest,
   SetupLocations,
   SetupProgress,
   SetupSnapshot,
-  MovieEdit,
+  MovieExportReceipt,
   MovieImageAssetGeneration,
   MovieReferenceAsset,
   MovieProject,
@@ -62,17 +79,6 @@ import type {
   ModelDownloadRequest,
   ModelDownloadInspection,
   MovieSummary,
-  AttachMovieProducerReferencesRequest,
-  CreateMovieProducerProjectRequest,
-  MovieProducerWorkspace,
-  MovieStudioChatEvent,
-  MovieStudioChatRequest,
-  MovieStudioConversation,
-  AcceptMovieStoryRevisionRequest,
-  ResetMovieStudioConversationRequest,
-  SaveMovieScenesRequest,
-  SaveMovieStoryRevisionRequest,
-  SummarizeMovieStudioConversationRequest,
   MusicGenerationEvent,
   MusicLyricsDocument,
   MusicLyricsSaveResult,
@@ -88,28 +94,13 @@ import type {
   ImageGenerationEvent,
   ImageProject,
   ImageSummary,
+  UpsertMovieH3EntityRequest,
+  UpsertMovieH3PromptSectionRequest,
   VramCleanupPreview,
   VramCleanupResult,
   PromptDraftEvent,
   PromptDraftRequest,
-  ThinkingLevel,
 } from "../contracts/index";
-
-export async function getMovieEditorState(id: string): Promise<MovieEditorState> {
-  return invoke("get_movie_editor_state", { id });
-}
-
-export async function prepareMovieEditorRange(request: MovieEditorRangeRequest, edit: MovieEdit): Promise<MovieEditorJob> {
-  return invoke("prepare_movie_editor_range", { request, edit });
-}
-
-export async function startMovieEditorGeneration(request: MovieEditorGenerateRequest): Promise<string> {
-  return invoke("start_movie_editor_generation", { request });
-}
-
-export async function onMovieEditorJob(callback: (job: MovieEditorJob) => void): Promise<UnlistenFn> {
-  return listen("movie-editor-job", (event) => callback(event.payload));
-}
 
 export function getSpeechPreferences() {
   return invoke("get_speech_preferences", { legacy: readLegacySpeechPreferences() });
@@ -224,60 +215,72 @@ export async function getMovie(id: string): Promise<MovieProject> {
   return invoke("get_movie", { id });
 }
 
-export async function createMovieProducerProject(request: CreateMovieProducerProjectRequest): Promise<MovieProject> {
-  return invoke("create_movie_producer_project", { request });
+export async function getMovieH3Digest(id: string): Promise<H3ProductionDigest> {
+  return invoke("get_movie_h3_digest", { id });
 }
 
-export async function attachMovieProducerReferences(request: AttachMovieProducerReferencesRequest): Promise<MovieProject> {
-  return invoke("attach_movie_producer_references", { request });
+export async function getMovieH3Environment(): Promise<H3EnvironmentSnapshot> {
+  return invoke("get_movie_h3_environment");
 }
 
-export async function getMovieProducerWorkspace(id: string): Promise<MovieProducerWorkspace> {
-  return invoke("get_movie_producer_workspace", { id });
+export async function installMovieH3TurboLoras(): Promise<H3EnvironmentSnapshot> {
+  return invoke("install_movie_h3_turbo_loras");
 }
 
-export async function getMovieStudioConversation(projectId: string, conversationId: string): Promise<MovieStudioConversation> {
-  return invoke("get_movie_studio_conversation", { projectId, conversationId });
+export async function listMovieReferenceAssets(): Promise<MovieReferenceAsset[]> {
+  return invoke("list_movie_reference_assets");
 }
 
-export async function saveMovieStoryRevision(request: SaveMovieStoryRevisionRequest): Promise<MovieProducerWorkspace> {
-  return invoke("save_movie_story_revision", { request });
+export async function createMovieH3Project(request: CreateMovieH3ProjectRequest): Promise<MovieProject> {
+  return invoke("create_movie_h3_project", { request });
 }
 
-export async function acceptMovieStoryRevision(request: AcceptMovieStoryRevisionRequest): Promise<MovieProducerWorkspace> {
-  return invoke("accept_movie_story_revision", { request });
+export async function saveMovieH3Story(request: SaveMovieH3StoryRequest): Promise<MovieProject> {
+  return invoke("save_movie_h3_story", { request });
 }
 
-export async function saveMovieScenes(request: SaveMovieScenesRequest): Promise<MovieProducerWorkspace> {
-  return invoke("save_movie_scenes", { request });
+export async function upsertMovieH3Entity(request: UpsertMovieH3EntityRequest): Promise<MovieProject> {
+  return invoke("upsert_movie_h3_entity", { request });
 }
 
-export async function renderMovieScenes(id: string): Promise<MovieProject> {
-  return invoke("render_movie_scenes", { id });
+export async function deleteMovieH3Entity(request: DeleteMovieH3EntityRequest): Promise<MovieProject> {
+  return invoke("delete_movie_h3_entity", { request });
 }
 
-export async function resetMovieStudioConversation(request: ResetMovieStudioConversationRequest): Promise<MovieStudioConversation> {
-  return invoke("reset_movie_studio_conversation", { request });
+export async function createMovieH3Scene(request: CreateMovieH3SceneRequest): Promise<MovieProject> {
+  return invoke("create_movie_h3_scene", { request });
 }
 
-export async function summarizeMovieStudioConversation(request: SummarizeMovieStudioConversationRequest): Promise<MovieStudioConversation> {
-  return invoke("summarize_movie_studio_conversation", { request });
+export async function saveMovieH3Scene(request: SaveMovieH3SceneRequest): Promise<MovieProject> {
+  return invoke("save_movie_h3_scene", { request });
 }
 
-export async function startMovieStudioChat(request: MovieStudioChatRequest): Promise<string> {
-  return invoke("start_movie_studio_chat", { request });
+export async function stageMovieH3Reference(request: StageMovieH3ReferenceRequest): Promise<H3StageReferenceReceipt> {
+  return invoke("stage_movie_h3_reference", { request });
 }
 
-export async function cancelMovieStudioChat(requestId: string): Promise<void> {
-  await invoke("cancel_movie_studio_chat", { requestId });
+export async function upsertMovieH3PromptSection(request: UpsertMovieH3PromptSectionRequest): Promise<H3UpsertPromptSectionReceipt> {
+  return invoke("upsert_movie_h3_prompt_section", { request });
 }
 
-export async function onMovieStudioChat(callback: (event: MovieStudioChatEvent) => void): Promise<UnlistenFn> {
-  return listen("movie-studio-chat", (event) => callback(event.payload));
+export async function captureMovieH3FrameGuide(request: CaptureMovieH3FrameRequest): Promise<MovieReferenceAsset> {
+  return invoke("capture_movie_h3_frame_guide", { request });
 }
 
-export async function onMovieProducerWorkspace(callback: (workspace: MovieProducerWorkspace) => void): Promise<UnlistenFn> {
-  return listen("movie-producer-workspace", (event) => callback(event.payload));
+export async function compileMovieH3Window(request: CompileMovieH3WindowRequest): Promise<H3WindowCompileResult> {
+  return invoke("compile_movie_h3_window", { request });
+}
+
+export async function startMovieH3Generation(request: H3StartGenerationRequest): Promise<H3GenerationStartReceipt> {
+  return invoke("start_movie_h3_generation", { request });
+}
+
+export async function placeMovieH3Take(request: PlaceMovieH3TakeRequest): Promise<MovieProject> {
+  return invoke("place_movie_h3_take", { request });
+}
+
+export async function inspectMovieH3Take(projectId: string, jobId: string): Promise<H3TakeInspection> {
+  return invoke("inspect_movie_h3_take", { projectId, jobId });
 }
 
 export async function pickMovieReferenceFiles(): Promise<MovieReferenceImport> {
@@ -291,6 +294,16 @@ export async function listMovieImageAssets(): Promise<MovieImageAssetGeneration[
 /** Imports a finished Image Studio take into the movie reference library (by IDs; no path crosses IPC). */
 export async function importImageTakeAsMovieReference(imageProjectId: string, takeId: string): Promise<MovieReferenceAsset> {
   return invoke("import_image_take_as_movie_reference", { imageProjectId, takeId });
+}
+
+/** Imports a verified Kestrel Speech Studio clip (`generated/*.opus`) into the movie reference library. */
+export async function importSpeechClipAsMovieReference(relativePath: string, label?: string): Promise<MovieReferenceAsset> {
+  return invoke("import_speech_clip_as_movie_reference", { relativePath, label: label ?? null });
+}
+
+/** Imports a finished Music Studio take into the movie reference library. */
+export async function importMusicTakeAsMovieReference(musicProjectId: string, takeId: string): Promise<MovieReferenceAsset> {
+  return invoke("import_music_take_as_movie_reference", { musicProjectId, takeId });
 }
 
 export async function onMovieRenderPreview(callback: (event: MovieRenderPreviewEvent) => void): Promise<UnlistenFn> {
@@ -501,16 +514,12 @@ export async function getMovieRenderState(id: string): Promise<MovieRenderState>
   return invoke("get_movie_render_state", { id });
 }
 
-export async function cancelMovieRender(id: string): Promise<void> {
-  await invoke("cancel_movie_render", { id });
+export async function cancelMovieRender(id: string): Promise<MovieProject> {
+  return invoke("cancel_movie_render", { id });
 }
 
-export async function saveMovieEdits(id: string, edit: MovieEdit): Promise<MovieProject> {
-  return invoke("save_movie_edits", { id, edit });
-}
-
-export async function renderMovieEdit(id: string): Promise<MovieProject> {
-  return invoke("render_movie_edit", { id });
+export async function renderMovieEdit(request: RenderMovieExportRequest): Promise<MovieExportReceipt> {
+  return invoke("render_movie_edit", { request });
 }
 
 export async function revealMovie(id: string): Promise<void> {

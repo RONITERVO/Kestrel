@@ -25,6 +25,15 @@ pub fn artifact(arguments: &Value, receipt: &Value) -> Option<std::path::PathBuf
         }
         "export_production_bundle" => result.get("manifestPath")?.as_str()?,
         "export_media_composition" => result.get("mediaPath")?.as_str()?,
+        "render_movie_edit" => result
+            .get("destinationCopyPath")
+            .and_then(Value::as_str)
+            .or_else(|| result.pointer("/export/path").and_then(Value::as_str))?,
+        "inspect_movie_h3_take" => result.get("takeMediaPath")?.as_str()?,
+        "import_image_take_as_movie_reference"
+        | "import_speech_clip_as_movie_reference"
+        | "import_music_take_as_movie_reference"
+        | "capture_movie_h3_frame_guide" => result.get("path")?.as_str()?,
         "get_movie" => result.get("finalPath")?.as_str()?,
         "get_music_project" | "get_image_project" => {
             let active = result.get("activeTakeId")?.as_str()?;
@@ -43,6 +52,30 @@ pub fn artifact(arguments: &Value, receipt: &Value) -> Option<std::path::PathBuf
     };
     let path = std::path::PathBuf::from(path);
     path.is_file().then_some(path)
+}
+
+pub fn extra_artifacts(arguments: &Value, receipt: Option<&Value>) -> Vec<std::path::PathBuf> {
+    let Some(command) = arguments.get("command").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let Some(result) = receipt.and_then(|r| r.get("result")) else {
+        return Vec::new();
+    };
+    if command == "inspect_movie_h3_take" {
+        return result
+            .pointer("/quality/contactSheetPaths")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(std::path::PathBuf::from)
+                    .filter(|p| p.is_file())
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    Vec::new()
 }
 
 pub async fn execute(
@@ -90,12 +123,16 @@ pub async fn execute(
             ) {
                 return Err("A Computer Task cannot recursively start tasks/chat or change the producer's selected runtime. Use Studio drafting actions for local collaboration.".into());
             }
-            let arguments = args.get("args").cloned().ok_or("args is required")?;
+            let arguments = app_control::coerce_stringified_object(
+                args.get("args").cloned().ok_or("args is required")?,
+            );
             let configured = app
                 .state::<AppState>()
                 .research_settings
                 .load()
                 .map_err(|e| e.to_string())?;
+            let advanced = configured.advanced_mode || settings.advanced_mode;
+            let comfy_root = configured.comfy_root.clone();
             let trusted = [
                 configured.comfy_root,
                 configured.muscriptor_executable_path,
@@ -182,25 +219,115 @@ pub async fn execute(
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
             state.work_active.store(true, Ordering::Release);
-            serde_json::to_value(result?).map_err(|e| e.to_string())
+            let mut receipt = result?;
+            compact_movie_receipt_for_agent(
+                command,
+                &mut receipt,
+                &state,
+                &comfy_root,
+                advanced,
+            );
+            serde_json::to_value(receipt).map_err(|e| e.to_string())
         }
         _ => Err(format!("Unknown app tool: {name}")),
+    }
+}
+
+fn compact_movie_receipt_for_agent(
+    command: &str,
+    receipt: &mut kestrel_app_core::AppActionReceipt,
+    state: &AppState,
+    comfy_root: &str,
+    advanced: bool,
+) {
+    if matches!(
+        command,
+        "create_movie_h3_project"
+            | "save_movie_h3_story"
+            | "upsert_movie_h3_entity"
+            | "delete_movie_h3_entity"
+            | "create_movie_h3_scene"
+            | "save_movie_h3_scene"
+            | "place_movie_h3_take"
+            | "cancel_movie_render"
+    ) {
+        if let Some(proj_id) = receipt
+            .result
+            .as_ref()
+            .and_then(|v| v.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        {
+            let detail = receipt
+                .result
+                .as_ref()
+                .and_then(|v| v.get("detail"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if let Ok(digest) = state.studio.production_digest(&proj_id, comfy_root, advanced) {
+                if let Ok(mut digest_val) = serde_json::to_value(digest) {
+                    if let Some(obj) = digest_val.as_object_mut() {
+                        obj.insert("id".into(), json!(proj_id));
+                        if !detail.is_empty() {
+                            obj.insert("detail".into(), json!(detail));
+                        }
+                    }
+                    receipt.result = Some(digest_val);
+                }
+            }
+        }
+    } else if command == "start_movie_h3_generation" {
+        if let Some(proj_id) = receipt
+            .result
+            .as_ref()
+            .and_then(|v| v.get("projectId"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        {
+            if let Ok(digest) = state.studio.production_digest(&proj_id, comfy_root, advanced) {
+                if matches!(digest.status.as_str(), "failed" | "cancelled") {
+                    receipt.status = digest.status.clone();
+                    if let Ok(proj) = state.studio.get(&proj_id) {
+                        if !proj.error.is_empty() {
+                            receipt.error = Some(proj.error);
+                        }
+                    }
+                }
+                if let (Some(res_obj), Ok(digest_val)) = (
+                    receipt.result.as_mut().and_then(Value::as_object_mut),
+                    serde_json::to_value(digest),
+                ) {
+                    res_obj.insert("postRenderDigest".into(), digest_val);
+                }
+            }
+        }
     }
 }
 
 fn cancel_owned_job(command: &str, args: &Value, state: &AppState) -> Result<(), String> {
     let id = args
         .get("id")
+        .or_else(|| args.pointer("/request/projectId"))
         .or_else(|| args.pointer("/request/requestId"))
         .and_then(Value::as_str);
     if let Some(id) = id {
         let registry = match command {
             "start_image_generation" => &state.image_generation_jobs,
             "start_music_generation" => &state.music_jobs,
-            "render_movie_scenes" | "start_movie_editor_generation" => &state.movie_jobs,
+            "start_movie_h3_generation" => &state.movie_jobs,
             _ => &state.interactive_jobs,
         };
         if let Some(token) = registry.lock().map_err(|e| e.to_string())?.get(id) {
+            token.cancel();
+        }
+    } else if command == "install_movie_h3_turbo_loras" {
+        if let Some(token) = state
+            .movie_jobs
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get("turbo-loras")
+        {
             token.cancel();
         }
     }

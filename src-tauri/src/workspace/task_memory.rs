@@ -95,7 +95,7 @@ impl WorkspaceStore {
     pub fn update_task_checkpoint(
         &self,
         id: &str,
-        update: TaskCheckpointUpdate,
+        mut update: TaskCheckpointUpdate,
     ) -> Result<TaskMemorySnapshot, String> {
         let _guard = self
             .write_lock
@@ -106,6 +106,7 @@ impl WorkspaceStore {
         if update.expected_revision != current.revision {
             return Err(format!("Working memory changed. Read task_memory again and merge your update; current revision is {}.", current.revision));
         }
+        normalize_checkpoint_evidence(&mut update.checkpoint, &run);
         validate_checkpoint(&update.checkpoint, &run)?;
         let revision = current
             .revision
@@ -134,6 +135,10 @@ impl WorkspaceStore {
         if needle.len() > 256 {
             return Err("History search may contain up to 256 bytes.".into());
         }
+        let tokens: Vec<&str> = needle
+            .split_whitespace()
+            .filter(|w| w.len() >= 2)
+            .collect();
         let mut entries = Vec::new();
         let mut cursor = query.after as usize;
         for (index, event) in run.events.iter().enumerate().skip(cursor) {
@@ -146,15 +151,31 @@ impl WorkspaceStore {
             if query.kind.as_ref().is_some_and(|kind| kind != &event.kind) {
                 continue;
             }
-            if !needle.is_empty()
-                && !event.detail.to_lowercase().contains(&needle)
-                && !event.title.to_lowercase().contains(&needle)
-                && !event
+            if !needle.is_empty() {
+                let detail_lower = event.detail.to_lowercase();
+                let title_lower = event.title.to_lowercase();
+                let data_lower = event
                     .data
                     .as_ref()
-                    .is_some_and(|data| data.to_string().to_lowercase().contains(&needle))
-            {
-                continue;
+                    .map(|d| d.to_string().to_lowercase())
+                    .unwrap_or_default();
+                let exact_match = detail_lower.contains(&needle)
+                    || title_lower.contains(&needle)
+                    || data_lower.contains(&needle);
+                let token_match = tokens.len() >= 2 && {
+                    let matched = tokens
+                        .iter()
+                        .filter(|&&tok| {
+                            detail_lower.contains(tok)
+                                || title_lower.contains(tok)
+                                || data_lower.contains(tok)
+                        })
+                        .count();
+                    matched >= tokens.len().div_ceil(2)
+                };
+                if !exact_match && !token_match {
+                    continue;
+                }
             }
             entries.push(TaskHistoryEntry {
                 sequence: cursor as u32,
@@ -419,6 +440,64 @@ fn snapshot(run: &ComputerTaskRun) -> Result<TaskMemorySnapshot, String> {
         direction_sequences: directions,
         unsettled_actions: pending.into_values().collect(),
     })
+}
+
+fn normalize_checkpoint_evidence(checkpoint: &mut TaskCheckpoint, run: &ComputerTaskRun) {
+    if checkpoint.summary.trim().is_empty() {
+        if let Some(first_plan) = checkpoint.plan.first() {
+            if !first_plan.description.trim().is_empty() {
+                checkpoint.summary = first_plan.description.trim().to_string();
+            }
+        } else if let Some(first_dec) = checkpoint.decisions.first() {
+            if !first_dec.trim().is_empty() {
+                checkpoint.summary = first_dec.trim().to_string();
+            }
+        }
+    }
+    for item in &mut checkpoint.plan {
+        let mut normalized = Vec::new();
+        for &seq in &item.evidence {
+            let Some(idx) = seq.checked_sub(1).map(|i| i as usize) else {
+                continue;
+            };
+            let Some(ev) = run.events.get(idx) else {
+                normalized.push(seq);
+                continue;
+            };
+            if matches!(ev.kind.as_str(), "tool_result" | "artifact") {
+                if !normalized.contains(&seq) {
+                    normalized.push(seq);
+                }
+            } else if ev.kind == "tool_start" {
+                if let Some(next_ev) = run.events.get(idx + 1) {
+                    if matches!(next_ev.kind.as_str(), "tool_result" | "artifact") {
+                        let snapped = seq + 1;
+                        if !normalized.contains(&snapped) {
+                            normalized.push(snapped);
+                        }
+                        continue;
+                    }
+                }
+                normalized.push(seq);
+            } else {
+                normalized.push(seq);
+            }
+        }
+        let valid_only: Vec<u32> = normalized
+            .iter()
+            .copied()
+            .filter(|&seq| {
+                seq.checked_sub(1)
+                    .and_then(|i| run.events.get(i as usize))
+                    .is_some_and(|ev| matches!(ev.kind.as_str(), "tool_result" | "artifact"))
+            })
+            .collect();
+        if !valid_only.is_empty() || item.status != TaskPlanStatus::Done {
+            item.evidence = valid_only;
+        } else {
+            item.evidence = normalized;
+        }
+    }
 }
 
 fn validate_checkpoint(checkpoint: &TaskCheckpoint, run: &ComputerTaskRun) -> Result<(), String> {

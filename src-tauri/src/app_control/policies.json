@@ -143,55 +143,79 @@
   ],
   "list_movies": [
     "read",
-    "Read the current native state. This does not authorize generation or apply a proposal."
+    "Read summary records of all local Movie Studio projects."
   ],
   "get_movie": [
     "read",
-    "Read the current native state. This does not authorize generation or apply a proposal."
+    "Read the full durable MovieProject JSON. For 64k-context producer workflows, prefer get_movie_h3_digest first so full lane/job payloads do not crowd your context window."
   ],
-  "create_movie_producer_project": [
-    "write",
-    "Create a producer-owned movie. Preserve native faster defaults (768x448, 20 steps) unless the user requests higher detail. settings may be omitted to use defaults. Generation edges must be multiples of 32, 320–1344 normally or up to 2048 in Advanced mode. Clip length 5–15 seconds. Media composition scales to the requested frame shape independently."
-  ],
-  "attach_movie_producer_references": [
-    "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
-  ],
-  "get_movie_producer_workspace": [
+  "get_movie_h3_digest": [
     "read",
-    "Read the current native state. This does not authorize generation or apply a proposal."
+    "Read a compact (< 4 KB) deterministic MiniMax H3 production digest: entities, scene timelines, video coverage spans, uncovered timeline gaps, recent job telemetry, and concrete nextActions. Call this first when resuming or tracking a movie."
   ],
-  "get_movie_studio_conversation": [
+  "get_movie_h3_environment": [
     "read",
-    "Read the current native state. This does not authorize generation or apply a proposal."
+    "Inspect installed MiniMax H3 weights (ref2va, fl2va, Qwen3-VL 32B, video/audio VAEs, taeh3 preview) and discovered H3 LoRAs in ComfyUI."
   ],
-  "save_movie_story_revision": [
-    "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  "install_movie_h3_turbo_loras": [
+    "human",
+    "Use the explicit desktop control for this action; producer delegation cannot grant consent, change access/runtime policy, run developer tools, delete user data, or authorize downloads."
   ],
-  "accept_movie_story_revision": [
-    "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+  "list_movie_reference_assets": [
+    "read",
+    "List content-addressed picture, video, and audio assets in Movie Studio's Reference Library."
   ],
-  "save_movie_scenes": [
+  "create_movie_h3_project": [
     "write",
-    "Save producer-owned shots and real visual bindings. Recurring characters/objects need image conditioning or prior-shot frames; prose alone does not bind their identity. firstFrame/lastFrame use referenceImage with an attached assetId, or previousScene for the prior shot endpoint. Do not combine first/last-frame conditioning with the separate per-scene references mode; H3 rejects that combination. Imported image takes can be attached through import_image_take_as_movie_reference and attach_movie_producer_references."
+    "Create a MiniMax H3 Studio project (schema v9) with a Markdown story brief and an initial 1920x1088 24fps Main scene."
   ],
-  "reset_movie_studio_conversation": [
+  "save_movie_h3_story": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Save an immutable Markdown story brief revision on a Movie Studio project."
   ],
-  "summarize_movie_studio_conversation": [
+  "upsert_movie_h3_entity": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Create or update a reusable @Handle entity (character, location, prop, outfit, voice, sound, other) with subjectDescription, retentionLevel (fullyPreserved, mostlyPreserved, looselyInspired), and cropped/trimmed pictures, videos, or standaloneAudios members. Mention @Handle in prompt sections to auto-bind <Subject N>, <Picture N>, <Video N>, <Audio N>, and (Sn) speaker codes."
   ],
-  "start_movie_studio_chat": [
+  "delete_movie_h3_entity": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Remove an @Handle entity from the project Reference Library and clean up its staged reference-lane items."
   ],
-  "cancel_movie_studio_chat": [
+  "create_movie_h3_scene": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Create a new H3 scene workspace: standard (768x448 main cut default), audition (768x448 voice/character tests), or soundtrack (64x32 minimal-video music/ambience generation)."
+  ],
+  "save_movie_h3_scene": [
+    "write",
+    "Save edits to an H3Scene (window [inSec..outSec] & pre/post context frames, generation settings, globalPrompt, promptSections, guides, referenceLanes, videoLanes, driverLanes, audioLanes). Omitted lane/section/guide arrays are preserved by default unless replaceEmptyCollections=true."
+  ],
+  "stage_movie_h3_reference": [
+    "write",
+    "High-leverage timeline action: stage an @Handle entity (by entityId or '@Handle') or raw assetId over [startSec..endSec] on a non-colliding reference lane (R1..Rn). Tighter timeline spans automatically override wider spans for the same @Handle."
+  ],
+  "upsert_movie_h3_prompt_section": [
+    "write",
+    "High-leverage timeline action: create or update a timed [Shot k] prompt section (summaryBeat, detailedAction with @Handle names, cameraAndLighting, soundscapeOverride, musicOverride, vocalEvents <d>[Language] ...</d>, or swapFields) and optional scene globalPrompt without resending the whole scene."
+  ],
+  "capture_movie_h3_frame_guide": [
+    "write",
+    "Extract an exact PNG frame at timeSec from a completed take (sourceJobId) or video reference (sourceAssetId) into the Reference Library, optionally pinning it on the scene's Guides track (addGuideAtSec) for FL2V first/last-frame or Ref2V keyframe conditioning."
+  ],
+  "compile_movie_h3_window": [
+    "read",
+    "Dry-run the native H3 compiler on a scene window before rendering. Returns exact 17k+5 frame geometry, winner/superseded/capExceeded/belowThreshold/muted/outsideSpan reference verdicts, <Subject>/<Picture>/<Video>/<Audio> bindings, compiled 6-channel prompt text, resolved model + LoRAs, and advisories."
+  ],
+  "start_movie_h3_generation": [
+    "write",
+    "Render one or more H3 scene windows in ComfyUI after releasing the local LLM VRAM lease. Defaults to draft02Mp (768x448, expandQualityLadder=false) for fast ~1 min per 2s rendering; pass windows=[] to automatically queue all uncovered prompt sections in order with 23-frame (~0.96s) preContextSec continuity bridging. Only set expandQualityLadder=true (1MP -> 1080p) when slow high-resolution upscaling is explicitly requested."
+  ],
+  "place_movie_h3_take": [
+    "write",
+    "Non-destructively place a completed H3 take (jobId) or Reference Library asset (assetId) onto a scene's video (targetVideoLaneId), audio (targetAudioLaneId), or pose/motion driver (targetDriverLaneId) lane using authored_v1 trim geometry (placementMode: trimmed, untrimmed, or assetOnly). Optional gain (0.0-2.0; audio clip gain, or embedded audio gain for video clips) and fadeInSec/fadeOutSec (audio clips) set the mix in the same action, e.g. a quieter A2 score under dialogue."
+  ],
+  "inspect_movie_h3_take": [
+    "read",
+    "Inspect a render job's exact compiled prompt, SHA-256 take media path, ridge color-drift report, and native quality telemetry (FFprobe streams, verified boolean, measured audioPeakDbfs/audioMeanDbfs, hasAudio, and 3 extracted contactSheetPaths PNGs)."
   ],
   "start_studio_prompt_draft": [
     "write",
@@ -203,7 +227,7 @@
   ],
   "get_movie_render_state": [
     "read",
-    "Read the current native state. This does not authorize generation or apply a proposal."
+    "Read the current native state and approximate taeh3 live preview frame if a render is running."
   ],
   "pick_movie_reference_files": [
     "human",
@@ -211,43 +235,31 @@
   ],
   "list_movie_image_assets": [
     "read",
-    "Read the current native state. This does not authorize generation or apply a proposal."
+    "Read legacy still image records."
   ],
   "import_image_take_as_movie_reference": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Import a completed Image Studio take (MOSS or Ideogram) into Movie Studio's content-addressed Reference Library by imageProjectId and takeId so it can populate a Character, Location, Prop, or Outfit @Handle."
   ],
-  "save_movie_edits": [
+  "import_speech_clip_as_movie_reference": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Import a verified Kestrel-generated speech clip (relativePath 'generated/*.opus' from synthesize_local_speech) into Movie Studio's Reference Library to condition a @Voice entity or place dialogue on an audio lane."
   ],
-  "render_movie_scenes": [
+  "import_music_take_as_movie_reference": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
-  ],
-  "get_movie_editor_state": [
-    "read",
-    "Read the current native state. This does not authorize generation or apply a proposal."
-  ],
-  "prepare_movie_editor_range": [
-    "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
-  ],
-  "start_movie_editor_generation": [
-    "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Import a completed Music Studio take (Music 3 or YuE2) into Movie Studio's Reference Library by musicProjectId and takeId for soundtrack assembly or H3 audio reference conditioning."
   ],
   "cancel_movie_render": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Stop the active H3 ComfyUI render queue for a project while preserving all completed takes and timeline edits."
   ],
   "render_movie_edit": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Render an immutable multi-lane deliverable from an H3 scene timeline via FFmpeg: preset 'publish' (BT.709 H.264 MP4 + AAC), 'archive' (BT.709 CRF 12 MKV + FLAC), 'lossless' (FFV1 + 24-bit PCM MKV), 'review' (MP4), or 'audio_flac' (24-bit FLAC), with measured linear peak-headroom scaling (-1.0 dBFS default) and optional explicit destinationPath."
   ],
   "reveal_movie": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Open the Movie Studio project directory in Windows Explorer."
   ],
   "list_music_projects": [
     "read",
@@ -628,7 +640,7 @@
   ],
   "export_production_bundle": [
     "write",
-    "Deliver any selected artifacts and producer-authored text/code as a new folder with a manifest. No output type or platform is required. Artifacts use shared ProductionArtifact handles: image/music takes, movie clips/edits, speech, compositions, imported attachments, or immutable research HTML/JSON/evidence/provenance. Original copies keep their extensions; jpegImage converts image options to explicit dimensions/fit. filenames are safe relative paths; roles are producer-defined. files contains exact authored text/code, which is saved but never executed. No uploads occur. Discover export_media_composition separately when timing/mixing is needed."
+    "Deliver any selected artifacts and producer-authored text/code as a new folder with a manifest. No output type or platform is required. Artifacts use shared ProductionArtifact handles: image/music takes, movie clips/edits, MiniMax H3 takes (movieH3Take with projectId, jobId and file: video, contactStart, contactMid or contactEnd for continuity stills), speech, compositions, imported attachments, or immutable research HTML/JSON/evidence/provenance. Original copies keep their extensions; jpegImage converts image options to explicit dimensions/fit. filenames are safe relative paths; roles are producer-defined. files contains exact authored text/code, which is saved but never executed. No uploads occur. Discover export_media_composition separately when timing/mixing is needed."
   ],
   "cancel_production_job": [
     "write",

@@ -10,6 +10,9 @@ pub enum ProductionArtifact {
     MusicTake { project_id: String, take_id: String },
     MovieClip { project_id: String, clip_id: String, version_id: Option<String> },
     MovieExport { project_id: String },
+    /// A completed MiniMax H3 take from Movie Studio: its verified video, or one of the
+    /// start/mid/end contact-sheet stills written when the take was verified.
+    MovieH3Take { project_id: String, job_id: String, file: MovieH3TakeFile },
     /// Use the generated/...opus cache reference returned by synthesize_local_speech, with
     /// the exact spoken text. An exported M4A is an imported Attachment instead.
     Speech { relative_path: String, text: String },
@@ -25,6 +28,23 @@ pub enum ProductionArtifact {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum ResearchArtifactFile { Html, Report, Sources, Provenance }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MovieH3TakeFile { Video, ContactStart, ContactMid, ContactEnd }
+
+impl MovieH3TakeFile {
+    /// File name inside the take folder; the same names `inspect_movie_h3_take` reports.
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Self::Video => "take.mp4",
+            Self::ContactStart => "contact-start.png",
+            Self::ContactMid => "contact-mid.png",
+            Self::ContactEnd => "contact-end.png",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
