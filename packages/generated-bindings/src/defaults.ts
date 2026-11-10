@@ -30,6 +30,16 @@ export const movieH3Defaults: MovieH3Defaults = {
   "upscaleWidth": 1920
 };
 export const speechPreferencesDefaults: SpeechPreferences = {
+  "conversation": {
+    "enabled": true,
+    "vad": {
+      "enabled": true,
+      "initialGraceTimeoutSec": 15,
+      "minSpeechDurationMs": 200,
+      "silenceTimeoutSec": 0.6,
+      "speechThresholdDb": -42
+    }
+  },
   "narration": {
     "checkMistakes": false
   },

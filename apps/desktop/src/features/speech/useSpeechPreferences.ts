@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getSpeechPreferences, saveNarrationSpeechPreferences, saveResearchSpeechPreferences, saveVadSettings } from "../../platform/api";
+import { getSpeechPreferences, saveNarrationSpeechPreferences, saveResearchSpeechPreferences, saveVadSettings, saveConversationVoiceEnabled, saveConversationVad } from "../../platform/api";
 import { speechPreferencesDefaults, type NarrationPreferences, type ResearchSpeechPreferences, type SpeechPreferences, type VadSettings } from "../../contracts/index";
 
 /** Editable view of native preferences. Native replies become the accepted saved state. */
@@ -45,9 +45,16 @@ export function useSpeechPreferences() {
     save({ ...draft.current, vad }, () => saveVadSettings(vad));
   }, [save]);
   const resetVadSettings = useCallback(() => updateVadSettings(speechPreferencesDefaults.vad), [updateVadSettings]);
+  const updateConversationEnabled = useCallback((enabled: boolean) => {
+    save({ ...draft.current, conversation: { ...draft.current.conversation, enabled } }, () => saveConversationVoiceEnabled(enabled));
+  }, [save]);
   const updateResearchSpeechPreferences = useCallback((patch: Partial<ResearchSpeechPreferences>) => {
     const research = { ...draft.current.research, ...patch };
     save({ ...draft.current, research }, () => saveResearchSpeechPreferences(research));
+  }, [save]);
+  const updateConversationVad = useCallback((patch: Partial<VadSettings>) => {
+    const vad = { ...draft.current.conversation.vad, ...patch };
+    save({ ...draft.current, conversation: { ...draft.current.conversation, vad } }, () => saveConversationVad(vad));
   }, [save]);
 
   const updateNarrationPreferences = useCallback((patch: Partial<NarrationPreferences>) => {
@@ -57,5 +64,6 @@ export function useSpeechPreferences() {
 
   return { vadSettings: preferences.vad, researchSpeechPreferences: preferences.research,
     narrationPreferences: preferences.narration,
-    updateVadSettings, resetVadSettings, updateResearchSpeechPreferences, updateNarrationPreferences, preferenceError };
+    conversationPreferences: preferences.conversation, preferencesReady: ready.current,
+    updateConversationEnabled, updateConversationVad, updateVadSettings, resetVadSettings, updateResearchSpeechPreferences, updateNarrationPreferences, preferenceError };
 }

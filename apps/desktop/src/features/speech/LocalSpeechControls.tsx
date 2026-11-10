@@ -53,11 +53,17 @@ import {
 import { useNarrationExport } from "./useNarrationExport";
 import { describeExportedFiles } from "../../shared/format";
 import "./speech.css";
+import type { ConversationControl } from "./useConversationVoice";
 
 export { claimPlayback, clearPlayback };
 export type { SpeechProgressState };
 
 type SpeechContextValue = {
+  conversationEnabled: boolean;
+  conversationVad: VadSettings;
+  updateConversationVad: (patch: Partial<VadSettings>) => void;
+  preferencesReady: boolean;
+  updateConversationEnabled: (enabled: boolean) => void;
   snapshot: LocalSpeechSnapshot | null;
   refresh: () => Promise<LocalSpeechSnapshot>;
   prepare: () => Promise<LocalSpeechSnapshot>;
@@ -98,6 +104,11 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(
     () => ({
+      conversationEnabled: preferences.conversationPreferences.enabled,
+      conversationVad: preferences.conversationPreferences.vad,
+      updateConversationVad: preferences.updateConversationVad,
+      preferencesReady: preferences.preferencesReady,
+      updateConversationEnabled: preferences.updateConversationEnabled,
       snapshot,
       refresh,
       prepare,
@@ -111,7 +122,7 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
       updateVadSettings,
       resetVadSettings,
     }),
-    [prepare, refresh, resetVadSettings, snapshot, updateVadSettings, vadSettings, researchSpeechPreferences, updateResearchSpeechPreferences, narrationPreferences, updateNarrationPreferences],
+    [prepare, refresh, resetVadSettings, snapshot, updateVadSettings, vadSettings, researchSpeechPreferences, updateResearchSpeechPreferences, narrationPreferences, updateNarrationPreferences, preferences.conversationPreferences, preferences.preferencesReady, preferences.updateConversationEnabled, preferences.updateConversationVad],
   );
 
   const updateVoiceLibrary = useCallback((library: VoiceLibrarySnapshot) => {
@@ -129,6 +140,11 @@ export function useSpeech() {
   const value = useContext(SpeechContext);
   return (
     value ?? {
+      conversationEnabled: true,
+      conversationVad: speechPreferencesDefaults.conversation.vad,
+      updateConversationVad: () => undefined,
+      preferencesReady: false,
+      updateConversationEnabled: () => undefined,
       snapshot: null,
       refresh: getLocalSpeechSnapshot,
       prepare: prepareLocalSpeech,
@@ -725,6 +741,7 @@ export function VadSettingsModal({
 }
 
 export function SpeechDictationButton({
+  conversation,
   sourceKind,
   sourceId,
   value,
@@ -734,6 +751,7 @@ export function SpeechDictationButton({
   disabled = false,
   label = "Dictate",
 }: {
+  conversation?: ConversationControl;
   sourceKind: SourceKind;
   sourceId: string;
   value: string;
@@ -752,6 +770,7 @@ export function SpeechDictationButton({
   const [showVadSettings, setShowVadSettings] = useState(false);
   const [isSpeakingLive, setIsSpeakingLive] = useState(false);
   const [silenceProgress, setSilenceProgress] = useState(0);
+  const [manualConversationDictation, setManualConversationDictation] = useState(false);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -1033,6 +1052,25 @@ export function SpeechDictationButton({
     }
   };
 
+  if (conversation && !manualConversationDictation) {
+    return <span className={`speech-dictation ${conversation.listening ? "recording" : ""}`}>
+      <button type="button" title={conversation.detail || "Voice conversation; Shift-click for manual large Whisper"}
+        aria-label={conversation.listening ? "Mute voice conversation" : "Enable voice conversation"}
+        onClick={(event) => {
+          if (event.shiftKey) {
+            conversation.mute(); setManualConversationDictation(true); void begin();
+          } else conversation.toggle();
+        }}>
+        {conversation.preparing ? <LoaderCircle className="spin" /> : conversation.listening ? <Square /> : <Mic />}
+        <span>{conversation.preparing ? "Preparing…" : conversation.listening ? "Stop" : label}</span>
+      </button>
+      {conversation.listening && <i className="speech-recording-vad-indicator" aria-hidden="true" title="Listening locally" />}
+      <button type="button" className="speech-vad-settings-btn" title="Voice Activity Detection (VAD) Settings"
+        aria-label="Voice Activity Detection Settings" onClick={() => setShowVadSettings(true)}><Sliders size={12} /></button>
+      {showVadSettings && <VadSettingsModal settings={conversation.vad} onChange={conversation.updateVad} onReset={conversation.resetVad} onClose={() => setShowVadSettings(false)} />}
+    </span>;
+  }
+
   return (
     <span
       className={`speech-dictation ${recording ? "recording" : ""} ${isSpeakingLive ? "speaking-live" : ""}`}
@@ -1046,7 +1084,11 @@ export function SpeechDictationButton({
         disabled={
           preparing || (disabled && !recording) || (transcribing && !recording)
         }
-        onClick={() => (recording ? stop() : void begin())}
+        onClick={() => {
+          if (recording) stop();
+          else if (conversation) { setManualConversationDictation(false); conversation.toggle(); }
+          else void begin();
+        }}
       >
         {preparing || (transcribing && !recording) ? (
           <LoaderCircle className="spin" />

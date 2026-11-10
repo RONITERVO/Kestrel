@@ -103,6 +103,28 @@ pub struct SpeechPreferences {
     pub vad: VadSettings,
     pub research: ResearchSpeechPreferences,
     pub narration: NarrationPreferences,
+    pub conversation: ConversationVoicePreferences,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(default, rename_all = "camelCase")]
+#[ts(export)]
+pub struct ConversationVoicePreferences {
+    pub enabled: bool,
+    pub vad: VadSettings,
+}
+
+impl Default for ConversationVoicePreferences {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            vad: VadSettings {
+                silence_timeout_sec: 0.6,
+                min_speech_duration_ms: 200.0,
+                ..VadSettings::default()
+            },
+        }
+    }
 }
 
 /// Read-only import from older WebView preferences. Native storage wins once present.

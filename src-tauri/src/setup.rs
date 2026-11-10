@@ -14,6 +14,7 @@ use tauri::AppHandle;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
+pub(crate) mod conversation;
 
 pub use kestrel_app_core::{
     SetupComponent, SetupInstallRequest, SetupLocations, SetupModelAsset, SetupProgress,
@@ -365,6 +366,14 @@ pub fn snapshot(
 
     let components = vec![
         component(
+            "conversation-voice", "Voice conversation (CPU)",
+            (crate::conversation_voice::installed(&research.install_root),
+             crate::conversation_voice::root(&research.install_root).exists()),
+            "Pocket TTS in seven languages and compact Whisper, resident beside your selected LLM. One-time setup; existing TTS and large Whisper stay manual.",
+            crate::conversation_voice::root(&research.install_root).to_string_lossy().as_ref(),
+            (conversation::assets().iter().filter(|asset| !file_has_size(&crate::conversation_voice::root(&research.install_root).join(&asset.relative), asset.bytes)).map(|asset| asset.bytes).sum::<u64>() + 400_000_000, true),
+        ),
+        component(
             "assistant",
             "Included local model",
             (assistant_ready, assistant_partial),
@@ -698,6 +707,7 @@ pub async fn install_component(
     fs::create_dir_all(&root)?;
     settings.install_root = root.to_string_lossy().into_owned();
     match request.component.as_str() {
+        "conversation-voice" => conversation::install(app, &root, cancel).await,
         "assistant" => install_assistant(app, settings, &root, request, cancel).await,
         "wikipedia" => {
             install_wikipedia(app, settings, &root, &request.wikipedia_edition, cancel).await

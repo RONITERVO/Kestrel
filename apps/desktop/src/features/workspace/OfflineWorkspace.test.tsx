@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { demoSnapshot } from "../../preview/fixtures";
 import type { ChatSession, ComputerTaskEvent, ComputerTaskRun } from "../../contracts/index";
 import { OfflineWorkspace } from "./OfflineWorkspace";
+import * as conversationVoice from "../speech/useConversationVoice";
+import { speechPreferencesDefaults } from "../../contracts/index";
 
 const api = vi.hoisted(() => ({
   listChatSessions: vi.fn(),
@@ -14,6 +16,7 @@ const api = vi.hoisted(() => ({
   sendProducerMessage: vi.fn(),
   getProducerTaskStatus: vi.fn(),
   onComputerTaskEvent: vi.fn(),
+  startChatStream: vi.fn(),
 }));
 
 vi.mock("../../platform/api", async (importOriginal) => ({
@@ -28,6 +31,8 @@ vi.mock("../../platform/api", async (importOriginal) => ({
   discardChatReplyEdit: api.discardChatReplyEdit,
   onChatStream: vi.fn(async () => () => undefined),
   onComputerTaskEvent: api.onComputerTaskEvent,
+  onTaskResponseDelta: vi.fn(async () => () => undefined),
+  startChatStream: api.startChatStream,
   onRuntimeProgress: vi.fn(async () => () => undefined),
   getControlSnapshot: vi.fn(async () => demoSnapshot.control),
 }));
@@ -55,6 +60,7 @@ function withEdit(content: string): ChatSession {
 
 let taskEventListener: (event: ComputerTaskEvent) => void;
 beforeEach(() => {
+  api.startChatStream.mockReset();
   api.onComputerTaskEvent.mockReset().mockImplementation(async (listener) => {
     taskEventListener = listener;
     return () => undefined;
@@ -77,6 +83,27 @@ describe("producer conversation", () => {
     access: "workspace", status: "completed", createdAt: original.createdAt, updatedAt: original.updatedAt,
     events: [], artifacts: [], attachments: [],
   };
+
+  it("routes speech-only clarification and continue through the durable producer command", async () => {
+    const voice = captureSpokenTurns();
+    const waiting = { ...savedTask, status: "waiting", events: [questionEvent] };
+    api.listComputerTasks.mockResolvedValue([{ ...waiting, eventCount: 1, artifactCount: 0 }]);
+    api.getComputerTask.mockResolvedValue(waiting);
+    api.sendProducerMessage.mockResolvedValue({ id: savedTask.id, status: "running", eventCount: 2, artifactPaths: [] });
+    const onError = vi.fn();
+    render(<OfflineWorkspace control={demoSnapshot.control} onChanged={vi.fn()} onError={onError} />);
+    fireEvent.click(screen.getByRole("button", { name: /Computer/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Keep the fox/ }));
+    await screen.findByRole("textbox", { name: "Message Kestrel" });
+    expect(api.sendProducerMessage).not.toHaveBeenCalled();
+    await act(async () => voice.say("Use the shorter wording"));
+    expect(api.sendProducerMessage).toHaveBeenLastCalledWith({ runId: savedTask.id, answer: "Use the shorter wording" });
+    act(() => taskEventListener({ ...questionEvent, kind: "limit", title: "Paused", detail: "Step limit" }));
+    await act(async () => voice.say("Continue"));
+    expect(api.sendProducerMessage).toHaveBeenLastCalledWith({ runId: savedTask.id, answer: "Continue" });
+    expect(api.sendProducerMessage).toHaveBeenCalledTimes(2);
+    expect(onError).not.toHaveBeenCalled();
+  });
   const questionEvent: ComputerTaskEvent = {
     runId: savedTask.id, step: 1, kind: "question", title: "Needs your input",
     detail: "Which shorter wording?", at: "2026-10-30T13:06:11Z",
@@ -155,7 +182,29 @@ describe("producer conversation", () => {
   });
 });
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+function captureSpokenTurns() {
+  let submit!: (text: string) => Promise<void>;
+  const presentation = { control: { listening: true, preparing: false, installed: true, detail: "Listening locally",
+    toggle: vi.fn(), mute: vi.fn(), vad: speechPreferencesDefaults.conversation.vad, updateVad: vi.fn(), resetVad: vi.fn() },
+    chatEvent: vi.fn(), taskDelta: vi.fn(), taskEvent: vi.fn(), stopOutput: vi.fn() };
+  vi.spyOn(conversationVoice, "useConversationVoice").mockImplementation((options) => { submit = options.onTurn; return presentation; });
+  return { say: (text: string) => submit(text) };
+}
+
+it("sends a spoken chat turn with the selected LLM and saved output settings", async () => {
+  const voice = captureSpokenTurns();
+  const selected = demoSnapshot.control.models[0].id;
+  const settings = { ...demoSnapshot.control.settings, selectedModelId: selected };
+  api.startChatStream.mockResolvedValue({ requestId: "spoken-chat", session: original });
+  const onError = vi.fn();
+  render(<OfflineWorkspace control={{ ...demoSnapshot.control, settings }} onChanged={vi.fn()} onError={onError} />);
+  await act(async () => voice.say("Tell me about the lake"));
+  expect(api.startChatStream).toHaveBeenCalledWith(expect.objectContaining({ modelId: selected, message: "Tell me about the lake",
+    thinkingLevel: undefined, maxOutputTokens: settings.modelOverrides.find((item) => item.modelId === selected)?.maxOutputTokens ?? settings.maxOutputTokens }));
+  expect(onError).not.toHaveBeenCalled();
+});
 
 describe("editing a reply for listening and export", () => {
   it("keeps the model's reply and shows the producer's edit beside it", async () => {
