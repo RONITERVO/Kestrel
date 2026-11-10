@@ -5,6 +5,7 @@ shell execution, or access to task tools exists here. Setup prepares every depen
 """
 import base64
 import concurrent.futures
+import gc
 import json
 import os
 from pathlib import Path
@@ -58,6 +59,11 @@ def tts(language):
     if language not in LANGUAGES:
         raise ValueError("Unsupported conversation language")
     if language not in MODELS:
+        # All TTS work shares one executor. Drop the previous model and its conditioning
+        # before loading the user's new selection; never retain a language-model cache.
+        VOICES.clear()
+        MODELS.clear()
+        gc.collect()
         MODELS[language] = TTSModel.load_model(config=ROOT / "models" / language / "config.yaml")
         MODELS[language].has_voice_cloning = (ROOT / "models" / language / "voice-cloning.safetensors").is_file()
     return MODELS[language]
@@ -80,7 +86,7 @@ def voice(model, language, request):
         raise ValueError("The selected local voice source is missing")
     key = (language, request.get("voiceFingerprint", "default"))
     if key not in VOICES:
-        # Voice conditioning is model-specific. Keep a small bounded set; models stay loaded.
+        # Voice conditioning is model-specific and cleared whenever the language changes.
         if len(VOICES) >= 14:
             VOICES.pop(next(iter(VOICES)))
         VOICES[key] = model.get_state_for_audio_prompt(path, truncate=True)
@@ -98,13 +104,18 @@ def run(request, cancel):
                  stt=id(STT) if STT is not None else None, cuda=torch.version.cuda,
                  devices={code: str(model.device) for code, model in MODELS.items()})
         elif operation == "warm_tts":
-            model = tts("en")
-            voice(model, "en", {})
+            language = request["language"]
+            model = tts(language)
+            voice(model, language, {})
         elif operation == "warm_stt":
             stt()
         elif operation == "speak":
             language = request["language"]
-            model = tts(language)
+            if not MODELS:
+                tts(language)  # An explicit new utterance may recover a crashed worker.
+            if language not in MODELS:
+                raise ValueError("Conversation language changed. Prepare the selected language before speaking again.")
+            model = MODELS[language]
             state = voice(model, language, request)
             for chunk in model.generate_audio_stream(state, request["text"], stop=cancel):
                 if cancel.is_set():

@@ -32,6 +32,7 @@ export const movieH3Defaults: MovieH3Defaults = {
 export const speechPreferencesDefaults: SpeechPreferences = {
   "conversation": {
     "enabled": true,
+    "language": "en",
     "vad": {
       "enabled": true,
       "initialGraceTimeoutSec": 15,

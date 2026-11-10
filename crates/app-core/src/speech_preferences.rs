@@ -111,13 +111,43 @@ pub struct SpeechPreferences {
 #[ts(export)]
 pub struct ConversationVoicePreferences {
     pub enabled: bool,
+    pub language: ConversationLanguage,
     pub vad: VadSettings,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum ConversationLanguage {
+    #[default]
+    En,
+    Fr,
+    De,
+    Pt,
+    It,
+    Es,
+    Nl,
+}
+
+impl ConversationLanguage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::Fr => "fr",
+            Self::De => "de",
+            Self::Pt => "pt",
+            Self::It => "it",
+            Self::Es => "es",
+            Self::Nl => "nl",
+        }
+    }
 }
 
 impl Default for ConversationVoicePreferences {
     fn default() -> Self {
         Self {
             enabled: true,
+            language: ConversationLanguage::default(),
             vad: VadSettings {
                 silence_timeout_sec: 0.6,
                 min_speech_duration_ms: 200.0,

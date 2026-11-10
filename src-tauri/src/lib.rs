@@ -169,9 +169,10 @@ async fn prepare_conversation_voice(
 ) -> Result<kestrel_app_core::ConversationVoiceSnapshot, String> {
     ensure_conversation_allowed(&state)?;
     let settings = state.research_settings.load().map_err(|e| e.to_string())?;
+    let language = state.speech_preferences.get(None)?.conversation.language;
     state
         .conversation_voice
-        .prepare(&settings.install_root)
+        .prepare(&settings.install_root, language.as_str())
         .await
 }
 
@@ -182,6 +183,7 @@ async fn speak_conversation(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     ensure_conversation_allowed(&state)?;
+    ensure_conversation_language(&state, &request.language)?;
     let settings = state.research_settings.load().map_err(|e| e.to_string())?;
     let voice = state
         .voice_library
@@ -199,6 +201,7 @@ async fn transcribe_conversation(
     state: State<'_, AppState>,
 ) -> Result<kestrel_app_core::ConversationTranscript, String> {
     ensure_conversation_allowed(&state)?;
+    ensure_conversation_language(&state, &request.language)?;
     let settings = state.research_settings.load().map_err(|e| e.to_string())?;
     state
         .conversation_voice
@@ -217,6 +220,29 @@ fn ensure_conversation_allowed(state: &AppState) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn ensure_conversation_language(state: &AppState, language: &str) -> Result<(), String> {
+    if state.speech_preferences.get(None)?.conversation.language.as_str() != language {
+        return Err("Conversation language changed. Retry with the language selected in microphone settings.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_conversation_language(
+    language: kestrel_app_core::ConversationLanguage,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::SpeechPreferences, String> {
+    ensure_conversation_allowed(&state)?;
+    let preferences = state.speech_preferences.save_conversation_language(language)?;
+    let settings = state.research_settings.load().map_err(|e| e.to_string())?;
+    // Muted speech also releases the old language. Never start an unused worker just
+    // to save a preference; normal conversation preparation loads the selection later.
+    if state.conversation_voice.snapshot(&settings.install_root).await.running {
+        state.conversation_voice.prepare(&settings.install_root, language.as_str()).await?;
+    }
+    Ok(preferences)
 }
 
 #[tauri::command]
@@ -4627,6 +4653,7 @@ pub fn run() {
             transcribe_conversation,
             cancel_conversation_voice,
             save_conversation_voice_enabled,
+            save_conversation_language,
             save_conversation_vad,
             get_voice_library,
             create_voice_profile,

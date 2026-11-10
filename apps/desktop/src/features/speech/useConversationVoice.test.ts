@@ -4,11 +4,12 @@ import type { ConversationAudio, ChatStreamEvent } from "../../contracts/index";
 import { useConversationVoice } from "./useConversationVoice";
 import { pcmBase64 } from "./conversationAudio";
 
-const native = vi.hoisted(() => ({ snapshot: vi.fn(), prepare: vi.fn(), speak: vi.fn(), transcribe: vi.fn(), cancel: vi.fn(), listen: vi.fn(), save: vi.fn() }));
+const native = vi.hoisted(() => ({ snapshot: vi.fn(), prepare: vi.fn(), speak: vi.fn(), transcribe: vi.fn(), cancel: vi.fn(), listen: vi.fn(), save: vi.fn(), language: "en" }));
 vi.mock("../../platform/api", () => ({ getConversationVoiceSnapshot: native.snapshot, prepareConversationVoice: native.prepare,
   speakConversation: native.speak, transcribeConversation: native.transcribe, cancelConversationVoice: native.cancel,
   onConversationAudio: native.listen }));
 vi.mock("./LocalSpeechControls", () => ({ useSpeech: () => ({ conversationEnabled: true, preferencesReady: true,
+  conversationLanguage: native.language, updateConversationLanguage: vi.fn(async () => {}),
   updateConversationEnabled: native.save, updateConversationVad: vi.fn(), conversationVad: { enabled: true, speechThresholdDb: -42, silenceTimeoutSec: 0.6, minSpeechDurationMs: 200 } }) }));
 vi.mock("./usePipelinedSpeechPlayer", () => ({ claimPlayback: vi.fn(), clearPlayback: vi.fn(), speechJobId: (prefix: string) => `${prefix}-${crypto.randomUUID()}` }));
 
@@ -40,6 +41,7 @@ const frame = (speech: boolean) => new MessageEvent("message", { data: Float32Ar
 
 beforeEach(() => {
   vi.clearAllMocks(); sources.length = 0;
+  native.language = "en";
   stopTrack = vi.fn();
   vi.stubGlobal("AudioContext", AudioContextFake); vi.stubGlobal("AudioWorkletNode", WorkletFake);
   Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) } });
@@ -49,6 +51,29 @@ beforeEach(() => {
   native.transcribe.mockResolvedValue({ text: "Continue", language: "en", words: [] });
 });
 afterEach(() => vi.unstubAllGlobals());
+
+it("uses the selected language for both directions and never switches from detected speech", async () => {
+  native.language = "de";
+  native.transcribe.mockResolvedValue({ text: "Weiter", language: "fr", words: [] });
+  const onTurn = vi.fn(async () => {});
+  const { result, rerender, unmount } = renderHook(() => useConversationVoice({ active: true, scope: "chat-1", onTurn, onError: vi.fn() }));
+  await waitFor(() => expect(result.current.control.preparing).toBe(false));
+  await waitFor(() => expect(result.current.control.listening).toBe(true));
+  act(() => { for (let i = 0; i < 20; i++) micFrames(frame(true)); for (let i = 0; i < 35; i++) micFrames(frame(false)); });
+  await waitFor(() => expect(onTurn).toHaveBeenCalledWith("Weiter"));
+  expect(native.transcribe.mock.calls[0][0].language).toBe("de");
+  act(() => result.current.chatEvent(token("Weiter geht es. ")));
+  await waitFor(() => expect(native.speak).toHaveBeenCalledTimes(1));
+  expect(native.speak.mock.calls[0][0].language).toBe("de");
+  native.language = "nl";
+  rerender();
+  await waitFor(() => expect(native.prepare).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(result.current.control.preparing).toBe(false));
+  act(() => result.current.chatEvent({ ...token("We gaan verder. "), requestId: "reply-2" }));
+  await waitFor(() => expect(native.speak).toHaveBeenCalledTimes(2));
+  expect(native.speak.mock.calls[1][0].language).toBe("nl");
+  unmount();
+});
 
 it("retains the first utterance while speech models warm, without asking for another click", async () => {
   let warmed!: () => void;
@@ -80,6 +105,7 @@ it("speaks a task clarification once and accepts consecutive spoken answers", as
   }
   expect(onTurn.mock.calls).toEqual([["Use the approved folder"], ["Continue"]]);
   expect(native.prepare).toHaveBeenCalledTimes(1);
+  expect(native.transcribe.mock.calls.every(([request]) => request.language === "en")).toBe(true);
   unmount();
 });
 

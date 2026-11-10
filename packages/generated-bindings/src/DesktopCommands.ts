@@ -15,6 +15,7 @@ import type { ComputerTaskSummary } from "./ComputerTaskSummary.js";
 import type { ContextAttachmentImport } from "./ContextAttachmentImport.js";
 import type { ControlSettings } from "./ControlSettings.js";
 import type { ControlSnapshot } from "./ControlSnapshot.js";
+import type { ConversationLanguage } from "./ConversationLanguage.js";
 import type { ConversationSpeakRequest } from "./ConversationSpeakRequest.js";
 import type { ConversationTranscribeRequest } from "./ConversationTranscribeRequest.js";
 import type { ConversationTranscript } from "./ConversationTranscript.js";
@@ -254,6 +255,7 @@ export type DesktopCommands = {
   run_research: { args: { request: RunResearchRequest }; result: ResearchReport };
   save_chat_reply_edit: { args: { sessionId: string; messageId: string; content: string }; result: ChatSession };
   save_control_settings: { args: { settings: ControlSettings }; result: ControlSnapshot };
+  save_conversation_language: { args: { language: ConversationLanguage }; result: SpeechPreferences };
   save_conversation_vad: { args: { vad: VadSettings }; result: SpeechPreferences };
   save_conversation_voice_enabled: { args: { enabled: boolean }; result: SpeechPreferences };
   save_image_project: { args: { project: ImageProjectEdit }; result: ImageProject };

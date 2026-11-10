@@ -24,6 +24,7 @@ export type { ContextAttachmentImport } from "./ContextAttachmentImport.js";
 export type { ControlSettings } from "./ControlSettings.js";
 export type { ControlSnapshot } from "./ControlSnapshot.js";
 export type { ConversationAudio } from "./ConversationAudio.js";
+export type { ConversationLanguage } from "./ConversationLanguage.js";
 export type { ConversationSpeakRequest } from "./ConversationSpeakRequest.js";
 export type { ConversationTranscribeRequest } from "./ConversationTranscribeRequest.js";
 export type { ConversationTranscript } from "./ConversationTranscript.js";

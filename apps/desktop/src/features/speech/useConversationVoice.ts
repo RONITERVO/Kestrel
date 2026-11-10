@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { speechPreferencesDefaults, type VadSettings, type ChatStreamEvent, type ComputerTaskEvent, type TaskResponseDelta } from "../../contracts/index";
+import { speechPreferencesDefaults, type ConversationLanguage, type VadSettings, type ChatStreamEvent, type ComputerTaskEvent, type TaskResponseDelta } from "../../contracts/index";
 import { cancelConversationVoice, getConversationVoiceSnapshot, onConversationAudio,
   prepareConversationVoice, speakConversation, transcribeConversation } from "../../platform/api";
 import { useSpeech } from "./LocalSpeechControls";
@@ -14,6 +14,8 @@ export type ConversationControl = {
   detail: string;
   toggle: () => void;
   mute: () => void;
+  language: ConversationLanguage;
+  updateLanguage: (language: ConversationLanguage) => void;
   vad: VadSettings;
   updateVad: (patch: Partial<VadSettings>) => void;
   resetVad: () => void;
@@ -23,7 +25,7 @@ type Options = { active: boolean; scope: string; onTurn: (text: string) => Promi
 
 /** Only media-device/playback state lives here. Rust owns preferences, model identity and turns. */
 export function useConversationVoice(options: Options) {
-  const { conversationEnabled, preferencesReady, updateConversationEnabled, conversationVad: vadSettings, updateConversationVad } = useSpeech();
+  const { conversationEnabled, conversationLanguage, updateConversationLanguage, preferencesReady, updateConversationEnabled, conversationVad: vadSettings, updateConversationVad } = useSpeech();
   const latest = useRef(options); latest.current = options;
   const [listening, setListening] = useState(false);
   const [preparing, setPreparing] = useState(false);
@@ -40,7 +42,7 @@ export function useConversationVoice(options: Options) {
   const speechJob = useRef<string | null>(null);
   const inputJob = useRef<string | null>(null);
   const expectedSequence = useRef(0);
-  const language = useRef("en");
+  const language = useRef(conversationLanguage); language.current = conversationLanguage;
   const queue = useRef<{ response: string; conversation: string; text: string }[]>([]);
   const pumping = useRef(false);
   const inputQueue = useRef<Float32Array[]>([]);
@@ -129,9 +131,8 @@ export function useConversationVoice(options: Options) {
         const jobId = speechJobId("conversation-stt");
         inputJob.current = jobId;
         try {
-          const transcript = await transcribeConversation({ jobId, pcmBase64: pcmBase64(samples), language: "auto" });
+          const transcript = await transcribeConversation({ jobId, pcmBase64: pcmBase64(samples), language: language.current });
           if (!ready.current || inputJob.current !== jobId) continue;
-          if (["en", "fr", "de", "pt", "it", "es", "nl"].includes(transcript.language)) language.current = transcript.language;
           if (transcript.text.trim()) await latest.current.onTurn(transcript.text.trim());
         } catch (error) { if (ready.current && inputJob.current === jobId) report(error); }
         finally { if (inputJob.current === jobId) inputJob.current = null; }
@@ -214,7 +215,7 @@ export function useConversationVoice(options: Options) {
       const ctx = context.current; context.current = null;
       if (ctx && ctx.state !== "closed") void ctx.close();
     };
-  }, [options.active, options.scope, conversationEnabled, preferencesReady, retry, receiveUtterance, report, stopOutput,
+  }, [options.active, options.scope, conversationEnabled, conversationLanguage, preferencesReady, retry, receiveUtterance, report, stopOutput,
     vadSettings.enabled, vadSettings.speechThresholdDb, vadSettings.silenceTimeoutSec, vadSettings.minSpeechDurationMs]);
 
   const chatEvent = useCallback((event: ChatStreamEvent) => {
@@ -243,12 +244,22 @@ export function useConversationVoice(options: Options) {
   }, [append]);
 
   const mute = useCallback(() => { ready.current = false; stopOutput(); updateConversationEnabled(false); }, [stopOutput, updateConversationEnabled]);
+  const updateLanguage = useCallback(async (next: ConversationLanguage) => {
+    if (next === language.current) return;
+    ready.current = false;
+    stopOutput();
+    inputQueue.current = [];
+    if (inputJob.current) void cancelConversationVoice(inputJob.current).catch(() => undefined);
+    inputJob.current = null;
+    try { await updateConversationLanguage(next); }
+    finally { if (mounted.current) setRetry((value) => value + 1); }
+  }, [stopOutput, updateConversationLanguage]);
   const toggle = useCallback(() => {
     if (listening || preparing) mute();
     else { updateConversationEnabled(true); if (!vadSettings.enabled) updateConversationVad({ enabled: true }); setRetry((value) => value + 1); }
   }, [listening, preparing, mute, updateConversationEnabled, updateConversationVad, vadSettings.enabled]);
 
-  return { control: { listening, preparing, installed, detail, toggle, mute, vad: vadSettings, updateVad: updateConversationVad,
+  return { control: { listening, preparing, installed, detail, toggle, mute, language: conversationLanguage, updateLanguage, vad: vadSettings, updateVad: updateConversationVad,
     resetVad: () => updateConversationVad(speechPreferencesDefaults.conversation.vad) } satisfies ConversationControl,
     chatEvent, taskDelta, taskEvent, stopOutput };
 }

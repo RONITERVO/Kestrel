@@ -1,11 +1,12 @@
 import { invoke, listen, type UnlistenFn } from "./transport";
-import type { ConversationSpeakRequest, ConversationTranscribeRequest, ConversationAudio, TaskResponseDelta } from "../contracts/index";
+import type { ConversationLanguage, ConversationSpeakRequest, ConversationTranscribeRequest, ConversationAudio, TaskResponseDelta } from "../contracts/index";
 export const getConversationVoiceSnapshot = () => invoke("get_conversation_voice_snapshot", {});
 export const prepareConversationVoice = () => invoke("prepare_conversation_voice", {});
 export const speakConversation = (request: ConversationSpeakRequest) => invoke("speak_conversation", { request });
 export const transcribeConversation = (request: ConversationTranscribeRequest) => invoke("transcribe_conversation", { request });
 export const cancelConversationVoice = (jobId: string) => invoke("cancel_conversation_voice", { jobId });
 export const saveConversationVoiceEnabled = (enabled: boolean) => invoke("save_conversation_voice_enabled", { enabled });
+export const saveConversationLanguage = (language: ConversationLanguage) => invoke("save_conversation_language", { language });
 export const saveConversationVad = (vad: VadSettings) => invoke("save_conversation_vad", { vad });
 export const onConversationAudio = (callback: (event: ConversationAudio) => void) => listen("conversation-audio", ({ payload }) => callback(payload));
 export const onTaskResponseDelta = (callback: (event: TaskResponseDelta) => void) => listen("task-response-delta", ({ payload }) => callback(payload));

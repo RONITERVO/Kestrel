@@ -309,7 +309,12 @@ impl ConversationVoice {
         result
     }
 
-    pub async fn prepare(&self, install: &str) -> Result<ConversationVoiceSnapshot, String> {
+    pub async fn prepare(
+        &self,
+        install: &str,
+        language: &str,
+    ) -> Result<ConversationVoiceSnapshot, String> {
+        validate_language(language, false)?;
         let _tts = self.tts.acquire().await.map_err(|e| e.to_string())?;
         let _stt = self.stt.acquire().await.map_err(|e| e.to_string())?;
         self.request(
@@ -322,7 +327,7 @@ impl ConversationVoice {
         self.request(
             install,
             &uuid::Uuid::new_v4().to_string(),
-            json!({"op":"warm_tts"}),
+            json!({"op":"warm_tts", "language":language}),
             |_| Ok(()),
         )
         .await?;
@@ -530,6 +535,23 @@ fn validate_language(language: &str, auto: bool) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    async fn worker_models(service: &ConversationVoice, install: &str) -> Value {
+        let mut status = Value::Null;
+        service
+            .request(
+                install,
+                &uuid::Uuid::new_v4().to_string(),
+                json!({"op":"status"}),
+                |v| {
+                    status = v;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        status
+    }
+
     #[test]
     fn rejects_unbounded_or_invalid_transcription_timings() {
         let word = kestrel_app_core::SpeechTiming {
@@ -569,8 +591,9 @@ mod tests {
         let install =
             std::env::var("KESTREL_VOICE_TEST_ROOT").expect("explicit installed test root");
         let service = ConversationVoice::new();
-        let snapshot = service.prepare(&install).await.unwrap();
+        let snapshot = service.prepare(&install, "en").await.unwrap();
         let pid = snapshot.process_id.expect("owned resident process");
+        let initial = worker_models(&service, &install).await;
         for (language, text) in [
             (
                 "en",
@@ -583,6 +606,31 @@ mod tests {
             ("es", "Hola, podemos continuar nuestra conversación."),
             ("nl", "Hallo, we kunnen ons gesprek voortzetten."),
         ] {
+            service.prepare(&install, language).await.unwrap();
+            let selected = worker_models(&service, &install).await;
+            assert_eq!(selected["models"].as_object().unwrap().len(), 1);
+            assert!(selected["models"][language].is_number());
+            assert_eq!(selected["stt"], initial["stt"]);
+            service.prepare(&install, language).await.unwrap();
+            assert_eq!(
+                worker_models(&service, &install).await["models"],
+                selected["models"]
+            );
+            if language != "en" {
+                let stale = service
+                    .request(
+                        &install,
+                        &uuid::Uuid::new_v4().to_string(),
+                        json!({"op":"speak", "language":"en", "text":"Stale response."}),
+                        |_| Ok(()),
+                    )
+                    .await;
+                assert!(stale.unwrap_err().contains("language changed"));
+                assert_eq!(
+                    worker_models(&service, &install).await["models"],
+                    selected["models"]
+                );
+            }
             let started = std::time::Instant::now();
             let mut first = None;
             let mut pcm = Vec::new();
@@ -638,7 +686,12 @@ mod tests {
                 "{language} transcription was empty"
             );
             eprintln!("{language} heard: {}", transcript.text);
+            assert_eq!(
+                worker_models(&service, &install).await["models"],
+                selected["models"]
+            );
         }
+        service.prepare(&install, "en").await.unwrap();
         let long_id = uuid::Uuid::new_v4().to_string();
         let mut chunks = 0;
         let result = service.request(&install, &long_id, json!({"op":"speak", "language":"en", "text":"This is a long answer that should be interrupted immediately when the producer starts speaking again. We must stop old audio and keep the model in memory for the next turn."}), |_| {
@@ -669,7 +722,12 @@ mod tests {
         let install =
             std::env::var("KESTREL_VOICE_TEST_ROOT").expect("explicit speech installation");
         let service = ConversationVoice::new();
-        let old = service.prepare(&install).await.unwrap().process_id.unwrap();
+        let old = service
+            .prepare(&install, "en")
+            .await
+            .unwrap()
+            .process_id
+            .unwrap();
         let job = uuid::Uuid::new_v4().to_string();
         let speech = service.request(&install, &job, json!({"op":"speak", "language":"en", "text":"This answer is interrupted by a controlled worker crash. It must never replay automatically."}), |_| Ok(()));
         let crash = async {
@@ -697,7 +755,12 @@ mod tests {
         assert!(service.jobs.lock().unwrap().is_empty());
         // Merely observing a dead worker must not restart it or replay the failed text.
         assert!(!service.snapshot(&install).await.running);
-        let next = service.prepare(&install).await.unwrap().process_id.unwrap();
+        let next = service
+            .prepare(&install, "en")
+            .await
+            .unwrap()
+            .process_id
+            .unwrap();
         assert_ne!(old, next);
         service
             .request(
@@ -737,7 +800,7 @@ mod tests {
         let effective = settings.for_model(selected);
         let runtime = Arc::new(RuntimeManager::new());
         let voice = ConversationVoice::new();
-        let voice_pid = voice.prepare(&install).await.unwrap().process_id;
+        let voice_pid = voice.prepare(&install, "en").await.unwrap().process_id;
         let mut model_identity = Value::Null;
         voice
             .request(
@@ -752,40 +815,14 @@ mod tests {
             .await
             .unwrap();
         assert!(model_identity["cuda"].is_null());
+        assert_eq!(model_identity["models"].as_object().unwrap().len(), 1);
+        assert!(model_identity["models"]["en"].is_number());
         let mut model_pid = None;
         for round in 1..=2 {
             let lease = runtime
                 .lease_model(selected, &models, &settings, None)
                 .await
                 .unwrap();
-            if round == 1 {
-                // All seven language models may remain resident alongside the actual selected
-                // Strata model. Prewarm them here to verify the largest supported resident set.
-                for code in LANGUAGES {
-                    voice
-                        .request(
-                            &install,
-                            &uuid::Uuid::new_v4().to_string(),
-                            json!({"op":"speak", "language":code, "text":"Kestrel."}),
-                            |_| Ok(()),
-                        )
-                        .await
-                        .unwrap();
-                }
-                voice
-                    .request(
-                        &install,
-                        &uuid::Uuid::new_v4().to_string(),
-                        json!({"op":"status"}),
-                        |v| {
-                            model_identity = v;
-                            Ok(())
-                        },
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(model_identity["models"].as_object().unwrap().len(), 7);
-            }
             let before = runtime.snapshot().await;
             if let Some(pid) = model_pid {
                 assert_eq!(before.pid, Some(pid));
@@ -819,8 +856,10 @@ mod tests {
                         // Match the UI's sentence/newline boundaries, including replies that
                         // put each spoken sentence on its own line.
                         if let Some((end, _)) = visible.char_indices().find(|(at, ch)| {
-                            *ch == '\n' || (".!?;".contains(*ch)
-                                && visible[at + ch.len_utf8()..].starts_with(char::is_whitespace))
+                            *ch == '\n'
+                                || (".!?;".contains(*ch)
+                                    && visible[at + ch.len_utf8()..]
+                                        .starts_with(char::is_whitespace))
                         }) {
                             if let Some(tx) = first_clause.take() {
                                 let _ = tx.send(visible[..=end].into());
@@ -831,7 +870,9 @@ mod tests {
                 .await
                 .unwrap();
                 let completed = start.elapsed();
-                if first_clause.is_some() { eprintln!("No streamable clause in visible reply: {visible}"); }
+                if first_clause.is_some() {
+                    eprintln!("No streamable clause in visible reply: {visible}");
+                }
                 drop(first_clause.take());
                 assert!(
                     result["choices"][0]["message"]["content"]
@@ -876,9 +917,8 @@ mod tests {
                     |v| {
                         assert_eq!(v["models"], model_identity["models"]);
                         assert_eq!(v["stt"], model_identity["stt"]);
-                        for code in LANGUAGES {
-                            assert_eq!(v["devices"][code], "cpu");
-                        }
+                        assert_eq!(v["devices"].as_object().unwrap().len(), 1);
+                        assert_eq!(v["devices"]["en"], "cpu");
                         Ok(())
                     },
                 )

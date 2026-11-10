@@ -132,6 +132,17 @@ impl SpeechPreferencesStore {
         Ok(preferences)
     }
 
+    pub fn save_conversation_language(
+        &self,
+        language: kestrel_app_core::ConversationLanguage,
+    ) -> Result<SpeechPreferences, String> {
+        let _guard = self.gate.lock().map_err(|e| e.to_string())?;
+        let mut preferences = self.load()?.unwrap_or_default();
+        preferences.conversation.language = language;
+        self.write(&preferences)?;
+        Ok(preferences)
+    }
+
     pub fn save_narration(
         &self,
         narration: kestrel_app_core::NarrationPreferences,
@@ -226,6 +237,32 @@ mod tests {
         let recovered = store.get(None).unwrap();
         assert_eq!(recovered.research.rate, 1.2);
         assert_eq!(recovered.vad.silence_timeout_sec, 3.5);
+    }
+
+    #[test]
+    fn conversation_language_migrates_and_persists_without_changing_manual_speech() {
+        use kestrel_app_core::ConversationLanguage;
+        let root = tempfile::tempdir().unwrap();
+        let store = SpeechPreferencesStore::new(root.path());
+        fs::write(
+            &store.path,
+            br#"{"conversation":{"enabled":false},"research":{"rate":1.2}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            store.get(None).unwrap().conversation.language,
+            ConversationLanguage::En
+        );
+        let saved = store
+            .save_conversation_language(ConversationLanguage::Fr)
+            .unwrap();
+        assert!(!saved.conversation.enabled);
+        assert_eq!(saved.research.rate, 1.2);
+        assert_eq!(
+            SpeechPreferencesStore::new(root.path()).get(None).unwrap(),
+            saved
+        );
+        assert!(serde_json::from_str::<ConversationLanguage>(r#""auto""#).is_err());
     }
 
     #[test]

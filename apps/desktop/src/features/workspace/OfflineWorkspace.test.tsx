@@ -187,7 +187,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 function captureSpokenTurns() {
   let submit!: (text: string) => Promise<void>;
   const presentation = { control: { listening: true, preparing: false, installed: true, detail: "Listening locally",
-    toggle: vi.fn(), mute: vi.fn(), vad: speechPreferencesDefaults.conversation.vad, updateVad: vi.fn(), resetVad: vi.fn() },
+    toggle: vi.fn(), mute: vi.fn(), language: "en" as const, updateLanguage: vi.fn(async () => {}), vad: speechPreferencesDefaults.conversation.vad, updateVad: vi.fn(), resetVad: vi.fn() },
     chatEvent: vi.fn(), taskDelta: vi.fn(), taskEvent: vi.fn(), stopOutput: vi.fn() };
   vi.spyOn(conversationVoice, "useConversationVoice").mockImplementation((options) => { submit = options.onTurn; return presentation; });
   return { say: (text: string) => submit(text) };

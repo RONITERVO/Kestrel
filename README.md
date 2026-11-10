@@ -228,7 +228,7 @@ You can pass a custom shortcut target via `-ShortcutPath <path>` or use `npm run
 
 ## Next useful improvements
 
-- [Voice conversation in seven languages](docs/POCKET_TTS_PLAN.md): prepare it in Setup for default-on speech in Chat and Computer Tasks, with the same UI and selected LLM. Pocket TTS and compact STT stay resident on CPU; existing production speech remains manual.
+- [Voice conversation in seven languages](docs/POCKET_TTS_PLAN.md): prepare it in Setup for default-on speech in Chat and Computer Tasks, with the same UI and selected LLM. One user-selected Pocket language and multilingual base Whisper stay resident on CPU; existing production speech remains manual.
 - Following work: [Sonder H3 fidelity and producer recovery](docs/SONDER_H3_IMPLEMENTATION_PLAN.md).
 - Add artifact hashes and an in-app integrity/rebuild action.
 - Supply the release signing certificate and validate the signed offline installer on a clean disconnected Windows VM.

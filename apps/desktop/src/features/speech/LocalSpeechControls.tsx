@@ -1,5 +1,5 @@
 import { useSpeechPreferences } from "./useSpeechPreferences";
-import { speechPreferencesDefaults, type NarrationPreferences, type ResearchSpeechPreferences } from "../../contracts/index";
+import { speechPreferencesDefaults, type ConversationLanguage, type NarrationPreferences, type ResearchSpeechPreferences } from "../../contracts/index";
 import {
   Check,
   Download,
@@ -60,6 +60,8 @@ export type { SpeechProgressState };
 
 type SpeechContextValue = {
   conversationEnabled: boolean;
+  conversationLanguage: ConversationLanguage;
+  updateConversationLanguage: (language: ConversationLanguage) => Promise<void>;
   conversationVad: VadSettings;
   updateConversationVad: (patch: Partial<VadSettings>) => void;
   preferencesReady: boolean;
@@ -105,6 +107,8 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       conversationEnabled: preferences.conversationPreferences.enabled,
+      conversationLanguage: preferences.conversationPreferences.language,
+      updateConversationLanguage: preferences.updateConversationLanguage,
       conversationVad: preferences.conversationPreferences.vad,
       updateConversationVad: preferences.updateConversationVad,
       preferencesReady: preferences.preferencesReady,
@@ -122,7 +126,7 @@ export function LocalSpeechProvider({ children }: { children: ReactNode }) {
       updateVadSettings,
       resetVadSettings,
     }),
-    [prepare, refresh, resetVadSettings, snapshot, updateVadSettings, vadSettings, researchSpeechPreferences, updateResearchSpeechPreferences, narrationPreferences, updateNarrationPreferences, preferences.conversationPreferences, preferences.preferencesReady, preferences.updateConversationEnabled, preferences.updateConversationVad],
+    [prepare, refresh, resetVadSettings, snapshot, updateVadSettings, vadSettings, researchSpeechPreferences, updateResearchSpeechPreferences, narrationPreferences, updateNarrationPreferences, preferences.conversationPreferences, preferences.preferencesReady, preferences.updateConversationEnabled, preferences.updateConversationLanguage, preferences.updateConversationVad],
   );
 
   const updateVoiceLibrary = useCallback((library: VoiceLibrarySnapshot) => {
@@ -141,6 +145,8 @@ export function useSpeech() {
   return (
     value ?? {
       conversationEnabled: true,
+      conversationLanguage: speechPreferencesDefaults.conversation.language,
+      updateConversationLanguage: async () => undefined,
       conversationVad: speechPreferencesDefaults.conversation.vad,
       updateConversationVad: () => undefined,
       preferencesReady: false,
@@ -555,11 +561,15 @@ export function VadSettingsModal({
   onChange,
   onReset,
   onClose,
+  language,
+  onLanguageChange,
 }: {
   settings: VadSettings;
   onChange: (updater: Partial<VadSettings>) => void;
   onReset: () => void;
   onClose: () => void;
+  language?: ConversationLanguage;
+  onLanguageChange?: (language: ConversationLanguage) => void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -630,6 +640,17 @@ export function VadSettingsModal({
         </p>
 
         <div className="vad-settings-body">
+          {language && onLanguageChange && <label className="vad-slider-row">
+            <span>Conversation language</span>
+            <select aria-label="Conversation language" value={language}
+              onChange={(event) => onLanguageChange(event.target.value as ConversationLanguage)}>
+              <option value="en">English</option><option value="fr">French</option>
+              <option value="de">German</option><option value="pt">Portuguese</option>
+              <option value="it">Italian</option><option value="es">Spanish</option>
+              <option value="nl">Dutch</option>
+            </select>
+            <small className="vad-slider-help">Used for listening and replies. Only this Pocket language stays loaded.</small>
+          </label>}
           <label className="vad-setting-toggle">
             <input
               type="checkbox"
@@ -659,7 +680,7 @@ export function VadSettingsModal({
                 onChange={(e) => onChange({ silenceTimeoutSec: parseFloat(e.target.value) })}
               />
               <small className="vad-slider-help">
-                Time of silence required after speaking before auto-stopping (default: 2.0s).
+                Time of silence required after speaking before auto-stopping (default: {language ? "0.6" : "2.0"}s).
               </small>
             </div>
 
@@ -703,7 +724,7 @@ export function VadSettingsModal({
               </small>
             </div>
 
-            <div className="vad-slider-row">
+            {!language && <div className="vad-slider-row">
               <div className="vad-slider-label">
                 <span>Initial Grace Period</span>
                 <strong>{settings.initialGraceTimeoutSec.toFixed(0)}s</strong>
@@ -721,7 +742,7 @@ export function VadSettingsModal({
               <small className="vad-slider-help">
                 Maximum time allowed before auto-stopping if you haven&apos;t started speaking yet.
               </small>
-            </div>
+            </div>}
           </div>
         </div>
 
@@ -1067,7 +1088,7 @@ export function SpeechDictationButton({
       {conversation.listening && <i className="speech-recording-vad-indicator" aria-hidden="true" title="Listening locally" />}
       <button type="button" className="speech-vad-settings-btn" title="Voice Activity Detection (VAD) Settings"
         aria-label="Voice Activity Detection Settings" onClick={() => setShowVadSettings(true)}><Sliders size={12} /></button>
-      {showVadSettings && <VadSettingsModal settings={conversation.vad} onChange={conversation.updateVad} onReset={conversation.resetVad} onClose={() => setShowVadSettings(false)} />}
+      {showVadSettings && <VadSettingsModal settings={conversation.vad} language={conversation.language} onLanguageChange={conversation.updateLanguage} onChange={conversation.updateVad} onReset={conversation.resetVad} onClose={() => setShowVadSettings(false)} />}
     </span>;
   }
 
