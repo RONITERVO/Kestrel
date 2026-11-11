@@ -13,6 +13,11 @@ The immutable model/voice/tokenizer manifest contains 25 assets, totaling 1,722,
 Python, dependency wheels and installation caches require additional disk space.
 No account or gated voice-cloning download is needed for the supplied voices.
 
+Setup preserves unchanged saved selections from retired model manifests, including MiniMax
+Music 3 selections saved before the move to YuE2. Only current manifest assets enter an install
+request. Old music selections therefore cannot block installing conversation voice, and no
+saved model paths or source files need to be deleted to proceed.
+
 Conversation is enabled by default in the visible Chat and Computer Tasks workspace. Speak,
 pause, and hear the selected LLM's reply as its visible text arrives. A subsequent utterance
 uses the same native chat or producer-direction command as typing. This includes clarification
@@ -71,6 +76,10 @@ bounded utterance detector commit one final STT result; partial text never initi
 Speech onset cancels old playback and queued clauses while keeping the microphone live.
 Audio frames carry a request identity and sequence; stale/reordered frames are discarded or
 reported. The input queue is bounded, and navigating away cancels pending transcription.
+The microphone worklet is explicitly emitted as a separate same-origin JavaScript asset.
+Vite's default inlining of this small script caused a desktop-only `data:` URL loading failure
+under the existing CSP. The production build now checks the emitted file and its bundle
+reference; capture failures produce a concise retry message instead of encoded script text.
 
 ## Compact Whisper and alignment
 
@@ -183,11 +192,14 @@ $env:KESTREL_LIVE_STRATA_ROOT = '<existing Strata installation>'
 cargo test --manifest-path src-tauri/Cargo.toml live_voice_coexists -- --ignored --nocapture
 ```
 
-Repository verification: `git diff --check`, all-target native tests (316 passed, 28 optional
+Repository verification: `git diff --check`, all-target native tests (318 passed, 28 optional
 live tests ignored), Clippy with `-D warnings`, `npm run check` (including 307 core binding tests),
-all 251 frontend tests and `npm run build`. Chat and Computer Tasks were also visually
+all 252 frontend tests and `npm run build`. Chat and Computer Tasks were also visually
 checked in the browser preview with the existing book layout and composer controls. The new
 seven-option selector was visually checked inside the existing microphone settings dialog.
+After the packaged-worklet fix, the optimized desktop executable was rebuilt and opened with
+the producer's installed `D:/AI/ConversationVoice` runtime. Chat reached "Listening locally"
+in the actual Windows WebView without the earlier worklet error or a model reinstall.
 
 Physical speaker/headset echo rejection, room noise, double-talk and perceived endpoint latency
 still need the producer's device review. Browser AEC constraints and synthetic mic tests cannot

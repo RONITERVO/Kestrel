@@ -5,7 +5,9 @@ import { cancelConversationVoice, getConversationVoiceSnapshot, onConversationAu
 import { useSpeech } from "./LocalSpeechControls";
 import { claimPlayback, clearPlayback, speechJobId } from "./usePipelinedSpeechPlayer";
 import { decodePcm, pcmBase64, SpokenClauses, UtteranceGate } from "./conversationAudio";
-import captureUrl from "./conversationCapture.worklet.js?url";
+// Worklets must remain packaged same-origin files. Vite otherwise inlines this small
+// script as a data URL, which the desktop's script policy correctly rejects.
+import captureUrl from "./conversationCapture.worklet.js?url&no-inline";
 
 export type ConversationControl = {
   listening: boolean;
@@ -170,7 +172,13 @@ export function useConversationVoice(options: Options) {
         const ctx = new AudioContext(); context.current = ctx;
         await ctx.resume();
         if (ctx.state !== "running") throw new Error("Audio is paused by the WebView. Use the existing microphone button once to enable conversation.");
-        await ctx.audioWorklet.addModule(captureUrl);
+        try {
+          await ctx.audioWorklet.addModule(captureUrl);
+        } catch {
+          // WebView errors can contain the entire base64 script. Keep the producer's
+          // message bounded and actionable instead of filling the window with code.
+          throw new Error("Microphone capture could not start. Restart the updated Kestrel app and try the microphone again.");
+        }
         if (disposed) return;
         audioDispose = await onConversationAudio((event) => {
           if (disposed || !ready.current || event.jobId !== speechJob.current) return;

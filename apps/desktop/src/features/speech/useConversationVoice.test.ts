@@ -16,12 +16,13 @@ vi.mock("./usePipelinedSpeechPlayer", () => ({ claimPlayback: vi.fn(), clearPlay
 let audioListener: (audio: ConversationAudio) => void;
 let micFrames: (event: MessageEvent<Float32Array>) => void;
 let stopTrack: ReturnType<typeof vi.fn>;
+const loadWorklet = vi.fn(async (_url: string) => {});
 const sources: { stop: ReturnType<typeof vi.fn> }[] = [];
 class AudioContextFake {
   state = "running";
   currentTime = 0;
   destination = {};
-  audioWorklet = { addModule: vi.fn(async () => {}) };
+  audioWorklet = { addModule: loadWorklet };
   resume = vi.fn(async () => {});
   close = vi.fn(async () => { this.state = "closed"; });
   createMediaStreamSource = () => ({ connect: vi.fn(), disconnect: vi.fn() });
@@ -42,6 +43,7 @@ const frame = (speech: boolean) => new MessageEvent("message", { data: Float32Ar
 beforeEach(() => {
   vi.clearAllMocks(); sources.length = 0;
   native.language = "en";
+  loadWorklet.mockReset().mockResolvedValue(undefined);
   stopTrack = vi.fn();
   vi.stubGlobal("AudioContext", AudioContextFake); vi.stubGlobal("AudioWorkletNode", WorkletFake);
   Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) } });
@@ -51,6 +53,23 @@ beforeEach(() => {
   native.transcribe.mockResolvedValue({ text: "Continue", language: "en", words: [] });
 });
 afterEach(() => vi.unstubAllGlobals());
+
+it("reports a concise capture failure, releases the microphone, and permits an explicit retry", async () => {
+  loadWorklet.mockRejectedValueOnce(new Error(`AbortError: Failed to load worklet module script: data:text/javascript;base64,${"A".repeat(5000)}`));
+  const onError = vi.fn();
+  const { result, unmount } = renderHook(() => useConversationVoice({ active: true, scope: "chat-1", onTurn: vi.fn(async () => {}), onError }));
+  await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+  expect(onError.mock.calls[0][0]).toContain("Microphone capture could not start");
+  expect(onError.mock.calls[0][0]).not.toContain("base64");
+  expect(onError.mock.calls[0][0].length).toBeLessThan(200);
+  expect(stopTrack).toHaveBeenCalled();
+  expect(native.prepare).not.toHaveBeenCalled();
+  expect(result.current.control.listening).toBe(false);
+  act(() => result.current.control.toggle());
+  await waitFor(() => expect(native.prepare).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(result.current.control.listening).toBe(true));
+  unmount();
+});
 
 it("uses the selected language for both directions and never switches from detected speech", async () => {
   native.language = "de";
