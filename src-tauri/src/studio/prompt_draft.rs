@@ -204,6 +204,9 @@ impl PromptDraftJob {
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        if lease.connection.engine == crate::model::ModelEngine::Strata {
+            body["reasoning_budget_tokens"] = json!(thinking_budget_tokens);
+        }
         if settings.thinking_level.is_off() {
             body["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
             body["reasoning_effort"] = json!("off");

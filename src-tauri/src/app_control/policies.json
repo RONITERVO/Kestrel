@@ -196,7 +196,7 @@
   ],
   "save_movie_h3_scene": [
     "write",
-    "Save edits to an H3Scene (window [inSec..outSec] & pre/post context frames, generation settings, globalPrompt, promptSections, guides, referenceLanes, videoLanes, driverLanes, audioLanes). Omitted lane/section/guide arrays are preserved by default unless replaceEmptyCollections=true."
+    "Save edits to an H3Scene ({ projectId, scene: { id, name?, window?, generation?, globalPrompt?, promptSections?, guides?, videoLanes?, audioLanes?, driverLanes?, referenceLanes? }, setActive?, replaceEmptyCollections? }). Omitted window, generation, globalPrompt, sections, guides, and lane arrays are preserved automatically unless replaceEmptyCollections=true."
   ],
   "stage_movie_h3_reference": [
     "write",
@@ -216,11 +216,11 @@
   ],
   "start_movie_h3_generation": [
     "write",
-    "Render one or more H3 scene windows in ComfyUI after releasing the local LLM VRAM lease. Defaults to draft02Mp (768x448, expandQualityLadder=false) for fast ~1 min per 2s rendering; pass windows=[] to automatically queue all uncovered prompt sections in order with 23-frame (~0.96s) preContextSec continuity bridging. Only set expandQualityLadder=true (1MP -> 1080p) when slow high-resolution upscaling is explicitly requested."
+    "Render one or more H3 scene windows in ComfyUI after releasing the local LLM VRAM lease. Defaults to draft02Mp (768x448, expandQualityLadder=false) with automatic 10-step Turbo LoRA, cfg=1.0 (BasicGuider), shiftVideo=12.0, and shiftAudio=6.0; pass windows=[] (or omit generationOverride) to queue uncovered prompt sections in order with 23-frame (~0.96s) preContextSec continuity bridging. Do not set cfg>1.0 on draft02Mp/detail1Mp/upscale1080p presets (CFGGuider doubles render time). Only set expandQualityLadder=true (1MP -> 1080p) when slow high-resolution upscaling is explicitly requested."
   ],
   "place_movie_h3_take": [
     "write",
-    "Non-destructively place a completed H3 take (jobId) or Reference Library asset (assetId) onto a scene's video (targetVideoLaneId), audio (targetAudioLaneId), or pose/motion driver (targetDriverLaneId) lane using authored_v1 trim geometry (placementMode: trimmed, untrimmed, or assetOnly). Optional gain (0.0-2.0; audio clip gain, or embedded audio gain for video clips) and fadeInSec/fadeOutSec (audio clips) set the mix in the same action, e.g. a quieter A2 score under dialogue."
+    "Non-destructively place a completed H3 take (jobId) or Reference Library asset (assetId) onto a scene's video (targetVideoLaneId), audio (targetAudioLaneId), or pose/motion driver (targetDriverLaneId) lane using authored_v1 trim geometry (placementMode defaults to 'trimmed'; use 'assetOnly' only to stage in the library without a target lane). Optional gain (0.0-2.0; audio clip gain, or embedded audioGain for video clips) and fadeInSec/fadeOutSec (audio clips) set the mix in the same action; omitting jobId/assetId while passing targetVideoLaneId/targetAudioLaneId + gain adjusts all clips on that lane (e.g. targetVideoLaneId:'vid-lane-1', gain:0.15 to duck V1 weather foley under an A2 score)."
   ],
   "inspect_movie_h3_take": [
     "read",
@@ -316,7 +316,7 @@
   ],
   "start_music_generation": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Render a song take in ComfyUI/YuE2. Kestrel automatically unloads the local LLM and clears ComfyUI VRAM before rendering, waits in app_call until rendering finishes, and reloads the LLM after your tool batch; batch multiple start_*_generation calls in one turn to avoid reloading the LLM between renders. Inspect get_music_project afterwards to verify the completed take."
   ],
   "cancel_music_generation": [
     "write",
@@ -364,7 +364,7 @@
   ],
   "start_image_generation": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Render still image take(s) in ComfyUI. Kestrel automatically unloads the local LLM and clears ComfyUI VRAM before rendering, waits in app_call until rendering finishes, and reloads the LLM after your tool batch; batch multiple start_*_generation calls in one turn to avoid reloading the LLM between renders. Inspect get_image_project afterwards to verify the completed take."
   ],
   "cancel_image_generation": [
     "write",
@@ -416,7 +416,7 @@
   ],
   "preview_vram_cleanup": [
     "read",
-    "Read the current native state. This does not authorize generation or apply a proposal."
+    "Inspect non-Kestrel GPU processes for manual desktop cleanup. High VRAM during a Computer Task turn is your own active LLM runtime, which Kestrel automatically unloads during start_*_generation; tasks do not need to inspect or free VRAM."
   ],
   "clean_vram": [
     "human",
@@ -524,7 +524,7 @@
   ],
   "release_ai_memory": [
     "write",
-    "Use the same native validation, work lock, persistence and cancellation as the desktop. A start action returns acceptance; inspect its job/project for completion."
+    "Unload the managed LLM/speech runtime from the desktop UI. Computer Tasks cannot and do not need to call this: Kestrel automatically unloads the LLM before GPU generation and reloads it after the tool batch."
   ],
   "list_chat_sessions": [
     "read",

@@ -251,7 +251,9 @@ impl WorkspaceStore {
             }
         };
         let value = match pointer.filter(|p| !p.is_empty()) {
-            Some(pointer) => payload.pointer(pointer).ok_or("That JSON pointer does not exist in the saved payload; read without a pointer to inspect its shape.")?,
+            Some(pointer) => resolve_payload_pointer(&payload, pointer).ok_or(
+                "That JSON pointer does not exist in the saved payload; read without a pointer to inspect its shape.",
+            )?,
             None => &payload,
         };
         let text = value
@@ -312,6 +314,24 @@ impl WorkspaceStore {
             width /= 2;
         }
     }
+}
+
+/// Resolve an RFC 6901 JSON pointer against `payload`, tolerating `/result` prefix drift
+/// between direct tool payloads and `app_call` receipt envelopes `{status, result}`.
+fn resolve_payload_pointer<'a>(payload: &'a Value, pointer: &str) -> Option<&'a Value> {
+    if let Some(found) = payload.pointer(pointer) {
+        return Some(found);
+    }
+    if pointer == "/result" {
+        return Some(payload);
+    }
+    if let Some(rest) = pointer.strip_prefix("/result/") {
+        let stripped = format!("/{rest}");
+        if let Some(found) = payload.pointer(&stripped) {
+            return Some(found);
+        }
+    }
+    payload.get("result").and_then(|inner| inner.pointer(pointer))
 }
 
 fn record_page(
@@ -565,12 +585,29 @@ mod tests {
         assert_eq!(page.text, "line one\nline two");
         assert_eq!(page.next_offset, None);
         let page = store
+            .read_task_payload(&task.id, 1, Some("/sources/0/text"), 0, 500)
+            .unwrap();
+        assert_eq!(page.text, "line one\nline two");
+        let page = store
             .read_task_payload(&task.id, 1, Some("/result/sources/0/title"), 5, 1)
             .unwrap();
         assert_eq!(page.text, "🦉");
         assert!(store
             .read_task_payload(&task.id, 1, Some("/absent"), 0, 500)
             .is_err());
+
+        let direct = json!({"entries": [{"name": "abyss-ping.html"}]});
+        append(
+            &store,
+            &task.id,
+            "tool_result",
+            &direct.to_string(),
+            Some(json!({"result": direct})),
+        );
+        let page = store
+            .read_task_payload(&task.id, 2, Some("/result/entries/0/name"), 0, 500)
+            .unwrap();
+        assert_eq!(page.text, "abyss-ping.html");
         // Full audit remains available, including the original receipt in both saved fields.
         let original = store.read_task_record(&task.id, 1, 0, 16_000).unwrap();
         let event: ComputerTaskEvent = serde_json::from_str(&original.text).unwrap();

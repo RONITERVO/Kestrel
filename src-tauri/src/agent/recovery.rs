@@ -142,8 +142,11 @@ fn observe_file(
             if current.as_deref() == Some(text_sha256(content.as_bytes()).as_str()) {
                 Some(json!({"outcome":"desiredStateObserved","path":target,"sha256":current}))
             } else if (!target.exists() && data.get("expectedSha256").is_none())
-                || (current.is_some()
-                    && current.as_deref() == data.get("expectedSha256").and_then(Value::as_str))
+                || current.as_deref().is_some_and(|cur| {
+                    data.get("expectedSha256")
+                        .and_then(Value::as_str)
+                        .is_some_and(|exp| super::sha256_matches(cur, exp))
+                })
             {
                 Some(json!({"outcome":"unchangedStateObserved","path":target,"sha256":current}))
             } else {
@@ -154,9 +157,11 @@ fn observe_file(
             // The edited bytes are not journaled, so only the untouched state is provable.
             let target = path("path")?;
             let current = file_hash(&target)?;
-            if current.is_some()
-                && current.as_deref() == data.get("expectedSha256").and_then(Value::as_str)
-            {
+            if current.as_deref().is_some_and(|cur| {
+                data.get("expectedSha256")
+                    .and_then(Value::as_str)
+                    .is_some_and(|exp| super::sha256_matches(cur, exp))
+            }) {
                 Some(json!({"outcome":"unchangedStateObserved","path":target,"sha256":current}))
             } else {
                 None
