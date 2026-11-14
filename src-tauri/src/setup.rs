@@ -14,6 +14,7 @@ use tauri::AppHandle;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
+pub(crate) mod conversation;
 
 pub use kestrel_app_core::{
     SetupComponent, SetupInstallRequest, SetupLocations, SetupModelAsset, SetupProgress,
@@ -365,6 +366,14 @@ pub fn snapshot(
 
     let components = vec![
         component(
+            "conversation-voice", "Voice conversation (CPU)",
+            (crate::conversation_voice::installed(&research.install_root),
+             crate::conversation_voice::root(&research.install_root).exists()),
+            "Pocket TTS in seven languages and compact Whisper, resident beside your selected LLM. One-time setup; existing TTS and large Whisper stay manual.",
+            crate::conversation_voice::root(&research.install_root).to_string_lossy().as_ref(),
+            (conversation::assets().iter().filter(|asset| !file_has_size(&crate::conversation_voice::root(&research.install_root).join(&asset.relative), asset.bytes)).map(|asset| asset.bytes).sum::<u64>(), true),
+        ),
+        component(
             "assistant",
             "Included local model",
             (assistant_ready, assistant_partial),
@@ -613,7 +622,7 @@ pub fn apply_locations(
     control: &mut ControlSettings,
     locations: SetupLocations,
 ) -> Result<(), SetupError> {
-    validate_model_paths(&locations.existing_model_paths)?;
+    validate_model_paths(&locations.existing_model_paths, &research.existing_model_paths)?;
     for value in [
         &locations.ffmpeg_path,
         &locations.ffprobe_path,
@@ -685,12 +694,8 @@ pub async fn install_component(
     request: &SetupInstallRequest,
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
-    let mut request = request.clone();
-    let mut sources = settings.existing_model_paths.clone();
-    sources.extend(request.existing_model_paths);
-    request.existing_model_paths = sources;
+    let request = prepare_install_request(settings, request)?;
     let request = &request;
-    validate_existing_model_paths(request)?;
     let root = PathBuf::from(request.install_root.trim());
     if !root.is_absolute() {
         return Err(SetupError::InvalidPath(request.install_root.clone()));
@@ -698,6 +703,7 @@ pub async fn install_component(
     fs::create_dir_all(&root)?;
     settings.install_root = root.to_string_lossy().into_owned();
     match request.component.as_str() {
+        "conversation-voice" => conversation::install(app, &root, cancel).await,
         "assistant" => install_assistant(app, settings, &root, request, cancel).await,
         "wikipedia" => {
             install_wikipedia(app, settings, &root, &request.wikipedia_edition, cancel).await
@@ -740,24 +746,47 @@ pub async fn install_component(
     }
 }
 
-fn validate_existing_model_paths(request: &SetupInstallRequest) -> Result<(), SetupError> {
-    validate_model_paths(&request.existing_model_paths)
+fn supported_model_ids() -> Vec<String> {
+    let mut ids = reusable_model_assets()
+        .into_iter()
+        .map(|asset| asset.id())
+        .collect::<Vec<_>>();
+    ids.push("muscriptor:model.safetensors".into());
+    ids
 }
 
-fn validate_model_paths(paths: &BTreeMap<String, String>) -> Result<(), SetupError> {
+fn prepare_install_request(
+    settings: &ResearchSettings,
+    request: &SetupInstallRequest,
+) -> Result<SetupInstallRequest, SetupError> {
+    let mut request = request.clone();
+    let mut sources = settings.existing_model_paths.clone();
+    sources.extend(request.existing_model_paths);
+    validate_model_paths(&sources, &settings.existing_model_paths)?;
+    // Retired selections are durable producer data (for example MiniMax Music 3 after
+    // Setup moved to YuE2). Preserve them in settings, but only current manifest assets
+    // can become installation inputs. Never reinterpret an old model as its replacement.
+    let supported = supported_model_ids();
+    sources.retain(|id, _| supported.contains(id));
+    request.existing_model_paths = sources;
+    Ok(request)
+}
+
+fn validate_model_paths(
+    paths: &BTreeMap<String, String>,
+    saved: &BTreeMap<String, String>,
+) -> Result<(), SetupError> {
     if paths.len() > 32 {
         return Err(SetupError::Dependency {
             name: "existing model selection".into(),
             details: "at most 32 supported model files can be selected for one setup run".into(),
         });
     }
-    let mut ids = reusable_model_assets()
-        .into_iter()
-        .map(|asset| asset.id())
-        .collect::<Vec<_>>();
-    ids.push("muscriptor:model.safetensors".into());
+    let ids = supported_model_ids();
     for (id, path) in paths {
-        if !ids.contains(id) {
+        // An older saved choice may round-trip unchanged through any Setup operation.
+        // New or edited unsupported choices still fail the native allowlist.
+        if !ids.contains(id) && saved.get(id) != Some(path) {
             return Err(SetupError::Dependency {
                 name: "existing model selection".into(),
                 details: format!("{id} is not a supported Setup model asset"),
@@ -3572,6 +3601,84 @@ mod acceptance;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_music_selections_survive_save_and_do_not_block_other_installs() {
+        let root = tempfile::tempdir().unwrap();
+        let mut research = ResearchSettings::default();
+        let mut control = ControlSettings::default();
+        let retired = [
+            "minimax_music3_dav.safetensors",
+            "minimax_music3_dit_int8_convrot.safetensors",
+            "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        ];
+        for name in retired {
+            research.existing_model_paths.insert(
+                format!("music:{name}"),
+                root.path().join(name).to_string_lossy().into_owned(),
+            );
+        }
+        let current = reusable_model_assets()
+            .into_iter()
+            .find(|asset| asset.component == "music")
+            .unwrap()
+            .id();
+        research.existing_model_paths.insert(
+            current.clone(),
+            root.path().join("current.safetensors").to_string_lossy().into_owned(),
+        );
+        let before = research.existing_model_paths.clone();
+        let locations = serde_json::from_value(serde_json::json!({
+            "installRoot": research.install_root, "bonsaiRoot": research.bonsai_root,
+            "enginePath": root.path().join("llama-server.exe"),
+            "wikipediaZimPath": research.wikipedia_zim_path, "kiwixServerPath": research.kiwix_server_path,
+            "comfyRoot": research.comfy_root, "existingModelPaths": before,
+            "ffmpegPath": "", "ffprobePath": "",
+        }))
+        .unwrap();
+        apply_locations(&mut research, &mut control, locations).unwrap();
+        let store = crate::config::SettingsStore::new(root.path());
+        store.save(&research).unwrap();
+        let restored = store.load().unwrap();
+        assert_eq!(restored.existing_model_paths, before);
+        // The UI echoes saved choices; a native caller can omit them. Both paths must
+        // succeed before the install dispatcher reaches downloads or filesystem writes.
+        for component in ["conversation-voice", "music", "wikipedia"] {
+            for echoed in [BTreeMap::new(), before.clone()] {
+                let request = serde_json::from_value(serde_json::json!({
+                    "component": component, "installRoot": root.path(), "existingModelPaths": echoed,
+                }))
+                .unwrap();
+                let prepared = prepare_install_request(&restored, &request).unwrap();
+                assert_eq!(prepared.existing_model_paths.len(), 1);
+                assert_eq!(
+                    prepared.existing_model_paths.get(&current), before.get(&current)
+                );
+                assert_eq!(restored.existing_model_paths, before);
+            }
+        }
+    }
+
+    #[test]
+    fn retired_selection_compatibility_does_not_admit_new_or_invalid_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let id = "music:minimax_music3_dav.safetensors".to_string();
+        let path = root.path().join("old.safetensors").to_string_lossy().into_owned();
+        let saved = BTreeMap::from([(id.clone(), path.clone())]);
+        assert!(validate_model_paths(&saved, &BTreeMap::new()).is_err());
+        let edited = BTreeMap::from([(
+            id.clone(),
+            root.path().join("different.safetensors").to_string_lossy().into_owned(),
+        )]);
+        assert!(validate_model_paths(&edited, &saved).is_err());
+        let unknown = BTreeMap::from([("music:typo.safetensors".into(), path)]);
+        assert!(validate_model_paths(&unknown, &saved).is_err());
+        let relative = BTreeMap::from([(id.clone(), "relative.safetensors".into())]);
+        assert!(validate_model_paths(&relative, &relative).is_err());
+        let oversized = BTreeMap::from([(id, "x".repeat(32_768))]);
+        assert!(validate_model_paths(&oversized, &oversized).is_err());
+        assert!(validate_model_paths(&BTreeMap::new(), &saved).is_ok());
+    }
 
     #[tokio::test]
     async fn reuse_from_unrelated_folders_verifies_bytes_and_preserves_sources() {

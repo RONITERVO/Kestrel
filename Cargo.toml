@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/app-core", "src-tauri"]
+members = ["crates/app-core", "crates/conversation-engine", "src-tauri"]
 resolver = "2"

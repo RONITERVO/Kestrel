@@ -6,6 +6,7 @@ mod app_control;
 mod attachments;
 mod chat;
 mod config;
+mod conversation_voice;
 mod developer;
 mod gpu_memory;
 mod hardware_profiles;
@@ -120,6 +121,7 @@ struct AppState {
     work_active: AtomicBool,
     jobs: Mutex<HashMap<String, CancellationToken>>,
     speech: LocalSpeech,
+    conversation_voice: conversation_voice::ConversationVoice,
     voice_library: VoiceLibrary,
     speech_command_gate: AsyncMutex<()>,
     speech_jobs: Mutex<HashMap<String, CancellationToken>>,
@@ -148,6 +150,128 @@ async fn release_all_comfy_memory(state: &AppState) {
 #[derive(Clone)]
 struct SpeechRuntimeRestore {
     model_id: String,
+}
+
+#[tauri::command]
+async fn get_conversation_voice_snapshot(
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ConversationVoiceSnapshot, String> {
+    let settings = state.research_settings.load().map_err(|e| e.to_string())?;
+    Ok(state
+        .conversation_voice
+        .snapshot(&settings.install_root)
+        .await)
+}
+
+#[tauri::command]
+async fn prepare_conversation_voice(
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ConversationVoiceSnapshot, String> {
+    ensure_conversation_allowed(&state)?;
+    let settings = state.research_settings.load().map_err(|e| e.to_string())?;
+    let language = state.speech_preferences.get(None)?.conversation.language;
+    state
+        .conversation_voice
+        .prepare(&settings.install_root, language.as_str())
+        .await
+}
+
+#[tauri::command]
+async fn start_conversation_capture(
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    ensure_conversation_allowed(&state)?;
+    let preferences=state.speech_preferences.get(None)?.conversation;
+    if !preferences.enabled || !preferences.vad.enabled { return Err("Voice conversation is muted.".into()); }
+    let settings=state.research_settings.load().map_err(|e|e.to_string())?;
+    state.conversation_voice.capture(&settings.install_root,&session_id,preferences.language.as_str(),&preferences.vad,&app).await
+}
+
+#[tauri::command]
+async fn speak_conversation(
+    request: kestrel_app_core::ConversationSpeakRequest,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    ensure_conversation_allowed(&state)?;
+    ensure_conversation_language(&state, &request.language)?;
+    let settings = state.research_settings.load().map_err(|e| e.to_string())?;
+    let voice = state
+        .voice_library
+        .resolve(&request.voice_profile_id)
+        .map_err(|e| e.to_string())?;
+    state
+        .conversation_voice
+        .speak(&settings.install_root, request, voice, &app)
+        .await
+}
+
+#[tauri::command]
+async fn transcribe_conversation(
+    request: kestrel_app_core::ConversationTranscribeRequest,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::ConversationTranscript, String> {
+    ensure_conversation_allowed(&state)?;
+    ensure_conversation_language(&state, &request.language)?;
+    let settings = state.research_settings.load().map_err(|e| e.to_string())?;
+    state
+        .conversation_voice
+        .transcribe(&settings.install_root, request)
+        .await
+}
+
+#[tauri::command]
+fn cancel_conversation_voice(job_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.conversation_voice.cancel(&job_id)
+}
+
+fn ensure_conversation_allowed(state: &AppState) -> Result<(), String> {
+    if state.research_active.load(Ordering::Acquire) {
+        Err("Voice conversation is unavailable while research is active.".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_conversation_language(state: &AppState, language: &str) -> Result<(), String> {
+    if state.speech_preferences.get(None)?.conversation.language.as_str() != language {
+        return Err("Conversation language changed. Retry with the language selected in microphone settings.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_conversation_language(
+    language: kestrel_app_core::ConversationLanguage,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::SpeechPreferences, String> {
+    ensure_conversation_allowed(&state)?;
+    let preferences = state.speech_preferences.save_conversation_language(language)?;
+    let settings = state.research_settings.load().map_err(|e| e.to_string())?;
+    // Muted speech also releases the old language. Never start an unused worker just
+    // to save a preference; normal conversation preparation loads the selection later.
+    if state.conversation_voice.snapshot(&settings.install_root).await.running {
+        state.conversation_voice.prepare(&settings.install_root, language.as_str()).await?;
+    }
+    Ok(preferences)
+}
+
+#[tauri::command]
+fn save_conversation_vad(
+    vad: kestrel_app_core::VadSettings,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::SpeechPreferences, String> {
+    state.speech_preferences.save_conversation_vad(vad)
+}
+
+#[tauri::command]
+fn save_conversation_voice_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<kestrel_app_core::SpeechPreferences, String> {
+    state.speech_preferences.save_conversation(enabled)
 }
 
 struct ResearchGuard<'a> {
@@ -2646,6 +2770,11 @@ async fn install_setup_component(
             .await
             .map_err(|error| error.to_string())?;
     }
+    if request.component == "conversation-voice" {
+        // Explicit repair may replace files held by the private speech worker on Windows.
+        // The independently owned language-model process remains untouched.
+        state.conversation_voice.stop().await;
+    }
     let cancel = CancellationToken::new();
     {
         let mut active = state
@@ -4450,6 +4579,7 @@ pub fn run() {
                 work_active: AtomicBool::new(false),
                 jobs: Mutex::new(HashMap::new()),
                 speech,
+                conversation_voice: conversation_voice::ConversationVoice::new(),
                 voice_library,
                 speech_command_gate: AsyncMutex::new(()),
                 speech_jobs: Mutex::new(HashMap::new()),
@@ -4530,6 +4660,15 @@ pub fn run() {
             bootstrap,
             get_report,
             get_local_speech_snapshot,
+            get_conversation_voice_snapshot,
+            prepare_conversation_voice,
+            start_conversation_capture,
+            speak_conversation,
+            transcribe_conversation,
+            cancel_conversation_voice,
+            save_conversation_voice_enabled,
+            save_conversation_language,
+            save_conversation_vad,
             get_voice_library,
             create_voice_profile,
             update_voice_profile,
@@ -4683,6 +4822,7 @@ pub fn run() {
             let runtime = state.runtime.clone();
             let speech = state.speech.clone();
             let _ = tauri::async_runtime::block_on(async move {
+                state.conversation_voice.stop().await;
                 speech.stop_comfy().await;
                 runtime.stop_managed().await
             });

@@ -44,6 +44,7 @@ import "./workspace.css";
 import { ProducerWorkspace } from "./ProducerWorkspace";
 import { useInferenceTelemetryReporter } from "../control/InferenceTelemetry";
 import { SpeechDictationButton, SpeechPlaybackButton } from "../speech/LocalSpeechControls";
+import { useConversationVoice, type ConversationControl } from "../speech/useConversationVoice";
 import {
   cancelChatStream,
   deleteChatSession,
@@ -55,6 +56,7 @@ import {
   listChatSessions,
   listComputerTasks,
   onChatStream,
+  onTaskResponseDelta,
   onComputerTaskEvent,
   onRuntimeProgress,
   openContextAttachment,
@@ -77,6 +79,7 @@ import type {
   ChatSessionSummary,
   ChatStreamEvent,
   ComputerTaskEvent,
+  TaskResponseDelta,
   ComputerTaskRun,
   ComputerTaskSummary,
   ProducerTaskStatus,
@@ -98,6 +101,7 @@ type WorkKind = "chat" | "task";
 export function OfflineWorkspace({ control, onChanged, onError, visible = true }: Props) {
   const [producerOpen, setProducerOpen] = useState(false);
   const [kind, setKind] = useState<WorkKind>("chat");
+  const [voiceScope, setVoiceScope] = useState(0);
   const [selectedId, setSelectedId] = useState(
     control.settings.selectedModelId ?? control.models[0]?.id ?? "",
   );
@@ -149,7 +153,16 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   const latestTaskRef = useRef<ComputerTaskRun | null>(task);
   const taskStartingRef = useRef(false);
   const earlyTaskEventsRef = useRef<ComputerTaskEvent[]>([]);
+  const earlyTaskSpeechRef = useRef<TaskResponseDelta[]>([]);
   const onChangedRef = useRef(onChanged);
+  const voiceTarget = useRef({ kind, visible, producerOpen });
+  voiceTarget.current = { kind, visible, producerOpen };
+  const conversation = useConversationVoice({
+    active: visible && !producerOpen && Boolean(selected),
+    scope: `${kind}:${voiceScope}`,
+    onTurn: submitSpokenTurn,
+    onError,
+  });
   const enginePathHasValidName = /(?:^|[\\/])llama-server\.exe$/i.test(
     settings.enginePath.trim(),
   );
@@ -190,6 +203,15 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     let chatDispose: (() => void) | undefined;
     let taskDispose: (() => void) | undefined;
     let runtimeDispose: (() => void) | undefined;
+    let responseDispose: (() => void) | undefined;
+    void onTaskResponseDelta((event) => {
+      if (taskStartingRef.current) {
+        if (earlyTaskSpeechRef.current.length < 2048) earlyTaskSpeechRef.current.push(event);
+        return;
+      }
+      const target = voiceTarget.current;
+      if (target.visible && !target.producerOpen && target.kind === "task" && latestTaskRef.current?.id === event.runId) conversation.taskDelta(event);
+    }).then((dispose) => { if (unmounted) dispose(); else responseDispose = dispose; });
     void onChatStream(handleChatEvent).then((dispose) => {
       if (unmounted) dispose();
       else chatDispose = dispose;
@@ -209,6 +231,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       chatDispose?.();
       taskDispose?.();
       runtimeDispose?.();
+      responseDispose?.();
     };
     // Event handlers use refs and functional state updates, so they remain stable for this subscription.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -227,6 +250,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   function handleChatEvent(event: ChatStreamEvent) {
     if (chatRequestRef.current && event.requestId !== chatRequestRef.current)
       return;
+    if (voiceTarget.current.visible && !voiceTarget.current.producerOpen && voiceTarget.current.kind === "chat") conversation.chatEvent(event);
     if (event.kind === "token" || event.kind === "reasoning") {
       setStream((current) => ({
         requestId: event.requestId,
@@ -326,6 +350,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       return;
     }
     if (latestTaskRef.current?.id !== event.runId) return;
+    if (voiceTarget.current.visible && !voiceTarget.current.producerOpen && voiceTarget.current.kind === "task") conversation.taskEvent(event);
     const current = latestTaskRef.current;
     const status = terminalTaskStatus(event.kind, current.status);
     taskRunRef.current = ["running", "starting"].includes(status) ? event.runId : null;
@@ -353,6 +378,13 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   function showTaskSnapshot(run: ComputerTaskRun) {
     const early = earlyTaskEventsRef.current.filter((event) => event.runId === run.id);
     earlyTaskEventsRef.current = [];
+    const speech = earlyTaskSpeechRef.current.filter((event) => event.runId === run.id);
+    earlyTaskSpeechRef.current = [];
+    const target = voiceTarget.current;
+    if (target.visible && !target.producerOpen && target.kind === "task") {
+      for (const delta of speech) conversation.taskDelta(delta);
+      for (const event of early) conversation.taskEvent(event);
+    }
     const additional = early.filter((event) => !run.events.some((known) =>
       known.at === event.at && known.kind === event.kind && known.title === event.title));
     const status = additional.reduce((current, event) => terminalTaskStatus(event.kind, current), run.status);
@@ -382,6 +414,8 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
 
   const openSession = async (summary: ChatSessionSummary) => {
     if (stream) return;
+    conversation.stopOutput();
+    setVoiceScope((value) => value + 1);
     try {
       const next = await getChatSession(summary.id);
       setSession(next);
@@ -394,6 +428,8 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
 
   const openTask = async (summary: ComputerTaskSummary) => {
     if (taskRunRef.current || taskStartingRef.current) return;
+    conversation.stopOutput();
+    setVoiceScope((value) => value + 1);
     taskStartingRef.current = true;
     try {
       const next = await getComputerTask(summary.id);
@@ -409,6 +445,8 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
 
   const newConversation = () => {
     if (stream) return;
+    conversation.stopOutput();
+    setVoiceScope((value) => value + 1);
     setSession(null);
     setChatAttachments([]);
     chatRequestRef.current = null;
@@ -417,6 +455,8 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   };
   const newTask = () => {
     if (active) return;
+    conversation.stopOutput();
+    setVoiceScope((value) => value + 1);
     latestTaskRef.current = null;
     setTask(null);
     setObjective("");
@@ -516,15 +556,23 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     }, 5_000);
   }
 
-  const send = async () => {
-    if (!selected || (!draft.trim() && chatAttachments.length === 0)) return;
-    const message = draft.trim();
+  const send = async (spoken?: string) => {
+    if (!selected || (!(spoken ?? draft).trim() && chatAttachments.length === 0)) return;
+    const message = (spoken ?? draft).trim();
+    conversation.stopOutput();
     const attachments = chatAttachments;
     const recording = pendingVoiceRecordingRef.current;
     pendingVoiceRecordingRef.current = null;
     setDraft("");
     setChatAttachments([]);
     if (stream) {
+      // Keep every utterance when two final transcriptions arrive before cancellation settles.
+      // They become one ordered user direction rather than replacing the earlier utterance.
+      if (pendingRedirectRef.current) {
+        pendingRedirectRef.current.message += `\n${message}`;
+        pendingRedirectRef.current.attachments = mergeAttachments(pendingRedirectRef.current.attachments, attachments).attachments;
+        return;
+      }
       pendingRedirectRef.current = { message, attachments, recording: recording ?? undefined };
       setStream((current) =>
         current ? { ...current, phase: "redirecting" } : current,
@@ -545,6 +593,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   };
 
   const cancelGeneration = async () => {
+    conversation.control.mute();
     if (!stream) return;
     setStream((current) =>
       current ? { ...current, phase: "stopping" } : current,
@@ -629,8 +678,8 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     }
   };
 
-  const runTask = async () => {
-    if (!selected || (!objective.trim() && taskAttachments.length === 0))
+  const runTask = async (spoken?: string) => {
+    if (!selected || (!(spoken ?? objective).trim() && taskAttachments.length === 0))
       return;
     if (access === "full" && !settings.allowFullAccessAgent) {
       onError(
@@ -651,7 +700,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       const run = await startComputerTask({
         modelId: selected.id,
         objective:
-          objective.trim() ||
+          (spoken ?? objective).trim() ||
           "Analyze the attached local context and complete the implied task safely.",
         attachmentIds: taskAttachments.map((item) => item.id),
         access,
@@ -674,6 +723,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
   };
 
   const stopTask = async () => {
+    conversation.control.mute();
     if (!task || stoppingTask) return;
     setStoppingTask(true);
     try {
@@ -685,10 +735,10 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     }
   };
 
-  const resumeTask = async () => {
-    if (!task || !taskAnswer.trim()) return;
+  const resumeTask = async (spoken?: string) => {
+    if (!task || !(spoken ?? taskAnswer).trim()) return;
     if (
-      task.access === "full" &&
+      task.access === "full" && spoken === undefined &&
       !window.confirm(
         "Continue this task with full computer access? The model may run programs and modify files outside workspace folders.",
       )
@@ -699,7 +749,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
     try {
       const accepted = await sendProducerMessage({
         runId: task.id,
-        answer: taskAnswer.trim(),
+        answer: (spoken ?? taskAnswer).trim(),
       });
       setTaskAnswer("");
       // Message acknowledgements stay compact for every client. This desktop view explicitly
@@ -717,6 +767,17 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
       setWorking(null);
     }
   };
+
+  async function submitSpokenTurn(text: string) {
+    if (kind === "chat") {
+      if (taskRunRef.current) throw new Error("A Computer Task is using this conversation. Open Computer to speak to it.");
+      await send(text);
+    } else if (task) {
+      await resumeTask(text);
+    } else {
+      await runTask(text);
+    }
+  }
 
   const save = async () => {
     if (!enginePathHasValidName) {
@@ -1395,6 +1456,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
                   )}
                 </button>
                 <SpeechDictationButton
+                  conversation={conversation.control}
                   sourceKind="chat"
                   sourceId={session?.id ?? "chat-draft"}
                   value={draft}
@@ -1458,6 +1520,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
           </>
         ) : (
           <ComputerTasks
+            conversation={conversation.control}
             run={task}
             objective={objective}
             attachments={taskAttachments}
@@ -1495,6 +1558,7 @@ export function OfflineWorkspace({ control, onChanged, onError, visible = true }
 }
 
 function ComputerTasks({
+  conversation,
   run,
   objective,
   attachments,
@@ -1520,6 +1584,7 @@ function ComputerTasks({
   onOpen,
   onError,
 }: {
+  conversation?: ConversationControl;
   run: ComputerTaskRun | null;
   objective: string;
   attachments: ContextAttachment[];
@@ -1592,7 +1657,7 @@ function ComputerTasks({
               onChange={(event) => onObjective(event.target.value)}
               placeholder="Describe the outcome, or attach context and ask the model to inspect it."
             />
-            <SpeechDictationButton sourceKind="task" sourceId={run?.id ?? "task-draft"} value={objective} onChange={onObjective} onActiveChange={setDictating} disabled={running} label="Dictate objective" />
+            <SpeechDictationButton conversation={conversation} sourceKind="task" sourceId={run?.id ?? "task-draft"} value={objective} onChange={onObjective} onActiveChange={setDictating} disabled={running} label="Dictate objective" />
           </div>
           {attachments.length > 0 && (
             <AttachmentShelf
@@ -1726,7 +1791,7 @@ function ComputerTasks({
                 onChange={(event) => onAnswer(event.target.value)}
                 aria-label="Message Kestrel"
                 placeholder="Write a message…"
-              /><SpeechDictationButton sourceKind="task" sourceId={run.id} value={answer} onChange={onAnswer} onActiveChange={setDictating} disabled={resuming} label="Dictate answer" /></div>
+              /><SpeechDictationButton conversation={conversation} sourceKind="task" sourceId={run.id} value={answer} onChange={onAnswer} onActiveChange={setDictating} disabled={resuming} label="Dictate answer" /></div>
               <button
                 className="primary-button"
                 disabled={dictating || (!ready && !running) || !answer.trim() || resuming}

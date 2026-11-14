@@ -1,0 +1,26 @@
+[package]
+name = "kestrel-conversation-engine"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+candle = { package = "candle-core", version = "0.9.2", default-features = false }
+candle-nn = { version = "0.9.2", default-features = false }
+candle-transformers = { version = "0.9.2", default-features = false }
+half = "2"
+log = "0.4"
+ptts = { git = "https://github.com/gabrieldemarmiesse/xn-ptts", rev = "7efa26973f81bba42cf2ace8da2c1eb9b605d54d", default-features = false }
+rand = "0.9"
+rand_distr = "0.5"
+rayon = "1"
+safetensors = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
+xn = "=0.2.11"
+cpal = "0.16"
+sonora = "=0.3.0"

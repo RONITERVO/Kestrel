@@ -15,6 +15,11 @@ import type { ComputerTaskSummary } from "./ComputerTaskSummary.js";
 import type { ContextAttachmentImport } from "./ContextAttachmentImport.js";
 import type { ControlSettings } from "./ControlSettings.js";
 import type { ControlSnapshot } from "./ControlSnapshot.js";
+import type { ConversationLanguage } from "./ConversationLanguage.js";
+import type { ConversationSpeakRequest } from "./ConversationSpeakRequest.js";
+import type { ConversationTranscribeRequest } from "./ConversationTranscribeRequest.js";
+import type { ConversationTranscript } from "./ConversationTranscript.js";
+import type { ConversationVoiceSnapshot } from "./ConversationVoiceSnapshot.js";
 import type { CreateImageProjectRequest } from "./CreateImageProjectRequest.js";
 import type { CreateMovieH3ProjectRequest } from "./CreateMovieH3ProjectRequest.js";
 import type { CreateMovieH3SceneRequest } from "./CreateMovieH3SceneRequest.js";
@@ -123,6 +128,7 @@ export type DesktopCommands = {
   apply_music_text: { args: { id: string; field: string; text: string }; result: MusicProject };
   bootstrap: { args: Record<string, never>; result: AppSnapshot };
   cancel_chat_stream: { args: { requestId: string }; result: void };
+  cancel_conversation_voice: { args: { jobId: string }; result: void };
   cancel_image_generation: { args: { id: string }; result: void };
   cancel_local_speech: { args: { jobId: string }; result: void };
   cancel_model_download: { args: Record<string, never>; result: void };
@@ -164,6 +170,7 @@ export type DesktopCommands = {
   get_chat_session: { args: { id: string }; result: ChatSession };
   get_computer_task: { args: { id: string }; result: ComputerTaskRun };
   get_control_snapshot: { args: { probeDeveloper?: boolean | null }; result: ControlSnapshot };
+  get_conversation_voice_snapshot: { args: Record<string, never>; result: ConversationVoiceSnapshot };
   get_default_prompt_pack_text: { args: Record<string, never>; result: string };
   get_image_project: { args: { id: string }; result: ImageProject };
   get_local_speech_snapshot: { args: Record<string, never>; result: SpeechSnapshot };
@@ -226,6 +233,7 @@ export type DesktopCommands = {
   pick_setup_file: { args: { kind: string }; result: string };
   pick_setup_folder: { args: Record<string, never>; result: string };
   place_movie_h3_take: { args: { request: PlaceMovieH3TakeRequest }; result: MovieProject };
+  prepare_conversation_voice: { args: Record<string, never>; result: ConversationVoiceSnapshot };
   prepare_local_speech: { args: Record<string, never>; result: SpeechSnapshot };
   prepare_services: { args: Record<string, never>; result: AppSnapshot };
   preview_vram_cleanup: { args: Record<string, never>; result: VramCleanupPreview };
@@ -247,6 +255,9 @@ export type DesktopCommands = {
   run_research: { args: { request: RunResearchRequest }; result: ResearchReport };
   save_chat_reply_edit: { args: { sessionId: string; messageId: string; content: string }; result: ChatSession };
   save_control_settings: { args: { settings: ControlSettings }; result: ControlSnapshot };
+  save_conversation_language: { args: { language: ConversationLanguage }; result: SpeechPreferences };
+  save_conversation_vad: { args: { vad: VadSettings }; result: SpeechPreferences };
+  save_conversation_voice_enabled: { args: { enabled: boolean }; result: SpeechPreferences };
   save_image_project: { args: { project: ImageProjectEdit }; result: ImageProject };
   save_movie_h3_scene: { args: { request: SaveMovieH3SceneRequest }; result: MovieProject };
   save_movie_h3_story: { args: { request: SaveMovieH3StoryRequest }; result: MovieProject };
@@ -263,9 +274,11 @@ export type DesktopCommands = {
   scan_setup_model_folder: { args: { path: string }; result: { [key in string]: string } };
   send_producer_message: { args: { request: ResumeComputerTaskRequest }; result: ProducerTaskStatus };
   set_default_voice_profile: { args: { profileId: string }; result: VoiceLibrarySnapshot };
+  speak_conversation: { args: { request: ConversationSpeakRequest }; result: void };
   stage_movie_h3_reference: { args: { request: StageMovieH3ReferenceRequest }; result: H3StageReferenceReceipt };
   start_chat_stream: { args: { request: StartChatRequest }; result: ChatStart };
   start_computer_task: { args: { request: ComputerTaskRequest }; result: ComputerTaskRun };
+  start_conversation_capture: { args: { sessionId: string }; result: void };
   start_image_generation: { args: { id: string }; result: ImageProject };
   start_local_model: { args: { modelId: string }; result: ControlSnapshot };
   start_model_download: { args: { request: ModelDownloadRequest }; result: ModelDownloadRecord };
@@ -278,6 +291,7 @@ export type DesktopCommands = {
   stop_local_model: { args: Record<string, never>; result: ControlSnapshot };
   stop_producer_workflow: { args: { id: string }; result: void };
   synthesize_local_speech: { args: { request: SpeechSynthesisRequest }; result: SpeechClip };
+  transcribe_conversation: { args: { request: ConversationTranscribeRequest }; result: ConversationTranscript };
   transcribe_local_speech: { args: { request: SpeechTranscriptionRequest }; result: SpeechTranscription };
   transcribe_music_lyrics: { args: { request: TranscribeMusicLyricsRequest }; result: MusicLyricsSaveResult };
   transcribe_music_midi: { args: { request: MusicMidiRequest }; result: MusicProject };

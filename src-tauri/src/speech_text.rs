@@ -25,6 +25,16 @@ const ONES: [&str; 20] = [
     "eighteen",
     "nineteen",
 ];
+
+/// English number expansion must not turn French/German/etc. replies into English words.
+/// Pocket's language-specific tokenizer accepts written numbers for the other languages.
+pub fn conversation_text(text: &str, language: &str) -> String {
+    if language == "en" {
+        speak_numbers(text)
+    } else {
+        text.to_string()
+    }
+}
 const TENS: [&str; 10] = [
     "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
 ];

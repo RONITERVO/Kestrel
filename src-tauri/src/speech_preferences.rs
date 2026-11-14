@@ -24,6 +24,7 @@ fn read_preferences(path: &Path) -> Result<SpeechPreferences, String> {
         serde_json::from_slice(without_utf8_bom(&bytes)).map_err(|error| error.to_string())?;
     preferences.research.validate()?;
     preferences.vad = preferences.vad.normalize();
+    preferences.conversation.vad = preferences.conversation.vad.normalize();
     Ok(preferences)
 }
 
@@ -115,6 +116,33 @@ impl SpeechPreferencesStore {
         Ok(preferences)
     }
 
+    pub fn save_conversation_vad(&self, vad: VadSettings) -> Result<SpeechPreferences, String> {
+        let _guard = self.gate.lock().map_err(|e| e.to_string())?;
+        let mut preferences = self.load()?.unwrap_or_default();
+        preferences.conversation.vad = vad.normalize();
+        self.write(&preferences)?;
+        Ok(preferences)
+    }
+
+    pub fn save_conversation(&self, enabled: bool) -> Result<SpeechPreferences, String> {
+        let _guard = self.gate.lock().map_err(|e| e.to_string())?;
+        let mut preferences = self.load()?.unwrap_or_default();
+        preferences.conversation.enabled = enabled;
+        self.write(&preferences)?;
+        Ok(preferences)
+    }
+
+    pub fn save_conversation_language(
+        &self,
+        language: kestrel_app_core::ConversationLanguage,
+    ) -> Result<SpeechPreferences, String> {
+        let _guard = self.gate.lock().map_err(|e| e.to_string())?;
+        let mut preferences = self.load()?.unwrap_or_default();
+        preferences.conversation.language = language;
+        self.write(&preferences)?;
+        Ok(preferences)
+    }
+
     pub fn save_narration(
         &self,
         narration: kestrel_app_core::NarrationPreferences,
@@ -154,6 +182,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn conversation_defaults_and_mute_are_durable_without_changing_manual_speech() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SpeechPreferencesStore::new(root.path());
+        fs::write(
+            &store.path,
+            br#"{"vad":{"silenceTimeoutSec":3.5},"narration":{"checkMistakes":true}}"#,
+        )
+        .unwrap();
+        let loaded = store.get(None).unwrap();
+        assert!(loaded.conversation.enabled);
+        assert_eq!(loaded.conversation.vad.silence_timeout_sec, 0.6);
+        store.save_conversation(false).unwrap();
+        store
+            .save_conversation_vad(VadSettings {
+                silence_timeout_sec: 0.8,
+                ..loaded.conversation.vad
+            })
+            .unwrap();
+        let reloaded = SpeechPreferencesStore::new(root.path()).get(None).unwrap();
+        assert!(!reloaded.conversation.enabled);
+        assert_eq!(reloaded.conversation.vad.silence_timeout_sec, 0.8);
+        assert_eq!(reloaded.vad.silence_timeout_sec, 3.5);
+        assert!(reloaded.narration.check_mistakes);
+    }
+
+    #[test]
     fn imports_once_preserves_other_preferences_and_recovers_backup() {
         let root = tempfile::tempdir().unwrap();
         let store = SpeechPreferencesStore::new(root.path());
@@ -183,6 +237,32 @@ mod tests {
         let recovered = store.get(None).unwrap();
         assert_eq!(recovered.research.rate, 1.2);
         assert_eq!(recovered.vad.silence_timeout_sec, 3.5);
+    }
+
+    #[test]
+    fn conversation_language_migrates_and_persists_without_changing_manual_speech() {
+        use kestrel_app_core::ConversationLanguage;
+        let root = tempfile::tempdir().unwrap();
+        let store = SpeechPreferencesStore::new(root.path());
+        fs::write(
+            &store.path,
+            br#"{"conversation":{"enabled":false},"research":{"rate":1.2}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            store.get(None).unwrap().conversation.language,
+            ConversationLanguage::En
+        );
+        let saved = store
+            .save_conversation_language(ConversationLanguage::Fr)
+            .unwrap();
+        assert!(!saved.conversation.enabled);
+        assert_eq!(saved.research.rate, 1.2);
+        assert_eq!(
+            SpeechPreferencesStore::new(root.path()).get(None).unwrap(),
+            saved
+        );
+        assert!(serde_json::from_str::<ConversationLanguage>(r#""auto""#).is_err());
     }
 
     #[test]

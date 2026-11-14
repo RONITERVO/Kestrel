@@ -14,6 +14,8 @@ pub use operations::*;
 pub mod events;
 mod speech_preferences;
 pub use speech_preferences::*;
+mod conversation_voice;
+pub use conversation_voice::*;
 mod runtime_limits;
 pub use runtime_limits::*;
 mod prompt_pack;

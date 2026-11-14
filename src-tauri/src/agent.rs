@@ -29,6 +29,7 @@ mod context;
 mod memory;
 pub(crate) mod progress;
 mod recovery;
+pub(crate) mod response;
 
 struct ToolOutput {
     text: String,
@@ -319,7 +320,7 @@ pub async fn run(
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
-            "stream": false,
+            "stream": true,
             "temperature": 0.2,
             "max_tokens": step_output_tokens
         });
@@ -341,6 +342,7 @@ pub async fn run(
                 "enable_thinking": true
             });
         }
+        let mut presentation = response::Presentation::new(app.clone(), &run_id, step);
         let response_request = async {
             let response = authorized(
                 client.post(format!("{}/chat/completions", lease.connection.endpoint)),
@@ -348,12 +350,13 @@ pub async fn run(
             )
             .json(&request_body)
             .send()
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
             let status = response.status();
             // Some servers send headers before finishing the JSON body. Human direction and
             // cancellation must also interrupt that body wait, not just connection setup.
-            let body = response.json::<Value>().await?;
-            Ok::<_, reqwest::Error>((status, body))
+            let body = response::read(response, |text| presentation.publish("token", text)).await?;
+            Ok::<_, String>((status, body))
         };
         let (status, body) = tokio::select! {
             response = response_request => response.map_err(|error| format!("computer task model request failed: {error}"))?,
@@ -419,6 +422,7 @@ pub async fn run(
         ) {
             return Err("The local model stopped without a successful completion. No action from that response was executed; inspect the model's response before resuming.".into());
         }
+        presentation.finish();
         if let Some(reasoning) = message
             .get("reasoning_content")
             .and_then(Value::as_str)

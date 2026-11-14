@@ -16,16 +16,27 @@ export type PlayerStatus = "ready" | "preparing" | "playing" | "paused" | "compl
 export type SourceKind = "research" | "chat" | "task" | "copilot";
 
 let activePlaybackStop: (() => void) | null = null;
+const playbackObservers = new Set<(owner: (() => void) | null) => void>();
+
+export function observePlayback(callback: (owner: (() => void) | null) => void) {
+  playbackObservers.add(callback);
+  callback(activePlaybackStop);
+  return () => { playbackObservers.delete(callback); };
+}
 
 export function claimPlayback(stop: () => void) {
   if (activePlaybackStop && activePlaybackStop !== stop) {
     activePlaybackStop();
   }
   activePlaybackStop = stop;
+  for (const observer of playbackObservers) observer(stop);
 }
 
 export function clearPlayback(stop: () => void) {
-  if (activePlaybackStop === stop) activePlaybackStop = null;
+  if (activePlaybackStop === stop) {
+    activePlaybackStop = null;
+    for (const observer of playbackObservers) observer(null);
+  }
 }
 
 export function speechJobId(prefix = "speech"): string {

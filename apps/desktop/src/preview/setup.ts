@@ -38,6 +38,8 @@ const handlers = {
   list_computer_tasks: () => [],
   list_model_downloads: () => [],
   get_speech_preferences: () => speechPreferencesDefaults,
+  get_conversation_voice_snapshot: () => ({ installed: false, running: false, processId: null,
+    languages: ["en", "fr", "de", "pt", "it", "es", "nl"], detail: "Voice conversation is available in the desktop application." }),
   get_prompt_pack_text: () => samplePromptPackText,
   get_setup_profile_text: () => JSON.stringify({ schemaVersion: 1, note: "Sample setup profile. The desktop application shows your real setup here." }, null, 2),
   get_default_prompt_pack_text: () => samplePromptPackText,

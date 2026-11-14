@@ -45,6 +45,7 @@ url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 zip = { version = "6", default-features = false, features = ["deflate"] }
 kestrel-app-core = { path = "../crates/app-core" }
+kestrel-conversation-engine = { path = "../crates/conversation-engine" }
 ts-rs = { version = "12.0.1", features = ["no-serde-warnings", "serde-json-impl"] }
 
 [target.'cfg(windows)'.dependencies]
