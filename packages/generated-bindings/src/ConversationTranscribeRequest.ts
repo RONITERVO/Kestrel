@@ -6,6 +6,6 @@ export type ConversationTranscribeRequest = { jobId: string,
  */
 pcmBase64: string,
 /**
- * "auto" or a supported ISO 639-1 language.
+ * The selected supported ISO 639-1 conversation language.
  */
 language: string, };

@@ -23,6 +23,20 @@ pub struct ConversationSpeakRequest {
     pub text: String,
     pub language: String,
     pub voice_profile_id: String,
+    #[serde(default)]
+    #[ts(optional)]
+    pub audio_session_id: Option<String>,
+}
+
+/// Native microphone lifecycle and final recognition; no audio data enters the WebView.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationCaptureEvent {
+    pub session_id: String,
+    pub kind: String,
+    pub text: String,
+    pub detail: String,
 }
 
 /// PCM is mono signed 16-bit little endian at sample_rate. Sequence starts at zero per job.
@@ -45,7 +59,7 @@ pub struct ConversationTranscribeRequest {
     pub job_id: String,
     /// Mono signed 16-bit little endian, 16 kHz; at most 30 seconds.
     pub pcm_base64: String,
-    /// "auto" or a supported ISO 639-1 language.
+    /// The selected supported ISO 639-1 conversation language.
     pub language: String,
 }
 

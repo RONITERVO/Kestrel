@@ -177,6 +177,19 @@ async fn prepare_conversation_voice(
 }
 
 #[tauri::command]
+async fn start_conversation_capture(
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    ensure_conversation_allowed(&state)?;
+    let preferences=state.speech_preferences.get(None)?.conversation;
+    if !preferences.enabled || !preferences.vad.enabled { return Err("Voice conversation is muted.".into()); }
+    let settings=state.research_settings.load().map_err(|e|e.to_string())?;
+    state.conversation_voice.capture(&settings.install_root,&session_id,preferences.language.as_str(),&preferences.vad,&app).await
+}
+
+#[tauri::command]
 async fn speak_conversation(
     request: kestrel_app_core::ConversationSpeakRequest,
     app: AppHandle,
@@ -4649,6 +4662,7 @@ pub fn run() {
             get_local_speech_snapshot,
             get_conversation_voice_snapshot,
             prepare_conversation_voice,
+            start_conversation_capture,
             speak_conversation,
             transcribe_conversation,
             cancel_conversation_voice,

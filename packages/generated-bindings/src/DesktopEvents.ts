@@ -2,6 +2,7 @@
 import type { ChatStreamEvent } from "./ChatStreamEvent.js";
 import type { ComputerTaskEvent } from "./ComputerTaskEvent.js";
 import type { ConversationAudio } from "./ConversationAudio.js";
+import type { ConversationCaptureEvent } from "./ConversationCaptureEvent.js";
 import type { ImageGenerationEvent } from "./ImageGenerationEvent.js";
 import type { ImageProject } from "./ImageProject.js";
 import type { ModelDownloadRecord } from "./ModelDownloadRecord.js";
@@ -22,6 +23,7 @@ export type DesktopEvents = {
   "chat-stream": ChatStreamEvent;
   "computer-task-event": ComputerTaskEvent;
   "conversation-audio": ConversationAudio;
+  "conversation-capture": ConversationCaptureEvent;
   "developer-progress": OperationProgress;
   "image-generation": ImageGenerationEvent;
   "image-project-updated": ImageProject;

@@ -371,7 +371,7 @@ pub fn snapshot(
              crate::conversation_voice::root(&research.install_root).exists()),
             "Pocket TTS in seven languages and compact Whisper, resident beside your selected LLM. One-time setup; existing TTS and large Whisper stay manual.",
             crate::conversation_voice::root(&research.install_root).to_string_lossy().as_ref(),
-            (conversation::assets().iter().filter(|asset| !file_has_size(&crate::conversation_voice::root(&research.install_root).join(&asset.relative), asset.bytes)).map(|asset| asset.bytes).sum::<u64>() + 400_000_000, true),
+            (conversation::assets().iter().filter(|asset| !file_has_size(&crate::conversation_voice::root(&research.install_root).join(&asset.relative), asset.bytes)).map(|asset| asset.bytes).sum::<u64>(), true),
         ),
         component(
             "assistant",

@@ -278,6 +278,7 @@ export type DesktopCommands = {
   stage_movie_h3_reference: { args: { request: StageMovieH3ReferenceRequest }; result: H3StageReferenceReceipt };
   start_chat_stream: { args: { request: StartChatRequest }; result: ChatStart };
   start_computer_task: { args: { request: ComputerTaskRequest }; result: ComputerTaskRun };
+  start_conversation_capture: { args: { sessionId: string }; result: void };
   start_image_generation: { args: { id: string }; result: ImageProject };
   start_local_model: { args: { modelId: string }; result: ControlSnapshot };
   start_model_download: { args: { request: ModelDownloadRequest }; result: ModelDownloadRecord };

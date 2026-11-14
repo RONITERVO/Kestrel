@@ -126,27 +126,21 @@
     "sha256": "be6b053e504c8345a9832c1e3676f539304a2921c416b7140ec5ebb5f95016c4"
   },
   {
-    "relative": "models/whisper-base/model.bin",
-    "url": "https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66/model.bin",
-    "bytes": 145217532,
-    "sha256": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9"
+    "relative": "models/whisper-medium-en-native/config.json",
+    "url": "https://huggingface.co/openai/whisper-medium.en/resolve/2e98eb6279edf5095af0c8dedb36bdec0acd172b/config.json",
+    "bytes": 1945,
+    "sha256": "4601bc6340054a7573f10765e785177bab1545d9c83c4f238f7d72fc08b07add"
   },
   {
-    "relative": "models/whisper-base/config.json",
-    "url": "https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66/config.json",
-    "bytes": 2309,
-    "sha256": "56a6d8110d311f19c8f0471e562832c7527f146b567275bfca59fcf7c184da9a"
+    "relative": "models/whisper-medium-en-native/tokenizer.json",
+    "url": "https://huggingface.co/openai/whisper-medium.en/resolve/2e98eb6279edf5095af0c8dedb36bdec0acd172b/tokenizer.json",
+    "bytes": 2405679,
+    "sha256": "5eb60cec1e77aeeb6869a2bb5a8e01a84c3fe5d072d75369343021fe6f5310d0"
   },
   {
-    "relative": "models/whisper-base/tokenizer.json",
-    "url": "https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66/tokenizer.json",
-    "bytes": 2203239,
-    "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"
-  },
-  {
-    "relative": "models/whisper-base/vocabulary.txt",
-    "url": "https://huggingface.co/Systran/faster-whisper-base/resolve/ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66/vocabulary.txt",
-    "bytes": 459861,
-    "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"
+    "relative": "models/whisper-medium-en-native/model.safetensors",
+    "url": "https://huggingface.co/openai/whisper-medium.en/resolve/2e98eb6279edf5095af0c8dedb36bdec0acd172b/model.safetensors",
+    "bytes": 3055540208,
+    "sha256": "8f731340f569588236c21f794c33e83b7cc5a297511d2bdc30117ea969004311"
   }
 ]

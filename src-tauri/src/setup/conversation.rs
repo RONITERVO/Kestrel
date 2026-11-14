@@ -52,15 +52,9 @@ fn local_config(template: &str, directory: &Path) -> String {
         .lines()
         .map(|line| {
             let trimmed = line.trim_start();
-            let file = if trimmed.starts_with("weights_path:") {
-                // Optional, producer-supplied authorized cloning weights. The official public
-                // checkpoint and voice embeddings work without a Hugging Face login.
-                Some(if directory.join("voice-cloning.safetensors").is_file() {
-                    "voice-cloning.safetensors"
-                } else {
-                    "model.safetensors"
-                })
-            } else if trimmed.starts_with("weights_path_without_voice_cloning:") {
+            let file = if trimmed.starts_with("weights_path:")
+                || trimmed.starts_with("weights_path_without_voice_cloning:")
+            {
                 Some("model.safetensors")
             } else if trimmed.starts_with("tokenizer_path:") {
                 Some("tokenizer.json")
@@ -99,48 +93,7 @@ pub async fn install(
     cancel: CancellationToken,
 ) -> Result<(), SetupError> {
     let root = install.join("ConversationVoice");
-    let runtime = root.join("runtime");
-    let downloads = root.join("downloads");
-    fs::create_dir_all(&downloads)?;
-    let uv_asset = uv_runner_asset("Conversation speech isolated Python runner");
-    let archive = downloads.join(&uv_asset.file_name);
-    download(app, "conversation-voice", &uv_asset, &archive, &cancel).await?;
-    unzip(&archive, &runtime, &uv_asset.name)?;
-    let uv = runtime.join("uv.exe");
-    if !uv.is_file() {
-        return Err(dependency("The verified uv archive is missing uv.exe."));
-    }
-    let requirements = root.join("requirements.lock");
-    fs::write(
-        &requirements,
-        include_bytes!("../../resources/conversation_voice/requirements.lock"),
-    )?;
-    emit(app, "conversation-voice", "dependencies", "Preparing isolated CPU Pocket TTS and compact Whisper; existing speech and the selected LLM are unchanged…", 0, 0, 0);
-    let mut command = uv_command(&uv, &root);
-    command
-        .args(["venv", "--python", "3.12.12", "--managed-python"])
-        .arg(root.join(".venv"));
-    run(command, &cancel).await?;
-    let python = root.join(".venv/Scripts/python.exe");
-    let mut command = uv_command(&uv, &root);
-    command
-        .args([
-            "pip",
-            "sync",
-            "--require-hashes",
-            "--only-binary",
-            ":all:",
-            "--python",
-        ])
-        .arg(&python)
-        .arg(&requirements)
-        .args([
-            "--extra-index-url",
-            "https://download.pytorch.org/whl/cpu",
-            "--index-strategy",
-            "unsafe-best-match",
-        ]);
-    run(command, &cancel).await?;
+    fs::create_dir_all(&root)?;
     for item in assets() {
         let destination = root.join(&item.relative);
         fs::create_dir_all(destination.parent().expect("fixed model parent"))?;
@@ -158,67 +111,16 @@ pub async fn install(
         download(app, "conversation-voice", &asset, &destination, &cancel).await?;
     }
     write_local_configs(&root)?;
-    fs::write(
-        root.join("worker.py"),
-        include_bytes!("../../resources/conversation_voice/worker.py"),
-    )?;
-    let mut probe = tokio::process::Command::new(&python);
-    probe.args(["-I", "-c", "import torch, pocket_tts, faster_whisper; assert torch.version.cuda is None, 'CPU-only PyTorch is required'"])
-        .env("HF_HUB_OFFLINE", "1").env("CUDA_VISIBLE_DEVICES", "");
-    run(probe, &cancel).await?;
     crate::config::atomic_json_write(
         &root.join("ready.txt"),
         crate::conversation_voice::REVISION.as_bytes(),
     )
-    .map_err(|e| dependency(&e.to_string()))?;
+    .map_err(|e| SetupError::Dependency {
+        name: "Native CPU voice conversation".into(),
+        details: e.to_string(),
+    })?;
     emit(app, "conversation-voice", "complete", "CPU voice conversation is installed for seven languages. It stays resident alongside the selected LLM. Existing production speech remains manual.", 1, 1, 0);
     Ok(())
-}
-
-fn uv_command(uv: &Path, root: &Path) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(uv);
-    command
-        .current_dir(root)
-        .env("UV_CACHE_DIR", root.join("cache"))
-        .env("UV_PYTHON_INSTALL_DIR", root.join("python"))
-        .env("UV_NO_PROGRESS", "1")
-        .env("UV_LINK_MODE", "copy")
-        .env("PYTHONUTF8", "1");
-    command
-}
-
-fn dependency(detail: &str) -> SetupError {
-    SetupError::Dependency {
-        name: "CPU voice conversation".into(),
-        details: detail.into(),
-    }
-}
-
-async fn run(
-    mut command: tokio::process::Command,
-    cancel: &CancellationToken,
-) -> Result<(), SetupError> {
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    let (mut child, _job) = crate::strata::ProcessJob::spawn(&mut command)?;
-    #[cfg(not(windows))]
-    let mut child = command.spawn()?;
-    let stderr = child.stderr.take().expect("piped setup stderr");
-    let tail = tokio::spawn(read_tail(stderr, 4096));
-    let status = tokio::select! {
-        result = child.wait() => result?,
-        _ = cancel.cancelled() => { let _ = child.kill().await; return Err(SetupError::Cancelled); }
-    };
-    let detail = tail.await.unwrap_or_default();
-    if status.success() {
-        Ok(())
-    } else {
-        Err(dependency(&format!("{status}: {detail}")))
-    }
 }
 
 #[cfg(test)]
@@ -234,7 +136,12 @@ mod tests {
             assert!(config.contains("model.safetensors"));
         }
         let assets = assets();
-        assert_eq!(assets.len(), 25);
+        assert_eq!(assets.len(), 24);
+        assert!(
+            assets
+                .iter()
+                .any(|asset| asset.relative == "models/whisper-medium-en-native/model.safetensors")
+        );
         for asset in assets {
             assert!(asset.url.starts_with("https://huggingface.co/"));
             assert_eq!(

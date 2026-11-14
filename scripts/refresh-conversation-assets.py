@@ -47,8 +47,15 @@ def main():
         assets.append(asset(REPO, tokenizer, f"languages/{language}/tokenizer.json", f"models/{code}/tokenizer.json"))
         assets.append(asset(REPO, "a7056f505a4a8ca72d8b5fb1440071d6f1a35739",
                             f"languages/{language}/embeddings/{voice}.safetensors", f"models/{code}/voice.safetensors"))
-    for file in ["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"]:
-        assets.append(asset("Systran/faster-whisper-base", "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66", file, f"models/whisper-base/{file}"))
+    for file in ["config.json", "tokenizer.json", "model.safetensors"]:
+        assets.append(
+            asset(
+                "openai/whisper-medium.en",
+                "2e98eb6279edf5095af0c8dedb36bdec0acd172b",
+                file,
+                f"models/whisper-medium-en-native/{file}",
+            )
+        )
     (ROOT / "assets.json").write_text(json.dumps(assets, indent=2) + "\n", encoding="utf-8")
     print(f"Pinned {len(assets)} speech assets, {sum(item['bytes'] for item in assets):,} bytes")
 

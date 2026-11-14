@@ -22,9 +22,39 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-pub const REVISION: &str = "pocket-4.0.1-whisper-base-cpu-v1";
+pub const REVISION: &str = "pocket-rust-9e8413e-whisper-medium-en-candle-v1";
 pub const LANGUAGES: [&str; 7] = ["en", "fr", "de", "pt", "it", "es", "nl"];
 type Pending = Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>;
+
+fn worker_executable() -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    {
+        if let Some(path) = std::env::var_os("KESTREL_VOICE_WORKER_EXE") {
+            let path = PathBuf::from(path);
+            if !path.is_absolute() || !path.is_file() {
+                return Err("Invalid explicit test worker path".into());
+            }
+            return Ok(path);
+        }
+        // Cargo's test harness cannot dispatch the application worker entry point.
+        let path = executable
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("Missing test executable directory")?
+            .join(if cfg!(windows) {
+                "kestrel-local.exe"
+            } else {
+                "kestrel-local"
+            });
+        if !path.is_file() {
+            return Err("Build the Kestrel binary before running live voice tests.".into());
+        }
+        Ok(path)
+    }
+    #[cfg(not(test))]
+    Ok(executable)
+}
 
 struct Worker {
     child: Child,
@@ -50,18 +80,19 @@ pub fn root(install: &str) -> PathBuf {
 
 pub fn installed(install: &str) -> bool {
     let root = root(install);
-    root.join(".venv/Scripts/python.exe").is_file()
-        && std::fs::File::open(root.join("ready.txt"))
-            .and_then(|file| {
-                let mut value = String::new();
-                std::io::Read::read_to_string(&mut std::io::Read::take(file, 256), &mut value)
-                    .map(|_| value)
-            })
-            .is_ok_and(|s| s.trim() == REVISION)
+    std::fs::File::open(root.join("ready.txt"))
+        .and_then(|file| {
+            let mut value = String::new();
+            std::io::Read::read_to_string(&mut std::io::Read::take(file, 256), &mut value)
+                .map(|_| value)
+        })
+        .is_ok_and(|s| s.trim() == REVISION)
         && LANGUAGES
             .iter()
             .all(|lang| root.join(format!("models/{lang}/config.yaml")).is_file())
-        && root.join("models/whisper-base/model.bin").is_file()
+        && root
+            .join("models/whisper-medium-en-native/model.safetensors")
+            .is_file()
         && crate::setup::conversation::assets().iter().all(|asset| {
             std::fs::metadata(root.join(&asset.relative))
                 .is_ok_and(|m| m.is_file() && m.len() == asset.bytes)
@@ -137,22 +168,16 @@ impl ConversationVoice {
             return Err("Voice conversation is not installed. Prepare it from Setup; existing manual speech remains available.".into());
         }
         crate::setup::conversation::write_local_configs(&root).map_err(|e| e.to_string())?;
-        let script = root.join("worker.py");
-        crate::config::atomic_json_write(
-            &script,
-            include_bytes!("../resources/conversation_voice/worker.py"),
-        )
-        .map_err(|e| e.to_string())?;
-        let mut command = Command::new(root.join(".venv/Scripts/python.exe"));
+        let whisper_threads = std::thread::available_parallelism()
+            .map(|n| (n.get() / 4).clamp(2, 8))
+            .unwrap_or(2);
+        let mut command = Command::new(worker_executable()?);
         command
-            .arg("-I")
-            .arg("-u")
-            .arg(&script)
+            .arg("--conversation-voice-worker")
             .arg(&root)
             .current_dir(&root)
-            .env("HF_HUB_OFFLINE", "1")
-            .env("HF_HUB_DISABLE_TELEMETRY", "1")
-            .env("CUDA_VISIBLE_DEVICES", "")
+            .env("RAYON_NUM_THREADS", whisper_threads.to_string())
+            .env("TOKENIZERS_PARALLELISM", "false")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -251,6 +276,7 @@ impl ConversationVoice {
         mut receive: impl FnMut(Value) -> Result<(), String>,
     ) -> Result<(), String> {
         validate_id(id)?;
+        let listening = value["op"] == "listen";
         let cancel = CancellationToken::new();
         {
             // Same lock order as cancel(): cancellation cannot fall between checking the
@@ -286,9 +312,11 @@ impl ConversationVoice {
                 loop {
                     let value = tokio::select! {
                         _ = cancel.cancelled() => return Err("Conversation speech cancelled.".into()),
-                        value = tokio::time::timeout(Duration::from_secs(120), rx.recv()) =>
-                            value.map_err(|_| "CPU speech stopped responding; retry this utterance.")?
-                                .ok_or("CPU speech disconnected; retry this utterance.")?,
+                        value = async {
+                            if listening { Ok(rx.recv().await) }
+                            else { tokio::time::timeout(Duration::from_secs(120), rx.recv()).await }
+                        } => value.map_err(|_| "CPU speech stopped responding; retry this utterance.")?
+                            .ok_or("CPU speech disconnected; retry this utterance.")?,
                     };
                     match value["kind"].as_str() {
                         Some("done") => return Ok(()),
@@ -299,7 +327,15 @@ impl ConversationVoice {
                 }
             }.await;
             // Cancellation stops computation cooperatively, retaining model and voice state.
-            if result.is_err() { let _ = send(&input, &json!({"id":id,"op":"cancel"})).await; }
+            if result.is_err() {
+                let _ = send(&input, &json!({"id":id,"op":"cancel"})).await;
+                // A replacement capture must wait until the old native devices are released.
+                let _ = tokio::time::timeout(Duration::from_secs(5), async {
+                    while let Some(reply) = rx.recv().await {
+                        if matches!(reply["kind"].as_str(), Some("done" | "cancelled")) { break; }
+                    }
+                }).await;
+            }
             if let Ok(mut map) = pending.lock() { map.remove(id); }
             result
         }.await;
@@ -351,7 +387,12 @@ impl ConversationVoice {
             return Err("A spoken clause must contain 1–1200 UTF-8 bytes.".into());
         }
         let text = crate::speech_text::conversation_text(&request.text, &request.language);
+        let native = request.audio_session_id.is_some();
+        if let Some(session) = &request.audio_session_id {
+            validate_id(session)?;
+        }
         let value = json!({"op":"speak","text":text,"language":request.language,
+            "nativePlayback":native,"audioSessionId":request.audio_session_id,
             "voicePath":voice.reference_path,"voiceFingerprint":voice.fingerprint()});
         let mut sequence = 0;
         self.request(install, &request.job_id, value, |value| {
@@ -385,6 +426,48 @@ impl ConversationVoice {
             sequence += 1;
             Ok(())
         })
+        .await
+    }
+
+    pub async fn capture(
+        &self,
+        install: &str,
+        session_id: &str,
+        language: &str,
+        vad: &kestrel_app_core::VadSettings,
+        app: &tauri::AppHandle,
+    ) -> Result<(), String> {
+        validate_language(language, false)?;
+        self.request(
+            install,
+            session_id,
+            json!({"op":"listen", "language":language,
+            "threshold":vad.speech_threshold_db, "silenceMs":vad.silence_timeout_sec*1000.0,
+            "minimumMs":vad.min_speech_duration_ms}),
+            |value| {
+                let kind = value["kind"]
+                    .as_str()
+                    .ok_or("Missing native capture event")?;
+                if !["listening", "speech_start", "transcript", "capture_error"].contains(&kind) {
+                    return Err("Unexpected native capture event".into());
+                }
+                let text = value["text"].as_str().unwrap_or_default();
+                let detail = value["detail"].as_str().unwrap_or_default();
+                if text.len() > 16_000 || detail.len() > 4096 {
+                    return Err("Native capture event exceeded its limit".into());
+                }
+                crate::ipc_events::emit::<kestrel_app_core::events::ConversationCapture>(
+                    app,
+                    &kestrel_app_core::ConversationCaptureEvent {
+                        session_id: session_id.into(),
+                        kind: kind.into(),
+                        text: text.into(),
+                        detail: detail.into(),
+                    },
+                )
+                .map_err(|e| e.to_string())
+            },
+        )
         .await
     }
 
@@ -594,6 +677,7 @@ mod tests {
         let snapshot = service.prepare(&install, "en").await.unwrap();
         let pid = snapshot.process_id.expect("owned resident process");
         let initial = worker_models(&service, &install).await;
+        let mut en_pcm_16k = Vec::new();
         for (language, text) in [
             (
                 "en",
@@ -656,36 +740,41 @@ mod tests {
                 pcm.len() / 2,
                 started.elapsed()
             );
-            // Test the actual STT route on audio produced by the real TTS model; this is a
-            // pipeline check, not an acoustic microphone/echo-cancellation acceptance claim.
-            let samples: Vec<f32> = pcm
-                .chunks_exact(2)
-                .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32)
-                .collect();
-            let mut input = Vec::new();
-            for i in 0..samples.len() * 2 / 3 {
-                let at = i as f64 * 1.5;
-                let lo = at.floor() as usize;
-                let hi = (lo + 1).min(samples.len() - 1);
-                let value = samples[lo] + (samples[hi] - samples[lo]) * at.fract() as f32;
-                input.extend_from_slice(&(value as i16).to_le_bytes());
+            if language == "en" || language == "nl" {
+                // Test the actual English STT route on audio produced by the real English TTS
+                // model, both initially and after cycling through every non-English TTS voice;
+                // this is a pipeline and residency check, not an acoustic echo-cancellation claim.
+                if language == "en" {
+                    let samples: Vec<f32> = pcm
+                        .chunks_exact(2)
+                        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32)
+                        .collect();
+                    for i in 0..samples.len() * 2 / 3 {
+                        let at = i as f64 * 1.5;
+                        let lo = at.floor() as usize;
+                        let hi = (lo + 1).min(samples.len() - 1);
+                        let value = samples[lo] + (samples[hi] - samples[lo]) * at.fract() as f32;
+                        en_pcm_16k.extend_from_slice(&(value as i16).to_le_bytes());
+                    }
+                }
+                let transcript = service
+                    .transcribe(
+                        &install,
+                        ConversationTranscribeRequest {
+                            job_id: uuid::Uuid::new_v4().to_string(),
+                            pcm_base64: STANDARD.encode(&en_pcm_16k),
+                            language: "en".into(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    transcript.text.to_ascii_lowercase().contains("kestrel"),
+                    "unexpected English transcription: {}",
+                    transcript.text
+                );
+                eprintln!("{language} stt check heard: {}", transcript.text);
             }
-            let transcript = service
-                .transcribe(
-                    &install,
-                    ConversationTranscribeRequest {
-                        job_id: uuid::Uuid::new_v4().to_string(),
-                        pcm_base64: STANDARD.encode(input),
-                        language: language.into(),
-                    },
-                )
-                .await
-                .unwrap();
-            assert!(
-                !transcript.text.trim().is_empty(),
-                "{language} transcription was empty"
-            );
-            eprintln!("{language} heard: {}", transcript.text);
             assert_eq!(
                 worker_models(&service, &install).await["models"],
                 selected["models"]
@@ -714,6 +803,37 @@ mod tests {
         assert_eq!(service.snapshot(&install).await.process_id, Some(pid));
         service.stop().await;
         assert!(!service.snapshot(&install).await.running);
+    }
+
+    #[tokio::test]
+    #[ignore = "opens the default Windows microphone and speaker, speaks a short local test and verifies cancellation/reopen; requires explicit speech installation"]
+    async fn live_native_audio_cancels_and_reopens_without_reloading_models() {
+        let install = std::env::var("KESTREL_VOICE_TEST_ROOT").expect("explicit speech installation");
+        let voice = ConversationVoice::new();
+        voice.prepare(&install, "en").await.unwrap();
+        let identity = worker_models(&voice, &install).await;
+        for _ in 0..2 {
+            let capture_id = uuid::Uuid::new_v4().to_string();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let mut listening = Some(tx);
+            let capture = voice.request(&install, &capture_id,
+                json!({"op":"listen","language":"en","threshold":-42.0,"silenceMs":600.0,"minimumMs":200.0}), |event| {
+                    if event["kind"] == "listening" { if let Some(tx)=listening.take() { let _=tx.send(()); } }
+                    assert_ne!(event["kind"], "capture_error"); Ok(())
+                });
+            let speaker = async {
+                tokio::time::timeout(Duration::from_secs(15), rx).await.unwrap().unwrap();
+                let result=voice.request(&install, &uuid::Uuid::new_v4().to_string(),
+                    json!({"op":"speak","language":"en","text":"Native voice is ready.","nativePlayback":true,"audioSessionId":capture_id}), |_| Ok(())).await;
+                // A real user interrupting the acoustic test is also valid; no automatic turn is submitted here.
+                if let Err(error)=result { assert!(error.contains("cancelled"), "{error}"); }
+                voice.cancel(&capture_id).unwrap();
+            };
+            let (capture,())=tokio::join!(capture,speaker);
+            assert!(capture.unwrap_err().contains("cancelled"));
+            assert_eq!(worker_models(&voice,&install).await["models"],identity["models"]);
+        }
+        voice.stop().await;
     }
 
     #[tokio::test]

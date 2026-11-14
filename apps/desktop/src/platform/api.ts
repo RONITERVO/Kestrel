@@ -1,7 +1,9 @@
 import { invoke, listen, type UnlistenFn } from "./transport";
-import type { ConversationLanguage, ConversationSpeakRequest, ConversationTranscribeRequest, ConversationAudio, TaskResponseDelta } from "../contracts/index";
+import type { ConversationLanguage, ConversationSpeakRequest, ConversationTranscribeRequest, ConversationAudio, ConversationCaptureEvent, TaskResponseDelta } from "../contracts/index";
 export const getConversationVoiceSnapshot = () => invoke("get_conversation_voice_snapshot", {});
 export const prepareConversationVoice = () => invoke("prepare_conversation_voice", {});
+export const startConversationCapture = (sessionId: string) => invoke("start_conversation_capture", { sessionId });
+export const onConversationCapture = (callback: (event: ConversationCaptureEvent) => void) => listen("conversation-capture", ({ payload }) => callback(payload));
 export const speakConversation = (request: ConversationSpeakRequest) => invoke("speak_conversation", { request });
 export const transcribeConversation = (request: ConversationTranscribeRequest) => invoke("transcribe_conversation", { request });
 export const cancelConversationVoice = (jobId: string) => invoke("cancel_conversation_voice", { jobId });

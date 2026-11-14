@@ -1,6 +1,7 @@
 {
   "get_conversation_voice_snapshot": ["read", "Observe the independent CPU voice adapter. Does not acquire or switch the selected LLM."],
   "prepare_conversation_voice": ["human", "The desktop prepares the installed CPU voice adapter. Does not download assets or change the LLM."],
+  "start_conversation_capture": ["human", "Desktop-only native microphone session. Requires enabled voice preferences; final speech uses the existing chat or Computer Task path."],
   "speak_conversation": ["human", "Desktop-only live audio playback; producer tools cannot inject unsolicited spoken turns."],
   "transcribe_conversation": ["human", "Desktop-only local microphone transcription. No tools or authority are granted by partial recognition."],
   "cancel_conversation_voice": ["human", "Cancel a desktop speech job while retaining its CPU model."],

@@ -23,6 +23,7 @@ macro_rules! events {
 events! {
     ChatStream: crate::ChatStreamEvent => "chat-stream",
     ConversationAudio: crate::ConversationAudio => "conversation-audio",
+    ConversationCapture: crate::ConversationCaptureEvent => "conversation-capture",
     TaskResponseDelta: crate::TaskResponseDelta => "task-response-delta",
     ComputerTask: crate::ComputerTaskEvent => "computer-task-event",
     DeveloperProgress: crate::OperationProgress => "developer-progress",
