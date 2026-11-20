@@ -168,11 +168,19 @@ impl ChatStreamJob {
             "stream": true,
             "stream_options": {"include_usage": true}
         });
+        let budget_key = if lease.connection.engine == crate::models::ModelEngine::Strata {
+            "reasoning_budget_tokens"
+        } else {
+            "thinking_budget_tokens"
+        };
         if thinking_level.is_off() {
-            body["thinking_budget_tokens"] = json!(0);
+            body[budget_key] = json!(0);
             body["chat_template_kwargs"] = json!({"enable_thinking": false, "reasoning": false});
             body["reasoning_effort"] = json!("off");
         } else {
+            body[budget_key] = json!(
+                thinking_level.budget_tokens(max_output_tokens.saturating_sub(512).max(1))
+            );
             body["reasoning_effort"] = json!(thinking_level.as_str());
             body["chat_template_kwargs"] = json!({
                 "reasoning_effort": thinking_level.as_template_effort(),

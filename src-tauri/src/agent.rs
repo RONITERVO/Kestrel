@@ -206,6 +206,7 @@ pub async fn run(
     )?;
     let thinking_level = request.thinking_level.unwrap_or(settings.thinking_level);
     let mut truncated_retries = 0_u8;
+    let mut malformed_tool_retries = 0_u8;
     let mut unavailable_retries = 0_u8;
     let base_objective = messages[1]["content"].clone();
     'steps: for step in 1..=max_steps {
@@ -321,7 +322,7 @@ pub async fn run(
             "tools": tools,
             "tool_choice": "auto",
             "stream": true,
-            "temperature": 0.2,
+            "temperature": if lease.connection.engine == crate::models::ModelEngine::Strata { 0.0 } else { 0.2 },
             "max_tokens": step_output_tokens
         });
         apply_thinking_budget(
@@ -392,7 +393,7 @@ pub async fn run(
                 truncate(&body.to_string(), 800)
             ));
         }
-        let message = body
+        let mut message = body
             .pointer("/choices/0/message")
             .cloned()
             .ok_or_else(|| "computer task model returned no message".to_string())?;
@@ -445,6 +446,7 @@ pub async fn run(
                 None,
             )?;
         }
+        response::recover_xml_tool_calls(&mut message, &tools);
         let tool_calls = message
             .get("tool_calls")
             .and_then(Value::as_array)
@@ -456,6 +458,24 @@ pub async fn run(
                 .get("content")
                 .and_then(Value::as_str)
                 .unwrap_or("The task ended without a summary.");
+            if response::has_unparsed_tool_markup(answer) {
+                malformed_tool_retries += 1;
+                if malformed_tool_retries > 2 {
+                    return Err("The assistant emitted malformed tool-call markup three times, so nothing from those replies was executed. Send \"continue\" to try again.".into());
+                }
+                event(
+                    &app,
+                    &store,
+                    &run_id,
+                    step,
+                    "progress",
+                    "Retrying malformed tool call",
+                    "The local model emitted unparsed tool-call markup without an executable tool call. Retrying cleanly.",
+                    Some(json!({"retry":malformed_tool_retries})),
+                )?;
+                messages.push(json!({"role":"user","content":"Native runner feedback: your last response contained malformed or unclosed tool-call markup, so no tool was executed and the task is not finished. Emit a valid tool call only (for example <tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n</function>\n</tool_call>). For edit_file, pass flat parameters path, expectedSha256, find, and replace."}));
+                continue;
+            }
             let unsettled = store.task_memory(&run_id)?.unsettled_actions;
             let question = !unsettled.is_empty() || answer.trim_end().ends_with('?');
             let answer = if unsettled.is_empty() {
@@ -487,6 +507,7 @@ pub async fn run(
             }
             return Ok(());
         }
+        malformed_tool_retries = 0;
         if let Some(content) = message
             .get("content")
             .and_then(Value::as_str)
@@ -496,6 +517,8 @@ pub async fn run(
                 &app, &store, &run_id, step, "message", "Kestrel", content, None,
             )?;
         }
+        let mut batch_file_shas: std::collections::HashMap<PathBuf, (String, String)> =
+            std::collections::HashMap::new();
         for call in tool_calls {
             if store.task_direction_revision(&run_id)? != direction_revision {
                 messages.truncate(2);
@@ -523,7 +546,7 @@ pub async fn run(
                 .pointer("/function/arguments")
                 .and_then(Value::as_str)
                 .unwrap_or("{}");
-            let arguments: Value = match serde_json::from_str(argument_text) {
+            let mut arguments: Value = match serde_json::from_str(argument_text) {
                 Ok(arguments) => arguments,
                 Err(error) => {
                     let detail = format!("ERROR: invalid arguments for {name}: {error}");
@@ -555,6 +578,37 @@ pub async fn run(
                 )?;
                 messages.push(json!({"role":"tool","tool_call_id":call_id,"content":detail}));
                 continue;
+            }
+            let mut batch_initial_sha: Option<String> = None;
+            if matches!(name, "edit_file" | "write_file") {
+                if let (Some(raw_path), Some(expected_sha)) = (
+                    arguments.get("path").and_then(Value::as_str),
+                    arguments.get("expectedSha256").and_then(Value::as_str),
+                ) {
+                    if let Ok(resolved) =
+                        allowed_existing(raw_path, access, &settings.agent_workspace_roots)
+                    {
+                        if let Some((initial_sha, latest_sha)) = batch_file_shas.get(&resolved) {
+                            batch_initial_sha = Some(initial_sha.clone());
+                            if (sha256_matches(initial_sha, expected_sha)
+                                || sha256_matches(latest_sha, expected_sha))
+                                && !sha256_matches(latest_sha, expected_sha)
+                            {
+                                if let Some(obj) = arguments.as_object_mut() {
+                                    obj.insert(
+                                        "expectedSha256".into(),
+                                        Value::String(latest_sha.clone()),
+                                    );
+                                }
+                            }
+                        } else if let Ok(bytes) = fs::read(&resolved) {
+                            let actual_sha = text_sha256(&bytes);
+                            if sha256_matches(&actual_sha, expected_sha) {
+                                batch_initial_sha = Some(actual_sha);
+                            }
+                        }
+                    }
+                }
             }
             if name == "ask_user" {
                 match parse_question(&arguments) {
@@ -700,6 +754,28 @@ pub async fn run(
                     true,
                 ),
             };
+            if !failed && matches!(name, "edit_file" | "write_file") {
+                if let (Some(written_path), Some(new_sha)) = (
+                    output
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("path"))
+                        .and_then(Value::as_str),
+                    output
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("sha256"))
+                        .and_then(Value::as_str),
+                ) {
+                    let key_path = strip_windows_verbatim(PathBuf::from(written_path));
+                    let initial = batch_file_shas
+                        .get(&key_path)
+                        .map(|(init, _)| init.clone())
+                        .or_else(|| batch_initial_sha.clone())
+                        .unwrap_or_else(|| new_sha.to_string());
+                    batch_file_shas.insert(key_path, (initial, new_sha.to_string()));
+                }
+            }
             let result_sequence = event(
                 &app,
                 &store,
@@ -859,18 +935,18 @@ fn tool_schemas(access: Access, has_attachments: bool) -> Vec<Value> {
         ),
         schema(
             "read_file",
-            "Read a local text file in bounded character pages. Returns content, nextOffset and sha256. Inspect existing content before changing it; pass its sha256 as expectedSha256 to write_file or edit_file. Supports text files up to 64 MiB without filling model context.",
+            "Read a UTF-8 text page; returns content, nextOffset, and sha256. Inspect before changing a file and pass its sha256 as expectedSha256 to write_file/edit_file.",
             json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":16000}},"required":["path"]}),
         ),
         schema(
             "write_file",
-            "Save exact text to an approved path with a recovery copy. To overwrite an existing file, first read it and pass its exact sha256 as expectedSha256; intervening changes are rejected. Omit expectedSha256 only for a new file. Never overwrite another person's changes without inspecting and preserving their work. To change part of an existing file, use edit_file instead of rewriting it. For a large new file, write a short complete version first, then grow it with edit_file.",
+            "Write UTF-8 text to an approved path (recovery copy kept). Pass sha256 from read_file as expectedSha256 when overwriting; omit for new files. Prefer edit_file for partial edits; write a minimal complete version first for large new files, then expand with edit_file.",
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expectedSha256":{"type":"string"}},"required":["path","content"]}),
         ),
         schema(
             "edit_file",
-            "Change part of an existing text file without rewriting all of it, with a recovery copy. Read the file first and pass its sha256 as expectedSha256. Each edit replaces one exact find string, copied from read_file, that occurs exactly once; edits apply in order and nothing is saved if any edit fails. Returns the new sha256 for further edits.",
-            json!({"type":"object","properties":{"path":{"type":"string"},"expectedSha256":{"type":"string"},"edits":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"find":{"type":"string"},"replace":{"type":"string"}},"required":["find","replace"]}}},"required":["path","expectedSha256","edits"]}),
+            "Replace one exact unique substring in an existing UTF-8 file (recovery copy kept). Read first and pass sha256 as expectedSha256; returns new sha256.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"expectedSha256":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"}},"required":["path","expectedSha256","find","replace"]}),
         ),
         schema(
             "create_directory",
@@ -908,7 +984,17 @@ struct ClarifyingQuestion {
 }
 
 fn parse_question(arguments: &Value) -> Result<ClarifyingQuestion, String> {
-    let question = arguments
+    let source = if arguments.get("question").is_none() {
+        arguments
+            .get("questions")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .filter(|first| first.is_object())
+            .unwrap_or(arguments)
+    } else {
+        arguments
+    };
+    let question = source
         .get("question")
         .and_then(Value::as_str)
         .map(str::trim)
@@ -917,7 +1003,7 @@ fn parse_question(arguments: &Value) -> Result<ClarifyingQuestion, String> {
     if question.chars().count() > 600 {
         return Err("ask_user question exceeds 600 characters".into());
     }
-    let options = arguments
+    let options = source
         .get("options")
         .and_then(Value::as_array)
         .map(|values| {
@@ -931,7 +1017,7 @@ fn parse_question(arguments: &Value) -> Result<ClarifyingQuestion, String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let recommended_index = arguments
+    let recommended_index = source
         .get("recommended_index")
         .and_then(Value::as_u64)
         .map(|value| value as usize)
@@ -1028,9 +1114,15 @@ async fn execute_tool(
                 .take(limit as usize)
                 .collect();
             let next = offset + content.chars().count() as u64;
-            let data = json!({"path":path,"sha256":sha256,"text":content,"totalChars":total,"offset":offset,"nextOffset":(next<total).then_some(next)});
+            let next_offset = (next < total).then_some(next);
+            let next_label = next_offset.map_or_else(|| "none".to_string(), |n| n.to_string());
+            let data = json!({"path":path,"sha256":sha256,"text":content,"totalChars":total,"offset":offset,"nextOffset":next_offset});
+            let text_out = format!(
+                "path: {}\nsha256: {sha256}\noffset: {offset}\nnextOffset: {next_label}\ntotalChars: {total}\n---\n{content}",
+                path.display()
+            );
             Ok(ToolOutput {
-                text: data.to_string(),
+                text: text_out,
                 data: Some(data),
                 artifact: None,
             })
@@ -1050,20 +1142,47 @@ async fn execute_tool(
         "edit_file" => {
             let path = allowed_existing(string("path")?, access, roots)?;
             let expected = string("expectedSha256")?;
-            let edits = arguments
-                .get("edits")
-                .and_then(Value::as_array)
-                .ok_or("edit_file requires edits: [{find, replace}]")?;
+            let mut collected_edits: Vec<Value> = Vec::new();
+            let top_find = arguments
+                .get("find")
+                .or_else(|| arguments.get("old"))
+                .or_else(|| arguments.get("old_str"))
+                .and_then(Value::as_str);
+            let top_replace = arguments
+                .get("replace")
+                .or_else(|| arguments.get("new"))
+                .or_else(|| arguments.get("new_str"))
+                .and_then(Value::as_str);
+            if let (Some(find), Some(replace)) = (top_find, top_replace) {
+                collected_edits.push(json!({ "find": find, "replace": replace }));
+            }
+            if let Some(array) = arguments.get("edits").and_then(Value::as_array) {
+                for item in array {
+                    let duplicate_first = collected_edits.len() == 1
+                        && item.get("find").and_then(Value::as_str) == top_find
+                        && item.get("replace").and_then(Value::as_str) == top_replace;
+                    if !duplicate_first {
+                        collected_edits.push(item.clone());
+                    }
+                }
+            }
+            if collected_edits.is_empty() {
+                return Err(
+                    "edit_file requires find and replace strings (or edits: [{find, replace}])"
+                        .into(),
+                );
+            }
             if fs::metadata(&path).map_err(|e| e.to_string())?.len() > 5 * 1_048_576 {
                 return Err("edit_file supports text files up to 5 MiB.".into());
             }
             let original = String::from_utf8(fs::read(&path).map_err(|e| e.to_string())?)
                 .map_err(|_| "edit_file only edits UTF-8 text files.".to_string())?;
-            if text_sha256(original.as_bytes()) != expected {
+            let actual_sha = text_sha256(original.as_bytes());
+            if !sha256_matches(&actual_sha, expected) {
                 return Err("The file changed after it was inspected. Read it again and pass its current sha256 as expectedSha256.".into());
             }
-            let edited = apply_text_edits(&original, edits)?;
-            save_text_with_recovery(&path, &edited, Some(expected))
+            let edited = apply_text_edits(&original, &collected_edits)?;
+            save_text_with_recovery(&path, &edited, Some(&actual_sha))
         }
         "create_directory" => {
             let path = allowed_new(string("path")?, access, roots)?;
@@ -1187,7 +1306,7 @@ pub(crate) fn allowed_existing(
         .canonicalize()
         .map_err(|error| format!("{}: {error}", path.display()))?;
     ensure_access(&canonical, access, roots)?;
-    Ok(canonical)
+    Ok(strip_windows_verbatim(canonical))
 }
 
 pub(crate) fn allowed_new(
@@ -1213,15 +1332,50 @@ pub(crate) fn allowed_new(
         })?;
         ensure_access(&canonical, access, roots)?;
     }
-    Ok(path)
+    Ok(strip_windows_verbatim(path))
+}
+
+fn normalize_windows_verbatim_str(value: &str) -> &str {
+    if let Some(rest) = value.strip_prefix(r"\\?\") {
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/')
+        {
+            return rest;
+        }
+    }
+    value
+}
+
+fn strip_windows_verbatim(path: PathBuf) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(stripped) = raw.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{stripped}"));
+    }
+    let normalized = normalize_windows_verbatim_str(&raw);
+    if normalized.len() != raw.len() {
+        PathBuf::from(normalized)
+    } else {
+        path
+    }
 }
 
 fn absolute(value: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(value);
+    let normalized = normalize_windows_verbatim_str(value);
+    if let Some(stripped_unc) = normalized.strip_prefix(r"\\?\UNC\") {
+        let unc = format!(r"\\{stripped_unc}");
+        if unc.contains('*') || unc.contains('?') {
+            return Err("wildcards are not accepted in tool paths".into());
+        }
+        return Ok(PathBuf::from(unc));
+    }
+    let path = PathBuf::from(normalized);
     if !path.is_absolute() {
         return Err("tool paths must be absolute".into());
     }
-    if value.contains('*') || value.contains('?') {
+    if normalized.contains('*') || normalized.contains('?') {
         return Err("wildcards are not accepted in tool paths".into());
     }
     Ok(path)
@@ -1325,9 +1479,10 @@ fn save_text_with_recovery(
         }
         return Err(error.to_string());
     }
+    let sha = text_sha256(content.as_bytes());
     Ok(ToolOutput {
         text: format!(
-            "Wrote {} bytes to {}{}",
+            "Wrote {} bytes to {} (sha256: {sha}){}",
             content.len(),
             path.display(),
             backup
@@ -1336,8 +1491,52 @@ fn save_text_with_recovery(
                 .unwrap_or_default()
         ),
         artifact: Some(path.to_path_buf()),
-        data: Some(json!({"path":path,"backup":backup,"sha256":text_sha256(content.as_bytes())})),
+        data: Some(json!({"path":path,"backup":backup,"sha256":sha})),
     })
+}
+
+/// Compare actual and expected SHA-256 digests, tolerating a >=16-char hex prefix
+/// or a single-character quantization copy stutter on a 64-char hex digest.
+pub(crate) fn sha256_matches(actual: &str, expected: &str) -> bool {
+    let actual_norm = actual.trim().to_ascii_lowercase();
+    let expected_norm = expected.trim().to_ascii_lowercase();
+    if expected_norm.is_empty() || !expected_norm.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return false;
+    }
+    if actual_norm == expected_norm {
+        return true;
+    }
+    if expected_norm.len() >= 16 && actual_norm.starts_with(&expected_norm) {
+        return true;
+    }
+    (63..=65).contains(&expected_norm.len())
+        && actual_norm.len() == 64
+        && hex_edit_distance_at_most_one(actual_norm.as_bytes(), expected_norm.as_bytes())
+}
+
+fn hex_edit_distance_at_most_one(a: &[u8], b: &[u8]) -> bool {
+    if a.len() == b.len() {
+        return a.iter().zip(b.iter()).filter(|(x, y)| x != y).count() <= 1;
+    }
+    let (shorter, longer) = if a.len() < b.len() { (a, b) } else { (b, a) };
+    if longer.len() - shorter.len() != 1 {
+        return false;
+    }
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut skipped = false;
+    while i < shorter.len() && j < longer.len() {
+        if shorter[i] == longer[j] {
+            i += 1;
+            j += 1;
+        } else if !skipped {
+            skipped = true;
+            j += 1;
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 /// Applies exact find/replace edits in order. Each `find` must occur exactly once in the text
@@ -1377,7 +1576,7 @@ fn verify_write_version(path: &Path, expected: Option<&str>) -> Result<(), Strin
             return Err("This file exceeds the 64 MiB safe text overwrite limit.".into());
         }
         let bytes = fs::read(path).map_err(|e| e.to_string())?;
-        if text_sha256(&bytes) != expected {
+        if !sha256_matches(&text_sha256(&bytes), expected) {
             return Err("The file changed after it was inspected. Read it again and preserve the newer changes before saving.".into());
         }
     } else if expected.is_some() {
@@ -1761,5 +1960,82 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(allowed.text, "local");
+    }
+
+    #[tokio::test]
+    async fn read_and_flat_edit_handle_verbatim_paths_raw_text_and_stuttered_sha() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("workspace");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("game.html");
+        let original = "<div>\"quoted\"\nsector 7</div>\n";
+        fs::write(&path, original).unwrap();
+        let attachments = AttachmentStore::new(directory.path()).unwrap();
+        let roots = vec![root.to_string_lossy().into_owned()];
+
+        let read = execute_tool(
+            "read_file",
+            &json!({ "path": path }),
+            Access::Workspace,
+            &roots,
+            &attachments,
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(read.text.contains("\n---\n<div>\"quoted\"\nsector 7</div>\n"));
+        assert!(!read.text.contains("\\\"quoted\\\""));
+        let data = read.data.unwrap();
+        let sha = data["sha256"].as_str().unwrap().to_string();
+        assert_eq!(sha.len(), 64);
+
+        let returned_path = data["path"].as_str().unwrap();
+        assert!(!returned_path.starts_with(r"\\?\"));
+
+        let verbatim_arg = if cfg!(windows) {
+            format!(r"\\?\{returned_path}")
+        } else {
+            returned_path.to_string()
+        };
+        let stuttered_sha = format!("{}a{}", &sha[..10], &sha[10..]);
+        assert_eq!(stuttered_sha.len(), 65);
+        assert!(sha256_matches(&sha, &stuttered_sha));
+        assert!(sha256_matches(&sha, &sha[..16]));
+
+        let edited = execute_tool(
+            "edit_file",
+            &json!({
+                "path": verbatim_arg,
+                "expectedSha256": stuttered_sha,
+                "find": "sector 7",
+                "replace": "SECTOR 1"
+            }),
+            Access::Workspace,
+            &roots,
+            &attachments,
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(edited.text.contains("(sha256: "));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "<div>\"quoted\"\nSECTOR 1</div>\n"
+        );
+    }
+
+    #[test]
+    fn parse_question_unwraps_questions_array_shape() {
+        let parsed = parse_question(&json!({
+            "questions": [{
+                "question": "Which export folder should I use?",
+                "options": ["Workspace/dist", "Ask for a custom folder"],
+                "recommended_index": 0
+            }]
+        }))
+        .unwrap();
+        assert_eq!(parsed.question, "Which export folder should I use?");
+        assert_eq!(parsed.options, vec!["Workspace/dist", "Ask for a custom folder"]);
+        assert_eq!(parsed.recommended_index, Some(0));
     }
 }

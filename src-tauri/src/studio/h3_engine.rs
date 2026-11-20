@@ -150,10 +150,10 @@ pub fn resolve_installed_h3_models(
     let discovered_loras = scan_h3_loras(&models_dir.join("loras"));
     let has_ref2v_turbo_lora = discovered_loras
         .iter()
-        .any(|l| l.recommended_role == "ref2v_turbo");
+        .any(|l| matches!(l.recommended_role.as_str(), "ref2v_turbo" | "turbo"));
     let has_fl2v_turbo_lora = discovered_loras
         .iter()
-        .any(|l| l.recommended_role == "fl2v_turbo");
+        .any(|l| matches!(l.recommended_role.as_str(), "fl2v_turbo" | "turbo"));
 
     let mut defaults = H3InstalledModelNames::default();
     if let Some(ref name) = found_ref2va {
@@ -273,6 +273,11 @@ fn scan_h3_loras(loras_root: &Path) -> Vec<H3DiscoveredLora> {
                 || lower.contains("dmad"))
         {
             ("fl2v_turbo", 0.8)
+        } else if lower.contains("dmad")
+            || (lower.contains("h3")
+                && (lower.contains("turbo") || lower.contains("4step") || lower.contains("8step")))
+        {
+            ("turbo", 0.75)
         } else if lower.contains("h3") || lower.contains("minimax") || lower.contains("pika_h3") {
             ("style", 0.6)
         } else {
@@ -1101,6 +1106,16 @@ impl MovieStudio {
                 {
                     scene.global_prompt = existing.global_prompt.clone();
                 }
+                if scene.window == H3WindowConfig::default()
+                    && existing.window != H3WindowConfig::default()
+                {
+                    scene.window = existing.window.clone();
+                }
+                if scene.generation == H3GenerationSettings::default()
+                    && existing.generation != H3GenerationSettings::default()
+                {
+                    scene.generation = existing.generation.clone();
+                }
             }
         }
 
@@ -1486,10 +1501,11 @@ impl MovieStudio {
                 .window_override
                 .clone()
                 .unwrap_or_else(|| scene.window.clone());
-            let base_gen = spec
+            let mut base_gen = spec
                 .generation_override
                 .clone()
                 .unwrap_or_else(|| scene.generation.clone());
+            normalize_preset_generation(&mut base_gen, advanced);
 
             // When queueing sequential windows in one batch (or after an existing V1 clip) and
             // pre_context_sec was omitted (0.0), automatically bridge 23 frames (~0.958s, exact
@@ -1693,7 +1709,6 @@ impl MovieStudio {
 
         on_progress("Starting local ComfyUI MiniMax H3 service...".into());
         self.ensure_comfy(comfy_root, &mut project, app).await?;
-        let (installed_models, env) = resolve_installed_h3_models(comfy_root);
         let preview_available = self.comfy_preview_available().await;
 
         let queued_ids: Vec<String> = project
@@ -1738,7 +1753,10 @@ impl MovieStudio {
                 .clone();
 
             let eff_win = win_cfg.unwrap_or_else(|| scene.window.clone());
-            let eff_gen = gen_cfg.unwrap_or_else(|| scene.generation.clone());
+            let mut eff_gen = gen_cfg.unwrap_or_else(|| scene.generation.clone());
+            normalize_preset_generation(&mut eff_gen, advanced);
+            // Rescan installed H3 weights/LoRAs per queued job so mid-batch downloads take effect.
+            let (installed_models, env) = resolve_installed_h3_models(comfy_root);
 
             let compiled = compile_h3_window(
                 &project,
@@ -2234,16 +2252,40 @@ impl MovieStudio {
             self.ensure_project_reference_copy(&mut project, &asset, &asset.name)?;
             if let Some(clip_id) = place_reference_asset_on_scene(&mut project, &request, &asset)? {
                 apply_placement_mix(&mut project, &request, &clip_id)?;
+                project.detail = format!("Placed asset '{}' onto scene timeline.", asset.name);
+            } else {
+                project.detail = format!(
+                    "Staged asset '{}' in project reference library (no target lane specified).",
+                    asset.name
+                );
             }
-            project.detail = format!("Placed asset '{}' onto scene timeline.", asset.name);
             self.persist_emit(&mut project, app)?;
             return Ok(project);
         }
 
         let job_id = request.job_id.trim();
-        if job_id.is_empty() {
+        let has_lane_mix_target = (request.gain.is_some()
+            || request.fade_in_sec.is_some()
+            || request.fade_out_sec.is_some())
+            && (request
+                .target_video_lane_id
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+                || request
+                    .target_audio_lane_id
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty()));
+        if (job_id.is_empty() || job_id == "*" || job_id.eq_ignore_ascii_case("all"))
+            && has_lane_mix_target
+        {
+            let updated = apply_lane_mix(&mut project, &request)?;
+            project.detail = format!("Updated mix on {updated} clip(s) on target lane.");
+            self.persist_emit(&mut project, app)?;
+            return Ok(project);
+        }
+        if job_id.is_empty() || job_id == "*" || job_id.eq_ignore_ascii_case("all") {
             return Err(StudioError::Invalid(
-                "Supply either jobId (completed take) or assetId (reference asset) to place on the timeline.".into(),
+                "Supply either jobId (completed take) or assetId (reference asset) to place on the timeline, or pass targetVideoLaneId/targetAudioLaneId with gain/fadeInSec/fadeOutSec to mix an existing lane.".into(),
             ));
         }
         let job = project
@@ -2635,6 +2677,16 @@ impl MovieStudio {
         if let Some(job) = project.render_jobs.iter_mut().find(|j| j.id == job_id) {
             mutate(job);
             job.updated_at = Utc::now().to_rfc3339();
+        }
+    }
+}
+
+fn normalize_preset_generation(gen: &mut H3GenerationSettings, advanced: bool) {
+    if gen.pass_preset != H3PassPreset::Custom && !advanced {
+        gen.cfg = 1.0;
+        if (gen.shift_video - 1.0).abs() < 1e-3 && (gen.shift_audio - 1.0).abs() < 1e-3 {
+            gen.shift_video = 12.0;
+            gen.shift_audio = 6.0;
         }
     }
 }
@@ -3151,12 +3203,77 @@ fn apply_placement_mix(
     Ok(())
 }
 
+fn has_explicit_placement_target(request: &PlaceMovieH3TakeRequest) -> bool {
+    request
+        .target_video_lane_id
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+        || request
+            .target_audio_lane_id
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+        || request
+            .target_driver_lane_id
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+        || request.timeline_start_override_sec.is_some()
+        || request.duration_override_sec.is_some()
+}
+
+fn apply_lane_mix(
+    project: &mut MovieProject,
+    request: &PlaceMovieH3TakeRequest,
+) -> Result<usize, StudioError> {
+    let scene = project
+        .scenes
+        .iter()
+        .find(|s| s.id == request.target_scene_id)
+        .ok_or_else(|| {
+            StudioError::NotFound(format!("Scene {} not found.", request.target_scene_id))
+        })?;
+    let mut clip_ids = Vec::new();
+    if request
+        .target_video_lane_id
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        let idx = select_video_lane_index(
+            &scene.video_lanes,
+            request.target_video_lane_id.as_deref(),
+        )?;
+        clip_ids.extend(scene.video_lanes[idx].clips.iter().map(|c| c.id.clone()));
+    }
+    if request
+        .target_audio_lane_id
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        let idx = select_audio_lane_index(
+            &scene.audio_lanes,
+            request.target_audio_lane_id.as_deref(),
+            false,
+        )?;
+        clip_ids.extend(scene.audio_lanes[idx].clips.iter().map(|c| c.id.clone()));
+    }
+    if clip_ids.is_empty() {
+        return Err(StudioError::Invalid(
+            "Target lane has no clips to update mix on.".into(),
+        ));
+    }
+    for clip_id in &clip_ids {
+        apply_placement_mix(project, request, clip_id)?;
+    }
+    Ok(clip_ids.len())
+}
+
 fn place_reference_asset_on_scene(
     project: &mut MovieProject,
     request: &PlaceMovieH3TakeRequest,
     asset: &MovieReferenceAsset,
 ) -> Result<Option<String>, StudioError> {
-    if request.placement_mode == H3TakePlacementMode::AssetOnly {
+    if request.placement_mode == H3TakePlacementMode::AssetOnly
+        && !has_explicit_placement_target(request)
+    {
         return Ok(None);
     }
     let scene = project
@@ -3752,5 +3869,203 @@ mod tests {
         ] {
             assert!(apply_placement_mix(&mut project.clone(), &request(bad), "clip-score").is_err());
         }
+    }
+
+    #[test]
+    fn scan_h3_loras_classifies_sonder_speed_loras_and_dmad_as_turbo() {
+        let comfy = tempdir().unwrap();
+        let loras_h3 = comfy.path().join("models").join("loras").join("H3");
+        fs::create_dir_all(&loras_h3).unwrap();
+        let files = [
+            "minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors",
+            "minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors",
+            "minimax_h3_fl2v_lightx2v_turbo_8step_v1.0_resized_avg_rank_24_bf16.safetensors",
+        ];
+        for name in files {
+            fs::write(loras_h3.join(name), b"stub").unwrap();
+        }
+
+        let scanned = scan_h3_loras(&comfy.path().join("models").join("loras"));
+        let role_of = |needle: &str| {
+            scanned
+                .iter()
+                .find(|l| l.file_name.contains(needle))
+                .expect(needle)
+                .recommended_role
+                .as_str()
+        };
+        assert_eq!(role_of("DMAD_4step"), "turbo");
+        assert_eq!(role_of("ref2v_lightx2v_turbo"), "ref2v_turbo");
+        assert_eq!(role_of("fl2v_lightx2v_turbo"), "fl2v_turbo");
+
+        let dmad_only = tempdir().unwrap();
+        let dmad_h3 = dmad_only.path().join("models").join("loras").join("H3");
+        fs::create_dir_all(&dmad_h3).unwrap();
+        fs::write(dmad_h3.join(files[0]), b"stub").unwrap();
+        let (_, snap) = resolve_installed_h3_models(&dmad_only.path().to_string_lossy());
+        assert!(snap.has_ref2v_turbo_lora);
+        assert!(snap.has_fl2v_turbo_lora);
+    }
+
+    #[test]
+    fn preset_generation_normalization_enforces_basic_guider_and_h3_shifts() {
+        let mut draft = H3GenerationSettings {
+            pass_preset: H3PassPreset::Draft02Mp,
+            cfg: 3.0,
+            shift_video: 1.0,
+            shift_audio: 1.0,
+            ..H3GenerationSettings::default()
+        };
+        normalize_preset_generation(&mut draft, false);
+        assert_eq!(draft.cfg, 1.0);
+        assert_eq!(draft.shift_video, 12.0);
+        assert_eq!(draft.shift_audio, 6.0);
+
+        let mut custom = H3GenerationSettings {
+            pass_preset: H3PassPreset::Custom,
+            cfg: 3.0,
+            shift_video: 1.0,
+            shift_audio: 1.0,
+            ..H3GenerationSettings::default()
+        };
+        normalize_preset_generation(&mut custom, false);
+        assert_eq!(custom.cfg, 3.0);
+        assert_eq!(custom.shift_video, 1.0);
+        assert_eq!(custom.shift_audio, 1.0);
+
+        let mut adv = H3GenerationSettings {
+            pass_preset: H3PassPreset::Draft02Mp,
+            cfg: 3.0,
+            shift_video: 1.0,
+            shift_audio: 1.0,
+            ..H3GenerationSettings::default()
+        };
+        normalize_preset_generation(&mut adv, true);
+        assert_eq!(adv.cfg, 3.0);
+        assert_eq!(adv.shift_video, 1.0);
+        assert_eq!(adv.shift_audio, 1.0);
+    }
+
+    #[tokio::test]
+    async fn asset_only_with_target_lane_places_clip_lane_mix_and_partial_scene_save_work() {
+        let root = tempdir().unwrap();
+        let studio = MovieStudio::new(root.path()).unwrap();
+        let mut project = studio
+            .create_h3_project(
+                CreateMovieH3ProjectRequest {
+                    title: "Assembly".into(),
+                    story_markdown: String::new(),
+                    width: None,
+                    height: None,
+                    duration_sec: Some(12.0),
+                },
+                "",
+                false,
+                None,
+            )
+            .unwrap();
+        let scene_id = project.active_scene_id.clone();
+        let tmp_audio = root.path().join("song.wav");
+        fs::write(&tmp_audio, b"stub").unwrap();
+        let asset_id = hash_reference(&tmp_audio).unwrap();
+        let ref_root = studio.root.join("_references");
+        let obj_path = ref_root.join("objects").join(format!("{asset_id}.wav"));
+        fs::write(&obj_path, b"stub").unwrap();
+        let asset = MovieReferenceAsset {
+            id: asset_id.clone(),
+            name: "Song 1".into(),
+            kind: "audio".into(),
+            mime_type: "audio/wav".into(),
+            bytes: 4,
+            duration_seconds: 10.0,
+            width: 0,
+            height: 0,
+            has_audio: true,
+            path: obj_path.to_string_lossy().into_owned(),
+            created_at: Utc::now().to_rfc3339(),
+            generation: None,
+        };
+        fs::write(
+            ref_root.join("meta").join(format!("{asset_id}.json")),
+            serde_json::to_vec(&asset).unwrap(),
+        )
+        .unwrap();
+        {
+            let scene = project.scenes.iter_mut().find(|s| s.id == scene_id).unwrap();
+            scene.window.in_sec = 4.0;
+            scene.window.out_sec = 9.0;
+            scene.generation.cfg = 1.5;
+            scene.video_lanes[0].clips.push(H3VideoClip {
+                id: "vid-1".into(),
+                source_kind: H3ClipSourceKind::Take,
+                source_id: "job-1".into(),
+                label: "V1".into(),
+                timeline_start_sec: 0.0,
+                duration_sec: 5.0,
+                source_in_sec: 0.0,
+                source_duration_sec: 5.0,
+                opacity: 1.0,
+                audio_gain: 1.0,
+                include_embedded_audio: true,
+                enabled: true,
+            });
+        }
+        studio.persist_emit(&mut project, None).unwrap();
+
+        // placementMode: assetOnly without target lane stays library-only staging.
+        let staged: PlaceMovieH3TakeRequest = serde_json::from_value(json!({
+            "projectId": project.id,
+            "assetId": asset_id,
+            "placementMode": "assetOnly"
+        }))
+        .unwrap();
+        let mut library_only = project.clone();
+        assert!(place_reference_asset_on_scene(&mut library_only, &staged, &asset)
+            .unwrap()
+            .is_none());
+
+        // placementMode: assetOnly WITH explicit targetAudioLaneId places the asset anyway.
+        let placed_req: PlaceMovieH3TakeRequest = serde_json::from_value(json!({
+            "projectId": project.id,
+            "assetId": asset_id,
+            "targetAudioLaneId": "aud-lane-2",
+            "timelineStartOverrideSec": 0.0,
+            "durationOverrideSec": 8.0,
+            "placementMode": "assetOnly",
+            "gain": 0.8,
+            "fadeInSec": 1.0
+        }))
+        .unwrap();
+        let placed = studio.place_h3_take(placed_req, None).await.unwrap();
+        let a2 = &placed.scenes[0].audio_lanes[1];
+        assert_eq!(a2.clips.len(), 1);
+        assert_eq!((a2.clips[0].gain, a2.clips[0].fade_in_sec), (0.8, 1.0));
+
+        // Lane-wide mix via place_h3_take adjusts V1 clips without touching scene JSON manually.
+        let mix_req: PlaceMovieH3TakeRequest = serde_json::from_value(json!({
+            "projectId": project.id,
+            "targetVideoLaneId": "vid-lane-1",
+            "gain": 0.15
+        }))
+        .unwrap();
+        let mixed = studio.place_h3_take(mix_req, None).await.unwrap();
+        assert!((mixed.scenes[0].video_lanes[0].clips[0].audio_gain - 0.15).abs() < 1e-6);
+
+        // Partial save_h3_scene preserves non-default window and generation when omitted.
+        let saved = studio
+            .save_h3_scene(
+                serde_json::from_value(json!({
+                    "projectId": project.id,
+                    "scene": { "id": scene_id }
+                }))
+                .unwrap(),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.scenes[0].window.in_sec, 4.0);
+        assert_eq!(saved.scenes[0].window.out_sec, 9.0);
+        assert_eq!(saved.scenes[0].generation.cfg, 1.5);
     }
 }

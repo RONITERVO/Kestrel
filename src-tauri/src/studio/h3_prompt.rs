@@ -256,7 +256,12 @@ where
     let installed_turbo = env
         .discovered_loras
         .iter()
-        .find(|l| l.recommended_role == turbo_role);
+        .find(|l| l.recommended_role == turbo_role)
+        .or_else(|| {
+            env.discovered_loras
+                .iter()
+                .find(|l| l.recommended_role == "turbo")
+        });
 
     let has_source_video =
         scene_has_video_in_span(scene, geometry.render_start_sec, geometry.render_end_sec);
@@ -1527,81 +1532,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn compiles_6_channel_h3_full_reference_with_subjects_props_and_dialogue() {
-        let a_cowboy = mk_asset('1', "image");
-        let a_voice = mk_asset('2', "audio");
-        let a_bottle = mk_asset('3', "image");
-        let assets: HashMap<String, MovieReferenceAsset> =
-            [a_cowboy.clone(), a_voice.clone(), a_bottle.clone()]
-                .into_iter()
-                .map(|a| (a.id.clone(), a))
-                .collect();
-
-        let cowboy = H3ReferenceEntity {
-            id: "ent-cowboy".into(),
-            handle: "Cowboy".into(),
-            display_name: "The Drifter".into(),
-            kind: H3EntityKind::Character,
-            subject_description: "Sun-weathered gunslinger in a dusty leather coat".into(),
-            retention_level: H3RetentionLevel::FullyPreserved,
-            default_visual_intent: H3VisualIntent::Preserve,
-            default_audio_intent: H3AudioIntent::VoiceIdentity,
-            members: vec![
-                H3ReferenceMember {
-                    id: "m1".into(),
-                    asset_id: a_cowboy.id.clone(),
-                    label: "Portrait".into(),
-                    population: H3ReferencePopulation::Pictures,
-                    role: H3ReferenceRole::Subject,
-                    crop: None,
-                    source_start_sec: 0.0,
-                    source_end_sec: 0.0,
-                    use_embedded_audio: false,
-                    description_override: String::new(),
-                },
-                H3ReferenceMember {
-                    id: "m2".into(),
-                    asset_id: a_voice.id.clone(),
-                    label: "Voice".into(),
-                    population: H3ReferencePopulation::StandaloneAudios,
-                    role: H3ReferenceRole::Voice,
-                    crop: None,
-                    source_start_sec: 0.0,
-                    source_end_sec: 3.0,
-                    use_embedded_audio: false,
-                    description_override: String::new(),
-                },
-            ],
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-
-        let bottle = H3ReferenceEntity {
-            id: "ent-bottle".into(),
-            handle: "SonderBottle".into(),
-            display_name: "Amber Bottle".into(),
-            kind: H3EntityKind::Prop,
-            subject_description: "Square amber whiskey bottle with a torn paper label".into(),
-            retention_level: H3RetentionLevel::FullyPreserved,
-            default_visual_intent: H3VisualIntent::Preserve,
-            default_audio_intent: H3AudioIntent::IgnoreEmbedded,
-            members: vec![H3ReferenceMember {
-                id: "m3".into(),
-                asset_id: a_bottle.id.clone(),
-                label: "Bottle".into(),
-                population: H3ReferencePopulation::Pictures,
-                role: H3ReferenceRole::General,
-                crop: None,
-                source_start_sec: 0.0,
-                source_end_sec: 0.0,
-                use_embedded_audio: false,
-                description_override: String::new(),
-            }],
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-
+    fn sample_scene_and_project() -> (H3Scene, MovieProject) {
         let scene = H3Scene {
             id: "sc-1".into(),
             name: "Saloon Showdown".into(),
@@ -1723,13 +1654,93 @@ mod tests {
             producer_approved_at: String::new(),
             story_markdown: String::new(),
             story_revisions: Vec::new(),
-            entities: vec![cowboy, bottle],
+            entities: Vec::new(),
             scenes: Vec::new(),
             active_scene_id: "sc-1".into(),
             render_jobs: Vec::new(),
             legacy_producer_feedback: Vec::new(),
             legacy_copilot_history: Vec::new(),
         };
+        (scene, project)
+    }
+
+    #[test]
+    fn compiles_6_channel_h3_full_reference_with_subjects_props_and_dialogue() {
+        let a_cowboy = mk_asset('1', "image");
+        let a_voice = mk_asset('2', "audio");
+        let a_bottle = mk_asset('3', "image");
+        let assets: HashMap<String, MovieReferenceAsset> =
+            [a_cowboy.clone(), a_voice.clone(), a_bottle.clone()]
+                .into_iter()
+                .map(|a| (a.id.clone(), a))
+                .collect();
+
+        let cowboy = H3ReferenceEntity {
+            id: "ent-cowboy".into(),
+            handle: "Cowboy".into(),
+            display_name: "The Drifter".into(),
+            kind: H3EntityKind::Character,
+            subject_description: "Sun-weathered gunslinger in a dusty leather coat".into(),
+            retention_level: H3RetentionLevel::FullyPreserved,
+            default_visual_intent: H3VisualIntent::Preserve,
+            default_audio_intent: H3AudioIntent::VoiceIdentity,
+            members: vec![
+                H3ReferenceMember {
+                    id: "m1".into(),
+                    asset_id: a_cowboy.id.clone(),
+                    label: "Portrait".into(),
+                    population: H3ReferencePopulation::Pictures,
+                    role: H3ReferenceRole::Subject,
+                    crop: None,
+                    source_start_sec: 0.0,
+                    source_end_sec: 0.0,
+                    use_embedded_audio: false,
+                    description_override: String::new(),
+                },
+                H3ReferenceMember {
+                    id: "m2".into(),
+                    asset_id: a_voice.id.clone(),
+                    label: "Voice".into(),
+                    population: H3ReferencePopulation::StandaloneAudios,
+                    role: H3ReferenceRole::Voice,
+                    crop: None,
+                    source_start_sec: 0.0,
+                    source_end_sec: 3.0,
+                    use_embedded_audio: false,
+                    description_override: String::new(),
+                },
+            ],
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let bottle = H3ReferenceEntity {
+            id: "ent-bottle".into(),
+            handle: "SonderBottle".into(),
+            display_name: "Amber Bottle".into(),
+            kind: H3EntityKind::Prop,
+            subject_description: "Square amber whiskey bottle with a torn paper label".into(),
+            retention_level: H3RetentionLevel::FullyPreserved,
+            default_visual_intent: H3VisualIntent::Preserve,
+            default_audio_intent: H3AudioIntent::IgnoreEmbedded,
+            members: vec![H3ReferenceMember {
+                id: "m3".into(),
+                asset_id: a_bottle.id.clone(),
+                label: "Bottle".into(),
+                population: H3ReferencePopulation::Pictures,
+                role: H3ReferenceRole::General,
+                crop: None,
+                source_start_sec: 0.0,
+                source_end_sec: 0.0,
+                use_embedded_audio: false,
+                description_override: String::new(),
+            }],
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let (scene, mut project) = sample_scene_and_project();
+        project.entities = vec![cowboy, bottle];
 
         let res = compile_h3_window(
             &project,
@@ -1757,5 +1768,94 @@ mod tests {
         assert!(res.compiled_prompt.contains("Retention Analysis:\n- <Subject 1> (<Picture 1>, <Audio 1>) (appears in [Shot 1]): fully_preserved"));
         assert!(res.compiled_prompt.contains("[Shot 1] At 00:00.000, Medium close-up, shallow depth of field. <Subject 1> slides <Picture 2> across the scarred oak counter. <Subject 1> (S1) says in a low rasp: <d>[English] Keep the change.</d>"));
         assert!(res.compiled_prompt.contains("Non-Diegetic Music:\nN/A"));
+    }
+
+    #[test]
+    fn turbo_lora_selection_prefers_exact_role_and_never_stacks_with_generic_turbo() {
+        let env_all = H3EnvironmentSnapshot {
+            discovered_loras: vec![
+                H3DiscoveredLora {
+                    file_name: "H3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors".into(),
+                    bytes: 366_647_000,
+                    recommended_role: "turbo".into(),
+                    default_strength: 0.75,
+                },
+                H3DiscoveredLora {
+                    file_name: "H3/minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors".into(),
+                    bytes: 306_731_560,
+                    recommended_role: "ref2v_turbo".into(),
+                    default_strength: 0.8,
+                },
+                H3DiscoveredLora {
+                    file_name: "H3/minimax_h3_fl2v_lightx2v_turbo_8step_v1.0_resized_avg_rank_24_bf16.safetensors".into(),
+                    bytes: 364_638_304,
+                    recommended_role: "fl2v_turbo".into(),
+                    default_strength: 0.8,
+                },
+            ],
+            ..dummy_env()
+        };
+
+        let (mut scene, project) = sample_scene_and_project();
+        scene.reference_lanes.clear();
+        scene.prompt_sections[0].summary_beat = "A rider crosses the ridge".into();
+        scene.prompt_sections[0].detailed_action = "Wide shot of a rider crossing the ridge".into();
+        scene.prompt_sections[0].vocal_events.clear();
+        let empty_assets: HashMap<String, MovieReferenceAsset> = HashMap::new();
+
+        // No refs + Auto selects FL2VA, so exact fl2v_turbo wins without stacking DMAD.
+        let exact_fl2v = compile_h3_window(
+            &project,
+            &scene,
+            None,
+            None,
+            &env_all,
+            false,
+            |aid| empty_assets.get(aid).cloned().ok_or_else(|| StudioError::NotFound(aid.into())),
+        )
+        .unwrap();
+        assert_eq!(exact_fl2v.resolved_steps, 10);
+        assert_eq!(exact_fl2v.resolved_loras.len(), 1);
+        assert!(exact_fl2v.resolved_loras[0]
+            .file_name
+            .contains("fl2v_lightx2v_turbo"));
+
+        // Explicit Ref2va pathway picks exact ref2v_turbo without stacking DMAD.
+        let mut ref2v_scene = scene.clone();
+        ref2v_scene.generation.model_choice = H3ModelChoice::Ref2va;
+        let exact_ref2v = compile_h3_window(
+            &project,
+            &ref2v_scene,
+            None,
+            None,
+            &env_all,
+            false,
+            |aid| empty_assets.get(aid).cloned().ok_or_else(|| StudioError::NotFound(aid.into())),
+        )
+        .unwrap();
+        assert_eq!(exact_ref2v.resolved_loras.len(), 1);
+        assert!(exact_ref2v.resolved_loras[0]
+            .file_name
+            .contains("ref2v_lightx2v_turbo"));
+
+        // Generic DMAD turbo acts as fallback when model-specific Turbo LoRAs are absent.
+        let env_dmad = H3EnvironmentSnapshot {
+            discovered_loras: vec![env_all.discovered_loras[0].clone()],
+            ..dummy_env()
+        };
+        let fallback = compile_h3_window(
+            &project,
+            &scene,
+            None,
+            None,
+            &env_dmad,
+            false,
+            |aid| empty_assets.get(aid).cloned().ok_or_else(|| StudioError::NotFound(aid.into())),
+        )
+        .unwrap();
+        assert_eq!(fallback.resolved_steps, 10);
+        assert_eq!(fallback.resolved_loras.len(), 1);
+        assert!(fallback.resolved_loras[0].file_name.contains("DMAD_4step"));
+        assert!((fallback.resolved_loras[0].strength_model - 0.8).abs() < 1e-4);
     }
 }

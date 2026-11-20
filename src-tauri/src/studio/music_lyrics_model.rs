@@ -62,7 +62,11 @@ pub(crate) async fn draft_from_audio(
             "model": connection.model_id,
             "messages": messages,
             "max_tokens": 256,
-            "temperature": 0.1
+            "temperature": 0.1,
+            "reasoning_effort": "off",
+            "thinking_budget_tokens": 0,
+            "reasoning_budget_tokens": 0,
+            "chat_template_kwargs": {"enable_thinking": false, "reasoning": false}
         }),
         "Audio lyric suggestion",
     )
@@ -122,7 +126,11 @@ pub(crate) async fn translate(
             "model": connection.model_id,
             "messages": messages,
             "max_tokens": (request.lines.len() * 64).clamp(256, 4096),
-            "temperature": 0.2
+            "temperature": 0.2,
+            "reasoning_effort": "off",
+            "thinking_budget_tokens": 0,
+            "reasoning_budget_tokens": 0,
+            "chat_template_kwargs": {"enable_thinking": false, "reasoning": false}
         }),
         "Lyric translation",
     )

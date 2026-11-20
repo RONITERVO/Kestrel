@@ -9,9 +9,9 @@ use tokio_util::sync::CancellationToken;
 pub fn schemas() -> Vec<Value> {
     let schema = |name: &str, description: &str, parameters: Value| json!({"type":"function","function":{"name":name,"description":description,"parameters":parameters}});
     vec![
-        schema("app_actions", "List native producer action names and access by name fragment, e.g. music, image, movie, draft, research. Use app_describe for a selected action's guidance and exact formats. App projects are managed through these actions, never by editing internal files.", json!({"type":"object","properties":{"filter":{"type":"string"}}})),
-        schema("app_describe", "Read the exact Rust-owned argument types, access policy and guidance for an action before invoking it.", json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})),
-        schema("app_call", "Perform one native producer action with typed arguments. Use a unique request_id per intentional action; retry unchanged with the same ID. You are the producer: write text yourself using save actions OR ask the app's local model via start_studio_prompt_draft and inspect get_app_job before saving. Generation acceptance is not completion. Never claim a render exists without inspecting its completed native take.", json!({"type":"object","properties":{"request_id":{"type":"string"},"command":{"type":"string"},"args":{"type":"object"}},"required":["request_id","command","args"]})),
+        schema("app_actions", "List native app command names and access by fragment (e.g. movie, music, image, speech, export). Use returned names with app_describe/app_call; never edit internal app files.", json!({"type":"object","properties":{"filter":{"type":"string"}}})),
+        schema("app_describe", "Read exact argument types, access policy, and workflow rules for one app_actions command before calling it.", json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})),
+        schema("app_call", "Execute one app_actions command with unique request_id, exact command name, and clean JSON args object. Never invent confirmation: inspect completed takes/jobs before claiming results.", json!({"type":"object","properties":{"request_id":{"type":"string"},"command":{"type":"string"},"args":{"type":"object"}},"required":["request_id","command","args"]})),
     ]
 }
 
@@ -78,6 +78,49 @@ pub fn extra_artifacts(arguments: &Value, receipt: Option<&Value>) -> Vec<std::p
     Vec::new()
 }
 
+pub(crate) fn is_task_blocked_command(command: &str) -> bool {
+    matches!(
+        command,
+        "start_computer_task"
+            | "start_producer_task"
+            | "resume_computer_task"
+            | "send_producer_message"
+            | "acknowledge_task_action"
+            | "stop_computer_task"
+            | "start_chat_stream"
+            | "start_local_model"
+            | "stop_local_model"
+            | "release_ai_memory"
+    )
+}
+
+pub(crate) fn actions_catalog_for_task(filter: Option<&str>) -> Vec<Value> {
+    app_control::catalog(filter)
+        .iter()
+        .map(|name| {
+            let (mut access, _) =
+                app_control::policy(name).unwrap_or_else(|error| ("unavailable".into(), error));
+            if is_task_blocked_command(name) {
+                access = "human".into();
+            }
+            json!({"command":name,"access":access})
+        })
+        .collect()
+}
+
+pub(crate) fn describe_for_task(
+    command: &str,
+) -> Result<kestrel_app_core::AppActionDescription, String> {
+    let mut desc = app_control::describe(command)?;
+    if is_task_blocked_command(command) {
+        desc.access = "human".into();
+        desc.guidance.push_str(
+            " Blocked in Computer Tasks: Kestrel automatically unloads the LLM and frees VRAM during GPU generation (start_*_generation, synthesize_local_speech) and reloads the LLM after your tool batch.",
+        );
+    }
+    Ok(desc)
+}
+
 pub async fn execute(
     app: &AppHandle,
     run_id: &str,
@@ -93,35 +136,16 @@ pub async fn execute(
             .ok_or_else(|| "command is required".to_string())
     };
     match name {
-        "app_actions" => Ok(json!(app_control::catalog(
+        "app_actions" => Ok(json!(actions_catalog_for_task(
             args.get("filter").and_then(Value::as_str)
-        )
-        .iter()
-        .map(|name| {
-            let (access, _) =
-                app_control::policy(name).unwrap_or_else(|error| ("unavailable".into(), error));
-            json!({"command":name,"access":access})
-        })
-        .collect::<Vec<_>>())),
+        ))),
         "app_describe" => {
-            serde_json::to_value(app_control::describe(command()?)?).map_err(|e| e.to_string())
+            serde_json::to_value(describe_for_task(command()?)?).map_err(|e| e.to_string())
         }
         "app_call" => {
             let command = command()?;
-            if matches!(
-                command,
-                "start_computer_task"
-                    | "start_producer_task"
-                    | "resume_computer_task"
-                    | "send_producer_message"
-                    | "acknowledge_task_action"
-                    | "stop_computer_task"
-                    | "start_chat_stream"
-                    | "start_local_model"
-                    | "stop_local_model"
-                    | "release_ai_memory"
-            ) {
-                return Err("A Computer Task cannot recursively start tasks/chat or change the producer's selected runtime. Use Studio drafting actions for local collaboration.".into());
+            if is_task_blocked_command(command) {
+                return Err("A Computer Task cannot recursively start tasks/chat or change the producer's selected runtime (Kestrel manages LLM/VRAM unloading automatically during GPU generation). Use Studio drafting actions for local collaboration.".into());
             }
             let arguments = app_control::coerce_stringified_object(
                 args.get("args").cloned().ok_or("args is required")?,
@@ -449,5 +473,21 @@ mod tests {
             &[]
         )
         .is_err());
+    }
+
+    #[test]
+    fn task_blocked_runtime_commands_are_not_advertised_as_writable() {
+        let actions = actions_catalog_for_task(Some("release_ai_memory"));
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0]["command"], "release_ai_memory");
+        assert_eq!(actions[0]["access"], "human");
+
+        let blocked = describe_for_task("release_ai_memory").unwrap();
+        assert_eq!(blocked.access, "human");
+        assert!(blocked.guidance.contains("automatically unloads the LLM"));
+
+        let allowed = describe_for_task("start_music_generation").unwrap();
+        assert_eq!(allowed.access, "write");
+        assert!(allowed.guidance.contains("automatically unloads the local LLM"));
     }
 }

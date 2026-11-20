@@ -346,6 +346,19 @@ pub fn catalog(filter: Option<&str>) -> Vec<String> {
         .map(|name| (*name).into())
         .collect()
 }
+const H3_WORKFLOW_OVERVIEW: &str = " H3 workflow: track state via get_movie_h3_digest ({id}, <4 KB), not get_movie. Build reusable @Handle entities (upsert_movie_h3_entity + import_*_as_movie_reference), stage @Handle spans across active [startSec..endSec] lanes (stage_movie_h3_reference), author 4s-6s [Shot k] beats (upsert_movie_h3_prompt_section), dry-run compile_movie_h3_window (caps: 9 pics, 3 vids, 3 audios per window), and render draft02Mp (768x448, expandQualityLadder:false) sequentially or with windows:[] (auto 23-frame preContextSec continuity bridge). Place scores on A2 with place_movie_h3_take (gain/fades), verify takes via inspect_movie_h3_take, render timeline via render_movie_edit, and bundle outputs with export_production_bundle.";
+
+fn needs_h3_workflow_overview(name: &str) -> bool {
+    name.contains("movie_h3")
+        || matches!(
+            name,
+            "create_movie_producer_project"
+                | "render_movie_edit"
+                | "export_production_bundle"
+                | "export_media_composition"
+        )
+}
+
 pub fn describe(name: &str) -> Result<AppActionDescription, String> {
     let (access, mut guidance) = policy(name)?;
     if name == "apply_image_composition" {
@@ -353,8 +366,21 @@ pub fn describe(name: &str) -> Result<AppActionDescription, String> {
         // the same literal schema used by native drafting; editor state is a different type.
         guidance.push_str(" The text argument contains JSON matching this schema, not ImageProject editor fields. Preserve the listed key order; bbox is [top,left,bottom,right] in 0–1000 coordinates. Schema: ");
         guidance.push_str(crate::studio::IMAGE_COMPOSITION_SCHEMA.text);
+    } else if needs_h3_workflow_overview(name) {
+        guidance.push_str(H3_WORKFLOW_OVERVIEW);
     }
     let (arguments, result_type, types) = describe_app_command(name)?;
+    if types.len() > 8 {
+        if let Some(arr) = arguments.as_array() {
+            for arg in arr {
+                if let Some(arg_type) = arg.get("type").and_then(Value::as_str) {
+                    if let Some(inline_def) = types.get(arg_type) {
+                        guidance.push_str(&format!(" Input contract ({arg_type}): {inline_def}"));
+                    }
+                }
+            }
+        }
+    }
     Ok(AppActionDescription {
         command: name.into(),
         access,
@@ -365,16 +391,67 @@ pub fn describe(name: &str) -> Result<AppActionDescription, String> {
     })
 }
 
-/// Local models sometimes JSON-encode a large nested `args` object into a string. When that
-/// string is exactly one JSON object, use the object; any other string stays a string and is
-/// rejected by the normal object check. Path and policy checks run on the decoded object.
+/// Local models sometimes JSON-encode a large nested `args` object into a string or drop 1–3
+/// trailing closing braces on deeply nested payloads. When that string decodes into one JSON
+/// object, use the object; any other string stays a string and is rejected by the normal check.
 pub fn coerce_stringified_object(value: Value) -> Value {
-    if let Value::String(text) = &value {
-        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(text.trim()) {
-            return Value::Object(map);
+    let Value::String(text) = &value else {
+        return value;
+    };
+    let trimmed = text.trim();
+    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(trimmed) {
+        return Value::Object(map);
+    }
+    if trimmed.starts_with('{') {
+        for suffix in ["}", "}}", "}}}"] {
+            let candidate = format!("{trimmed}{suffix}");
+            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&candidate) {
+                return Value::Object(map);
+            }
         }
     }
     value
+}
+
+pub fn normalize_action_args(command: &str, mut args: Value) -> Value {
+    if let Ok((arguments, _, _)) = describe_app_command(command) {
+        if let Some(arr) = arguments.as_array() {
+            if arr.len() == 1 {
+                if let Some(key) = arr[0].get("name").and_then(Value::as_str) {
+                    if key == "id" {
+                        if let Some(obj) = args.as_object() {
+                            if obj.len() == 1 && !obj.contains_key("id") {
+                                if let Some(val) = [
+                                    "projectId",
+                                    "movieId",
+                                    "musicProjectId",
+                                    "imageProjectId",
+                                    "jobId",
+                                    "reportId",
+                                    "bundleId",
+                                ]
+                                .into_iter()
+                                .find_map(|alias| obj.get(alias))
+                                {
+                                    args = json!({ "id": val.clone() });
+                                }
+                            }
+                        }
+                    } else if matches!(
+                        key,
+                        "request" | "edited" | "project" | "settings" | "draft"
+                    ) {
+                        if let Some(obj) = args.as_object() {
+                            if !obj.contains_key(key) && !obj.is_empty() {
+                                args = json!({ key: args });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    args
 }
 
 pub async fn execute(
@@ -383,24 +460,7 @@ pub async fn execute(
 ) -> Result<AppActionReceipt, String> {
     valid_id(&request.request_id)?;
     request.args = coerce_stringified_object(std::mem::take(&mut request.args));
-    if let Ok((arguments, _, _)) = describe_app_command(&request.command) {
-        if let Some(arr) = arguments.as_array() {
-            if arr.len() == 1 {
-                if let Some(key) = arr[0].get("name").and_then(Value::as_str).filter(|k| {
-                    matches!(
-                        *k,
-                        "request" | "edited" | "project" | "settings" | "draft"
-                    )
-                }) {
-                    if let Some(obj) = request.args.as_object() {
-                        if !obj.contains_key(key) && !obj.is_empty() {
-                            request.args = json!({ key: request.args });
-                        }
-                    }
-                }
-            }
-        }
-    }
+    request.args = normalize_action_args(&request.command, std::mem::take(&mut request.args));
     if matches!(
         request.command.as_str(),
         "export_narration" | "export_music_lyrics" | "export_music_midi"
@@ -505,10 +565,61 @@ mod tests {
         let nested = json!({"request": {"scene": {"audioLanes": [{"clips": [{"gain": 0.32}]}]}}});
         let decoded = coerce_stringified_object(Value::String(format!(" {nested} ")));
         assert_eq!(decoded, nested);
-        for kept in [json!("plain text"), json!("[1,2]"), json!("\"quoted\""), json!(3)] {
+        let one_missing = coerce_stringified_object(json!(
+            "{\"request\":{\"projectId\":\"mov-1\",\"title\":\"Aurora Watch\""
+        ));
+        assert_eq!(
+            one_missing,
+            json!({"request": {"projectId": "mov-1", "title": "Aurora Watch"}})
+        );
+        let two_missing = coerce_stringified_object(json!(
+            "{\"request\":{\"scene\":{\"id\":\"scene-1\",\"name\":\"Main\"}"
+        ));
+        assert_eq!(
+            two_missing,
+            json!({"request": {"scene": {"id": "scene-1", "name": "Main"}}})
+        );
+        let three_missing = coerce_stringified_object(json!(
+            "{\"request\":{\"scene\":{\"id\":\"scene-1\",\"name\":\"Main\""
+        ));
+        assert_eq!(
+            three_missing,
+            json!({"request": {"scene": {"id": "scene-1", "name": "Main"}}})
+        );
+        for kept in [
+            json!("plain text"),
+            json!("[1,2]"),
+            json!("\"quoted\""),
+            json!(3),
+            json!("{\"unclosed\":\"value"),
+        ] {
             assert_eq!(coerce_stringified_object(kept.clone()), kept);
         }
         assert_eq!(coerce_stringified_object(nested.clone()), nested);
+
+        let h3_desc = describe("create_movie_h3_project").unwrap();
+        assert!(h3_desc.guidance.contains("get_movie_h3_digest"));
+        let place_desc = describe("place_movie_h3_take").unwrap();
+        assert!(place_desc
+            .guidance
+            .contains("Input contract (PlaceMovieH3TakeRequest):"));
+        assert_eq!(
+            normalize_action_args("get_movie_h3_digest", json!({"projectId": "mov-1"})),
+            json!({"id": "mov-1"})
+        );
+        assert_eq!(
+            normalize_action_args("get_music_project", json!({"musicProjectId": "mus-1"})),
+            json!({"id": "mus-1"})
+        );
+        assert_eq!(
+            normalize_action_args(
+                "place_movie_h3_take",
+                json!({"projectId": "mov-1", "jobId": "job-1"})
+            ),
+            json!({"request": {"projectId": "mov-1", "jobId": "job-1"}})
+        );
+        let non_h3_desc = describe("get_setup_snapshot").unwrap();
+        assert!(!non_h3_desc.guidance.contains("get_movie_h3_digest"));
     }
     #[test]
     fn unfinished_actions_and_drafts_recover_without_replay() {
